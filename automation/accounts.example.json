@@ -1,0 +1,14 @@
+[
+  {
+    "name": "AccountA",
+    "account": "UXXXXXXXX",
+    "port": 4001,
+    "leverage": 1.2
+  },
+  {
+    "name": "AccountB",
+    "account": "UYYYYYYYY",
+    "port": 7497,
+    "leverage": 1.2
+  }
+]

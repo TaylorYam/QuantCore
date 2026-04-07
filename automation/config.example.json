@@ -1,0 +1,20 @@
+{
+  "host": "127.0.0.1",
+  "port": 7497,
+  "client_id": 20,
+  "account": "UXXXXXXXX",
+  "dry_run": true,
+  "order_type": "MOO",
+  "outside_rth": false,
+  "wait_fill_sec": 30,
+  "alloc_sr": 0.7,
+  "alloc_sp500": 0.5,
+  "leverage": 1.2,
+  "telegram_token": "",
+  "telegram_chat_id": "",
+  "sinopac_api_key": "",
+  "sinopac_secret_key": "",
+  "sinopac_person_id": "",
+  "sinopac_ca_path": "",
+  "sinopac_ca_password": ""
+}

@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Data files（不上傳原始資料，避免大檔案）
+data/stocks/
+data/etfs/
+data/reference/
+
+# Output（回測結果本機保留，不上傳）
+output/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+automation/logs/
+
+# Sensitive configs（含 API token、帳號密碼）
+automation/config.json
+automation/accounts.json
+
+# Generated files
+automation/charts/
+automation/*.xlsx
+
+# IB / IBC config
+jts.ini
+automation/jts.ini
+
+# Tool / agent config
+.claude/
+.agents/
+.continue/
+skills-lock.json

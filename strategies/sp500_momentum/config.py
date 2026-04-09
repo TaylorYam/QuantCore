@@ -50,6 +50,15 @@ BENCHMARK_TICKER    = "SPY"
 DIP_BUY_TICKER      = "SPY"    # 熊市抄底標的（從 SSO 改為 SPY，2026-03 高利率環境）
 ENABLE_BEAR_DIP_BUY = True     # 開啟熊市 SSO 抄底策略
 
+# 熊市 DD 階層配置：{DD_level: allocation_of_strategy_capital}
+# 各階層獨立觸發，同一等級只觸發一次（直到牛市確認後 reset）
+# 總和可達 100% → 熊市全倉抄底
+DIP_BUY_ALLOCATIONS = {
+    0.15: 0.30,   # SPY 自高點回落 15% → 配置 30%
+    0.20: 0.30,   # 再跌到 20%         → 再配置 30%
+    0.25: 0.40,   # 再跌到 25%         → 再配置 40%（總和 100%）
+}
+
 # ── ATR 參數 ──────────────────────────────────────────────────
 ATR_PERIOD = 20    # ATR 計算週期
 

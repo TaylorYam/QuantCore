@@ -366,7 +366,7 @@ class SP500Backtester:
         if not config.ENABLE_BEAR_DIP_BUY:
             return
 
-        alloc_map = {0.15: 0.30, 0.20: 0.30, 0.25: 0.40}
+        alloc_map = config.DIP_BUY_ALLOCATIONS
         for level in [0.15, 0.20, 0.25]:
             if spy_dd >= level and not self.dip_state[level]:
                 alloc      = alloc_map[level]

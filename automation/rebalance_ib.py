@@ -80,13 +80,16 @@ ALLOC_SP500    = cfg.get('alloc_sp500',    0.50)
 LEVERAGE       = cfg.get('leverage',       1.3)
 TG_TOKEN       = cfg.get('telegram_token',   '')
 TG_CHAT_ID     = cfg.get('telegram_chat_id', '')
+# 即時報價備援：新帳戶若無 market data 訂閱，會自動連到這個 port 抓價
+# 例如 Rosa 有訂閱 → 設為 Rosa 的 port (7497)
+PRICE_FEED_PORT = cfg.get('price_feed_port', 7497)
 
 
 def _apply_config(cfg_dict: dict) -> None:
     """將 config dict 套用到模組全域變數（多帳戶切換用）"""
     global HOST, PORT, CLIENT_ID, ACCOUNT, ACCOUNT_NAME, DRY_RUN, ORDER_TYPE
     global OUTSIDE_RTH, WAIT_FILL_SEC, ALLOC_SR, ALLOC_SP500, LEVERAGE
-    global TG_TOKEN, TG_CHAT_ID
+    global TG_TOKEN, TG_CHAT_ID, PRICE_FEED_PORT
     HOST          = cfg_dict.get('host',           '127.0.0.1')
     PORT          = cfg_dict.get('port',           7497)
     ACCOUNT       = cfg_dict.get('account',        '')
@@ -100,6 +103,7 @@ def _apply_config(cfg_dict: dict) -> None:
     LEVERAGE      = cfg_dict.get('leverage',       1.3)
     TG_TOKEN      = cfg_dict.get('telegram_token',   '')
     TG_CHAT_ID    = cfg_dict.get('telegram_chat_id', '')
+    PRICE_FEED_PORT = cfg_dict.get('price_feed_port', 7497)
     # clientId 由 account_utils 計算
     from account_utils import get_client_id, ROLE_REBALANCE
     CLIENT_ID     = get_client_id(ACCOUNT_NAME, ROLE_REBALANCE) if ACCOUNT_NAME else 20
@@ -160,18 +164,17 @@ def get_positions_detail(ib: IB) -> list:
 
 
 def get_prices(ib: IB, symbols: list) -> dict:
-    contracts = [Stock(s, 'SMART', 'USD') for s in symbols]
-    ib.qualifyContracts(*contracts)
-    tickers = ib.reqTickers(*contracts)
-    prices = {}
-    for t in tickers:
-        sym = t.contract.symbol
-        mid = t.midpoint()
-        if not (np.isfinite(mid) and mid > 0):
-            mid = t.last if (t.last and t.last > 0) else t.close
-        prices[sym] = float(mid)
-        log.info(f"  {sym}: ${mid:.2f}")
-    return prices
+    """
+    取得 symbols 的報價（透過 price_utils.robust_get_prices）。
+    優先順序：本連線即時 → price_feed_port → delayed → 本地 CSV。
+    """
+    from price_utils import robust_get_prices
+    return robust_get_prices(
+        ib, symbols,
+        host=HOST,
+        price_feed_port=PRICE_FEED_PORT,
+        verbose_log=lambda m: log.info(m),
+    )
 
 
 def make_order(action: str, qty: int, lmt_price: float) -> Order:
@@ -188,6 +191,8 @@ def make_order(action: str, qty: int, lmt_price: float) -> Order:
     else:  # MKT
         o = MarketOrder(action, qty)
         o.outsideRth = OUTSIDE_RTH
+        if OUTSIDE_RTH:
+            o.tif = 'GTC'
     # FA 帳戶必須指定下單帳戶，否則 Error 436
     if ACCOUNT:
         o.account = ACCOUNT
@@ -256,47 +261,66 @@ def check_fills(trades: list) -> list:
 
 def compute_sr_weights() -> tuple[dict, str]:
     """
-    取 Sector Rotation 最新目標權重。
+    取 Sector Rotation 最新目標權重（live 模式）。
+
+    使用 get_latest_weights_live() 直接從最新資料算訊號，
+    不套用 rebalance mask / forward-fill，避免週二盤前拿到上週舊訊號。
+    等同回測中「今天是 rebalance day」時的 shift(1) 結果。
+
     回傳 (weights_dict, signal_date_str)
     """
     from strategies.sector_rotation.data_loader import load_data
-    from strategies.sector_rotation.signal import get_latest_weights
+    from strategies.sector_rotation.signal import get_latest_weights_live
 
     data = load_data()
     etf_close = data['etf_close']
-    weights, sig_date = get_latest_weights(etf_close)
+    weights, sig_date = get_latest_weights_live(etf_close)
 
     wgt = {sym: float(w) for sym, w in weights.items() if w > 0.001}
-    log.info(f"SR signal date: {sig_date.date()}")
+    log.info(f"SR signal date: {sig_date.date()}  (live, skip rebal mask)")
     for sym, w in sorted(wgt.items(), key=lambda x: -x[1]):
         log.info(f"  SR  {sym}: {w*100:.0f}%")
     return wgt, str(sig_date.date())
 
 
-def compute_sp500_weights(current_sp500_holdings: list[str]) -> tuple[dict, str]:
+def compute_sp500_weights(current_sp500_holdings: list[str],
+                          account_name: str = "") -> tuple[dict, str]:
     """
-    基於 IB 帳戶的實際 SP500 持股，產生 live 目標權重。
+    基於 IB 帳戶的實際 SP500 持股，產生 live 目標權重（與 backtester 一致）。
 
-    核心邏輯（與 backtester._unified_rebalance 一致）：
-      1. scan_market() 取當日排名
-      2. 現有持股只要還在 top SELL_RANK_THRESHOLD(20) 且未跌破 EMA50 → 保留
-      3. 跌出 top 20 或跌破 EMA50 → 賣出
-      4. 持股不足 TARGET_HOLDINGS(4) 支 → 從 top-ranked 補進
-      5. 過熱保護：adj_slope > MAX_ADJ_SLOPE(1.5) 不買入
-      6. 用 ATR 反比例計算各持股目標權重
+    對齊回測的邏輯：
+      1. 牛市確認：連續 2 個 rebal day SPY>MA200 才做 rotation
+         （bull_weeks_counter，持久化於 sp500_state_{account}.json）
+      2. 未確認牛市 + SPY < MA200 → 熊市，執行 dip-buy（15/20/25% DD）
+      3. 未確認牛市 + SPY ≥ MA200 → 等待，不動作
+      4. REBALANCE_WEEKS gate：只有 rotation week 才執行 rotation
+      5. rotation 流程：保留 top 20 內且未跌破 EMA50 的持股，補滿 TARGET_HOLDINGS
+      6. ATR 反比例權重
 
     Parameters
     ----------
     current_sp500_holdings : list[str]
         IB 帳戶中屬於 SP500 策略的股票代碼（不含 SR ETFs）
+    account_name : str
+        帳戶名稱，用於讀取 / 寫入 state file
 
     Returns
     -------
     (weights_dict, signal_date_str)
+
+    Note
+    ----
+    當回傳空 dict 時可能是下列情況之一：
+      - 熊市未滿足 dip-buy 條件（權重由熊市邏輯處理）
+      - 牛市尚未確認且 SPY ≥ MA200 (holding pattern)
+    主流程會根據 SR+SP500 合併結果計算 orders。
     """
     from strategies.sp500_momentum.selection    import SelectionEngine
     from strategies.sp500_momentum.market_regime import MarketRegime
     from strategies.sp500_momentum import config as sp_cfg, utils
+    from sp500_state import (load_state, save_state, update_bull_counter,
+                             is_bull_confirmed, reset_dip_state,
+                             is_dip_triggered, mark_dip_triggered)
 
     # 初始化選股引擎
     selector = SelectionEngine()
@@ -304,20 +328,125 @@ def compute_sp500_weights(current_sp500_holdings: list[str]) -> tuple[dict, str]
     sso_df   = utils.load_benchmark(sp_cfg.ETF_DIR / "SSO.csv")
     regime   = MarketRegime(spy_df, sso_df)
 
-    # 訊號日期 = 最新一個交易日（用前一日收盤訊號）
-    signal_date = spy_df.index[-1]
+    # ── signal_date = 上一個排程調倉日的前一天收盤 ──────────────────────
+    # 保證任何日期 sync 都會產生與「上次排程 rebalance」完全一致的結果，
+    # 所有帳戶在任何時間 sync 都會看到相同的目標持倉。
+    today       = pd.Timestamp.today().normalize()
+    rebal_wday  = sp_cfg.REBALANCE_WEEKDAY  # 2 = Wednesday
+    days_back   = (today.dayofweek - rebal_wday) % 7
+    last_rebal  = today - pd.Timedelta(days=days_back)
+
+    # 資料截斷到 < last_rebal，取最後一筆作為 signal_date
+    trimmed_idx = spy_df.index[spy_df.index < last_rebal]
+    if len(trimmed_idx) > 0:
+        signal_date = trimmed_idx[-1]
+        log.info(f"SP500 last_rebal={last_rebal.date()} → signal_date={signal_date.date()}")
+    else:
+        signal_date = spy_df.index[-1]
+        log.warning(f"  SP500: not enough history, using latest {signal_date.date()}")
     sig_date_str = str(signal_date.date())
     log.info(f"SP500 signal date: {sig_date_str}")
     log.info(f"SP500 current IB holdings: {current_sp500_holdings or '(none)'}")
 
-    # ── 熊市檢查 ─────────────────────────────────────────────────────────
-    state = regime.get_state(signal_date)
-    if state and state["SPY_Close"] < state["SPY_MA200"]:
-        log.info("  SP500: BEAR market (SPY < MA200) → 清倉個股，不持有")
-        # 熊市 → SP500 部分不持有個股（可選擇 dip-buy SPY，但這裡簡化處理）
+    # ── 讀取持久化狀態 ──────────────────────────────────────────────────
+    state = load_state(account_name)
+    log.info(f"  state: bull_counter={state['bull_weeks_counter']}  "
+             f"dip={state['dip_state']}  last_rebal={state.get('last_rebal_date')}")
+
+    # ── 市場狀態 ────────────────────────────────────────────────────────
+    mkt = regime.get_state(signal_date)
+    if not mkt:
+        log.warning("  SP500: no market regime data")
         return {}, sig_date_str
 
-    # ── 排名掃描 ─────────────────────────────────────────────────────────
+    spy_close  = mkt["SPY_Close"]
+    spy_ma200  = mkt["SPY_MA200"]
+    spy_dd     = abs(mkt["SPY_DD"])
+    spy_above  = spy_close > spy_ma200
+
+    log.info(f"  SPY=${spy_close:.2f}  MA200=${spy_ma200:.2f}  DD={spy_dd*100:.1f}%  "
+             f"{'BULL' if spy_above else 'BEAR'}")
+
+    # ── 牛市計數器更新 ─────────────────────────────────────────────────
+    # 每個 signal_date 只計數一次，避免手動 Sync / 重複執行造成計數失真。
+    # last_rebal_date 記錄上次計數的日期；同一天重跑不再更新 counter。
+    last_counted = state.get("last_rebal_date")
+    if last_counted != sig_date_str:
+        state = update_bull_counter(state, spy_above, is_rebal_day=True)
+        state["last_rebal_date"] = sig_date_str
+        log.info(f"  counter updated (new signal_date): "
+                 f"bull_counter={state['bull_weeks_counter']}")
+    else:
+        log.info(f"  counter unchanged (already counted {last_counted}): "
+                 f"bull_counter={state['bull_weeks_counter']}")
+
+    bull_confirmed = is_bull_confirmed(state)
+    log.info(f"  bull_confirmed={bull_confirmed}")
+
+    # ── 熊市 / 等待分支：bull 未確認 ────────────────────────────────────
+    # 計算已觸發的 dip 階層總配置（相對於 SP500 配額）
+    ALLOC_MAP = sp_cfg.DIP_BUY_ALLOCATIONS
+
+    if not bull_confirmed:
+        dip_ticker = sp_cfg.DIP_BUY_TICKER
+
+        # 如果 SPY < MA200 且啟用 dip-buy，檢查是否要觸發新的階層
+        if not spy_above and sp_cfg.ENABLE_BEAR_DIP_BUY:
+            for level in (0.15, 0.20, 0.25):
+                if spy_dd >= level and not is_dip_triggered(state, level):
+                    alloc = ALLOC_MAP[level]
+                    log.info(f"  DIP-BUY trigger: -{level*100:.0f}% "
+                             f"(actual DD={spy_dd*100:.1f}%) → +{alloc*100:.0f}% 買 {dip_ticker}")
+                    state = mark_dip_triggered(state, level)
+
+        # 累積所有已觸發階層的總配置
+        total_dip_alloc = 0.0  # 相對於 SP500 配額的比例
+        for level, alloc in ALLOC_MAP.items():
+            if is_dip_triggered(state, level):
+                total_dip_alloc += alloc
+
+        save_state(account_name, state)
+
+        if spy_above:
+            log.info(f"  SP500: waiting for bull confirmation (bull_counter < 2)")
+        else:
+            log.info(f"  SP500: BEAR market → dip_total={total_dip_alloc*100:.0f}%")
+
+        # 清個股，只保留 dip 部位
+        if total_dip_alloc > 0:
+            log.info(f"  → {dip_ticker} 權重 = {total_dip_alloc*100:.0f}%")
+            return {dip_ticker: total_dip_alloc}, sig_date_str
+        return {}, sig_date_str
+
+    # ── 牛市已確認：清掉任何 dip 部位 ───────────────────────────────────
+    if any(state["dip_state"].values()):
+        log.info("  BULL confirmed → reset dip_state")
+        state = reset_dip_state(state)
+
+    # ── REBALANCE_WEEKS gate：非 rotation week 只維持現狀 ──────────────
+    iso_week = signal_date.isocalendar()[1]
+    is_rotation_week = (iso_week % sp_cfg.REBALANCE_WEEKS == 0)
+    log.info(f"  iso_week={iso_week}  rotation_week={is_rotation_week} "
+             f"(REBALANCE_WEEKS={sp_cfg.REBALANCE_WEEKS})")
+
+    if not is_rotation_week:
+        # 非 rotation week：只重新計算現有持股的 ATR 權重
+        kept = [t for t in current_sp500_holdings
+                if t != sp_cfg.DIP_BUY_TICKER]
+        log.info(f"  non-rotation week → re-weight kept holdings: {kept}")
+        save_state(account_name, state)
+        if not kept:
+            return {}, sig_date_str
+        metrics = [selector.calculate_metrics(t, signal_date, sp_cfg.LOOKBACK)
+                   for t in kept]
+        metrics = [m for m in metrics if m and m.get("atr_pct", 0) > 0]
+        if not metrics:
+            return {}, sig_date_str
+        inv_sum = sum(1 / m["atr_pct"] for m in metrics)
+        wgt = {m["ticker"]: (1 / m["atr_pct"]) / inv_sum for m in metrics}
+        return wgt, sig_date_str
+
+    # ── Rotation week：完整 rotation 流程 ───────────────────────────────
     ranked = selector.scan_market(signal_date, sp_cfg.LOOKBACK)
     top_tickers = [x["ticker"] for x in ranked][:sp_cfg.SELL_RANK_THRESHOLD]
 
@@ -329,23 +458,21 @@ def compute_sp500_weights(current_sp500_holdings: list[str]) -> tuple[dict, str]
     log.info(f"  Top {sp_cfg.SELL_RANK_THRESHOLD} tickers: {top_tickers[:10]}...")
 
     # ── Step 1: 判斷現有持股保留 or 賣出 ─────────────────────────────────
+    # 排除 dip 標的（牛市確認時已 reset，但留個保險）
+    non_dip_holdings = [t for t in current_sp500_holdings
+                        if t != sp_cfg.DIP_BUY_TICKER]
     kept = []
-    sells = []
-    for ticker in current_sp500_holdings:
+    for ticker in non_dip_holdings:
         reason = None
-
-        # 不在 top SELL_RANK_THRESHOLD → 排名跌出
         if ticker not in top_tickers:
             reason = f"排名跌出前{sp_cfg.SELL_RANK_THRESHOLD}名"
         else:
-            # 在 top 20 但跌破 EMA → 出場
             m = next((x for x in ranked if x["ticker"] == ticker), None)
             if m and m["price"] < m["exit_ema"]:
                 reason = f"跌破EMA{sp_cfg.EXIT_EMA}"
 
         if reason:
             log.info(f"  SELL {ticker}: {reason}")
-            sells.append(ticker)
         else:
             log.info(f"  KEEP {ticker}: still in top {sp_cfg.SELL_RANK_THRESHOLD}")
             kept.append(ticker)
@@ -366,6 +493,7 @@ def compute_sp500_weights(current_sp500_holdings: list[str]) -> tuple[dict, str]
     final_tickers = kept + buy_candidates
     if not final_tickers:
         log.info("  SP500: no positions to hold")
+        save_state(account_name, state)
         return {}, sig_date_str
 
     metrics = []
@@ -377,6 +505,7 @@ def compute_sp500_weights(current_sp500_holdings: list[str]) -> tuple[dict, str]
 
     if not metrics:
         log.info("  SP500: no valid metrics for weight calculation")
+        save_state(account_name, state)
         return {}, sig_date_str
 
     inv_sum = sum(1 / m["atr_pct"] for m in metrics)
@@ -386,6 +515,7 @@ def compute_sp500_weights(current_sp500_holdings: list[str]) -> tuple[dict, str]
     for sym, w in sorted(wgt.items(), key=lambda x: -x[1]):
         log.info(f"    {sym}: {w*100:.1f}%")
 
+    save_state(account_name, state)
     return wgt, sig_date_str
 
 
@@ -401,10 +531,13 @@ def combine_targets(nav: float, sr_wgt: dict, sp500_wgt: dict,
     """
     targets = {}  # symbol -> {'shares': int, 'strategy': str}
 
+    def _valid_price(p) -> bool:
+        return p is not None and np.isfinite(p) and p > 0
+
     # SR 部位（ETF）
     for sym, w in sr_wgt.items():
         price = prices.get(sym, 0)
-        if price <= 0:
+        if not _valid_price(price):
             log.warning(f"  {sym}: no price, skipping (SR)")
             continue
         shares = int(nav * ALLOC_SR * w / price)
@@ -414,7 +547,7 @@ def combine_targets(nav: float, sr_wgt: dict, sp500_wgt: dict,
     # SP500 部位（個股）
     for sym, w in sp500_wgt.items():
         price = prices.get(sym, 0)
-        if price <= 0:
+        if not _valid_price(price):
             log.warning(f"  {sym}: no price, skipping (SP500)")
             continue
         shares = int(nav * ALLOC_SP500 * w / price)
@@ -608,7 +741,8 @@ def main(mode: str = "both"):
         # ── 4. 計算 SP500 目標權重（基於 IB 實際持倉 + rank buffer）────────
         if run_sp500:
             log.info("Step 4: Computing SP500 Momentum weights (live, rank-aware)...")
-            sp500_wgt, sp500_signal_date = compute_sp500_weights(current_sp500_holdings)
+            sp500_wgt, sp500_signal_date = compute_sp500_weights(
+                current_sp500_holdings, ACCOUNT_NAME)
         else:
             log.info("Step 4: SP500 skipped (sr mode)")
             # SR only 模式：保留 SP500 現有持倉不動
@@ -648,6 +782,10 @@ def main(mode: str = "both"):
         order_list = []
 
         # 處理所有策略標的（排除 OTHER 手動持倉，不會被賣出或調整）
+        # 加入 REBALANCE_THRESHOLD 過濾 — 小於 3% NAV 漂移不動作（與 backtest 一致）
+        from strategies.sp500_momentum import config as sp_cfg
+        rebal_thresh = sp_cfg.REBALANCE_THRESHOLD  # 0.03
+
         all_target_syms = set(targets.keys()) | set(current_pos.keys())
         all_target_syms -= set(current_other_holdings)  # 排除手動操作標的
         for sym in all_target_syms:
@@ -660,6 +798,19 @@ def main(mode: str = "both"):
             curr_shares   = int(current_pos.get(sym, 0))
             delta         = target_shares - curr_shares
             strategy      = targets.get(sym, {}).get('strategy', 'EXIT')
+
+            # REBALANCE_THRESHOLD 過濾：小於 3% NAV 漂移不動作
+            # 例外：完全清倉（target=0）或從無到有建倉（current=0）必須執行
+            if delta != 0 and target_shares > 0 and curr_shares > 0:
+                drift_val = abs(delta) * price
+                drift_pct = drift_val / nav if nav > 0 else 0
+                if drift_pct < rebal_thresh:
+                    log.info(
+                        f"  {sym} [{strategy}]: target={target_shares:5d}sh "
+                        f"current={curr_shares:5d}sh  delta={delta:+d}  "
+                        f"drift={drift_pct*100:.1f}% < {rebal_thresh*100:.0f}% → skip"
+                    )
+                    continue
 
             log.info(
                 f"  {sym} [{strategy}]: target={target_shares:5d}sh "
@@ -675,10 +826,30 @@ def main(mode: str = "both"):
                     'strategy':  strategy,
                 })
 
-        # ── 7. 下單 ─────────────────────────────────────────────────────────
+        # ── 7. 下單（先取消既有掛單，避免重複）─────────────────────────
         if not order_list:
             log.info("Step 7: No changes needed.")
         else:
+            # 訂單去重
+            seen_syms = set()
+            dedup_list = []
+            for o in order_list:
+                if o['symbol'] in seen_syms:
+                    log.warning(f"  duplicate order for {o['symbol']}, keeping first")
+                    continue
+                seen_syms.add(o['symbol'])
+                dedup_list.append(o)
+            order_list = dedup_list
+
+            # 取消該帳戶既有掛單
+            if not DRY_RUN:
+                open_trades = ib.openTrades()
+                if open_trades:
+                    log.info(f"  Cancelling {len(open_trades)} existing open orders...")
+                    for t in open_trades:
+                        ib.cancelOrder(t.order)
+                    ib.sleep(2)
+
             log.info(f"Step 7: Placing {len(order_list)} orders ({ORDER_TYPE})...")
             placed, trades = place_orders(ib, order_list)
 

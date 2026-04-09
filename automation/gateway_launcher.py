@@ -18,16 +18,18 @@ GATEWAY_EXE = Path(r"C:\Jts\ibgateway\1041\ibgateway.exe")
 ACCOUNT_IBC_CONFIG = {
     "TAYLOR": Path(r"C:\Jts\gateway_a\ibc\config.ini"),
     "ROSA":   Path(r"C:\Jts\gateway_b\ibc\config.ini"),
+    "YVONNE": Path(r"C:\Jts\gateway_c\ibc\config.ini"),
 }
 
 ACCOUNT_SETTINGS_DIR = {
     "TAYLOR": Path(r"C:\Jts\gateway_a"),
     "ROSA":   Path(r"C:\Jts\gateway_b"),
+    "YVONNE": Path(r"C:\Jts\gateway_c"),
 }
 
 # 哪些帳戶用 IBC，哪些手動
-IBC_MANAGED = {"TAYLOR"}     # Taylor 用 IBC
-MANUAL_MANAGED = {"ROSA"}    # Rosa 手動 Gateway
+IBC_MANAGED = {"TAYLOR", "YVONNE"}   # Taylor / Yvonne 用 IBC
+MANUAL_MANAGED = {"ROSA"}            # Rosa 手動 Gateway
 
 
 def _build_classpath() -> str:
@@ -84,6 +86,13 @@ def _start_ibc(account_name: str) -> subprocess.Popen | None:
         "-Dsun.awt.nopixfmt=true",
         "-Dsun.java2d.noddraw=true",
         "-Dswing.boldMetal=false",
+        # Java 17 模組封裝：解除 Gateway 需要的反射權限
+        # （修復「Select second factor device」對話框 crash）
+        "--add-opens=java.desktop/java.awt=ALL-UNNAMED",
+        "--add-opens=java.desktop/javax.swing=ALL-UNNAMED",
+        "--add-opens=java.desktop/sun.awt=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
         "ibcalpha.ibc.IbcGateway",
         str(config_ini),
         "live",

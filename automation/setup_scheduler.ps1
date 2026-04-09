@@ -86,13 +86,26 @@ schtasks /create /tn $t6 `
 if ($LASTEXITCODE -eq 0) { Write-Host "OK  Task6: $t6  (Wed 21:31)" }
 else { Write-Host "FAIL Task6 exit=$LASTEXITCODE" }
 
+# ── Task 7: SP500 每日檢查（台灣 16:00 = 美東 04:00 EDT，盤前開始）─────────
+#   Stop loss / Gap exit / Bear dip-buy trigger （每個交易日都跑）
+$t7 = "QuantCore_SP500_DailyCheck"
+$s7 = "$ScriptDir\sp500_daily_check.py"
+schtasks /delete /tn $t7 /f 2>$null
+schtasks /create /tn $t7 `
+    /tr "`"$PythonExe`" `"$s7`" --account all" `
+    /sc weekly /d "MON,TUE,WED,THU,FRI" /st 16:00 `
+    /rl HIGHEST /ru SYSTEM /f
+if ($LASTEXITCODE -eq 0) { Write-Host "OK  Task7: $t7  (Mon-Fri 16:00)" }
+else { Write-Host "FAIL Task7 exit=$LASTEXITCODE" }
+
 Write-Host ""
 Write-Host "=========================================="
 Write-Host "  Schedule (Taiwan Summer Time):"
-Write-Host "  04:30  Data Update     (Daily)"
-Write-Host "  04:40  Daily Report    (Daily)"
-Write-Host "  21:00  SR Rebalance    (Tuesday)"
-Write-Host "  21:00  SP500 Rebalance (Wednesday)"
-Write-Host "  21:31  MOO Fill Check  (Tue + Wed)"
+Write-Host "  04:30  Data Update        (Daily)"
+Write-Host "  04:40  Daily Report       (Daily)"
+Write-Host "  16:00  SP500 Daily Check  (Mon-Fri, stop/gap/dip)"
+Write-Host "  21:00  SR Rebalance       (Tuesday)"
+Write-Host "  21:00  SP500 Rebalance    (Wednesday)"
+Write-Host "  21:31  MOO Fill Check     (Tue + Wed)"
 Write-Host "=========================================="
 Write-Host "Done."

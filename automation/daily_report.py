@@ -47,6 +47,7 @@ HOST         = cfg.get('host',           '127.0.0.1')
 PORT         = cfg.get('port',           7497)
 CLIENT_ID    = cfg.get('client_id',      20) + 1   # 與 rebalance 不同，避免衝突
 ACCOUNT      = cfg.get('account',        '')
+PRICE_FEED_PORT = cfg.get('price_feed_port', 7497)
 ACCOUNT_NAME = cfg.get('account_name',   '')
 ALLOC_SR     = cfg.get('alloc_sr',       0.80)
 ALLOC_SP500  = cfg.get('alloc_sp500',    0.50)
@@ -59,6 +60,7 @@ def _apply_config(cfg_dict: dict) -> None:
     """多帳戶切換用"""
     global HOST, PORT, CLIENT_ID, ACCOUNT, ACCOUNT_NAME
     global ALLOC_SR, ALLOC_SP500, LEVERAGE, TG_TOKEN, TG_CHAT_ID
+    global PRICE_FEED_PORT
     HOST         = cfg_dict.get('host',           '127.0.0.1')
     PORT         = cfg_dict.get('port',           7497)
     ACCOUNT      = cfg_dict.get('account',        '')
@@ -68,6 +70,7 @@ def _apply_config(cfg_dict: dict) -> None:
     LEVERAGE     = cfg_dict.get('leverage',       1.3)
     TG_TOKEN     = cfg_dict.get('telegram_token',   '')
     TG_CHAT_ID   = cfg_dict.get('telegram_chat_id', '')
+    PRICE_FEED_PORT = cfg_dict.get('price_feed_port', 7497)
     from account_utils import get_client_id, ROLE_REPORT
     CLIENT_ID    = get_client_id(ACCOUNT_NAME, ROLE_REPORT) if ACCOUNT_NAME else 21
 
@@ -186,18 +189,13 @@ def get_positions_detail(ib: IB) -> list:
 
 
 def get_prices(ib: IB, symbols: list) -> dict:
-    from ib_insync import Stock as IBStock
-    contracts = [IBStock(s, 'SMART', 'USD') for s in symbols]
-    ib.qualifyContracts(*contracts)
-    tickers = ib.reqTickers(*contracts)
-    prices = {}
-    for t in tickers:
-        sym = t.contract.symbol
-        mid = t.midpoint()
-        if not (np.isfinite(mid) and mid > 0):
-            mid = t.last if (t.last and t.last > 0) else t.close
-        prices[sym] = float(mid)
-    return prices
+    """透過 price_utils.robust_get_prices 取得價格（多層 fallback）。"""
+    from price_utils import robust_get_prices
+    return robust_get_prices(
+        ib, symbols,
+        host=HOST,
+        price_feed_port=PRICE_FEED_PORT,
+    )
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────

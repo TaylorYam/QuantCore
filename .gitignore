@@ -43,6 +43,12 @@ automation/logs/
 automation/config.json
 automation/accounts.json
 
+# Runtime state（每帳戶 SP500 bull counter / dip state）
+automation/sp500_state_*.json
+
+# Dev / audit tests
+automation/_audit_test.py
+
 # Generated files
 automation/charts/
 automation/*.xlsx

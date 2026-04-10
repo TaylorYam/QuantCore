@@ -1,0 +1,195 @@
+"""
+Unit tests for sync_position._build_order_list (REBALANCE_THRESHOLD filter).
+
+Coverage:
+  - Drift < threshold → skipped (both BUY and SELL)
+  - Drift ≥ threshold → kept
+  - target=0 (full exit) → always executed even if small
+  - current=0 (new entry) → always executed even if small
+  - Other holdings (manual) never generate orders
+  - Zero / invalid prices are skipped
+  - SyncOrder dataclass fields populated correctly
+"""
+
+from __future__ import annotations
+
+import pytest
+
+
+# _build_order_list reads sp_cfg.REBALANCE_THRESHOLD at runtime.
+# Real value is 0.03 (3% NAV); we test with that assumption.
+
+
+def test_delta_above_threshold_kept():
+    """A 5% NAV drift should generate an order."""
+    from sync_position import _build_order_list
+
+    # NAV $100k, threshold 3% = $3000
+    # XLB @ $100, delta = 50 shares = $5000 drift = 5% → kept
+    orders = _build_order_list(
+        targets={"XLB": {"shares": 100, "strategy": "SR"}},
+        current_pos={"XLB": 50},
+        current_other_holdings=[],
+        prices={"XLB": 100.0},
+        nav=100_000,
+    )
+    assert len(orders) == 1
+    assert orders[0].symbol == "XLB"
+    assert orders[0].action == "BUY"
+    assert orders[0].qty == 50
+    assert orders[0].target == 100
+    assert orders[0].current == 50
+    assert orders[0].strategy == "SR"
+
+
+def test_delta_below_threshold_skipped():
+    """A 1% NAV drift should be filtered out."""
+    from sync_position import _build_order_list
+
+    # NAV $100k, threshold 3% = $3000
+    # XLB @ $100, delta = 10 shares = $1000 drift = 1% → skipped
+    orders = _build_order_list(
+        targets={"XLB": {"shares": 60, "strategy": "SR"}},
+        current_pos={"XLB": 50},
+        current_other_holdings=[],
+        prices={"XLB": 100.0},
+        nav=100_000,
+    )
+    assert orders == []
+
+
+def test_full_exit_bypasses_threshold():
+    """target=0 (清倉) must execute even if the notional is tiny."""
+    from sync_position import _build_order_list
+
+    # Current 1 share @ $100 = $100 (< 3% of $100k)
+    # target=0 → must SELL even though below threshold
+    orders = _build_order_list(
+        targets={},                        # no target
+        current_pos={"XLB": 1},
+        current_other_holdings=[],
+        prices={"XLB": 100.0},
+        nav=100_000,
+    )
+    assert len(orders) == 1
+    assert orders[0].action == "SELL"
+    assert orders[0].qty == 1
+    assert orders[0].target == 0
+    assert orders[0].current == 1
+    # 當 targets 沒有該 sym，strategy 預設 'EXIT'
+    assert orders[0].strategy == "EXIT"
+
+
+def test_new_entry_bypasses_threshold():
+    """current=0 (從無到有) must execute even if tiny."""
+    from sync_position import _build_order_list
+
+    orders = _build_order_list(
+        targets={"XLB": {"shares": 5, "strategy": "SR"}},  # $500
+        current_pos={},                                       # no position
+        current_other_holdings=[],
+        prices={"XLB": 100.0},
+        nav=100_000,                                          # $500 is 0.5%
+    )
+    assert len(orders) == 1
+    assert orders[0].action == "BUY"
+    assert orders[0].qty == 5
+    assert orders[0].current == 0
+
+
+def test_sell_delta_above_threshold():
+    from sync_position import _build_order_list
+
+    # Holding 100 sh, target 40 sh → SELL 60 sh × $100 = $6000 = 6% → kept
+    orders = _build_order_list(
+        targets={"XLB": {"shares": 40, "strategy": "SR"}},
+        current_pos={"XLB": 100},
+        current_other_holdings=[],
+        prices={"XLB": 100.0},
+        nav=100_000,
+    )
+    assert len(orders) == 1
+    assert orders[0].action == "SELL"
+    assert orders[0].qty == 60
+
+
+def test_other_holdings_ignored():
+    """Manual positions (current_other_holdings) must never generate orders —
+    even if they're not in targets."""
+    from sync_position import _build_order_list
+
+    orders = _build_order_list(
+        targets={},
+        current_pos={"BTC": 100, "XLB": 10},  # both present
+        current_other_holdings=["BTC"],         # BTC is manual
+        prices={"BTC": 30.0, "XLB": 100.0},
+        nav=100_000,
+    )
+    syms = {o.symbol for o in orders}
+    assert "BTC" not in syms, "BTC is manual, should not be synced"
+    # XLB current=10, target=0 → full exit bypasses threshold
+    assert "XLB" in syms
+
+
+def test_zero_price_skipped():
+    from sync_position import _build_order_list
+
+    orders = _build_order_list(
+        targets={"XLB": {"shares": 100, "strategy": "SR"}},
+        current_pos={"XLB": 50},
+        current_other_holdings=[],
+        prices={"XLB": 0},
+        nav=100_000,
+    )
+    assert orders == []
+
+
+def test_multiple_orders_sorted_by_symbol():
+    """Orders should be sorted alphabetically (per source code)."""
+    from sync_position import _build_order_list
+
+    orders = _build_order_list(
+        targets={
+            "XLU": {"shares": 100, "strategy": "SR"},
+            "XLB": {"shares": 100, "strategy": "SR"},
+            "XLE": {"shares": 100, "strategy": "SR"},
+        },
+        current_pos={},
+        current_other_holdings=[],
+        prices={"XLB": 100.0, "XLE": 100.0, "XLU": 100.0},
+        nav=100_000,
+    )
+    symbols = [o.symbol for o in orders]
+    assert symbols == ["XLB", "XLE", "XLU"]
+
+
+def test_exact_threshold_edge_case():
+    """Drift exactly AT threshold (3%) — current implementation uses `<`,
+    so 3.0% should NOT be filtered (kept)."""
+    from sync_position import _build_order_list
+
+    # 30 shares × $100 = $3000 = exactly 3% of $100k
+    orders = _build_order_list(
+        targets={"XLB": {"shares": 80, "strategy": "SR"}},
+        current_pos={"XLB": 50},
+        current_other_holdings=[],
+        prices={"XLB": 100.0},
+        nav=100_000,
+    )
+    # drift_pct = 3000/100000 = 0.03; rebal_thresh = 0.03
+    # `drift_pct < rebal_thresh` → False → kept
+    assert len(orders) == 1
+
+
+def test_no_delta_no_order():
+    """target == current → no order generated."""
+    from sync_position import _build_order_list
+
+    orders = _build_order_list(
+        targets={"XLB": {"shares": 50, "strategy": "SR"}},
+        current_pos={"XLB": 50},
+        current_other_holdings=[],
+        prices={"XLB": 100.0},
+        nav=100_000,
+    )
+    assert orders == []

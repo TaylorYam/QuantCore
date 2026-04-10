@@ -123,6 +123,6 @@ S1-S10 已 commit `e12e3e5` 推到 origin/main。核心架構改好了：
 |---|---|---|---|
 | R1 | post-S10 cleanup | ✅ 完成 | 663452f |
 | R2 | smoke tests (52 tests) | ✅ 完成 | pending |
-| R3.1 | sync preview window | ⏳ 待開工 | — |
+| R3.1 | sync preview window | ✅ 完成（Panel −224 行） | pending |
 | R3.2-3.4 | panel views | ⏳ 待開工 | — |
 | R4 | decisions | ⏳ 待決定 | — |

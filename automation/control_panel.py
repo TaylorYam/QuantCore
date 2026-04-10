@@ -1136,273 +1136,41 @@ class ControlPanel(tk.Tk):
             self.after(0, lambda m=err_msg: self._log(f"[X] Sync compute failed: {m}"))
             self.after(0, lambda m=err_msg: messagebox.showerror("Sync Error", m))
 
+    # R3.1: Panel theme colours bundled for SyncPreviewWindow injection
+    @property
+    def _preview_theme(self) -> dict:
+        return {
+            "bg":        BG,
+            "bg2":       BG2,
+            "bg3":       BG3,
+            "accent":    ACCENT,
+            "accent_hl": ACCENT_HL,
+            "text":      TEXT,
+            "text_dim":  TEXT_DIM,
+            "blue":      BLUE,
+            "green":     GREEN,
+            "red":       RED,
+            "btn_bg":    BTN_BG,
+        }
+
     def _show_sync_preview(self, plan):
-        """顯示同步預覽對話框：理論持倉 → 實際持倉 → 交易清單。
-        S10：吃 sync_position.SyncPlan dataclass"""
-        ctx                     = plan.ctx
-        account_name            = ctx.name
-        nav                     = plan.nav
-        sr_date                 = plan.sr_date
-        sp500_date              = plan.sp500_date
-        sr_wgt                  = plan.sr_wgt
-        sp500_wgt               = plan.sp500_wgt
-        prices                  = plan.prices
-        targets                 = plan.targets
-        current_pos             = plan.current_pos
-        current_other_holdings  = plan.current_other_holdings
-        alloc_sr                = ctx.alloc_sr
-        alloc_sp500             = ctx.alloc_sp500
+        """R3.1 thin wrapper — 實作在 sync_preview_window.SyncPreviewWindow"""
+        from sync_preview_window import SyncPreviewWindow
 
-        # SyncOrder list → 相容舊 dict-style 的 order_list（給表格 render 用）
-        order_list = [
-            {
-                'symbol':   o.symbol,
-                'action':   o.action,
-                'qty':      o.qty,
-                'price':    o.price,
-                'strategy': o.strategy,
-                'target':   o.target,
-                'current':  o.current,
-            }
-            for o in plan.orders
-        ]
+        def on_confirm(p):
+            threading.Thread(
+                target=self._sync_execute, args=(p,), daemon=True,
+            ).start()
 
-        # ── Output Log 摘要 ──
-        self._log(f"{'─'*40}")
-        self._log(f"  Strategy Target (理論持倉)")
-        if sr_wgt:
-            self._log(f"  SR ({alloc_sr:.0%} of NAV):")
-            for sym, w in sorted(sr_wgt.items(), key=lambda x: -x[1]):
-                px = prices.get(sym, 0)
-                t_sh = targets.get(sym, {}).get('shares', 0)
-                self._log(f"    {sym:<6s} {w*100:5.1f}%  → {t_sh:4d}sh @ ${px:.2f}")
-        if sp500_wgt:
-            self._log(f"  SP500 ({alloc_sp500:.0%} of NAV):")
-            for sym, w in sorted(sp500_wgt.items(), key=lambda x: -x[1]):
-                px = prices.get(sym, 0)
-                t_sh = targets.get(sym, {}).get('shares', 0)
-                self._log(f"    {sym:<6s} {w*100:5.1f}%  → {t_sh:4d}sh @ ${px:.2f}")
-
-        strategy_syms = [s for s in current_pos if s not in current_other_holdings]
-        self._log(f"  Current Holdings (實際持倉):")
-        for sym in sorted(strategy_syms):
-            sh = int(current_pos[sym])
-            px = prices.get(sym, 0)
-            in_t = "" if sym in targets else " ← NOT in target"
-            self._log(f"    {sym:<6s} {sh:4d}sh @ ${px:.2f}{in_t}")
-
-        self._log(f"  Required Trades: {len(order_list)} 筆")
-        for o in order_list:
-            act = o['action']
-            self._log(f"    {act:<4s} {o['qty']:4d}sh {o['symbol']:<6s} "
-                      f"({o['current']}→{o['target']})  ~${o['qty']*o['price']:,.0f}  [{o['strategy']}]")
-        if not order_list:
-            self._log(f"    Already on target")
-        self._log(f"{'─'*40}")
-
-        win = tk.Toplevel(self)
-        win.title(f"Sync Position — {account_name}")
-        win.configure(bg=BG)
-        win.geometry("750x620")
-        win.resizable(True, True)
-        win.transient(self)
-        win.grab_set()
-
-        # 標題
-        hdr = tk.Frame(win, bg=ACCENT, padx=12, pady=8)
-        hdr.pack(fill="x")
-        tk.Label(hdr, text=f"Sync Position — {account_name}",
-                 font=("Segoe UI", 13, "bold"), bg=ACCENT, fg=TEXT).pack(anchor="w")
-        tk.Label(hdr, text=f"NAV: ${nav:,.0f}   |   SR: {sr_date}   |   SP500: {sp500_date}",
-                 font=("Segoe UI", 9), bg=ACCENT, fg=TEXT_DIM).pack(anchor="w")
-
-        # ── 可捲動主區域 ──
-        main_canvas = tk.Canvas(win, bg=BG, highlightthickness=0)
-        main_sb = tk.Scrollbar(win, orient="vertical", command=main_canvas.yview)
-        main_frame = tk.Frame(main_canvas, bg=BG)
-        main_frame.bind("<Configure>", lambda e: main_canvas.configure(scrollregion=main_canvas.bbox("all")))
-        main_canvas.create_window((0, 0), window=main_frame, anchor="nw")
-        main_canvas.configure(yscrollcommand=main_sb.set)
-        main_canvas.pack(side="left", fill="both", expand=True)
-        main_sb.pack(side="right", fill="y")
-        # 滑鼠滾輪
-        main_canvas.bind_all("<MouseWheel>",
-                             lambda e: main_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
-
-        # ═══ Section 1: 理論持倉（策略目標）═══
-        sec1 = tk.Frame(main_frame, bg=BG, padx=12, pady=6)
-        sec1.pack(fill="x")
-        tk.Label(sec1, text="Strategy Target (理論持倉)",
-                 font=("Segoe UI", 10, "bold"), bg=BG, fg=ACCENT_HL).pack(anchor="w")
-
-        # SR 目標
-        if sr_wgt:
-            sr_frame = tk.Frame(sec1, bg=BG2, padx=8, pady=4)
-            sr_frame.pack(fill="x", pady=(4, 2))
-            tk.Label(sr_frame, text=f"SR ({alloc_sr:.0%} of NAV)",
-                     font=("Consolas", 9, "bold"), bg=BG2, fg=BLUE).pack(anchor="w")
-            for sym, w in sorted(sr_wgt.items(), key=lambda x: -x[1]):
-                px = prices.get(sym, 0)
-                t_shares = targets.get(sym, {}).get('shares', 0)
-                t_val = t_shares * px
-                tk.Label(sr_frame,
-                         text=f"  {sym:<6s}  {w*100:5.1f}%  →  {t_shares:4d}sh  @ ${px:.2f}  = ${t_val:,.0f}",
-                         font=("Consolas", 9), bg=BG2, fg=TEXT).pack(anchor="w")
-
-        # SP500 目標
-        if sp500_wgt:
-            sp_frame = tk.Frame(sec1, bg=BG2, padx=8, pady=4)
-            sp_frame.pack(fill="x", pady=(2, 2))
-            tk.Label(sp_frame, text=f"SP500 Momentum ({alloc_sp500:.0%} of NAV)",
-                     font=("Consolas", 9, "bold"), bg=BG2, fg=GREEN).pack(anchor="w")
-            for sym, w in sorted(sp500_wgt.items(), key=lambda x: -x[1]):
-                px = prices.get(sym, 0)
-                t_shares = targets.get(sym, {}).get('shares', 0)
-                t_val = t_shares * px
-                tk.Label(sp_frame,
-                         text=f"  {sym:<6s}  {w*100:5.1f}%  →  {t_shares:4d}sh  @ ${px:.2f}  = ${t_val:,.0f}",
-                         font=("Consolas", 9), bg=BG2, fg=TEXT).pack(anchor="w")
-
-        if not sr_wgt and not sp500_wgt:
-            tk.Label(sec1, text="  (no target positions — all cash)",
-                     font=("Consolas", 9), bg=BG, fg=TEXT_DIM).pack(anchor="w")
-
-        # ═══ Section 2: 實際持倉 ═══
-        sec2 = tk.Frame(main_frame, bg=BG, padx=12, pady=6)
-        sec2.pack(fill="x")
-        tk.Label(sec2, text="Current Holdings (實際持倉)",
-                 font=("Segoe UI", 10, "bold"), bg=BG, fg=ACCENT_HL).pack(anchor="w")
-
-        # 策略相關持倉
-        strategy_syms = [s for s in current_pos if s not in current_other_holdings]
-        if strategy_syms:
-            cur_frame = tk.Frame(sec2, bg=BG2, padx=8, pady=4)
-            cur_frame.pack(fill="x", pady=(4, 2))
-            for sym in sorted(strategy_syms):
-                shares = int(current_pos[sym])
-                px = prices.get(sym, 0)
-                val = shares * px
-                tag = "SR" if sym in SR_ETFS else "SP500"
-                tag_color = BLUE if sym in SR_ETFS else GREEN
-                in_target = sym in targets
-                mark = "" if in_target else "  ← not in target"
-                mark_color = TEXT if in_target else RED
-                lbl = tk.Frame(cur_frame, bg=BG2)
-                lbl.pack(fill="x")
-                tk.Label(lbl, text=f"  {sym:<6s}  {shares:4d}sh  @ ${px:.2f}  = ${val:,.0f}",
-                         font=("Consolas", 9), bg=BG2, fg=TEXT).pack(side="left")
-                tk.Label(lbl, text=f"  [{tag}]", font=("Consolas", 9), bg=BG2, fg=tag_color).pack(side="left")
-                if mark:
-                    tk.Label(lbl, text=mark, font=("Consolas", 9), bg=BG2, fg=mark_color).pack(side="left")
-        else:
-            tk.Label(sec2, text="  (no strategy holdings)",
-                     font=("Consolas", 9), bg=BG, fg=TEXT_DIM).pack(anchor="w")
-
-        # 手動持倉
-        if current_other_holdings:
-            oth_frame = tk.Frame(sec2, bg=BG2, padx=8, pady=4)
-            oth_frame.pack(fill="x", pady=(2, 2))
-            tk.Label(oth_frame, text="Other (excluded from sync)",
-                     font=("Consolas", 9, "bold"), bg=BG2, fg=TEXT_DIM).pack(anchor="w")
-            for sym in sorted(current_other_holdings):
-                shares = int(current_pos[sym])
-                px = prices.get(sym, 0)
-                val = shares * px
-                tk.Label(oth_frame,
-                         text=f"  {sym:<6s}  {shares:4d}sh  @ ${px:.2f}  = ${val:,.0f}",
-                         font=("Consolas", 9), bg=BG2, fg=TEXT_DIM).pack(anchor="w")
-
-        # ═══ Section 3: 交易清單 ═══
-        sep = tk.Frame(main_frame, bg=ACCENT_HL, height=1)
-        sep.pack(fill="x", padx=12, pady=6)
-
-        sec3 = tk.Frame(main_frame, bg=BG, padx=12, pady=4)
-        sec3.pack(fill="x")
-        tk.Label(sec3, text=f"Required Trades (需要交易: {len(order_list)} 筆)",
-                 font=("Segoe UI", 10, "bold"), bg=BG, fg=ACCENT_HL).pack(anchor="w")
-
-        if not order_list:
-            tk.Label(sec3, text="  Already on target — no trades needed",
-                     font=("Consolas", 10), bg=BG, fg=GREEN).pack(anchor="w", pady=8)
-            # 按鈕列
-            btn_frame = tk.Frame(main_frame, bg=BG, padx=12, pady=10)
-            btn_frame.pack(fill="x")
-            self._btn(btn_frame, "OK", win.destroy, BTN_BG, width=12).pack()
-            self._log("[OK] Already on target, no trades needed")
-            return
-
-        # 表頭
-        cols = ("Action", "Symbol", "Qty", "Current", "Target", "Est.Price", "Est.Value", "Strategy")
-        col_widths = (7, 7, 6, 8, 8, 10, 11, 8)
-        thdr = tk.Frame(sec3, bg=BG3, padx=4, pady=3)
-        thdr.pack(fill="x", pady=(4, 0))
-        for c, w in zip(cols, col_widths):
-            tk.Label(thdr, text=c, font=("Consolas", 9, "bold"),
-                     bg=BG3, fg=ACCENT_HL, width=w, anchor="w").pack(side="left")
-
-        total_sell = 0.0
-        total_buy = 0.0
-        sells = [o for o in order_list if o['action'] == 'SELL']
-        buys = [o for o in order_list if o['action'] == 'BUY']
-
-        for o in sells + buys:
-            is_sell = o['action'] == 'SELL'
-            color = RED if is_sell else GREEN
-            est_val = o['qty'] * o['price']
-            if is_sell:
-                total_sell += est_val
-            else:
-                total_buy += est_val
-
-            row = tk.Frame(sec3, bg=BG, padx=4, pady=1)
-            row.pack(fill="x")
-            vals = (
-                o['action'],
-                o['symbol'],
-                str(o['qty']),
-                str(o['current']),
-                str(o['target']),
-                f"${o['price']:.2f}",
-                f"${est_val:,.0f}",
-                o['strategy'],
-            )
-            for v, w in zip(vals, col_widths):
-                fg = color if v in ('BUY', 'SELL') else TEXT
-                tk.Label(row, text=v, font=("Consolas", 9),
-                         bg=BG, fg=fg, width=w, anchor="w").pack(side="left")
-
-        # 總計
-        summary = tk.Frame(main_frame, bg=BG3, padx=12, pady=6)
-        summary.pack(fill="x", padx=12, pady=(6, 0))
-        net = total_buy - total_sell
-        net_sign = "+" if net >= 0 else ""
-        tk.Label(summary,
-                 text=f"SELL: ${total_sell:,.0f}   |   BUY: ${total_buy:,.0f}   |   Net: {net_sign}${net:,.0f}",
-                 font=("Consolas", 10, "bold"), bg=BG3, fg=TEXT).pack()
-
-        # 按鈕列
-        btn_frame = tk.Frame(main_frame, bg=BG, padx=12, pady=10)
-        btn_frame.pack(fill="x")
-        self._btn(btn_frame, "Cancel", win.destroy,
-                  BTN_BG, width=14).pack(side="left", padx=(0, 10))
-        self._btn(btn_frame, "Confirm & Send (LMT)",
-                  lambda p=plan: self._sync_confirm(win, p),
-                  RED, width=22, font=("Segoe UI", 10, "bold")).pack(side="right")
-
-    def _sync_confirm(self, win, plan):
-        """用戶確認後送出限價單"""
-        if not messagebox.askyesno("Confirm Send Orders",
-                                   f"確定送出 {len(plan.orders)} 筆限價單到 [{plan.ctx.name}]？\n"
-                                   f"(LMT ±0.3% buffer, GTC, outside RTH)",
-                                   parent=win):
-            return
-        win.destroy()
-        self._log(f"[>] Sending {len(plan.orders)} LMT orders for [{plan.ctx.name}]...")
-        threading.Thread(
-            target=self._sync_execute,
-            args=(plan,),
-            daemon=True,
-        ).start()
+        window = SyncPreviewWindow(
+            parent=self,
+            plan=plan,
+            theme=self._preview_theme,
+            log=self._log,
+            btn_factory=self._btn,
+            on_confirm=on_confirm,
+        )
+        window.show()
 
     def _sync_execute(self, plan):
         """背景執行緒：送出限價單 — S10 thin wrapper，實作在 sync_position.submit_sync_orders。

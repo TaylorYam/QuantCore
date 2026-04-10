@@ -15,11 +15,12 @@ ACCOUNTS_PATH = BASE_DIR / 'accounts.json'
 _CLIENT_ID_BASE = 20
 _CLIENT_ID_STEP = 10
 
-# role offset: rebalance=0, report=1, moo_check=2, control_panel=5
+# role offset: rebalance=0, report=1, moo_check=2, control_panel=5, gw_monitor=7
 ROLE_REBALANCE = 0
 ROLE_REPORT    = 1
 ROLE_MOO_CHECK = 2
 ROLE_PANEL     = 5
+ROLE_MONITOR   = 7
 
 
 def load_base_config() -> dict:
@@ -62,8 +63,6 @@ def get_account_config(name: str) -> dict:
         merged['account'] = acct['account']
     if 'port' in acct:
         merged['port'] = acct['port']
-    if 'leverage' in acct:
-        merged['leverage'] = acct['leverage']
     # 可覆蓋的其他欄位
     for key in ('host', 'alloc_sr', 'alloc_sp500', 'dry_run',
                 'order_type', 'outside_rth', 'wait_fill_sec',
@@ -71,7 +70,32 @@ def get_account_config(name: str) -> dict:
         if key in acct:
             merged[key] = acct[key]
 
+    # leverage 自動推導：永遠 = alloc_sr + alloc_sp500（避免顯示與實際脫節）
+    merged['leverage'] = round(
+        merged.get('alloc_sr', 0) + merged.get('alloc_sp500', 0), 2
+    )
+
     return merged
+
+
+def update_account_config(name: str, updates: dict) -> None:
+    """
+    寫入指定帳戶在 accounts.json 的覆蓋值（其他帳戶保持不變）。
+    範例：update_account_config('Taylor', {'alloc_sr': 0.75, 'alloc_sp500': 0.45})
+    """
+    accounts = load_accounts()
+    found = False
+    for a in accounts:
+        if a['name'].upper() == name.upper():
+            a.update(updates)
+            found = True
+            break
+    if not found:
+        raise ValueError(f"Account '{name}' not found in accounts.json")
+
+    with open(ACCOUNTS_PATH, 'w', encoding='utf-8') as f:
+        json.dump(accounts, f, indent=2, ensure_ascii=False)
+        f.write('\n')
 
 
 def get_client_id(account_name: str, role: int = ROLE_REBALANCE) -> int:

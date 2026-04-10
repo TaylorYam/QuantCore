@@ -47,30 +47,28 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-def run_daily_check(account_name: str = ""):
-    """單一帳戶的每日檢查"""
-    import rebalance_ib as reb
-    from account_utils import get_account_config
+def run_daily_check(account_name: str):
+    """單一帳戶的每日檢查。S6：account_name 為必填，ctx 一律建立。"""
+    import rebalance_ib as reb     # 仍需要：place_orders, check_fills
+    import ib_fetcher               # S8：IB 連線/查詢 helpers
+    from account_ctx import AccountCtx
+    from account_utils import ROLE_MOO_CHECK
     from sp500_state import (load_state, save_state, update_bull_counter,
                              mark_dip_triggered, is_dip_triggered)
+    # S7：config / utils 是資料載入 helper（不是策略 business logic），可保留
     from strategies.sp500_momentum import config as sp_cfg, utils
-    from strategies.sp500_momentum.market_regime import MarketRegime
+    # S7：MarketRegime / SelectionEngine 走 signals 統一入口
+    from signals import get_market_regime_state, get_ticker_history
 
-    if account_name:
-        cfg = get_account_config(account_name)
-        reb._apply_config(cfg)
-        tag = f"[{account_name}]"
-    else:
-        tag = ""
+    ctx = AccountCtx.from_name(account_name, ROLE_MOO_CHECK)
+    tag = f"[{account_name}]"
 
     log.info(f"{'='*60}")
     log.info(f"  {tag} SP500 Daily Check  {date.today()}")
     log.info(f"{'='*60}")
 
-    # ── 載入市場資料 ────────────────────────────────────────────────
+    # ── 載入市場資料（SPY df 用於取 trading day index，非 strategy logic）
     spy_df = utils.load_benchmark(sp_cfg.ETF_DIR / "SPY.csv")
-    sso_df = utils.load_benchmark(sp_cfg.ETF_DIR / "SSO.csv")
-    regime = MarketRegime(spy_df, sso_df)
 
     if len(spy_df) < 2:
         log.error("SPY data too short")
@@ -80,7 +78,7 @@ def run_daily_check(account_name: str = ""):
     prev_idx    = spy_df.index[-2]
     day_before  = spy_df.index[-3] if len(spy_df) >= 3 else None
 
-    mkt = regime.get_state(today_idx)
+    mkt = get_market_regime_state(today_idx)
     if not mkt:
         log.error("No market regime data")
         return
@@ -92,36 +90,34 @@ def run_daily_check(account_name: str = ""):
 
     # ── 連線 IB ────────────────────────────────────────────────────
     try:
-        ib = reb.connect_ib()
+        ib = ib_fetcher.connect(ctx)
     except Exception as e:
         log.error(f"IB connect failed: {e}")
         return
 
     try:
         # 取得當前持倉
-        current_pos = reb.get_positions(ib)
+        current_pos = ib_fetcher.get_positions(ib, ctx)
         log.info(f"  Current positions: {current_pos or '(none)'}")
 
         if not current_pos:
             log.info("  No positions to check")
             return
 
-        # 分辨 SP500 持倉（排除 SR ETFs）
-        from strategies.sp500_momentum.selection import SelectionEngine
-        selector = SelectionEngine()
-        sp500_universe = set(selector.get_constituents(spy_df.index[-1]))
-        sp500_universe |= {'SPY', 'SSO'}
+        # 分辨 SP500 持倉（排除 SR ETFs）— S7 走 signals 單一入口
+        from signals import get_sp500_universe
+        sp500_universe = get_sp500_universe()
 
         sp500_holdings = [s for s in current_pos
-                          if s not in reb.SR_ETFS and s in sp500_universe]
+                          if s not in ib_fetcher.SR_ETFS and s in sp500_universe]
         log.info(f"  SP500 holdings: {sp500_holdings or '(none)'}")
 
         # 取得報價（包括持倉 + 潛在 dip-buy 標的）
         quote_syms = list(set(sp500_holdings + [sp_cfg.DIP_BUY_TICKER]))
-        prices = reb.get_prices(ib, quote_syms) if quote_syms else {}
+        prices = ib_fetcher.get_prices(ib, quote_syms, ctx) if quote_syms else {}
 
         # 取得持倉成本
-        pos_detail = reb.get_positions_detail(ib)
+        pos_detail = ib_fetcher.get_positions_detail(ib, ctx)
         avg_costs = {p.contract.symbol: float(p.avgCost) for p in pos_detail}
 
         # ── Step 1: 停損檢查 ───────────────────────────────────────
@@ -135,7 +131,7 @@ def run_daily_check(account_name: str = ""):
             if avg_cost <= 0:
                 continue
             try:
-                prev_close = float(selector._get_ticker_data(ticker).loc[prev_idx, 'Close'])
+                prev_close = float(get_ticker_history(ticker).loc[prev_idx, 'Close'])
             except Exception:
                 log.warning(f"    {ticker}: no prev close data")
                 continue
@@ -154,7 +150,7 @@ def run_daily_check(account_name: str = ""):
                 if ticker in dip_tickers:
                     continue
                 try:
-                    df = selector._get_ticker_data(ticker)
+                    df = get_ticker_history(ticker)
                     close_before = float(df.loc[day_before, 'Close'])
                     open_prev = float(df.loc[prev_idx, 'Open']) if 'Open' in df.columns else None
                     if not open_prev or close_before <= 0:
@@ -185,14 +181,13 @@ def run_daily_check(account_name: str = ""):
                     newly_triggered.append((level, ALLOC_MAP[level]))
 
             if newly_triggered:
-                # 計算 dip-buy 股數：alloc × NAV × ALLOC_SP500 / price
-                nav = reb.get_nav(ib)
+                # 計算 dip-buy 股數：alloc × NAV × alloc_sp500 / price
+                nav = ib_fetcher.get_nav(ib, ctx)
                 dip_ticker = sp_cfg.DIP_BUY_TICKER
                 dip_price = prices.get(dip_ticker, 0)
                 if dip_price > 0:
                     total_new_alloc = sum(a for _, a in newly_triggered)
-                    # 按 SP500 配額比例
-                    target_val = total_new_alloc * nav * reb.ALLOC_SP500
+                    target_val = total_new_alloc * nav * ctx.alloc_sp500
                     qty = int(target_val / dip_price)
                     if qty > 0:
                         log.info(f"  NEW dip-buy: {qty}sh {dip_ticker} "
@@ -260,8 +255,8 @@ def run_daily_check(account_name: str = ""):
         if missing:
             fallback = robust_get_prices(
                 ib, missing,
-                host=reb.HOST,
-                price_feed_port=reb.PRICE_FEED_PORT,
+                host=ctx.host,
+                price_feed_port=ctx.price_feed_port,
                 verbose_log=lambda m: log.info(m),
             )
             for sym in missing:
@@ -269,8 +264,9 @@ def run_daily_check(account_name: str = ""):
                 if p > 0 and not quotes[sym].get('bid'):
                     quotes[sym]['ref'] = p
 
-        reb.ORDER_TYPE = 'LMT'
-        reb.OUTSIDE_RTH = True
+        # 為本段下單建一個 LMT+outsideRTH 的臨時 ctx（frozen，不汙染原 ctx）
+        from dataclasses import replace as _replace
+        place_ctx = _replace(ctx, order_type='LMT', outside_rth=True)
 
         ib_orders = []
         for o in orders:
@@ -293,8 +289,8 @@ def run_daily_check(account_name: str = ""):
             })
             log.info(f"    LMT {o['action']} {o['qty']}sh {sym} @ ${lmt:.2f}  ({o['reason']})")
 
-        if ib_orders and not reb.DRY_RUN:
-            placed, trades = reb.place_orders(ib, ib_orders)
+        if ib_orders and not ctx.dry_run:
+            placed, trades = reb.place_orders(ib, ib_orders, ctx=place_ctx)
             fill_results = reb.check_fills(trades) if trades else []
 
             # Telegram 通知
@@ -306,8 +302,9 @@ def run_daily_check(account_name: str = ""):
             ]
             for o in placed:
                 lines.append(f"  {o['action']} {o['qty']}sh {o['symbol']} @ ${o['lmt_price']:.2f}")
-            reb.tg_send("\n".join(lines))
-        elif reb.DRY_RUN:
+            from notify import tg_send as _tg
+            _tg("\n".join(lines), token=ctx.tg_token, chat_id=ctx.tg_chat_id)
+        elif ctx.dry_run:
             log.info("  [DRY RUN] orders not sent")
 
     finally:
@@ -317,21 +314,22 @@ def run_daily_check(account_name: str = ""):
 
 def main():
     parser = argparse.ArgumentParser(description="SP500 Daily Check")
-    parser.add_argument("--account", default="",
-                        help="帳戶名稱，all = 全部帳戶")
+    parser.add_argument("--account", required=True,
+                        help="帳戶名稱（Taylor/Rosa/Yvonne），或 'all' = 全部帳戶")
     args = parser.parse_args()
 
+    from account_utils import load_accounts
     if args.account.lower() == "all":
-        from account_utils import load_accounts
-        accounts = [a["name"] for a in load_accounts()]
-        for name in accounts:
-            log.info(f"\n\n{'*'*60}\n  Account: {name}\n{'*'*60}")
-            try:
-                run_daily_check(name)
-            except Exception as e:
-                log.error(f"  [{name}] daily check failed: {e}", exc_info=True)
+        names = [a["name"] for a in load_accounts()]
     else:
-        run_daily_check(args.account)
+        names = [args.account]
+
+    for name in names:
+        log.info(f"\n\n{'*'*60}\n  Account: {name}\n{'*'*60}")
+        try:
+            run_daily_check(name)
+        except Exception as e:
+            log.error(f"  [{name}] daily check failed: {e}", exc_info=True)
 
 
 if __name__ == '__main__':

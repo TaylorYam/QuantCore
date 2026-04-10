@@ -44,23 +44,8 @@ TG_TOKEN   = cfg.get('telegram_token',   '')
 TG_CHAT_ID = cfg.get('telegram_chat_id', '')
 
 
-# ── Telegram ──────────────────────────────────────────────────────────────────
-def tg_send(msg: str) -> None:
-    if not TG_TOKEN or not TG_CHAT_ID:
-        return
-    try:
-        url  = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-        data = urllib.parse.urlencode({
-            'chat_id':    TG_CHAT_ID,
-            'text':       msg,
-            'parse_mode': 'HTML',
-        }).encode()
-        req = urllib.request.Request(url, data=data, method='POST')
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            if resp.status != 200:
-                log.warning(f"Telegram HTTP {resp.status}")
-    except Exception as e:
-        log.warning(f"Telegram notify failed: {e}")
+# ── Telegram（統一由 notify.py 提供）─────────────────────────────────────
+from notify import tg_send as _tg
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
@@ -110,7 +95,7 @@ def main():
             f"Elapsed: {elapsed}s"
         )
 
-    tg_send(msg)
+    _tg(msg, token=TG_TOKEN, chat_id=TG_CHAT_ID)
     log.info(f"Done. Elapsed: {elapsed}s  Errors: {len(errors)}")
 
 

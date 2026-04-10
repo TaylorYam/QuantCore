@@ -52,6 +52,7 @@ automation/_audit_test.py
 # Generated files
 automation/charts/
 automation/*.xlsx
+automation/*.xlsx.bak
 
 # IB / IBC config
 jts.ini

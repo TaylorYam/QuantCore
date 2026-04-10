@@ -36,69 +36,39 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ── 讀取設定 ──────────────────────────────────────────────────────────────────
-cfg_path = BASE_DIR / 'config.json'
-with open(cfg_path, encoding='utf-8') as f:
-    cfg = json.load(f)
-
-HOST         = cfg.get('host',           '127.0.0.1')
-PORT         = cfg.get('port',           7497)
-ACCOUNT      = cfg.get('account',        '')
-ACCOUNT_NAME = cfg.get('account_name',   '')
-TG_TOKEN     = cfg.get('telegram_token',   '')
-TG_CHAT_ID   = cfg.get('telegram_chat_id', '')
-CLIENT_ID    = 22
-
-
-def _apply_config(cfg_dict: dict) -> None:
-    """多帳戶切換用"""
-    global HOST, PORT, ACCOUNT, ACCOUNT_NAME, TG_TOKEN, TG_CHAT_ID, CLIENT_ID
-    HOST         = cfg_dict.get('host',           '127.0.0.1')
-    PORT         = cfg_dict.get('port',           7497)
-    ACCOUNT      = cfg_dict.get('account',        '')
-    ACCOUNT_NAME = cfg_dict.get('account_name',   '')
-    TG_TOKEN     = cfg_dict.get('telegram_token',   '')
-    TG_CHAT_ID   = cfg_dict.get('telegram_chat_id', '')
-    from account_utils import get_client_id, ROLE_MOO_CHECK
-    CLIENT_ID    = get_client_id(ACCOUNT_NAME, ROLE_MOO_CHECK) if ACCOUNT_NAME else 22
-
-from ib_insync import IB, util
+from ib_insync import util
 util.logToConsole(logging.WARNING)
 logging.root.setLevel(logging.INFO)
 
 
-# ── Telegram 通知 ─────────────────────────────────────────────────────────────
-def tg_send(msg: str) -> None:
-    if not TG_TOKEN or not TG_CHAT_ID:
-        return
-    try:
-        url  = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-        data = urllib.parse.urlencode({
-            'chat_id':    TG_CHAT_ID,
-            'text':       msg,
-            'parse_mode': 'HTML',
-        }).encode()
-        req = urllib.request.Request(url, data=data, method='POST')
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            if resp.status != 200:
-                log.warning(f"Telegram HTTP {resp.status}")
-    except Exception as e:
-        log.warning(f"Telegram notify failed: {e}")
+# ── Telegram 通知（統一由 notify.py 提供）──────────────────────────────────
+from notify import tg_send as _tg
+
+# ── AccountCtx（S6：ctx 為必要參數）────────────────────────────────────
+from account_ctx import AccountCtx
+
+# ── IB 連線 helper（S8：統一由 ib_fetcher 提供）────────────────────────
+import ib_fetcher
 
 
-def main():
+def main(ctx: AccountCtx):
+    """MOO 成交回報。所有設定從 ctx 取得。"""
+    account    = ctx.account
+    acct_name  = ctx.name
+    tg_token   = ctx.tg_token
+    tg_chat_id = ctx.tg_chat_id
+
     start_ts = datetime.now()
     log.info(f"{'='*60}")
     log.info(f"  MOO Fill Check  {date.today()}")
     log.info(f"{'='*60}")
 
-    ib = IB()
     try:
-        ib.connect(HOST, PORT, clientId=CLIENT_ID, timeout=20)
-        log.info(f"Connected  host={HOST} port={PORT} clientId={CLIENT_ID}")
+        ib = ib_fetcher.connect(ctx)
     except Exception as e:
         log.error(f"IB connect failed: {e}")
-        tg_send(f"<b>MOO Fill Check ❌</b>\n{date.today()}\nIB 連線失敗: {e}")
+        _tg(f"<b>MOO Fill Check ❌</b>\n{date.today()}\nIB 連線失敗: {e}",
+            token=tg_token, chat_id=tg_chat_id)
         return
 
     try:
@@ -121,17 +91,17 @@ def main():
             moo_fills = [f for f in fills if f.execution.orderId > 0]
             # 用 executions 組報告
             if moo_fills:
-                _report_from_fills(moo_fills)
+                _report_from_fills(moo_fills, tg_token=tg_token, tg_chat_id=tg_chat_id)
             else:
                 msg = (f"<b>MOO Fill Check</b>\n"
                        f"{date.today()}\n\n"
                        f"今日無 MOO 委託紀錄")
                 log.info("No MOO orders found today")
-                tg_send(msg)
+                _tg(msg, token=tg_token, chat_id=tg_chat_id)
             return
 
         # 組裝報告
-        acct_tag = f"[{ACCOUNT_NAME}] " if ACCOUNT_NAME else ""
+        acct_tag = f"[{acct_name}] " if acct_name else ""
         lines = [
             f"<b>{acct_tag}MOO 開盤成交回報</b>",
             f"Date: {date.today()}",
@@ -195,13 +165,10 @@ def main():
             sign = "+" if net >= 0 else ""
             lines.append(f"  淨現金流: {sign}${net:,.0f}")
 
-        # 帳戶 NAV
+        # 帳戶 NAV（S8：走 ib_fetcher）
         try:
-            for v in ib.accountValues(ACCOUNT):
-                if v.tag == 'NetLiquidation' and v.currency == 'USD':
-                    nav = float(v.value)
-                    lines.append(f"\n  NAV: <b>${nav:,.2f}</b>")
-                    break
+            nav = ib_fetcher.get_nav(ib, ctx)
+            lines.append(f"\n  NAV: <b>${nav:,.2f}</b>")
         except Exception:
             pass
 
@@ -210,18 +177,19 @@ def main():
 
         report = "\n".join(lines)
         log.info(f"\n{report}")
-        tg_send(report)
+        _tg(report, token=tg_token, chat_id=tg_chat_id)
 
     except Exception as e:
         log.error(f"ERROR: {e}", exc_info=True)
-        tg_send(f"<b>MOO Fill Check ❌</b>\n{date.today()}\nError: {str(e)[:300]}")
+        _tg(f"<b>MOO Fill Check ❌</b>\n{date.today()}\nError: {str(e)[:300]}",
+            token=tg_token, chat_id=tg_chat_id)
 
     finally:
         ib.disconnect()
         log.info("Disconnected from IB Gateway.")
 
 
-def _report_from_fills(fills):
+def _report_from_fills(fills, tg_token: str, tg_chat_id: str):
     """從 ib.fills() 組裝回報（當 trades 已清空時的備援）"""
     lines = [
         f"<b>MOO 開盤成交回報</b>",
@@ -262,23 +230,25 @@ def _report_from_fills(fills):
 
     report = "\n".join(lines)
     log.info(f"\n{report}")
-    tg_send(report)
+    _tg(report, token=tg_token, chat_id=tg_chat_id)
 
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description="QuantCore MOO Fill Check")
-    parser.add_argument("--account", default=None,
-                        help="Account name from accounts.json, or 'all'")
+    parser.add_argument("--account", required=True,
+                        help="Account name from accounts.json (e.g. Taylor/Rosa/Yvonne), "
+                             "or 'all' to run all accounts sequentially")
     args = parser.parse_args()
 
-    if args.account:
-        from account_utils import get_account_config, get_all_account_configs
-        accounts = (get_all_account_configs() if args.account.lower() == 'all'
-                    else [get_account_config(args.account)])
-        for acfg in accounts:
-            _apply_config(acfg)
-            log.info(f">>> Account: {ACCOUNT_NAME} ({ACCOUNT}) port={PORT} <<<")
-            main()
+    from account_utils import load_accounts, ROLE_MOO_CHECK
+
+    if args.account.lower() == 'all':
+        names = [a['name'] for a in load_accounts()]
     else:
-        main()
+        names = [args.account]
+
+    for name in names:
+        ctx = AccountCtx.from_name(name, ROLE_MOO_CHECK)
+        log.info(f">>> Account: {ctx.name} ({ctx.account}) port={ctx.port} <<<")
+        main(ctx=ctx)

@@ -38,42 +38,6 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ── 設定 ──────────────────────────────────────────────────────────────────────
-cfg_path = BASE_DIR / 'config.json'
-with open(cfg_path, encoding='utf-8') as f:
-    cfg = json.load(f)
-
-HOST         = cfg.get('host',           '127.0.0.1')
-PORT         = cfg.get('port',           7497)
-CLIENT_ID    = cfg.get('client_id',      20) + 1   # 與 rebalance 不同，避免衝突
-ACCOUNT      = cfg.get('account',        '')
-PRICE_FEED_PORT = cfg.get('price_feed_port', 7497)
-ACCOUNT_NAME = cfg.get('account_name',   '')
-ALLOC_SR     = cfg.get('alloc_sr',       0.80)
-ALLOC_SP500  = cfg.get('alloc_sp500',    0.50)
-LEVERAGE     = cfg.get('leverage',       1.3)
-TG_TOKEN     = cfg.get('telegram_token',   '')
-TG_CHAT_ID   = cfg.get('telegram_chat_id', '')
-
-
-def _apply_config(cfg_dict: dict) -> None:
-    """多帳戶切換用"""
-    global HOST, PORT, CLIENT_ID, ACCOUNT, ACCOUNT_NAME
-    global ALLOC_SR, ALLOC_SP500, LEVERAGE, TG_TOKEN, TG_CHAT_ID
-    global PRICE_FEED_PORT
-    HOST         = cfg_dict.get('host',           '127.0.0.1')
-    PORT         = cfg_dict.get('port',           7497)
-    ACCOUNT      = cfg_dict.get('account',        '')
-    ACCOUNT_NAME = cfg_dict.get('account_name',   '')
-    ALLOC_SR     = cfg_dict.get('alloc_sr',       0.80)
-    ALLOC_SP500  = cfg_dict.get('alloc_sp500',    0.50)
-    LEVERAGE     = cfg_dict.get('leverage',       1.3)
-    TG_TOKEN     = cfg_dict.get('telegram_token',   '')
-    TG_CHAT_ID   = cfg_dict.get('telegram_chat_id', '')
-    PRICE_FEED_PORT = cfg_dict.get('price_feed_port', 7497)
-    from account_utils import get_client_id, ROLE_REPORT
-    CLIENT_ID    = get_client_id(ACCOUNT_NAME, ROLE_REPORT) if ACCOUNT_NAME else 21
-
 from ib_insync import IB, Stock, util
 util.logToConsole(logging.WARNING)
 logging.root.setLevel(logging.INFO)
@@ -101,118 +65,46 @@ def _load_sp500_universe() -> set:
 SP500_UNIVERSE = _load_sp500_universe()
 
 
-# ── Telegram ──────────────────────────────────────────────────────────────────
-def tg_send(msg: str) -> None:
-    if not TG_TOKEN or not TG_CHAT_ID:
-        return
-    try:
-        url  = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-        data = urllib.parse.urlencode({
-            'chat_id':    TG_CHAT_ID,
-            'text':       msg,
-            'parse_mode': 'HTML',
-        }).encode()
-        req = urllib.request.Request(url, data=data, method='POST')
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            if resp.status != 200:
-                log.warning(f"Telegram HTTP {resp.status}")
-    except Exception as e:
-        log.warning(f"Telegram notify failed: {e}")
+# ── Telegram（統一由 notify.py 提供）─────────────────────────────────────
+from notify import tg_send as _tg, tg_send_photo as _tg_photo
 
+# ── AccountCtx（S6：ctx 為所有函式的必要參數，無 module global 可 fallback）
+from account_ctx import AccountCtx
 
-def tg_send_photo(photo_path: str, caption: str = "") -> None:
-    """透過 Telegram Bot API 發送圖片"""
-    if not TG_TOKEN or not TG_CHAT_ID:
-        return
-    try:
-        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto"
-        boundary = "----QuantCoreBoundary"
-        body = b""
-
-        # chat_id field
-        body += f"--{boundary}\r\n".encode()
-        body += b"Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n"
-        body += f"{TG_CHAT_ID}\r\n".encode()
-
-        # caption field
-        if caption:
-            body += f"--{boundary}\r\n".encode()
-            body += b"Content-Disposition: form-data; name=\"caption\"\r\n\r\n"
-            body += f"{caption}\r\n".encode()
-
-        # photo file
-        filename = Path(photo_path).name
-        body += f"--{boundary}\r\n".encode()
-        body += f'Content-Disposition: form-data; name="photo"; filename="{filename}"\r\n'.encode()
-        body += b"Content-Type: image/png\r\n\r\n"
-        with open(photo_path, 'rb') as f:
-            body += f.read()
-        body += b"\r\n"
-
-        body += f"--{boundary}--\r\n".encode()
-
-        req = urllib.request.Request(url, data=body, method='POST')
-        req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            if resp.status != 200:
-                log.warning(f"Telegram photo HTTP {resp.status}")
-            else:
-                log.info("Equity chart sent to Telegram.")
-    except Exception as e:
-        log.warning(f"Telegram photo failed: {e}")
-
-
-# ── IB 工具 ───────────────────────────────────────────────────────────────────
-def get_account_info(ib: IB) -> dict:
-    info = {'nav': 0.0, 'cushion_pct': 0.0, 'excess_liq': 0.0, 'maint_margin': 0.0}
-    for v in ib.accountValues(ACCOUNT):
-        if v.currency not in ('USD', ''):
-            continue
-        if v.tag == 'NetLiquidation':
-            info['nav'] = float(v.value)
-        elif v.tag == 'Cushion':
-            info['cushion_pct'] = float(v.value) * 100
-        elif v.tag == 'ExcessLiquidity':
-            info['excess_liq'] = float(v.value)
-        elif v.tag == 'MaintMarginReq':
-            info['maint_margin'] = float(v.value)
-    if info['nav'] == 0:
-        raise RuntimeError("Cannot get NAV — check account ID in config.json")
-    return info
-
-
-def get_positions_detail(ib: IB) -> list:
-    return [
-        p for p in ib.positions(ACCOUNT)
-        if p.contract.secType == 'STK' and p.position != 0
-    ]
-
-
-def get_prices(ib: IB, symbols: list) -> dict:
-    """透過 price_utils.robust_get_prices 取得價格（多層 fallback）。"""
-    from price_utils import robust_get_prices
-    return robust_get_prices(
-        ib, symbols,
-        host=HOST,
-        price_feed_port=PRICE_FEED_PORT,
-    )
+# ── IB helpers 統一由 ib_fetcher 提供（S8 遷移）
+from ib_fetcher import (
+    get_account_info,
+    get_positions_detail,
+    get_prices,
+)
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
-def main():
+def main(ctx: AccountCtx):
+    """每日持倉報告。所有設定從 ctx 取得，thread-safe。"""
+    host        = ctx.host
+    port        = ctx.port
+    client_id   = ctx.client_id
+    account     = ctx.account
+    acct_name   = ctx.name
+    alloc_sr    = ctx.alloc_sr
+    alloc_sp500 = ctx.alloc_sp500
+    tg_token    = ctx.tg_token
+    tg_chat_id  = ctx.tg_chat_id
+
     log.info(f"QuantCore daily report start — {date.today()}")
     ib = IB()
-    ib.connect(HOST, PORT, clientId=CLIENT_ID, timeout=20)
-    log.info(f"Connected  account={ACCOUNT}")
+    ib.connect(host, port, clientId=client_id, timeout=20)
+    log.info(f"Connected  account={account}")
 
     try:
-        acct       = get_account_info(ib)
+        acct       = get_account_info(ib, ctx=ctx)
         nav        = acct['nav']
         cushion    = acct['cushion_pct']
         excess_liq = acct['excess_liq']
-        pos_detail = get_positions_detail(ib)
+        pos_detail = get_positions_detail(ib, ctx=ctx)
         symbols    = [p.contract.symbol for p in pos_detail]
-        prices     = get_prices(ib, symbols) if symbols else {}
+        prices     = get_prices(ib, symbols, ctx=ctx) if symbols else {}
 
         log.info(f"NAV = ${nav:,.2f}  Cushion = {cushion:.1f}%  ExcessLiq = ${excess_liq:,.0f}")
 
@@ -225,10 +117,10 @@ def main():
             cushion_icon = "🟢"
 
         # ── 組 Telegram 訊息 ──────────────────────────────────────────────
-        acct_tag = f"[{ACCOUNT_NAME}] " if ACCOUNT_NAME else ""
+        acct_tag = f"[{acct_name}] " if acct_name else ""
         lines = [
             f"<b>{acct_tag}📊 QuantCore 每日持倉報告 — {date.today()}</b>",
-            f"NAV: <b>${nav:,.2f}</b>  |  Alloc: SR {ALLOC_SR:.0%} + SP500 {ALLOC_SP500:.0%}",
+            f"NAV: <b>${nav:,.2f}</b>  |  Alloc: SR {alloc_sr:.0%} + SP500 {alloc_sp500:.0%}",
             f"{cushion_icon} Margin Cushion: <b>{cushion:.1f}%</b>  ExcessLiq: ${excess_liq:,.0f}",
         ]
 
@@ -269,7 +161,7 @@ def main():
 
             # SR 持倉
             if sr_positions:
-                lines.append(f"\n<b>🔵 Sector Rotation ({ALLOC_SR:.0%}):</b>")
+                lines.append(f"\n<b>🔵 Sector Rotation ({alloc_sr:.0%}):</b>")
                 for p in sorted(sr_positions, key=lambda x: -abs(x.position * prices.get(x.contract.symbol, 0))):
                     txt, upnl, mv = _fmt_position(p, total_upnl, strategy_mktval)
                     lines.append(txt)
@@ -278,7 +170,7 @@ def main():
 
             # SP500 MOM 持倉
             if sp_positions:
-                lines.append(f"\n<b>🟢 SP500 Momentum ({ALLOC_SP500:.0%}):</b>")
+                lines.append(f"\n<b>🟢 SP500 Momentum ({alloc_sp500:.0%}):</b>")
                 for p in sorted(sp_positions, key=lambda x: -abs(x.position * prices.get(x.contract.symbol, 0))):
                     txt, upnl, mv = _fmt_position(p, total_upnl, strategy_mktval)
                     lines.append(txt)
@@ -304,20 +196,20 @@ def main():
                 lines.append(f"  手動部位: ${other_mktval:,.0f}  (excluded)")
             lines.append(f"  <b>未實現損益: {sign}${total_upnl:,.2f}</b>")
 
-        tg_send("\n".join(lines))
+        _tg("\n".join(lines), token=tg_token, chat_id=tg_chat_id)
         log.info("Daily report sent.")
 
         append_daily_snapshot(nav, pos_detail, prices,
                               cushion_pct=cushion, excess_liq=excess_liq,
-                              account_name=ACCOUNT_NAME)
+                              account_name=acct_name)
         log.info(f"Excel snapshot written -> portfolio_tracker.xlsx")
 
         # ── 產生權益曲線圖 + 發送 ────────────────────────────────────────
         try:
-            chart_path = generate_equity_chart(account_name=ACCOUNT_NAME)
+            chart_path = generate_equity_chart(account_name=acct_name)
             if chart_path:
                 caption = f"{acct_tag}QuantCore 權益曲線 — {date.today()}"
-                tg_send_photo(chart_path, caption=caption)
+                _tg_photo(chart_path, token=tg_token, chat_id=tg_chat_id, caption=caption)
                 log.info(f"Equity chart generated: {chart_path}")
             else:
                 log.info("Not enough data to generate equity chart.")
@@ -326,7 +218,8 @@ def main():
 
     except Exception as e:
         log.error(f"ERROR: {e}", exc_info=True)
-        tg_send(f"<b>❌ QuantCore 每日報告失敗</b>\n{e}")
+        _tg(f"<b>❌ QuantCore 每日報告失敗</b>\n{e}",
+            token=tg_token, chat_id=tg_chat_id)
         raise
 
     finally:
@@ -337,17 +230,19 @@ def main():
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description="QuantCore Daily Report")
-    parser.add_argument("--account", default=None,
-                        help="Account name from accounts.json, or 'all'")
+    parser.add_argument("--account", required=True,
+                        help="Account name from accounts.json (e.g. Taylor/Rosa/Yvonne), "
+                             "or 'all' to run all accounts sequentially")
     args = parser.parse_args()
 
-    if args.account:
-        from account_utils import get_account_config, get_all_account_configs
-        accounts = (get_all_account_configs() if args.account.lower() == 'all'
-                    else [get_account_config(args.account)])
-        for acfg in accounts:
-            _apply_config(acfg)
-            log.info(f">>> Account: {ACCOUNT_NAME} ({ACCOUNT}) port={PORT} <<<")
-            main()
+    from account_utils import load_accounts, ROLE_REPORT
+
+    if args.account.lower() == 'all':
+        names = [a['name'] for a in load_accounts()]
     else:
-        main()
+        names = [args.account]
+
+    for name in names:
+        ctx = AccountCtx.from_name(name, ROLE_REPORT)
+        log.info(f">>> Account: {ctx.name} ({ctx.account}) port={ctx.port} <<<")
+        main(ctx=ctx)

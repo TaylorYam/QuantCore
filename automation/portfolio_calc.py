@@ -1,6 +1,14 @@
 """
-QuantCore — Portfolio Calculator
+QuantCore — Portfolio Calculator (LEGACY / STANDALONE)
 輸入 NAV + 當前持股 → 根據 50/50 策略計算目標持股與操作清單
+
+⚠️ LEGACY：這個工具獨立於 Panel / rebalance_ib.py，**沒有**被主要流程呼叫。
+S7 審查時暫保留原狀（含 SelectionEngine / MarketRegime 直接 import），
+因為它回傳 UI-friendly 的 metadata（drop 原因、rank 資訊），
+跟 signals.get_sp500_weights() 的純 weight 回傳簽章不同。
+
+未來若要整合：在 signals.py 加 `get_sp500_weights_with_metadata()` 版本，
+再把本檔案的 get_sp500_weights() 改成薄 wrapper。
 """
 import sys, os, threading
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

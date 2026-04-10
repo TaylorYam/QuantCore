@@ -51,7 +51,9 @@ TRADE_FILE     = BASE_DIR / "trade_log.xlsx"
 LOG_DIR        = BASE_DIR / "logs"
 PYTHON      = sys.executable
 
-from account_utils import load_accounts, get_account_config
+from account_utils import (
+    load_accounts, get_account_config, update_account_config,
+)
 
 TASK_UPDATE    = "QuantCore_DataUpdate_Daily"
 TASK_REBAL_SR  = "QuantCore_SR_Rebalance_Tue"
@@ -194,92 +196,34 @@ def read_latest_portfolio() -> dict:
 
 
 def fetch_ib_portfolio(account_name: str = "") -> dict:
-    """即時連線 IB Gateway 取得帳戶資訊和持倉，回傳與 read_latest_portfolio 相同格式。
-    account_name: 帳戶名稱（A/B），空字串則用 config.json 預設值。
+    """Thin wrapper — S8 遷移：實作全部搬到 `ib_fetcher.fetch_portfolio()`。
+
+    account_name 空字串時 legacy fallback 行為保留：
+      讀 config.json 的 account_name 建 ctx（若有）。
     """
-    if account_name:
-        cfg = get_account_config(account_name)
-        from account_utils import get_client_id, ROLE_PANEL
-        client_id = get_client_id(account_name, ROLE_PANEL)
-    else:
-        cfg = load_config()
-        client_id = cfg.get("client_id", 20) + 5
+    import ib_fetcher as _if
+    from account_ctx import AccountCtx
+    from account_utils import ROLE_PANEL
 
-    result = {
-        "date": str(date.today()), "nav": 0, "cushion": 0, "excess_liq": 0,
-        "etf_holdings": [], "stock_holdings": [], "other_holdings": [],
-        "strategy_mktval": 0, "other_mktval": 0,
-        "total_mktval": 0, "total_upnl": 0, "available": False,
-        "source": f"IB Live [{account_name}]" if account_name else "IB Live",
-    }
-    try:
-        from ib_insync import IB
-        import numpy as np
+    if not account_name:
+        # 向後相容：無 account_name 時從 config.json 的 account_name 推
+        try:
+            cfg = load_config()
+            account_name = cfg.get("account_name", "") or ""
+        except Exception:
+            account_name = ""
+        if not account_name:
+            return {
+                "date": str(date.today()), "nav": 0, "cushion": 0, "excess_liq": 0,
+                "etf_holdings": [], "stock_holdings": [], "other_holdings": [],
+                "strategy_mktval": 0, "other_mktval": 0,
+                "total_mktval": 0, "total_upnl": 0, "available": False,
+                "source": "IB Live",
+                "error": "No account name provided and config.json has none",
+            }
 
-        ib = IB()
-        ib.connect(cfg["host"], cfg["port"],
-                   clientId=client_id, timeout=15)
-
-        account = cfg["account"]
-
-        # 帳戶資訊
-        for v in ib.accountValues(account):
-            if v.currency not in ('USD', ''):
-                continue
-            if v.tag == 'NetLiquidation':
-                result["nav"] = float(v.value)
-            elif v.tag == 'Cushion':
-                result["cushion"] = float(v.value) * 100
-            elif v.tag == 'ExcessLiquidity':
-                result["excess_liq"] = float(v.value)
-
-        # 持倉明細
-        positions = [p for p in ib.positions(account)
-                     if p.contract.secType == 'STK' and p.position != 0]
-
-        if positions:
-            from price_utils import robust_get_prices
-            symbols = [p.contract.symbol for p in positions]
-            prices = robust_get_prices(
-                ib, symbols,
-                host=cfg["host"],
-                price_feed_port=cfg.get("price_feed_port", 7497),
-            )
-            # 清理：若仍有 0，讓 downstream .get(sym, avg_cost) 使用成本價
-            prices = {s: p for s, p in prices.items() if p > 0}
-
-            for p in positions:
-                sym = p.contract.symbol
-                shares = int(p.position)
-                avg_cost = float(p.avgCost)
-                px = prices.get(sym, avg_cost)
-                mkt_val = shares * px
-                upnl = (px - avg_cost) * shares
-                upnl_pct = (px / avg_cost - 1) * 100 if avg_cost > 0 else 0
-
-                entry = {
-                    "symbol": sym, "shares": shares,
-                    "avg_cost": avg_cost, "mkt_px": px,
-                    "mkt_val": mkt_val, "upnl": upnl, "upnl_pct": upnl_pct,
-                }
-
-                if sym in SR_ETFS:
-                    result["etf_holdings"].append(entry)
-                    result["strategy_mktval"] += mkt_val
-                elif _SP500_UNIVERSE and sym in _SP500_UNIVERSE:
-                    result["stock_holdings"].append(entry)
-                    result["strategy_mktval"] += mkt_val
-                else:
-                    result["other_holdings"].append(entry)
-                    result["other_mktval"] += mkt_val
-                result["total_mktval"] += mkt_val
-                result["total_upnl"] += upnl
-
-        ib.disconnect()
-        result["available"] = True
-    except Exception as e:
-        result["error"] = str(e)
-    return result
+    ctx = AccountCtx.from_name(account_name, ROLE_PANEL)
+    return _if.fetch_portfolio(ctx)
 
 
 def read_latest_trades(account_name: str = "") -> list:
@@ -496,7 +440,31 @@ class ControlPanel(tk.Tk):
         self.font_med_num = tkfont.Font(family="Segoe UI", size=11, weight="bold")
 
         self._build_ui()
+        # 初始高亮第一個帳戶 + 標題
+        try:
+            init_acct = self.selected_account.get()
+            if init_acct:
+                self._highlight_active_account_btn(init_acct)
+                self.title(f"QuantCore — {init_acct}")
+        except Exception:
+            pass
         self.refresh_all()
+        # 啟動 Gateway 持久監測連線（每帳戶一條，斷線自動重連 + Telegram 通知）
+        self.after(500, self._start_gateway_monitors)
+        # Panel 關閉時乾淨 disconnect 所有監測連線
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_close(self):
+        """視窗關閉前的清理：斷開所有監測連線，避免 zombie client slot"""
+        try:
+            self._log("[>] Shutting down gateway monitors...")
+            self._stop_gateway_monitors()
+        except Exception:
+            pass
+        try:
+            self.destroy()
+        except Exception:
+            pass
 
     # ── 建構 UI ─────────────────────────────────────────────
 
@@ -517,17 +485,22 @@ class ControlPanel(tk.Tk):
                  fg="#86efac" if admin_ok else "#fca5a5"
         ).pack(side="right", padx=(0, 12))
 
-        # ── 帳戶切換下拉 ──────────────────────────────────
+        # ── 帳戶切換按鈕（取代下拉選單）──────────────────
         accounts = load_accounts()
+        self._accounts_meta = accounts
         acct_names = [a["name"] for a in accounts]
         self.selected_account = tk.StringVar(value=acct_names[0] if acct_names else "")
+
         tk.Label(hdr, text="Account:", font=self.font_small,
-                 bg=ACCENT, fg="white").pack(side="right", padx=(0, 2))
-        acct_menu = tk.OptionMenu(hdr, self.selected_account, *acct_names,
-                                   command=self._on_account_change)
-        acct_menu.config(font=self.font_small, bg=ACCENT_HL, fg="black",
-                         highlightthickness=0, width=4)
-        acct_menu.pack(side="right", padx=(0, 8))
+                 bg=ACCENT, fg="white").pack(side="left", padx=(20, 4))
+        self.acct_btns = {}
+        for name in acct_names:
+            b = tk.Button(hdr, text=name, font=self.font_small,
+                          relief="flat", cursor="hand2",
+                          padx=10, pady=2, bd=0,
+                          command=lambda n=name: self._set_active_account(n))
+            b.pack(side="left", padx=2)
+            self.acct_btns[name] = b
 
         self.lbl_time = tk.Label(hdr, text="", font=self.font_small,
                                   bg=ACCENT, fg="#ccfbf1")
@@ -563,6 +536,43 @@ class ControlPanel(tk.Tk):
         self._btn(btn_bar, "Refresh",
                   self.refresh_all,
                   BTN_BG, padx=6, pady=3, font=self.font_small).pack(side="right", padx=(0, 2))
+
+        # ── Gateway Status 監控列 ─────────────────────────
+        gw_bar = tk.Frame(self, bg=BG2, pady=4, padx=10)
+        gw_bar.pack(fill="x")
+        tk.Label(gw_bar, text="Gateway Status:", font=self.font_small,
+                 bg=BG2, fg=ACCENT_HL).pack(side="left", padx=(0, 8))
+
+        self.gw_cards = {}
+        for a in accounts:
+            name = a["name"]
+            port = a.get("port", "?")
+            card = tk.Frame(gw_bar, bg=BG3, padx=8, pady=2,
+                            highlightthickness=1, highlightbackground=BG3)
+            card.pack(side="left", padx=3)
+            dot = tk.Label(card, text="●", font=self.font_badge,
+                           bg=BG3, fg=TEXT_DIM)
+            dot.pack(side="left", padx=(0, 4))
+            name_lbl = tk.Label(card, text=name, font=self.font_small,
+                                bg=BG3, fg=TEXT)
+            name_lbl.pack(side="left")
+            port_lbl = tk.Label(card, text=f":{port}", font=self.font_mono_sm,
+                                bg=BG3, fg=TEXT_DIM)
+            port_lbl.pack(side="left", padx=(2, 4))
+            status_lbl = tk.Label(card, text="checking…", font=self.font_small,
+                                  bg=BG3, fg=TEXT_DIM)
+            status_lbl.pack(side="left")
+            self.gw_cards[name] = {
+                "frame": card, "dot": dot, "status": status_lbl,
+                "name_lbl": name_lbl, "port_lbl": port_lbl,
+                "port": port,
+            }
+
+        self._btn(gw_bar, "Check Now", self._refresh_gateway_status,
+                  BTN_BG, padx=6, pady=2, font=self.font_small).pack(side="right")
+        self.gw_last_lbl = tk.Label(gw_bar, text="", font=self.font_small,
+                                     bg=BG2, fg=TEXT_DIM)
+        self.gw_last_lbl.pack(side="right", padx=8)
 
         # ══════════════════════════════════════════════════
         # 主體：三欄式 grid 佈局（填滿全螢幕）
@@ -900,10 +910,27 @@ class ControlPanel(tk.Tk):
             n_stk = len(pf.get("stock_holdings", []))
             n_oth = len(pf.get("other_holdings", []))
             nav = pf.get("nav", 0)
+            dbg = pf.get("debug", {}) or {}
             self.after(0, lambda: self._log(
                 f"[OK] IB Live — NAV ${nav:,.0f} | "
                 f"ETF: {n_etf}  Stocks: {n_stk}  Other: {n_oth}"
             ))
+            # 診斷一行：用了哪個帳號 + 抓到幾筆原始 raw data
+            if dbg:
+                managed = dbg.get("managed_accounts") or []
+                used = dbg.get("used_account") or "?"
+                cfg_a = dbg.get("configured_account") or "?"
+                n_vals = dbg.get("n_account_values", 0)
+                n_pos_raw = dbg.get("n_positions_raw", 0)
+                src = dbg.get("vals_source", "?")
+                port = dbg.get("port", "?")
+                cid = dbg.get("client_id", "?")
+                self.after(0, lambda: self._log(
+                    f"     gw :{port} cid={cid}  managed={managed}  cfg={cfg_a}  used={used}"
+                ))
+                self.after(0, lambda: self._log(
+                    f"     via {src}  vals={n_vals}  pos_raw={n_pos_raw}"
+                ))
         except Exception as e:
             self.after(0, lambda: self._log(f"[X] IB refresh failed: {e}"))
 
@@ -925,11 +952,158 @@ class ControlPanel(tk.Tk):
 
         threading.Thread(target=_do, daemon=True).start()
 
+    def _set_active_account(self, name: str):
+        """切換到指定帳戶（按鈕點擊入口）"""
+        self.selected_account.set(name)
+        self._highlight_active_account_btn(name)
+        self._on_account_change()
+
+    def _highlight_active_account_btn(self, active: str):
+        """更新帳戶按鈕的顏色（active = 高亮，其他 = 暗色）"""
+        for n, b in self.acct_btns.items():
+            if n == active:
+                b.config(bg=ACCENT_HL, fg="black",
+                         activebackground=ACCENT_HL,
+                         relief="raised")
+            else:
+                b.config(bg=BG3, fg=TEXT,
+                         activebackground=ACCENT,
+                         relief="flat")
+
     def _on_account_change(self, _=None):
-        """帳戶切換時刷新 IB 持倉"""
+        """帳戶切換時刷新策略參數 + IB 持倉"""
         acct = self.selected_account.get()
         self._log(f"[>] Switched to account: {acct}")
+        # 高亮對應按鈕
+        try:
+            self._highlight_active_account_btn(acct)
+        except Exception:
+            pass
+        # 重新載入該帳戶的策略參數到 UI
+        try:
+            cfg = get_account_config(acct)
+            self._update_cfg_ui(cfg)
+        except Exception as e:
+            self._log(f"[X] Load [{acct}] config failed: {e}")
+        # 視窗標題顯示當前帳戶
+        try:
+            self.title(f"QuantCore — {acct}")
+        except Exception:
+            pass
         self._refresh_ib_live()
+
+    # ── Gateway 連線監控 ──────────────────────────────────
+
+    # ── Gateway Monitor：每個帳戶一條長壽命 IB 連線 ─────────
+    #
+    # 設計原則：
+    #   - 每個帳戶開「一條」IB 連線做心跳監測（clientId ROLE_MONITOR）
+    #   - 連線在 Panel 生命週期內維持開啟，不做反覆 connect/disconnect
+    #   - 靠 ib.isConnected() 偵測斷線（比純 TCP polling 便宜且準確）
+    #   - 斷線 → 更新 UI 紅色 → 發 Telegram → 背景自動重連
+    #   - 重連 backoff：10 秒 → 30 秒 → 60 秒 → 60 秒 ...
+    #   - Panel 關閉時 cleanly disconnect 所有監測連線（WM_DELETE_WINDOW）
+    #
+    def _start_gateway_monitors(self):
+        """S9：建立並啟動 GatewayMonitor（實作在 automation/gateway_monitor.py）"""
+        from gateway_monitor import GatewayMonitor
+        account_names = [a["name"] for a in self._accounts_meta]
+
+        # Callbacks — 全部透過 self.after(0, ...) marshal 回主執行緒
+        def on_state(name, state):
+            self.after(0, lambda n=name, s=state: self._gw_ui_state(n, s))
+            # 同步更新 last-refresh 時戳
+            if state == "online":
+                ts = datetime.now().strftime("%H:%M:%S")
+                self.after(0, lambda: self.gw_last_lbl.config(text=f"last: {ts}"))
+
+        def on_connected(name):
+            def _fire():
+                self._log(f"[GW] {name} reconnected")
+                self._tg_notify(f"✅ <b>{name}</b> Gateway reconnected")
+            self.after(0, _fire)
+
+        def on_disconnected(name, reason):
+            def _fire():
+                self._log(f"[GW] {name} OFFLINE — {reason}")
+                self._tg_notify(
+                    f"🔴 <b>{name}</b> Gateway disconnected\n<code>{reason}</code>"
+                )
+            self.after(0, _fire)
+
+        def on_still_offline(name, minutes, reason):
+            def _fire():
+                self._tg_notify(
+                    f"🔴 <b>{name}</b> Gateway still OFFLINE ({minutes} min)\n"
+                    f"<code>{reason}</code>"
+                )
+            self.after(0, _fire)
+
+        self._gw_monitor = GatewayMonitor(
+            account_names=account_names,
+            on_state_change=on_state,
+            on_connected=on_connected,
+            on_disconnected=on_disconnected,
+            on_still_offline=on_still_offline,
+        )
+        self._gw_monitor.start()
+
+    def _stop_gateway_monitors(self):
+        """Panel 關閉時：請 GatewayMonitor 清乾淨（disconnect + cancel reminders）"""
+        mon = getattr(self, "_gw_monitor", None)
+        if mon is not None:
+            mon.stop(timeout=3.0)
+
+    # ── Gateway Status UI 狀態更新 ─────────────────────────
+
+    def _gw_ui_state(self, name: str, state: str, detail: str = ""):
+        """在主執行緒更新 Gateway Status 卡片的顏色/文字"""
+        card = self.gw_cards.get(name)
+        if not card:
+            return
+        if state == "online":
+            card["dot"].config(fg=GREEN)
+            card["status"].config(text="ONLINE", fg=GREEN)
+            card["frame"].config(highlightbackground=GREEN)
+        elif state == "offline":
+            card["dot"].config(fg=RED)
+            card["status"].config(text="OFFLINE", fg=RED)
+            card["frame"].config(highlightbackground=RED)
+        elif state == "connecting":
+            card["dot"].config(fg=ORANGE)
+            card["status"].config(text="connecting…", fg=ORANGE)
+            card["frame"].config(highlightbackground=ORANGE)
+
+    def _tg_notify(self, msg: str):
+        """背景 thread 發 Telegram 訊息（不阻塞 UI）— 統一用 notify.tg_send"""
+        try:
+            cfg = load_config()
+            token = cfg.get("telegram_token", "")
+            chat_id = cfg.get("telegram_chat_id", "")
+        except Exception:
+            return
+        if not token or not chat_id:
+            return
+
+        from notify import tg_send
+        threading.Thread(
+            target=lambda: tg_send(msg, token=token, chat_id=chat_id),
+            daemon=True,
+        ).start()
+
+    # ── Check Now 按鈕：顯示「已在監控中」狀態 ────────────
+
+    def _refresh_gateway_status(self):
+        """Check Now 按鈕：對每個帳戶顯示目前監測狀態（由 GatewayMonitor 維護）"""
+        mon = getattr(self, "_gw_monitor", None)
+        if mon is None:
+            return
+        for a in self._accounts_meta:
+            name = a["name"]
+            state = mon.get_state(name)
+            self._gw_ui_state(name, state if state != "init" else "connecting")
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.gw_last_lbl.config(text=f"last: {ts}")
 
     def _get_account_arg(self) -> str:
         """取得當前選中帳戶的 --account 參數"""
@@ -944,111 +1118,69 @@ class ControlPanel(tk.Tk):
         threading.Thread(target=self._sync_compute_thread, args=(acct,), daemon=True).start()
 
     def _sync_compute_thread(self, account_name: str):
-        """背景計算理論持倉與差額"""
+        """背景計算理論持倉與差額 — S10 thin wrapper，實作在 sync_position.compute_sync_plan"""
         try:
-            import asyncio
-            asyncio.set_event_loop(asyncio.new_event_loop())
+            from account_utils import ROLE_REBALANCE
+            from account_ctx import AccountCtx
+            import sync_position as sp
 
-            from account_utils import get_client_id, ROLE_REBALANCE
-            import rebalance_ib as reb
+            # 進度 log 回主執行緒
+            def progress(msg: str):
+                self.after(0, lambda m=msg: self._log(m))
 
-            # 套用帳戶 config
-            acct_cfg = get_account_config(account_name)
-            reb._apply_config(acct_cfg)
+            ctx = AccountCtx.from_name(account_name, ROLE_REBALANCE)
+            plan = sp.compute_sync_plan(ctx, log_fn=progress)
 
-            self.after(0, lambda: self._log("  Computing SR weights..."))
-            sr_wgt, sr_date = reb.compute_sr_weights()
-
-            self.after(0, lambda: self._log("  Connecting to IB..."))
-            ib = reb.connect_ib()
-
-            try:
-                nav = reb.get_nav(ib)
-                current_pos = reb.get_positions(ib)
-                self.after(0, lambda: self._log(f"  NAV=${nav:,.0f}  positions={len(current_pos)}"))
-
-                # 分辨 SR vs SP500 持倉
-                current_sp500_holdings = [s for s in current_pos
-                                          if s not in SR_ETFS and s in _SP500_UNIVERSE]
-                current_other_holdings = [s for s in current_pos
-                                          if s not in SR_ETFS and s not in _SP500_UNIVERSE]
-
-                self.after(0, lambda: self._log("  Computing SP500 weights..."))
-                sp500_wgt, sp500_date = reb.compute_sp500_weights(current_sp500_holdings, account_name)
-
-                # 報價
-                all_syms = list(set(
-                    list(sr_wgt.keys()) + list(sp500_wgt.keys()) + list(current_pos.keys())
-                ))
-                self.after(0, lambda: self._log(f"  Getting prices for {len(all_syms)} symbols..."))
-                prices = reb.get_prices(ib, all_syms)
-
-                # 計算目標
-                targets = reb.combine_targets(nav, sr_wgt, sp500_wgt, prices)
-
-                # 計算差額 order list（套用 REBALANCE_THRESHOLD 過濾）
-                from strategies.sp500_momentum import config as sp_cfg
-                rebal_thresh = sp_cfg.REBALANCE_THRESHOLD
-                order_list = []
-                all_target_syms = set(targets.keys()) | set(current_pos.keys())
-                all_target_syms -= set(current_other_holdings)
-                for sym in sorted(all_target_syms):
-                    price = prices.get(sym, 0)
-                    if price <= 0:
-                        continue
-                    target_shares = targets.get(sym, {}).get('shares', 0)
-                    curr_shares = int(current_pos.get(sym, 0))
-                    delta = target_shares - curr_shares
-                    strategy = targets.get(sym, {}).get('strategy', 'EXIT')
-
-                    # Threshold 過濾：小於 3% NAV 漂移不動作
-                    # 例外：完全清倉 / 從無到有建倉必須執行
-                    if delta != 0 and target_shares > 0 and curr_shares > 0:
-                        drift_val = abs(delta) * price
-                        drift_pct = drift_val / nav if nav > 0 else 0
-                        if drift_pct < rebal_thresh:
-                            continue
-
-                    if delta != 0:
-                        order_list.append({
-                            'symbol': sym,
-                            'action': 'BUY' if delta > 0 else 'SELL',
-                            'qty': abs(delta),
-                            'price': price,
-                            'strategy': strategy,
-                            'target': target_shares,
-                            'current': curr_shares,
-                        })
-
-            finally:
-                ib.disconnect()
-
-            # 回到主執行緒顯示預覽
-            self.after(0, lambda: self._show_sync_preview(
-                order_list, account_name, nav, sr_date, sp500_date,
-                sr_wgt, sp500_wgt, prices, targets, current_pos, current_other_holdings))
+            # 回主執行緒顯示預覽
+            self.after(0, lambda p=plan: self._show_sync_preview(p))
 
         except Exception as e:
-            self.after(0, lambda: self._log(f"[X] Sync compute failed: {e}"))
-            self.after(0, lambda: messagebox.showerror("Sync Error", str(e)))
+            err_msg = str(e)
+            self.after(0, lambda m=err_msg: self._log(f"[X] Sync compute failed: {m}"))
+            self.after(0, lambda m=err_msg: messagebox.showerror("Sync Error", m))
 
-    def _show_sync_preview(self, order_list, account_name, nav,
-                           sr_date, sp500_date, sr_wgt, sp500_wgt, prices,
-                           targets, current_pos, current_other_holdings):
-        """顯示同步預覽對話框：理論持倉 → 實際持倉 → 交易清單"""
-        import rebalance_ib as reb
+    def _show_sync_preview(self, plan):
+        """顯示同步預覽對話框：理論持倉 → 實際持倉 → 交易清單。
+        S10：吃 sync_position.SyncPlan dataclass"""
+        ctx                     = plan.ctx
+        account_name            = ctx.name
+        nav                     = plan.nav
+        sr_date                 = plan.sr_date
+        sp500_date              = plan.sp500_date
+        sr_wgt                  = plan.sr_wgt
+        sp500_wgt               = plan.sp500_wgt
+        prices                  = plan.prices
+        targets                 = plan.targets
+        current_pos             = plan.current_pos
+        current_other_holdings  = plan.current_other_holdings
+        alloc_sr                = ctx.alloc_sr
+        alloc_sp500             = ctx.alloc_sp500
+
+        # SyncOrder list → 相容舊 dict-style 的 order_list（給表格 render 用）
+        order_list = [
+            {
+                'symbol':   o.symbol,
+                'action':   o.action,
+                'qty':      o.qty,
+                'price':    o.price,
+                'strategy': o.strategy,
+                'target':   o.target,
+                'current':  o.current,
+            }
+            for o in plan.orders
+        ]
 
         # ── Output Log 摘要 ──
         self._log(f"{'─'*40}")
         self._log(f"  Strategy Target (理論持倉)")
         if sr_wgt:
-            self._log(f"  SR ({reb.ALLOC_SR:.0%} of NAV):")
+            self._log(f"  SR ({alloc_sr:.0%} of NAV):")
             for sym, w in sorted(sr_wgt.items(), key=lambda x: -x[1]):
                 px = prices.get(sym, 0)
                 t_sh = targets.get(sym, {}).get('shares', 0)
                 self._log(f"    {sym:<6s} {w*100:5.1f}%  → {t_sh:4d}sh @ ${px:.2f}")
         if sp500_wgt:
-            self._log(f"  SP500 ({reb.ALLOC_SP500:.0%} of NAV):")
+            self._log(f"  SP500 ({alloc_sp500:.0%} of NAV):")
             for sym, w in sorted(sp500_wgt.items(), key=lambda x: -x[1]):
                 px = prices.get(sym, 0)
                 t_sh = targets.get(sym, {}).get('shares', 0)
@@ -1110,7 +1242,7 @@ class ControlPanel(tk.Tk):
         if sr_wgt:
             sr_frame = tk.Frame(sec1, bg=BG2, padx=8, pady=4)
             sr_frame.pack(fill="x", pady=(4, 2))
-            tk.Label(sr_frame, text=f"SR ({reb.ALLOC_SR:.0%} of NAV)",
+            tk.Label(sr_frame, text=f"SR ({alloc_sr:.0%} of NAV)",
                      font=("Consolas", 9, "bold"), bg=BG2, fg=BLUE).pack(anchor="w")
             for sym, w in sorted(sr_wgt.items(), key=lambda x: -x[1]):
                 px = prices.get(sym, 0)
@@ -1124,7 +1256,7 @@ class ControlPanel(tk.Tk):
         if sp500_wgt:
             sp_frame = tk.Frame(sec1, bg=BG2, padx=8, pady=4)
             sp_frame.pack(fill="x", pady=(2, 2))
-            tk.Label(sp_frame, text=f"SP500 Momentum ({reb.ALLOC_SP500:.0%} of NAV)",
+            tk.Label(sp_frame, text=f"SP500 Momentum ({alloc_sp500:.0%} of NAV)",
                      font=("Consolas", 9, "bold"), bg=BG2, fg=GREEN).pack(anchor="w")
             for sym, w in sorted(sp500_wgt.items(), key=lambda x: -x[1]):
                 px = prices.get(sym, 0)
@@ -1257,157 +1389,90 @@ class ControlPanel(tk.Tk):
         self._btn(btn_frame, "Cancel", win.destroy,
                   BTN_BG, width=14).pack(side="left", padx=(0, 10))
         self._btn(btn_frame, "Confirm & Send (LMT)",
-                  lambda: self._sync_confirm(win, order_list, account_name,
-                                             nav, sr_date, sp500_date, sr_wgt, sp500_wgt, prices),
+                  lambda p=plan: self._sync_confirm(win, p),
                   RED, width=22, font=("Segoe UI", 10, "bold")).pack(side="right")
 
-    def _sync_confirm(self, win, order_list, account_name,
-                      nav, sr_date, sp500_date, sr_wgt, sp500_wgt, prices):
+    def _sync_confirm(self, win, plan):
         """用戶確認後送出限價單"""
         if not messagebox.askyesno("Confirm Send Orders",
-                                   f"確定送出 {len(order_list)} 筆限價單到 [{account_name}]？\n"
+                                   f"確定送出 {len(plan.orders)} 筆限價單到 [{plan.ctx.name}]？\n"
                                    f"(LMT ±0.3% buffer, GTC, outside RTH)",
                                    parent=win):
             return
         win.destroy()
-        self._log(f"[>] Sending {len(order_list)} LMT orders for [{account_name}]...")
+        self._log(f"[>] Sending {len(plan.orders)} LMT orders for [{plan.ctx.name}]...")
         threading.Thread(
             target=self._sync_execute,
-            args=(order_list, account_name, nav, sr_date, sp500_date, sr_wgt, sp500_wgt, prices),
+            args=(plan,),
             daemon=True,
         ).start()
 
-    def _sync_execute(self, order_list, account_name, nav,
-                      sr_date, sp500_date, sr_wgt, sp500_wgt, prices):
-        """背景執行緒：送出限價單"""
+    def _sync_execute(self, plan):
+        """背景執行緒：送出限價單 — S10 thin wrapper，實作在 sync_position.submit_sync_orders。
+        Panel 只負責 log marshalling、Excel 記錄、Telegram 通知、UI 刷新。"""
         try:
-            import asyncio
-            asyncio.set_event_loop(asyncio.new_event_loop())
-            import html as html_mod
-
-            import rebalance_ib as reb
-            from account_utils import get_account_config
+            import sync_position as sp
             from excel_logger import append_trade_log
 
-            acct_cfg = get_account_config(account_name)
-            reb._apply_config(acct_cfg)
+            # 進度 log 回主執行緒
+            def progress(msg: str):
+                self.after(0, lambda m=msg: self._log(m))
 
-            # 使用 LMT 單（支援盤前盤後，MKT 在盤外會被拒絕）
-            reb.ORDER_TYPE = 'LMT'
-            reb.OUTSIDE_RTH = True
+            placed, fill_results = sp.submit_sync_orders(plan, log_fn=progress)
 
-            ib = reb.connect_ib()
-            try:
-                # 先取消所有掛單，避免重複
-                open_trades = ib.openTrades()
-                if open_trades:
-                    self.after(0, lambda n=len(open_trades): self._log(
-                        f"  Cancelling {n} existing open orders..."))
-                    for t in open_trades:
-                        ib.cancelOrder(t.order)
-                    ib.sleep(2)
+            ctx = plan.ctx
+            account_name = ctx.name
+            nav = plan.nav
+            sr_date = plan.sr_date
+            sp500_date = plan.sp500_date
 
-                # 取得 bid/ask 報價以計算 LMT 價格
-                from ib_insync import Stock as IBStock
-                import numpy as np
-                syms = list({o['symbol'] for o in order_list})
-                contracts = [IBStock(s, 'SMART', 'USD') for s in syms]
-                ib.qualifyContracts(*contracts)
-                tickers = ib.reqTickers(*contracts)
-                quotes = {}
-                for t in tickers:
-                    sym = t.contract.symbol
-                    bid = t.bid if (t.bid and t.bid > 0 and np.isfinite(t.bid)) else None
-                    ask = t.ask if (t.ask and t.ask > 0 and np.isfinite(t.ask)) else None
-                    mid = t.midpoint() if (t.midpoint() and np.isfinite(t.midpoint())) else None
-                    last = t.last if (t.last and t.last > 0 and np.isfinite(t.last)) else None
-                    close = t.close if (t.close and t.close > 0 and np.isfinite(t.close)) else None
-                    quotes[sym] = {
-                        'bid': bid, 'ask': ask, 'mid': mid,
-                        'last': last, 'close': close,
-                    }
+            # Excel 交易記錄
+            for o in placed:
+                strat = o.get('strategy', 'Sync')
+                append_trade_log([o], fill_results,
+                                 f"SR:{sr_date} SP500:{sp500_date}",
+                                 'LMT', ctx.leverage, ctx.dry_run,
+                                 strategy=strat, account_name=account_name)
 
-                # 轉換 order_list 格式，計算 LMT 價格
-                # BUY: ask * 1.003（或 last * 1.005 做後備）
-                # SELL: bid * 0.997（或 last * 0.995 做後備）
-                ib_orders = []
-                for o in order_list:
-                    sym = o['symbol']
-                    q = quotes.get(sym, {})
-                    ref = o['price']  # 預覽時的估價
+            # Log 成交結果
+            self.after(0, lambda n=len(placed): self._log(f"[OK] Placed {n} orders"))
+            for f in fill_results:
+                icon = "OK" if f['status'] == 'Filled' else "!!"
+                self.after(0, lambda f=f, icon=icon: self._log(
+                    f"  [{icon}] {f['action']} {f['filled']}/{f['qty']}sh "
+                    f"{f['symbol']} @ ${f['avg_price']:.2f} [{f['status']}]"))
 
-                    if o['action'] == 'BUY':
-                        base = q.get('ask') or q.get('mid') or q.get('last') or q.get('close') or ref
-                        lmt = round(base * 1.003, 2)  # +0.3% buffer
-                    else:  # SELL
-                        base = q.get('bid') or q.get('mid') or q.get('last') or q.get('close') or ref
-                        lmt = round(base * 0.997, 2)  # -0.3% buffer
-
-                    ib_orders.append({
-                        'symbol': sym,
-                        'action': o['action'],
-                        'qty': o['qty'],
-                        'lmt_price': lmt,
-                        'strategy': o['strategy'],
-                    })
-                    self.after(0, lambda sym=sym, act=o['action'], q=o['qty'], lmt=lmt: self._log(
-                        f"  LMT {act} {q}sh {sym} @ ${lmt:.2f}"))
-
-                placed, trades = reb.place_orders(ib, ib_orders)
-
-                # 等待成交確認
-                fill_results = []
-                if trades:
-                    fill_results = reb.check_fills(trades)
-
-                # 記錄結果
+            # Telegram 通知
+            acct_tag = f"[{account_name}] "
+            lines = [
+                f"<b>{acct_tag}Sync Position — LMT</b>",
+                f"Date: {date.today()}",
+                f"NAV: <b>${nav:,.2f}</b>",
+                f"SR: {sr_date}  |  SP500: {sp500_date}",
+            ]
+            if not fill_results:
+                lines.append(f"\n<b>委託 ({len(placed)} 筆):</b>")
                 for o in placed:
-                    strat = o.get('strategy', 'Sync')
-                    append_trade_log([o], fill_results,
-                                     f"SR:{sr_date} SP500:{sp500_date}",
-                                     'LMT', reb.LEVERAGE, reb.DRY_RUN,
-                                     strategy=strat, account_name=account_name)
-
-                # Log 結果
-                self.after(0, lambda: self._log(f"[OK] Placed {len(placed)} orders"))
+                    action_tag = "🔴 SELL" if o['action'] == 'SELL' else "🟢 BUY "
+                    lines.append(f"  {action_tag} {o['qty']}sh {o['symbol']}  [{o.get('strategy', '')}]")
+            else:
+                lines.append(f"\n<b>成交結果 ({len(fill_results)} 筆):</b>")
                 for f in fill_results:
-                    icon = "OK" if f['status'] == 'Filled' else "!!"
-                    self.after(0, lambda f=f, icon=icon: self._log(
-                        f"  [{icon}] {f['action']} {f['filled']}/{f['qty']}sh "
-                        f"{f['symbol']} @ ${f['avg_price']:.2f} [{f['status']}]"))
-
-                # Telegram 通知
-                acct_tag = f"[{account_name}] "
-                lines = [
-                    f"<b>{acct_tag}Sync Position — LMT</b>",
-                    f"Date: {date.today()}",
-                    f"NAV: <b>${nav:,.2f}</b>",
-                    f"SR: {sr_date}  |  SP500: {sp500_date}",
-                ]
-                if not fill_results:
-                    lines.append(f"\n<b>委託 ({len(placed)} 筆):</b>")
-                    for o in placed:
-                        action_tag = "🔴 SELL" if o['action'] == 'SELL' else "🟢 BUY "
-                        lines.append(f"  {action_tag} {o['qty']}sh {o['symbol']}  [{o.get('strategy', '')}]")
-                else:
-                    lines.append(f"\n<b>成交結果 ({len(fill_results)} 筆):</b>")
-                    for f in fill_results:
-                        icon = "✅" if f['status'] == 'Filled' else "⚠️"
-                        action_tag = "🔴 SELL" if f['action'] == 'SELL' else "🟢 BUY "
-                        val = f['filled'] * f['avg_price']
-                        px_str = f"@ ${f['avg_price']:.2f}  ~${val:,.0f}" if f['filled'] > 0 else "未成交"
-                        lines.append(f"  {icon} {action_tag} {f['filled']}/{f['qty']}sh {f['symbol']}  {px_str}  [{f['status']}]")
-                reb.tg_send("\n".join(lines))
-
-            finally:
-                ib.disconnect()
+                    icon = "✅" if f['status'] == 'Filled' else "⚠️"
+                    action_tag = "🔴 SELL" if f['action'] == 'SELL' else "🟢 BUY "
+                    val = f['filled'] * f['avg_price']
+                    px_str = f"@ ${f['avg_price']:.2f}  ~${val:,.0f}" if f['filled'] > 0 else "未成交"
+                    lines.append(f"  {icon} {action_tag} {f['filled']}/{f['qty']}sh {f['symbol']}  {px_str}  [{f['status']}]")
+            from notify import tg_send as _tg
+            _tg("\n".join(lines), token=ctx.tg_token, chat_id=ctx.tg_chat_id)
 
             self.after(0, lambda: self._log("[OK] Sync complete — check Telegram"))
             self.after(0, lambda: self._refresh_ib_live())
 
         except Exception as e:
-            self.after(0, lambda: self._log(f"[X] Sync execute failed: {e}"))
-            self.after(0, lambda: messagebox.showerror("Sync Error", str(e)))
+            err_msg = str(e)
+            self.after(0, lambda m=err_msg: self._log(f"[X] Sync execute failed: {m}"))
+            self.after(0, lambda m=err_msg: messagebox.showerror("Sync Error", m))
 
     def refresh_all(self):
         self._log("Refreshing...")
@@ -1419,9 +1484,10 @@ class ControlPanel(tk.Tk):
             info = get_task_state(task_name)
             self.after(0, lambda f=frame, i=info: self._update_task_card(f, i))
 
-        # 2. Config
+        # 2. Config（讀取目前選中帳戶的 per-account 設定）
         try:
-            cfg = load_config()
+            acct = self.selected_account.get()
+            cfg = get_account_config(acct) if acct else load_config()
             self.after(0, lambda c=cfg: self._update_cfg_ui(c))
         except Exception as e:
             self.after(0, lambda: self._log(f"[X] Config read failed: {e}"))
@@ -1553,8 +1619,17 @@ class ControlPanel(tk.Tk):
             self.other_list.config(text="(none)")
 
         # Pie Chart (only strategy holdings)
+        # S10 post-fix：切帳戶後若新帳戶無持倉，一定要清掉舊的 canvas，
+        # 否則會留著前一個帳戶的圓餅圖
+        if self.chart_canvas:
+            try:
+                self.chart_canvas.get_tk_widget().destroy()
+            except Exception:
+                pass
+            self.chart_canvas = None
+
         all_holdings = pf["etf_holdings"] + pf["stock_holdings"]
-        if all_holdings and nav > 0:
+        if (all_holdings or other_mktval > 0) and nav > 0:
             self._render_pie_chart(all_holdings, nav, exposure,
                                     other_val=other_mktval)
 
@@ -1824,8 +1899,10 @@ class ControlPanel(tk.Tk):
         script_file, args = script_info
         label = TASK_LABELS.get(task_name, task_name)
 
+        # S5：讀當前選中帳戶的 dry_run（per-account via get_account_config）
         try:
-            cfg = load_config()
+            acct = self.selected_account.get()
+            cfg = get_account_config(acct) if acct else load_config()
             dry_run = cfg.get("dry_run", True)
         except Exception:
             dry_run = True
@@ -1864,8 +1941,10 @@ class ControlPanel(tk.Tk):
             if not messagebox.askyesno("Confirm", f"Run {label}?\n\n{display}"):
                 return
 
+        # S5：讀當前選中帳戶的 dry_run
         try:
-            cfg = load_config()
+            acct = self.selected_account.get()
+            cfg = get_account_config(acct) if acct else load_config()
             dry_run = cfg.get("dry_run", True)
         except Exception:
             dry_run = True
@@ -1986,7 +2065,7 @@ class ControlPanel(tk.Tk):
 
     def _save_params(self):
         try:
-            cfg = load_config()
+            acct = self.selected_account.get()
             new_sr = round(self.sr_scale.get(), 2)
             new_sp = round(self.sp_scale.get(), 2)
             total  = new_sr + new_sp
@@ -1995,22 +2074,27 @@ class ControlPanel(tk.Tk):
                 messagebox.showwarning("Warning", f"Total exposure {total:.0%} exceeds 200%!")
                 return
 
-            msg = (f"Save new parameters?\n\n"
+            msg = (f"Save parameters for [{acct}]?\n\n"
                    f"  ETF Allocation:    {new_sr:.0%}\n"
                    f"  Stocks Allocation: {new_sp:.0%}\n"
                    f"  Total Exposure:   {total:.0%} ({total:.1f}x)\n")
             if total > 1.0:
                 msg += f"  Borrow:           {total-1:.0%}\n"
+            msg += "\n(Only this account's settings will be changed.)"
 
             if not messagebox.askyesno("Confirm", msg):
                 return
 
-            cfg["alloc_sr"]    = new_sr
-            cfg["alloc_sp500"] = new_sp
-            cfg["leverage"]    = round(total, 2)
-            save_config(cfg)
+            # 寫入該帳戶在 accounts.json 的 override
+            update_account_config(acct, {
+                "alloc_sr":    new_sr,
+                "alloc_sp500": new_sp,
+            })
+
+            # 重新讀回該帳戶的合併 config 來刷新 UI
+            cfg = get_account_config(acct)
             self._update_cfg_ui(cfg)
-            self._log(f"[OK] Params saved: ETF={new_sr:.0%}  Stocks={new_sp:.0%}  Leverage={total:.1f}x")
+            self._log(f"[OK] [{acct}] Params saved: ETF={new_sr:.0%}  Stocks={new_sp:.0%}  Leverage={total:.1f}x")
 
         except Exception as e:
             messagebox.showerror("Error", f"Save failed:\n{e}")

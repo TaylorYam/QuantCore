@@ -46,23 +46,8 @@ SINOPAC_CA_PATH    = cfg.get('sinopac_ca_path',    '')
 SINOPAC_CA_PASSWD  = cfg.get('sinopac_ca_password', '')
 
 
-# ── Telegram ──────────────────────────────────────────────────────────────────
-def tg_send(msg: str) -> None:
-    if not TG_TOKEN or not TG_CHAT_ID:
-        return
-    try:
-        url  = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-        data = urllib.parse.urlencode({
-            'chat_id':    TG_CHAT_ID,
-            'text':       msg,
-            'parse_mode': 'HTML',
-        }).encode()
-        req = urllib.request.Request(url, data=data, method='POST')
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            if resp.status != 200:
-                log.warning(f"Telegram HTTP {resp.status}")
-    except Exception as e:
-        log.warning(f"Telegram notify failed: {e}")
+# ── Telegram（統一由 notify.py 提供）─────────────────────────────────────
+from notify import tg_send as _tg
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
@@ -155,12 +140,13 @@ def main():
             lines.append(f"\n🚨 <b>追繳金額: NT${margin_call:,.0f}</b>")
 
         msg = "\n".join(lines)
-        tg_send(msg)
+        _tg(msg, token=TG_TOKEN, chat_id=TG_CHAT_ID)
         log.info("Telegram report sent.")
 
     except Exception as e:
         log.error(f"ERROR: {e}", exc_info=True)
-        tg_send(f"<b>❌ 永豐期貨權益報告失敗</b>\n{e}")
+        _tg(f"<b>❌ 永豐期貨權益報告失敗</b>\n{e}",
+            token=TG_TOKEN, chat_id=TG_CHAT_ID)
         raise
 
     finally:

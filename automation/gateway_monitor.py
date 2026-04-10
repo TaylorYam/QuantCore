@@ -52,7 +52,10 @@ from account_utils import ROLE_MONITOR
 log = logging.getLogger(__name__)
 
 # Reconnect backoff schedule（秒）
-BACKOFF_SCHEDULE = [10, 30, 60, 60]
+# R4.1: 首次失敗用 3 秒快速重試，處理 Panel 啟動時 Gateway 正在 ready 的 race —
+#       避免首次 race-loss 就卡進 10→30→60s 長 backoff 讓 UI 誤顯 OFFLINE。
+#       第二次以後照原本的 10→30→60→60 schedule。
+BACKOFF_SCHEDULE = [3, 10, 30, 60, 60]
 
 # 連線維持迴圈的 poll 週期
 POLL_INTERVAL_SEC = 5

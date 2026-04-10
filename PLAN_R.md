@@ -87,24 +87,22 @@ S1-S10 已 commit `e12e3e5` 推到 origin/main。核心架構改好了：
 
 ---
 
-## Phase R4 — 決策題（看狀況）
+## Phase R4 — 決策題（已定調）
 
-**R4.1 — Gateway Monitor 首次連線 race**
+**R4.1 — Gateway Monitor 首次連線 race** ✅ Option A
 
-症狀：Panel 啟動時若某 Gateway 正在 ready 中，GatewayMonitor 的首次 connect 可能 timeout，進 backoff（10s → 30s → 60s）。Panel UI 顯示 OFFLINE 但 fetch_portfolio 用的 ROLE_PANEL clientId 可以連。
+修法：`gateway_monitor.py` 的 `BACKOFF_SCHEDULE` 從 `[10, 30, 60, 60]` 改為
+`[3, 10, 30, 60, 60]`，首次失敗 3 秒後快速重試，處理 Panel 啟動時 Gateway
+正在 ready 中的 race。
 
-**選項：**
-- A：GatewayMonitor 首次失敗後 **3 秒內快速重試一次**，之後才進正常 backoff
-- B：文件標為已知小瑕疵（Check Now 手動刷新即可）
+**R4.2 — `portfolio_calc.py` 774 行 legacy** ✅ Option C — 保留
 
-**R4.2 — `portfolio_calc.py` 766 行 legacy 工具命運**
-
-目前標為 legacy，仍有獨立 `SelectionEngine` / `MarketRegime` import（S7 acceptance 的例外）。
-
-**選項：**
-- A：**刪掉**（如果你確定不再用）
-- B：**改用 signals API** 瘦到 ~400 行（保留獨立 UI，只去除重複的計算邏輯）
-- C：**繼續 legacy**（什麼都不做，但下次 audit 會再提醒）
+原因：
+- 還在用（`QuantCore_Calc.vbs` 啟動獨立 GUI 計算機）
+- 大部分是 UI code，不是重複的計算邏輯
+- `get_sp500_weights()` 回傳的 UI metadata（drop 原因、rank）跟 signals
+  API 的純 weight 簽章不同，若要整合需要先為 signals 加新 API
+- 下次 audit 會再提醒，但不影響主流程
 
 ---
 
@@ -124,10 +122,11 @@ S1-S10 已 commit `e12e3e5` 推到 origin/main。核心架構改好了：
 | R1 | post-S10 cleanup | ✅ 完成 | 663452f |
 | R2 | smoke tests (52 tests) | ✅ 完成 | a0677ed |
 | R3.1 | sync preview window | ✅ 完成（Panel −224 行） | e3e7453 |
-| R3.2 | portfolio view | ✅ 完成 | pending |
-| R3.3 | task cards + trades view | ✅ 完成 | pending |
-| R3.4 | strategy params view | ✅ 完成 | pending |
-| R4 | decisions | ⏳ 待決定 | — |
+| R3.2 | portfolio view | ✅ 完成 | 290e4a0 |
+| R3.3 | task cards + trades view | ✅ 完成 | 290e4a0 |
+| R3.4 | strategy params view | ✅ 完成 | 290e4a0 |
+| R4.1 | Gateway backoff fast-retry | ✅ 完成 | pending |
+| R4.2 | portfolio_calc.py legacy | ✅ 保留 (無 code 改動) | — |
 
 **R3.2-3.4 合併結果**：Panel 1,895 → 1,392 行（−503 行，超越 PLAN_R 的 <1,500 目標）。
 抽出 3 個檔案：

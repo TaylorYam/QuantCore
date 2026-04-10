@@ -52,6 +52,9 @@ def load_equity_series(account_name: str = "") -> pd.Series:
     nav = df.groupby('Date')['NAV'].first()
     nav.index = pd.to_datetime(nav.index)
     nav = nav.sort_index()
+    # R1.1: 強制 NAV 為 float — Excel 讀入可能混合字串（例如空白 cell、舊資料），
+    #       object dtype 會讓下游 `nav >= cummax` 丟 TypeError
+    nav = pd.to_numeric(nav, errors='coerce').dropna()
     return nav
 
 

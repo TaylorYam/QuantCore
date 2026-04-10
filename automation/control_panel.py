@@ -96,9 +96,8 @@ TASK_LABELS = {
     TASK_SP_DAILY: "SP500 Daily Check (Stop/Gap/Dip)",
 }
 
-# SR ETFs (for classifying holdings)
-SR_ETFS = {'XLK', 'XLF', 'XLV', 'XLE', 'XLI', 'XLY', 'XLB',
-           'XLP', 'XLU', 'XLC', 'XLRE'}
+# SR ETFs (for classifying holdings) — R1.3：單一來源在 ib_fetcher
+from ib_fetcher import SR_ETFS
 
 # ── 顏色主題（深藍 + 金色）───────────────────────────────────
 BG        = "#0b1120"     # 深海藍底色
@@ -205,22 +204,17 @@ def fetch_ib_portfolio(account_name: str = "") -> dict:
     from account_ctx import AccountCtx
     from account_utils import ROLE_PANEL
 
+    # R1.4: 移除 load_config() legacy fallback。Panel 只會用 selected_account
+    # 呼叫本函式，不會傳空字串進來。若未來 CLI 要用，請明確指定 account_name。
     if not account_name:
-        # 向後相容：無 account_name 時從 config.json 的 account_name 推
-        try:
-            cfg = load_config()
-            account_name = cfg.get("account_name", "") or ""
-        except Exception:
-            account_name = ""
-        if not account_name:
-            return {
-                "date": str(date.today()), "nav": 0, "cushion": 0, "excess_liq": 0,
-                "etf_holdings": [], "stock_holdings": [], "other_holdings": [],
-                "strategy_mktval": 0, "other_mktval": 0,
-                "total_mktval": 0, "total_upnl": 0, "available": False,
-                "source": "IB Live",
-                "error": "No account name provided and config.json has none",
-            }
+        return {
+            "date": str(date.today()), "nav": 0, "cushion": 0, "excess_liq": 0,
+            "etf_holdings": [], "stock_holdings": [], "other_holdings": [],
+            "strategy_mktval": 0, "other_mktval": 0,
+            "total_mktval": 0, "total_upnl": 0, "available": False,
+            "source": "IB Live",
+            "error": "fetch_ib_portfolio requires account_name",
+        }
 
     ctx = AccountCtx.from_name(account_name, ROLE_PANEL)
     return _if.fetch_portfolio(ctx)
@@ -1075,9 +1069,12 @@ class ControlPanel(tk.Tk):
             card["frame"].config(highlightbackground=ORANGE)
 
     def _tg_notify(self, msg: str):
-        """背景 thread 發 Telegram 訊息（不阻塞 UI）— 統一用 notify.tg_send"""
+        """背景 thread 發 Telegram 訊息（不阻塞 UI）— 統一用 notify.tg_send。
+        R1.4: 從當前選中帳戶的 ctx 讀 telegram 憑證（實際值跟 config.json 共用，
+        但統一走 get_account_config 以維持「單一讀取入口」）"""
         try:
-            cfg = load_config()
+            acct = self.selected_account.get()
+            cfg = get_account_config(acct)
             token = cfg.get("telegram_token", "")
             chat_id = cfg.get("telegram_chat_id", "")
         except Exception:
@@ -1487,7 +1484,7 @@ class ControlPanel(tk.Tk):
         # 2. Config（讀取目前選中帳戶的 per-account 設定）
         try:
             acct = self.selected_account.get()
-            cfg = get_account_config(acct) if acct else load_config()
+            cfg = get_account_config(acct)
             self.after(0, lambda c=cfg: self._update_cfg_ui(c))
         except Exception as e:
             self.after(0, lambda: self._log(f"[X] Config read failed: {e}"))
@@ -1899,10 +1896,10 @@ class ControlPanel(tk.Tk):
         script_file, args = script_info
         label = TASK_LABELS.get(task_name, task_name)
 
-        # S5：讀當前選中帳戶的 dry_run（per-account via get_account_config）
+        # 讀當前選中帳戶的 dry_run（per-account via get_account_config）
         try:
             acct = self.selected_account.get()
-            cfg = get_account_config(acct) if acct else load_config()
+            cfg = get_account_config(acct)
             dry_run = cfg.get("dry_run", True)
         except Exception:
             dry_run = True
@@ -1941,10 +1938,10 @@ class ControlPanel(tk.Tk):
             if not messagebox.askyesno("Confirm", f"Run {label}?\n\n{display}"):
                 return
 
-        # S5：讀當前選中帳戶的 dry_run
+        # 讀當前選中帳戶的 dry_run
         try:
             acct = self.selected_account.get()
-            cfg = get_account_config(acct) if acct else load_config()
+            cfg = get_account_config(acct)
             dry_run = cfg.get("dry_run", True)
         except Exception:
             dry_run = True
@@ -2039,6 +2036,8 @@ class ControlPanel(tk.Tk):
         threading.Thread(target=_do, daemon=True).start()
 
     def _toggle_dry_run(self):
+        # R1.4: 刻意保留 load_config/save_config — dry_run 仍是全域設定（寫入 config.json）。
+        #       要改成 per-account 需先在 accounts.json 支援 dry_run 覆蓋並調整 update_account_config。
         try:
             cfg = load_config()
             current = cfg.get("dry_run", True)

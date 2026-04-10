@@ -42,9 +42,8 @@ from ib_insync import IB, Stock, util
 util.logToConsole(logging.WARNING)
 logging.root.setLevel(logging.INFO)
 
-# 只含 11 支板塊 ETF（與 strategies/sector_rotation/config.py SECTOR_TICKERS 一致）
-SR_ETFS = {'XLK', 'XLF', 'XLV', 'XLE', 'XLI', 'XLY', 'XLB',
-           'XLP', 'XLU', 'XLC', 'XLRE'}
+# R1.3：SR ETF 常數單一來源在 ib_fetcher
+from ib_fetcher import SR_ETFS
 
 
 def _load_sp500_universe() -> set:

@@ -80,6 +80,7 @@ from ib_fetcher import (
     get_positions,
     get_positions_detail,
     get_prices,
+    SR_ETFS,  # R1.3：SR ETF 常數單一來源
 )
 
 
@@ -335,11 +336,7 @@ def _send_tg_report(nav, order_list, placed, trades, fill_results,
     _tg("\n".join(lines), token=tg_token, chat_id=tg_chat_id)
 
 
-# ── SR ETF 清單（用於分辨 IB 持倉屬於哪個策略）────────────────────────────────
-# 只含 11 支板塊 ETF（與 strategies/sector_rotation/config.py SECTOR_TICKERS 一致）
-# SPY / SSO 是 SP500 策略的熊市 dip-buy 標的，歸類為 SP500 持倉
-SR_ETFS = {'XLK', 'XLF', 'XLV', 'XLE', 'XLI', 'XLY', 'XLB',
-           'XLP', 'XLU', 'XLC', 'XLRE'}
+# ── SR ETF 清單 — R1.3：單一來源在 ib_fetcher.SR_ETFS（已 re-export）
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────

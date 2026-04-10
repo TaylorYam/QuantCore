@@ -122,7 +122,15 @@ S1-S10 已 commit `e12e3e5` 推到 origin/main。核心架構改好了：
 | Phase | 項目 | 狀態 | Commit |
 |---|---|---|---|
 | R1 | post-S10 cleanup | ✅ 完成 | 663452f |
-| R2 | smoke tests (52 tests) | ✅ 完成 | pending |
-| R3.1 | sync preview window | ✅ 完成（Panel −224 行） | pending |
-| R3.2-3.4 | panel views | ⏳ 待開工 | — |
+| R2 | smoke tests (52 tests) | ✅ 完成 | a0677ed |
+| R3.1 | sync preview window | ✅ 完成（Panel −224 行） | e3e7453 |
+| R3.2 | portfolio view | ✅ 完成 | pending |
+| R3.3 | task cards + trades view | ✅ 完成 | pending |
+| R3.4 | strategy params view | ✅ 完成 | pending |
 | R4 | decisions | ⏳ 待決定 | — |
+
+**R3.2-3.4 合併結果**：Panel 1,895 → 1,392 行（−503 行，超越 PLAN_R 的 <1,500 目標）。
+抽出 3 個檔案：
+- `portfolio_view.py` (364 行) — NAV 卡 + 持倉列表 + 圓餅圖
+- `panel_task_cards.py` (246 行) — TaskCard + TradesView
+- `strategy_params_view.py` (242 行) — Dry Run + ETF/Stocks sliders + Save

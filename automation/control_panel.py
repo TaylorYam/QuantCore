@@ -55,6 +55,10 @@ from account_utils import (
     load_accounts, get_account_config, update_account_config,
 )
 
+from portfolio_view import PortfolioView
+from panel_task_cards import TaskCard, TradesView
+from strategy_params_view import StrategyParamsView
+
 TASK_UPDATE    = "QuantCore_DataUpdate_Daily"
 TASK_REBAL_SR  = "QuantCore_SR_Rebalance_Tue"
 TASK_REBAL_SP  = "QuantCore_SP500_Rebalance_Wed"
@@ -587,21 +591,22 @@ class ControlPanel(tk.Tk):
         col_left.rowconfigure(1, weight=2)  # Trades
         col_left.columnconfigure(0, weight=1)
 
-        # Portfolio Overview
+        # Portfolio Overview (R3.2: extracted to portfolio_view.PortfolioView)
         pf_wrapper = tk.Frame(col_left, bg=BG2)
         pf_wrapper.grid(row=0, column=0, sticky="nsew", pady=(0, 3))
         self._section_label_inline(pf_wrapper, "Portfolio Overview")
-        self._build_portfolio_overview(pf_wrapper)
+        self.portfolio_view = PortfolioView(
+            parent=pf_wrapper, theme=self._theme, fonts=self._fonts,
+        )
 
-        # Recent Trades
+        # Recent Trades (R3.3: extracted to panel_task_cards.TradesView)
         trades_wrapper = tk.Frame(col_left, bg=BG2)
         trades_wrapper.grid(row=1, column=0, sticky="nsew")
         self._section_label_inline(trades_wrapper, "Recent Trades")
-        self.trades_frame = tk.Frame(trades_wrapper, bg=BG2, padx=8, pady=4)
-        self.trades_frame.pack(fill="both", expand=True)
-        self.trades_placeholder = tk.Label(self.trades_frame, text="Loading...",
-                                            font=self.font_mono, bg=BG2, fg=TEXT_DIM)
-        self.trades_placeholder.pack(anchor="w")
+        self.trades_view = TradesView(
+            parent=trades_wrapper, theme=self._theme, fonts=self._fonts,
+        )
+        self.trades_view.pack(fill="both", expand=True)
 
         # ════════════════════════════════════════
         # 中欄：Scheduled Tasks + Trading Settings + Strategy Params
@@ -614,11 +619,11 @@ class ControlPanel(tk.Tk):
         col_mid.rowconfigure(3, weight=1)  # 彈性填充
         col_mid.columnconfigure(0, weight=1)
 
-        # Scheduled Tasks
+        # Scheduled Tasks (R3.3: extracted to panel_task_cards.TaskCard)
         tasks_wrapper = tk.Frame(col_mid, bg=BG2)
         tasks_wrapper.grid(row=0, column=0, sticky="new", pady=(0, 3))
         self._section_label_inline(tasks_wrapper, "Scheduled Tasks")
-        self.task_frames = {}
+        self.task_cards: dict[str, TaskCard] = {}
         task_defs = [
             (TASK_UPDATE,    "Data Update",          "Daily 04:30 TW = 16:30 ET"),
             (TASK_SP_DAILY,  "SP500 Daily Check",    "Mon-Fri 16:00 TW = 04:00 ET"),
@@ -629,89 +634,32 @@ class ControlPanel(tk.Tk):
             (TASK_REPORT,    "Daily Report",          "Daily 04:40 TW = 16:40 ET"),
         ]
         for tn, lbl, timing in task_defs:
-            card = self._task_card_compact(tasks_wrapper, tn, lbl, timing)
+            card = TaskCard(
+                parent=tasks_wrapper,
+                task_name=tn, label=lbl, timing=timing,
+                theme=self._theme, fonts=self._fonts,
+                btn_factory=self._btn,
+                on_toggle=self._toggle_task,
+                on_trigger=self._trigger_task,
+                on_install=self._install_single,
+            )
             card.pack(fill="x", padx=4, pady=1)
-            self.task_frames[tn] = card
+            self.task_cards[tn] = card
 
-        # Trading Settings
-        left_cfg = tk.Frame(col_mid, bg=BG2, padx=10, pady=6)
-        left_cfg.grid(row=1, column=0, sticky="new", pady=(0, 3))
-
-        tk.Label(left_cfg, text="Trading Settings", font=self.font_section,
-                 bg=BG2, fg=ACCENT_HL).pack(anchor="w")
-
-        # Dry Run
-        row_dry = tk.Frame(left_cfg, bg=BG2)
-        row_dry.pack(fill="x", pady=2)
-        tk.Label(row_dry, text="Mode", font=self.font_label,
-                 bg=BG2, fg=TEXT, width=10, anchor="w").pack(side="left")
-        self.dry_btn = tk.Button(row_dry, text="--", font=self.font_badge,
-                                  width=12, relief="flat", cursor="hand2",
-                                  command=self._toggle_dry_run)
-        self.dry_btn.pack(side="left", padx=4)
-        self.dry_lbl = tk.Label(row_dry, text="", font=self.font_small,
-                                 bg=BG2, fg=TEXT_DIM)
-        self.dry_lbl.pack(side="left")
-
-        # Data Status
-        row_data = tk.Frame(left_cfg, bg=BG2)
-        row_data.pack(fill="x", pady=2)
-        tk.Label(row_data, text="Data", font=self.font_label,
-                 bg=BG2, fg=TEXT, width=10, anchor="w").pack(side="left")
-        self.data_date_lbl = tk.Label(row_data, text="...", font=self.font_mono,
-                                       bg=BG2, fg=CYAN)
-        self.data_date_lbl.pack(side="left")
-
-        # Strategy Parameters
-        right_cfg = tk.Frame(col_mid, bg=BG2, padx=10, pady=6)
-        right_cfg.grid(row=2, column=0, sticky="new")
-
-        tk.Label(right_cfg, text="Strategy Parameters", font=self.font_section,
-                 bg=BG2, fg=ACCENT_HL).pack(anchor="w")
-
-        # ETF Allocation
-        row_sr = tk.Frame(right_cfg, bg=BG2)
-        row_sr.pack(fill="x", pady=2)
-        tk.Label(row_sr, text="ETF", font=self.font_label,
-                 bg=BG2, fg=BLUE, width=8, anchor="w").pack(side="left")
-        self.sr_scale = tk.Scale(row_sr, from_=0.0, to=1.0, resolution=0.05,
-                                  orient="horizontal", length=140,
-                                  bg=BG2, fg=TEXT, troughcolor=BG3,
-                                  highlightbackground=BG2, font=self.font_small,
-                                  command=self._on_alloc_change)
-        self.sr_scale.pack(side="left", padx=4)
-        self.sr_pct_lbl = tk.Label(row_sr, text="80%", font=self.font_badge,
-                                    bg=BG2, fg=BLUE)
-        self.sr_pct_lbl.pack(side="left")
-
-        # Stocks Allocation
-        row_sp = tk.Frame(right_cfg, bg=BG2)
-        row_sp.pack(fill="x", pady=2)
-        tk.Label(row_sp, text="Stocks", font=self.font_label,
-                 bg=BG2, fg=GREEN, width=8, anchor="w").pack(side="left")
-        self.sp_scale = tk.Scale(row_sp, from_=0.0, to=1.0, resolution=0.05,
-                                  orient="horizontal", length=140,
-                                  bg=BG2, fg=TEXT, troughcolor=BG3,
-                                  highlightbackground=BG2, font=self.font_small,
-                                  command=self._on_alloc_change)
-        self.sp_scale.pack(side="left", padx=4)
-        self.sp_pct_lbl = tk.Label(row_sp, text="50%", font=self.font_badge,
-                                    bg=BG2, fg=GREEN)
-        self.sp_pct_lbl.pack(side="left")
-
-        # Total Exposure + Save
-        row_lev = tk.Frame(right_cfg, bg=BG2)
-        row_lev.pack(fill="x", pady=(3, 2))
-        tk.Label(row_lev, text="Exposure", font=self.font_label,
-                 bg=BG2, fg=TEXT, width=8, anchor="w").pack(side="left")
-        self.lev_lbl = tk.Label(row_lev, text="130% (1.3x)",
-                                 font=self.font_badge, bg=BG2, fg=ORANGE)
-        self.lev_lbl.pack(side="left", padx=4)
-        self.lev_detail = tk.Label(row_lev, text="", font=self.font_small,
-                                    bg=BG2, fg=TEXT_DIM)
-        self.lev_detail.pack(side="left")
-        self._btn(row_lev, "Save", self._save_params,
-                  ACCENT_HL, padx=6, pady=2, font=self.font_small).pack(side="right")
+        # Trading Settings + Strategy Parameters
+        # (R3.4: extracted to strategy_params_view.StrategyParamsView)
+        settings_wrapper = tk.Frame(col_mid, bg=BG2)
+        settings_wrapper.grid(row=1, column=0, sticky="new", pady=(0, 3))
+        params_wrapper = tk.Frame(col_mid, bg=BG2)
+        params_wrapper.grid(row=2, column=0, sticky="new")
+        self.strategy_view = StrategyParamsView(
+            parent_settings=settings_wrapper,
+            parent_params=params_wrapper,
+            theme=self._theme, fonts=self._fonts,
+            btn_factory=self._btn,
+            on_toggle_dry_run=self._toggle_dry_run,
+            on_save=self._save_params,
+        )
 
         # ════════════════════════════════════════
         # 右欄：Output Log
@@ -733,127 +681,6 @@ class ControlPanel(tk.Tk):
         )
         self.log_box.pack(fill="both", expand=True)
         self.log_box.config(state="disabled")
-
-    # ── Portfolio Overview 建構 ────────────────────────────
-
-    def _build_portfolio_overview(self, parent):
-        self.overview_frame = tk.Frame(parent, bg=BG2, padx=8, pady=4)
-        self.overview_frame.pack(fill="both", expand=True)
-
-        # 左右分欄：左=數字+列表  右=圓餅圖
-        left_pf = tk.Frame(self.overview_frame, bg=BG2)
-        left_pf.pack(side="left", fill="both", expand=True)
-
-        right_pf = tk.Frame(self.overview_frame, bg=BG2)
-        right_pf.pack(side="right", fill="y")
-
-        # ── 左上：指標卡（2x2 grid）─────────────
-        cards_frame = tk.Frame(left_pf, bg=BG2)
-        cards_frame.pack(fill="x")
-
-        row1 = tk.Frame(cards_frame, bg=BG2)
-        row1.pack(fill="x")
-        self.nav_card = self._metric_card(row1, "NAV", "$—", TEXT)
-        self.nav_card.pack(side="left", fill="x", expand=True, padx=(0, 3), pady=(0, 3))
-        self.pnl_card = self._metric_card(row1, "Unrealized P&L", "$—", TEXT)
-        self.pnl_card.pack(side="left", fill="x", expand=True, pady=(0, 3))
-
-        row2 = tk.Frame(cards_frame, bg=BG2)
-        row2.pack(fill="x")
-        self.margin_card = self._metric_card(row2, "Margin Cushion", "—%", TEXT)
-        self.margin_card.pack(side="left", fill="x", expand=True, padx=(0, 3), pady=(0, 3))
-        self.strat_exp_card = self._metric_card(row2, "Strategy Exp.", "—%", TEXT)
-        self.strat_exp_card.pack(side="left", fill="x", expand=True, padx=(0, 3), pady=(0, 3))
-        self.total_exp_card = self._metric_card(row2, "Account Exp.", "—%", TEXT)
-        self.total_exp_card.pack(side="left", fill="x", expand=True, pady=(0, 3))
-
-        # 報告日期
-        self.report_date_lbl = tk.Label(left_pf, text="Report: —",
-                                         font=self.font_small, bg=BG2, fg=TEXT_DIM)
-        self.report_date_lbl.pack(anchor="w", pady=(2, 3))
-
-        # ── 左下：持倉文字列表 ─────────────
-        etf_frame = tk.Frame(left_pf, bg=BG3, padx=6, pady=4)
-        etf_frame.pack(fill="x", pady=(0, 3))
-        tk.Label(etf_frame, text="ETF Holdings (SR)", font=self.font_small,
-                 bg=BG3, fg=BLUE).pack(anchor="w")
-        self.etf_list = tk.Label(etf_frame, text="—", font=self.font_mono_sm,
-                                  bg=BG3, fg=TEXT, justify="left", anchor="nw")
-        self.etf_list.pack(anchor="w", fill="x")
-
-        stock_frame = tk.Frame(left_pf, bg=BG3, padx=6, pady=4)
-        stock_frame.pack(fill="x", pady=(0, 3))
-        tk.Label(stock_frame, text="Stock Holdings (MOM)", font=self.font_small,
-                 bg=BG3, fg=GREEN).pack(anchor="w")
-        self.stock_list = tk.Label(stock_frame, text="—", font=self.font_mono_sm,
-                                    bg=BG3, fg=TEXT, justify="left", anchor="nw")
-        self.stock_list.pack(anchor="w", fill="x")
-
-        other_frame = tk.Frame(left_pf, bg=BG3, padx=6, pady=4)
-        other_frame.pack(fill="x")
-        tk.Label(other_frame, text="Other (Manual, excluded)", font=self.font_small,
-                 bg=BG3, fg=TEXT_DIM).pack(anchor="w")
-        self.other_list = tk.Label(other_frame, text="—", font=self.font_mono_sm,
-                                    bg=BG3, fg=TEXT_DIM, justify="left", anchor="nw")
-        self.other_list.pack(anchor="w", fill="x")
-        self.other_frame = other_frame
-
-        # ── 右：圓餅圖 ─────────────
-        self.chart_frame = right_pf
-        self.chart_canvas = None
-
-    def _metric_card(self, parent, title, value, color) -> tk.Frame:
-        card = tk.Frame(parent, bg=BG3, padx=8, pady=6)
-        title_lbl = tk.Label(card, text=title, font=self.font_small,
-                              bg=BG3, fg=TEXT_DIM)
-        title_lbl.pack(anchor="w")
-        val_lbl = tk.Label(card, text=value, font=self.font_med_num,
-                            bg=BG3, fg=color)
-        val_lbl.pack(anchor="w")
-        card._val_lbl = val_lbl
-        return card
-
-    # ── Compact Task Card ──────────────────────────────────
-
-    def _task_card_compact(self, parent, task_name: str, label: str, timing: str) -> tk.Frame:
-        card = tk.Frame(parent, bg=BG2, padx=8, pady=4)
-        card.columnconfigure(1, weight=1)  # 名稱欄伸縮
-
-        # Row 0: badge | name | status
-        badge = tk.Label(card, text="*", font=self.font_small, bg=BG2, fg=TEXT_DIM)
-        badge.grid(row=0, column=0, sticky="w")
-        tk.Label(card, text=label, font=self.font_small,
-                 bg=BG2, fg=TEXT).grid(row=0, column=1, sticky="w", padx=(2, 0))
-        state_lbl = tk.Label(card, text="...", font=self.font_small,
-                              bg=BG2, fg=TEXT_DIM)
-        state_lbl.grid(row=0, column=2, columnspan=3, sticky="e")
-
-        # Row 1: timing | last | toggle | run
-        tk.Label(card, text=timing, font=self.font_mono_sm,
-                 bg=BG2, fg=TEXT_DIM).grid(row=1, column=0, columnspan=2, sticky="w")
-
-        last_lbl = tk.Label(card, text="", font=self.font_mono_sm,
-                             bg=BG2, fg=TEXT_DIM)
-        last_lbl.grid(row=1, column=2, sticky="e", padx=(4, 4))
-
-        toggle_btn = self._btn(card, "Enable", None, GREEN,
-                                width=6, padx=3, pady=1, font=self.font_mono_sm)
-        toggle_btn.grid(row=1, column=3, sticky="e", padx=(0, 2))
-
-        run_btn = self._btn(card, "Run", lambda tn=task_name: self._trigger_task(tn),
-                             BTN_BG, padx=4, pady=1, font=self.font_mono_sm)
-        run_btn.grid(row=1, column=4, sticky="e")
-
-        card._meta = {
-            "task_name":  task_name,
-            "badge":      badge,
-            "state_lbl":  state_lbl,
-            "last_lbl":   last_lbl,
-            "toggle_btn": toggle_btn,
-            "enabled":    False,
-        }
-        toggle_btn.config(command=lambda c=card: self._toggle_task(c))
-        return card
 
     # ── UI 元件工具 ───────────────────────────────────────
 
@@ -898,7 +725,7 @@ class ControlPanel(tk.Tk):
             if pf.get("error"):
                 self.after(0, lambda: self._log(f"[X] IB error: {pf['error']}"))
                 return
-            self.after(0, lambda p=pf: self._update_portfolio_ui(p))
+            self.after(0, lambda p=pf: self.portfolio_view.update(p))
             src = pf.get("source", "")
             n_etf = len(pf.get("etf_holdings", []))
             n_stk = len(pf.get("stock_holdings", []))
@@ -976,7 +803,7 @@ class ControlPanel(tk.Tk):
         # 重新載入該帳戶的策略參數到 UI
         try:
             cfg = get_account_config(acct)
-            self._update_cfg_ui(cfg)
+            self.strategy_view.update_cfg(cfg)
         except Exception as e:
             self._log(f"[X] Load [{acct}] config failed: {e}")
         # 視窗標題顯示當前帳戶
@@ -1136,9 +963,12 @@ class ControlPanel(tk.Tk):
             self.after(0, lambda m=err_msg: self._log(f"[X] Sync compute failed: {m}"))
             self.after(0, lambda m=err_msg: messagebox.showerror("Sync Error", m))
 
-    # R3.1: Panel theme colours bundled for SyncPreviewWindow injection
+    # R3.1/R3.2-3.4: Panel theme colours bundled for view injection.
+    # Extra keys (yellow/orange/cyan) added for PortfolioView / TaskCard /
+    # StrategyParamsView. SyncPreviewWindow validates with a subset check,
+    # so having extras is harmless.
     @property
-    def _preview_theme(self) -> dict:
+    def _theme(self) -> dict:
         return {
             "bg":        BG,
             "bg2":       BG2,
@@ -1150,7 +980,24 @@ class ControlPanel(tk.Tk):
             "blue":      BLUE,
             "green":     GREEN,
             "red":       RED,
+            "yellow":    YELLOW,
+            "orange":    ORANGE,
+            "cyan":      CYAN,
             "btn_bg":    BTN_BG,
+        }
+
+    # R3.2-3.4: Panel fonts bundled for view injection
+    @property
+    def _fonts(self) -> dict:
+        return {
+            "small":   self.font_small,
+            "mono":    self.font_mono,
+            "mono_sm": self.font_mono_sm,
+            "label":   self.font_label,
+            "section": self.font_section,
+            "badge":   self.font_badge,
+            "med_num": self.font_med_num,
+            "big_num": self.font_big_num,
         }
 
     def _show_sync_preview(self, plan):
@@ -1165,7 +1012,7 @@ class ControlPanel(tk.Tk):
         window = SyncPreviewWindow(
             parent=self,
             plan=plan,
-            theme=self._preview_theme,
+            theme=self._theme,
             log=self._log,
             btn_factory=self._btn,
             on_confirm=on_confirm,
@@ -1245,22 +1092,22 @@ class ControlPanel(tk.Tk):
 
     def _refresh_thread(self):
         # 1. Task states
-        for task_name, frame in self.task_frames.items():
+        for task_name, card in self.task_cards.items():
             info = get_task_state(task_name)
-            self.after(0, lambda f=frame, i=info: self._update_task_card(f, i))
+            self.after(0, lambda c=card, i=info: c.update(i))
 
         # 2. Config（讀取目前選中帳戶的 per-account 設定）
         try:
             acct = self.selected_account.get()
             cfg = get_account_config(acct)
-            self.after(0, lambda c=cfg: self._update_cfg_ui(c))
+            self.after(0, lambda c=cfg: self.strategy_view.update_cfg(c))
         except Exception as e:
             self.after(0, lambda: self._log(f"[X] Config read failed: {e}"))
 
         # 3. Portfolio overview
         try:
             pf = read_latest_portfolio()
-            self.after(0, lambda p=pf: self._update_portfolio_ui(p))
+            self.after(0, lambda p=pf: self.portfolio_view.update(p))
         except Exception as e:
             self.after(0, lambda: self._log(f"[X] Portfolio read failed: {e}"))
 
@@ -1268,379 +1115,29 @@ class ControlPanel(tk.Tk):
         try:
             acct = self.selected_account.get()
             trades = read_latest_trades(acct)
-            self.after(0, lambda t=trades: self._update_trades_ui(t))
+            self.after(0, lambda t=trades: self.trades_view.update(t))
         except Exception as e:
             self.after(0, lambda: self._log(f"[X] Trades read failed: {e}"))
 
         # 5. Data date
         try:
             dd = get_last_data_update()
-            self.after(0, lambda d=dd: self.data_date_lbl.config(text=f"Last: {d}"))
+            self.after(0, lambda d=dd: self.strategy_view.update_data_date(d))
         except Exception:
             pass
 
         self.after(0, lambda: self._log("[OK] Refresh done"))
 
-    def _update_portfolio_ui(self, pf: dict):
-        """更新 Portfolio Overview"""
-        if not pf.get("available"):
-            err = pf.get("error", "No data yet")
-            self.nav_card._val_lbl.config(text=f"$—", fg=TEXT_DIM)
-            self.pnl_card._val_lbl.config(text="$—", fg=TEXT_DIM)
-            self.margin_card._val_lbl.config(text="—%", fg=TEXT_DIM)
-            self.strat_exp_card._val_lbl.config(text="—%", fg=TEXT_DIM)
-            self.total_exp_card._val_lbl.config(text="—%", fg=TEXT_DIM)
-            self.report_date_lbl.config(text=f"Report: {err}")
-            self.etf_list.config(text="(no data)")
-            self.stock_list.config(text="(no data)")
-            return
-
-        nav = pf["nav"]
-        upnl = pf["total_upnl"]
-        cushion = pf["cushion"]
-        mktval = pf["total_mktval"]
-        strategy_mktval = pf.get("strategy_mktval", mktval)
-        other_mktval = pf.get("other_mktval", 0)
-        # 策略曝險（用於確認是否符合目標配置）
-        strat_exposure = (strategy_mktval / nav * 100) if nav > 0 else 0
-        # 帳戶總曝險（含 Other，影響 margin/融資）
-        total_exposure = (mktval / nav * 100) if nav > 0 else 0
-        exposure = strat_exposure  # 圓餅圖中心用策略曝險
-
-        # NAV
-        self.nav_card._val_lbl.config(text=f"${nav:,.0f}", fg=TEXT)
-
-        # P&L
-        sign = "+" if upnl >= 0 else ""
-        pnl_color = GREEN if upnl >= 0 else RED
-        self.pnl_card._val_lbl.config(text=f"{sign}${upnl:,.2f}", fg=pnl_color)
-
-        # Margin
-        if cushion < 10:
-            m_color = RED
-        elif cushion < 25:
-            m_color = YELLOW
-        else:
-            m_color = GREEN
-        self.margin_card._val_lbl.config(text=f"{cushion:.1f}%", fg=m_color)
-
-        # Strategy Exposure（策略部位 vs NAV）
-        s_color = ORANGE if strat_exposure > 100 else GREEN
-        self.strat_exp_card._val_lbl.config(text=f"{strat_exposure:.0f}%", fg=s_color)
-
-        # Account Exposure（全帳戶 vs NAV，含 Other）
-        t_color = ORANGE if total_exposure > 100 else GREEN
-        self.total_exp_card._val_lbl.config(text=f"{total_exposure:.0f}%", fg=t_color)
-
-        # Date + source
-        source = pf.get("source", "Excel")
-        src_tag = f"  [{source}]" if source != "Excel" else ""
-        self.report_date_lbl.config(text=f"Report Date: {pf['date']}{src_tag}")
-
-        # ETF Holdings
-        if pf["etf_holdings"]:
-            lines = []
-            for h in sorted(pf["etf_holdings"], key=lambda x: -abs(x["mkt_val"])):
-                sign = "+" if h["upnl"] >= 0 else ""
-                w = h["mkt_val"] / nav * 100 if nav > 0 else 0
-                lines.append(
-                    f"{h['symbol']:5s} {h['shares']:4d}sh  "
-                    f"${h['mkt_px']:.2f}  {w:4.0f}%  "
-                    f"{sign}{h['upnl_pct']:.1f}%"
-                )
-            self.etf_list.config(text="\n".join(lines))
-        else:
-            self.etf_list.config(text="(empty)")
-
-        # Stock Holdings
-        if pf["stock_holdings"]:
-            lines = []
-            for h in sorted(pf["stock_holdings"], key=lambda x: -abs(x["mkt_val"])):
-                sign = "+" if h["upnl"] >= 0 else ""
-                w = h["mkt_val"] / nav * 100 if nav > 0 else 0
-                lines.append(
-                    f"{h['symbol']:5s} {h['shares']:4d}sh  "
-                    f"${h['mkt_px']:.2f}  {w:4.0f}%  "
-                    f"{sign}{h['upnl_pct']:.1f}%"
-                )
-            self.stock_list.config(text="\n".join(lines))
-        else:
-            self.stock_list.config(text="(empty)")
-
-        # Other Holdings
-        if pf["other_holdings"]:
-            lines = []
-            for h in sorted(pf["other_holdings"], key=lambda x: -abs(x["mkt_val"])):
-                sign = "+" if h["upnl"] >= 0 else ""
-                w = h["mkt_val"] / nav * 100 if nav > 0 else 0
-                lines.append(
-                    f"{h['symbol']:5s} {h['shares']:4d}sh  "
-                    f"${h['mkt_px']:.2f}  {w:4.0f}%  "
-                    f"{sign}{h['upnl_pct']:.1f}%"
-                )
-            self.other_list.config(text="\n".join(lines))
-            self.other_frame.pack(fill="x")
-        else:
-            self.other_list.config(text="(none)")
-
-        # Pie Chart (only strategy holdings)
-        # S10 post-fix：切帳戶後若新帳戶無持倉，一定要清掉舊的 canvas，
-        # 否則會留著前一個帳戶的圓餅圖
-        if self.chart_canvas:
-            try:
-                self.chart_canvas.get_tk_widget().destroy()
-            except Exception:
-                pass
-            self.chart_canvas = None
-
-        all_holdings = pf["etf_holdings"] + pf["stock_holdings"]
-        if (all_holdings or other_mktval > 0) and nav > 0:
-            self._render_pie_chart(all_holdings, nav, exposure,
-                                    other_val=other_mktval)
-
-    def _render_pie_chart(self, holdings: list, nav: float, exposure: float,
-                          other_val: float = 0):
-        """用 matplotlib 畫 donut chart 嵌入 tkinter"""
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-
-        # 清除舊圖
-        if self.chart_canvas:
-            self.chart_canvas.get_tk_widget().destroy()
-            self.chart_canvas = None
-
-        # 資料準備
-        sorted_h = sorted(holdings, key=lambda x: -abs(x["mkt_val"]))
-        labels = [h["symbol"] for h in sorted_h]
-        values = [abs(h["mkt_val"]) for h in sorted_h]
-        total_mktval = sum(values)
-
-        # 顏色：ETF 用藍色系，Stocks 用綠色系
-        etf_blues = ["#3b82f6", "#60a5fa", "#93c5fd", "#bfdbfe",
-                      "#2563eb", "#1d4ed8", "#1e40af", "#1e3a8a",
-                      "#6366f1", "#818cf8", "#a5b4fc"]
-        stock_greens = ["#22c55e", "#4ade80", "#86efac", "#bbf7d0",
-                         "#16a34a", "#15803d", "#166534", "#14532d"]
-        colors = []
-        ei, si = 0, 0
-        for h in sorted_h:
-            if h["symbol"] in SR_ETFS:
-                colors.append(etf_blues[ei % len(etf_blues)])
-                ei += 1
-            else:
-                colors.append(stock_greens[si % len(stock_greens)])
-                si += 1
-
-        # Other 手動持倉（灰色）
-        if other_val > 0:
-            labels.append("Other")
-            values.append(abs(other_val))
-            total_mktval += abs(other_val)
-            colors.append("#6b7280")  # 灰色
-
-        # Cash 部分（如果有槓桿就不顯示 cash，如果 exposure < 100% 顯示 cash）
-        if exposure < 100 and nav > total_mktval:
-            cash = nav - total_mktval
-            labels.append("Cash")
-            values.append(cash)
-            colors.append("#4b5563")  # 灰色
-
-        # 畫圖 — 用 annotate 的 bbox 確保不裁切
-        import math
-        fig, ax = plt.subplots(figsize=(3.6, 2.4), dpi=100)
-        fig.patch.set_facecolor(BG2)
-        ax.set_facecolor(BG2)
-        ax.axis("off")
-
-        # 餅圖偏左放，騰出右側標籤空間
-        center_x = -0.15
-        wedges, _ = ax.pie(
-            values, labels=None, colors=colors,
-            startangle=90, counterclock=False,
-            wedgeprops=dict(width=0.38, edgecolor=BG2, linewidth=2),
-            radius=0.85, center=(center_x, 0),
-        )
-
-        # 收集標籤資訊並防 y 重疊
-        annotations = []
-        for i, (wedge, label) in enumerate(zip(wedges, labels)):
-            ang = (wedge.theta2 + wedge.theta1) / 2
-            pct = values[i] / total_mktval * 100 if total_mktval > 0 else 0
-            side = 1 if math.cos(math.radians(ang)) >= 0 else -1
-            y_pos = 0.95 * math.sin(math.radians(ang))
-            annotations.append((ang, pct, label, side, y_pos))
-
-        min_gap = 0.28
-        for side_val in [1, -1]:
-            side_annots = [(i, a) for i, a in enumerate(annotations) if a[3] == side_val]
-            side_annots.sort(key=lambda x: x[1][4])
-            for k in range(1, len(side_annots)):
-                prev_idx, prev = side_annots[k-1]
-                curr_idx, curr = side_annots[k]
-                if curr[4] - prev[4] < min_gap:
-                    new_y = prev[4] + min_gap
-                    old = annotations[curr_idx]
-                    annotations[curr_idx] = (old[0], old[1], old[2], old[3], new_y)
-
-        for ang, pct, label, side, y_final in annotations:
-            x_edge = center_x + 0.70 * math.cos(math.radians(ang))
-            y_edge = 0.70 * math.sin(math.radians(ang))
-            x_bend = center_x + 0.95 * math.cos(math.radians(ang))
-            y_bend = 0.95 * math.sin(math.radians(ang))
-            x_text = center_x + 1.20 * side
-
-            ha = "left" if side > 0 else "right"
-
-            ax.annotate(
-                f"{label} {pct:.0f}%",
-                xy=(x_edge, y_edge),
-                xytext=(x_text + 0.05 * side, y_final),
-                ha=ha, va="center",
-                fontsize=7.5, fontweight="bold", color="white",
-                arrowprops=dict(
-                    arrowstyle="-",
-                    color="#6b7d99",
-                    lw=0.8,
-                    connectionstyle=f"arc3,rad={0.1 * side}",
-                ),
-            )
-
-        # 圓心文字
-        if exposure > 100:
-            center_text = f"{exposure:.0f}%\nof NAV"
-            center_color = ORANGE
-        else:
-            center_text = f"{exposure:.0f}%\nExposure"
-            center_color = GREEN
-        ax.text(center_x, 0, center_text, ha="center", va="center",
-                fontsize=9, fontweight="bold", color=center_color)
-
-        fig.tight_layout(pad=0.3)
-
-        # 嵌入 tkinter
-        canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
-        canvas.draw()
-        canvas.get_tk_widget().pack()
-        self.chart_canvas = canvas
-        plt.close(fig)
-
-    def _update_trades_ui(self, trades: list):
-        """更新 Recent Trades 區"""
-        # 清除舊內容
-        for w in self.trades_frame.winfo_children():
-            w.destroy()
-
-        if not trades:
-            tk.Label(self.trades_frame, text="No recent trades",
-                     font=self.font_mono_sm, bg=BG2, fg=TEXT_DIM).pack(anchor="w")
-            return
-
-        # 表頭
-        hdr = tk.Frame(self.trades_frame, bg=BG2)
-        hdr.pack(fill="x")
-        for txt, w in [("Time", 14), ("Symbol", 7), ("Action", 5), ("Qty", 5),
-                        ("Strategy", 16), ("Status", 10)]:
-            tk.Label(hdr, text=txt, font=self.font_mono_sm, bg=BG2,
-                     fg=TEXT_DIM, width=w, anchor="w").pack(side="left")
-
-        # 最多顯示 8 筆
-        for t in trades[:8]:
-            row = tk.Frame(self.trades_frame, bg=BG2)
-            row.pack(fill="x")
-            dt_short = t["datetime"][-8:] if len(t["datetime"]) >= 8 else t["datetime"]
-            action_color = RED if t["action"] == "SELL" else GREEN
-            dry_tag = " [DRY]" if t["dry_run"] else ""
-
-            tk.Label(row, text=dt_short, font=self.font_mono_sm, bg=BG2,
-                     fg=TEXT_DIM, width=14, anchor="w").pack(side="left")
-            tk.Label(row, text=t["symbol"], font=self.font_mono_sm, bg=BG2,
-                     fg=TEXT, width=7, anchor="w").pack(side="left")
-            tk.Label(row, text=t["action"], font=self.font_mono_sm, bg=BG2,
-                     fg=action_color, width=5, anchor="w").pack(side="left")
-            tk.Label(row, text=str(t["qty"]), font=self.font_mono_sm, bg=BG2,
-                     fg=TEXT, width=5, anchor="w").pack(side="left")
-            tk.Label(row, text=t["strategy"], font=self.font_mono_sm, bg=BG2,
-                     fg=TEXT_DIM, width=16, anchor="w").pack(side="left")
-            tk.Label(row, text=f'{t["status"]}{dry_tag}', font=self.font_mono_sm, bg=BG2,
-                     fg=YELLOW if "DRY" in t["status"] else GREEN,
-                     width=14, anchor="w").pack(side="left")
-
-    def _update_task_card(self, card: tk.Frame, info: dict):
-        m = card._meta
-        if not info["found"]:
-            m["badge"].config(fg=YELLOW)
-            m["state_lbl"].config(text="! Not Installed", fg=YELLOW)
-            tn = m["task_name"]
-            m["toggle_btn"].config(text="Install", bg=ACCENT_HL, fg="black",
-                                    state="normal",
-                                    command=lambda t=tn: self._install_single(t))
-            m["last_lbl"].config(text="")
-            return
-
-        enabled = info["enabled"]
-        m["enabled"] = enabled
-        m["badge"].config(fg=GREEN if enabled else RED)
-        m["state_lbl"].config(
-            text="[OK] Active" if enabled else "[X] Disabled",
-            fg=GREEN if enabled else RED
-        )
-        m["last_lbl"].config(text=f"Last: {info['last_run']}")
-        m["toggle_btn"].config(
-            text="Disable" if enabled else "Enable",
-            bg=RED if enabled else GREEN
-        )
-
-    def _update_cfg_ui(self, cfg: dict):
-        # Dry Run
-        dry = cfg.get("dry_run", True)
-        self.dry_btn.config(
-            text="SIMULATED" if dry else "LIVE",
-            bg=YELLOW if dry else RED,
-            fg="black" if dry else "white"
-        )
-        self.dry_lbl.config(
-            text="(no real orders)" if dry else "!! LIVE !!"
-        )
-
-        # Order Type
-        # Allocations
-        alloc_sr = cfg.get("alloc_sr", 0.80)
-        alloc_sp = cfg.get("alloc_sp500", 0.50)
-        self.sr_scale.set(alloc_sr)
-        self.sp_scale.set(alloc_sp)
-        self._update_alloc_display(alloc_sr, alloc_sp)
-
-    def _update_alloc_display(self, alloc_sr, alloc_sp):
-        total = alloc_sr + alloc_sp
-        self.sr_pct_lbl.config(text=f"{alloc_sr:.0%}")
-        self.sp_pct_lbl.config(text=f"{alloc_sp:.0%}")
-        self.lev_lbl.config(text=f"{total:.0%} ({total:.1f}x)")
-
-        if total > 1.0:
-            borrow = total - 1.0
-            self.lev_detail.config(text=f"Borrow: {borrow:.0%}")
-            self.lev_lbl.config(fg=ORANGE)
-        else:
-            self.lev_detail.config(text="No leverage")
-            self.lev_lbl.config(fg=GREEN)
-
-    def _on_alloc_change(self, _=None):
-        sr = self.sr_scale.get()
-        sp = self.sp_scale.get()
-        self._update_alloc_display(sr, sp)
-
     # ── 操作 ──────────────────────────────────────────────
 
-    def _toggle_task(self, card: tk.Frame):
-        m = card._meta
-        task_name = m["task_name"]
-        enabled   = m["enabled"]
-        action    = "Disable" if enabled else "Enable"
+    def _toggle_task(self, task_name: str, enabled: bool):
+        """Enable/Disable a scheduled task. Called by TaskCard on_toggle."""
+        action = "Disable" if enabled else "Enable"
 
         if not messagebox.askyesno("Confirm", f"{action} '{task_name}'?"):
             return
+
+        card = self.task_cards.get(task_name)
 
         def _do():
             if enabled:
@@ -1650,7 +1147,8 @@ class ControlPanel(tk.Tk):
                 enable_task(task_name)
                 self._log(f"[OK] Enabled {task_name}")
             info = get_task_state(task_name)
-            self.after(0, lambda: self._update_task_card(card, info))
+            if card is not None:
+                self.after(0, lambda: card.update(info))
 
         threading.Thread(target=_do, daemon=True).start()
 
@@ -1769,9 +1267,9 @@ class ControlPanel(tk.Tk):
             out = install_single_task(task_name)
             self._log(out)
             info = get_task_state(task_name)
-            card = self.task_frames.get(task_name)
+            card = self.task_cards.get(task_name)
             if card:
-                self.after(0, lambda: self._update_task_card(card, info))
+                self.after(0, lambda: card.update(info))
 
         threading.Thread(target=_do, daemon=True).start()
 
@@ -1823,7 +1321,7 @@ class ControlPanel(tk.Tk):
 
             cfg["dry_run"] = new_val
             save_config(cfg)
-            self._update_cfg_ui(cfg)
+            self.strategy_view.update_cfg(cfg)
             mode = "SIMULATED" if new_val else "LIVE !!"
             self._log(f"{'[SIM]' if new_val else '[LIVE]'} Dry Run -> {mode}")
 
@@ -1833,8 +1331,7 @@ class ControlPanel(tk.Tk):
     def _save_params(self):
         try:
             acct = self.selected_account.get()
-            new_sr = round(self.sr_scale.get(), 2)
-            new_sp = round(self.sp_scale.get(), 2)
+            new_sr, new_sp = self.strategy_view.get_alloc()
             total  = new_sr + new_sp
 
             if total > 2.0:
@@ -1860,7 +1357,7 @@ class ControlPanel(tk.Tk):
 
             # 重新讀回該帳戶的合併 config 來刷新 UI
             cfg = get_account_config(acct)
-            self._update_cfg_ui(cfg)
+            self.strategy_view.update_cfg(cfg)
             self._log(f"[OK] [{acct}] Params saved: ETF={new_sr:.0%}  Stocks={new_sp:.0%}  Leverage={total:.1f}x")
 
         except Exception as e:

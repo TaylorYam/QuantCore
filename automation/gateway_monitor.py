@@ -190,9 +190,18 @@ class GatewayMonitor:
                 err = str(e) or type(e).__name__
                 self._on_disconnected_event(name, err)
             finally:
+                # Always call ib.disconnect() — even when ib.isConnected() is
+                # False (e.g. TimeoutError during connect). ib_insync keeps
+                # the underlying TCP socket half-open in that case, and
+                # leaving it unclosed causes the server to accumulate
+                # CLOSE_WAIT sockets. Gateway 10.41 stalls its accept thread
+                # after ~2-3 leaked sockets, bricking API handshakes for the
+                # whole session (see 2026-04-15 21:25 incident log).
+                #
+                # ib.disconnect() is idempotent — safe to call on a never-
+                # connected or already-disconnected IB instance.
                 try:
-                    if ib.isConnected():
-                        ib.disconnect()
+                    ib.disconnect()
                 except Exception:
                     pass
 

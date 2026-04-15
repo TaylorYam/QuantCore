@@ -4,9 +4,21 @@ QuantCore — IBC Gateway 啟動器
 """
 
 import subprocess, sys, os, logging
+from datetime import date
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+# IBC stdout/stderr 寫入檔案 — 之前丟 DEVNULL 結果 auto-restart 出問題完全沒線索
+IBC_LOG_DIR = Path(__file__).parent / "logs"
+IBC_LOG_DIR.mkdir(exist_ok=True)
+
+
+def _open_ibc_log(account_name: str):
+    """每帳戶一個 daily IBC log。回傳開啟的檔案 handle（append mode）。"""
+    log_path = IBC_LOG_DIR / f"ibc_{account_name.lower()}_{date.today():%Y%m%d}.log"
+    # buffering=1 = line-buffered — Java IBC 寫一行就 flush 一行，方便 tail
+    return open(log_path, "a", buffering=1, encoding="utf-8", errors="replace")
 
 JAVA_EXE = r"c:\users\kelvi\appdata\local\programs\common\i4j_jres\oda-jk0qgtemvssflllp\17.0.10.0.101-zulu_64\bin\java.exe"
 GATEWAY_JARS = Path(r"C:\Jts\ibgateway\1041\jars")
@@ -102,11 +114,22 @@ def _start_ibc(account_name: str) -> subprocess.Popen | None:
     si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     si.wShowWindow = 0
 
+    # 把 IBC stdout/stderr 寫入 logs/ibc_<account>_<date>.log
+    # 之前用 DEVNULL，結果 04-11~04-13 auto-restart 沒 fire 完全查不到原因
+    log_fp = _open_ibc_log(account_name)
+    log_fp.write(
+        f"\n{'='*70}\n"
+        f"IBC start for {account_name}  cfg={config_ini}\n"
+        f"{'='*70}\n"
+    )
     proc = subprocess.Popen(
-        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        cmd, stdout=log_fp, stderr=subprocess.STDOUT,
         startupinfo=si,
     )
-    log.info(f"IBC Gateway [{account_name}] started, PID={proc.pid}")
+    log.info(
+        f"IBC Gateway [{account_name}] started, PID={proc.pid} "
+        f"log={log_fp.name}"
+    )
     return proc
 
 

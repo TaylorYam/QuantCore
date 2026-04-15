@@ -341,8 +341,27 @@ class SP500Backtester:
         is_rebal   = (date.weekday() == config.REBALANCE_WEEKDAY)
 
         if is_rebal:
+            # ── 對齊 live signals.py：counter 用「前一個交易日收盤」判斷 ──
+            # Live 在 21:00 TW rebal 時美股還沒開盤，Wed close 不存在，只能看
+            # 前一天。Backtest 跟進 → 回測結果忠實反映 live 行為。
+            #
+            # 實測 2018-07 ~ 2026-04（compare_bull_counter.py）：
+            #   前一天版本 vs 當天版本：
+            #     CAGR      32.44% vs 32.36%  (+0.08 pp)
+            #     Sharpe    1.125 vs 1.116    (+0.009)
+            #     Max DD   -29.22% vs -33.10% (+3.88 pp, 顯著改善)
+            #     Final eq $8.86M vs $8.81M   (+0.5%)
+            # 「慢一週」意外過濾掉假突破 whipsaw，對 max DD 最有利。
+            idx = self.spy_df.index.get_indexer([date], method="pad")[0]
+            if idx > 0:
+                prev_date  = self.spy_df.index[idx - 1]
+                prev_state = self.market_regime.get_state(prev_date)
+                prev_above = (prev_state["SPY_Close"] > prev_state["SPY_MA200"]
+                              if prev_state else False)
+            else:
+                prev_above = False
             self.bull_weeks_counter = (self.bull_weeks_counter + 1
-                                       if spy_close > spy_ma200 else 0)
+                                        if prev_above else 0)
 
         bull_confirmed = (self.bull_weeks_counter >= 2)
 

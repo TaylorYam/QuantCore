@@ -59,45 +59,51 @@ from portfolio_view import PortfolioView
 from panel_task_cards import TaskCard, TradesView
 from strategy_params_view import StrategyParamsView
 
-TASK_UPDATE    = "QuantCore_DataUpdate_Daily"
-TASK_REBAL_SR  = "QuantCore_SR_Rebalance_Tue"
-TASK_REBAL_SP  = "QuantCore_SP500_Rebalance_Wed"
-TASK_REPORT    = "QuantCore_DailyReport"
-TASK_MOO_TUE   = "QuantCore_MOO_Fill_Tue"
-TASK_MOO_WED   = "QuantCore_MOO_Fill_Wed"
-TASK_SP_DAILY  = "QuantCore_SP500_DailyCheck"
+TASK_UPDATE     = "QuantCore_DataUpdate_Daily"
+TASK_REBAL_SR   = "QuantCore_SR_Rebalance_Tue"
+TASK_REBAL_SP   = "QuantCore_SP500_Rebalance_Wed"
+TASK_REPORT     = "QuantCore_DailyReport"
+TASK_MOO_TUE    = "QuantCore_MOO_Fill_Tue"
+TASK_MOO_WED    = "QuantCore_MOO_Fill_Wed"
+TASK_SP_DAILY   = "QuantCore_SP500_DailyCheck"
+TASK_GW_RESTART = "QuantCore_GW_DailyRestart"
 
 # 每個任務的 schtasks 安裝參數 (name -> schedule_args)
 TASK_SCHTASK_ARGS = {
-    TASK_UPDATE:   "/sc daily /st 04:30",
-    TASK_REBAL_SR: "/sc weekly /d TUE /st 21:00",
-    TASK_REBAL_SP: "/sc weekly /d WED /st 21:00",
-    TASK_REPORT:   "/sc daily /st 04:40",
-    TASK_MOO_TUE:  "/sc weekly /d TUE /st 21:31",
-    TASK_MOO_WED:  "/sc weekly /d WED /st 21:31",
-    TASK_SP_DAILY: "/sc weekly /d MON,TUE,WED,THU,FRI /st 16:00",
+    TASK_UPDATE:     "/sc daily /st 04:30",
+    TASK_REBAL_SR:   "/sc weekly /d TUE /st 21:00",
+    TASK_REBAL_SP:   "/sc weekly /d WED /st 21:00",
+    TASK_REPORT:     "/sc daily /st 04:40",
+    TASK_MOO_TUE:    "/sc weekly /d TUE /st 21:31",
+    TASK_MOO_WED:    "/sc weekly /d WED /st 21:31",
+    TASK_SP_DAILY:   "/sc weekly /d MON,TUE,WED,THU,FRI /st 16:00",
+    # 每日 06:00 TW 透過 IBC CommandServer 發 RESTART，繞開 IBC 3.23.0
+    # UI scraper 在 Gateway 10.41 上失效的問題（見 gateway_daily_restart.py）
+    TASK_GW_RESTART: "/sc daily /st 06:00",
 }
 
 # 每個任務對應的腳本與參數
 TASK_SCRIPT_ARGS = {
-    TASK_UPDATE:   ("update_data.py",       ""),
-    TASK_REBAL_SR: ("rebalance_ib.py",      "--mode sr --account all"),
-    TASK_REBAL_SP: ("rebalance_ib.py",      "--mode sp500 --account all"),
-    TASK_REPORT:   ("daily_report.py",      "--account all"),
-    TASK_MOO_TUE:  ("moo_fill_check.py",    "--account all"),
-    TASK_MOO_WED:  ("moo_fill_check.py",    "--account all"),
-    TASK_SP_DAILY: ("sp500_daily_check.py", "--account all"),
+    TASK_UPDATE:     ("update_data.py",          ""),
+    TASK_REBAL_SR:   ("rebalance_ib.py",         "--mode sr --account all"),
+    TASK_REBAL_SP:   ("rebalance_ib.py",         "--mode sp500 --account all"),
+    TASK_REPORT:     ("daily_report.py",         "--account all"),
+    TASK_MOO_TUE:    ("moo_fill_check.py",       "--account all"),
+    TASK_MOO_WED:    ("moo_fill_check.py",       "--account all"),
+    TASK_SP_DAILY:   ("sp500_daily_check.py",    "--account all"),
+    TASK_GW_RESTART: ("gateway_daily_restart.py", ""),
 }
 
 # 友善顯示名稱
 TASK_LABELS = {
-    TASK_UPDATE:   "Data Update",
-    TASK_REBAL_SR: "ETF Rebalance (Sector Rotation)",
-    TASK_REBAL_SP: "Stocks Rebalance (Momentum)",
-    TASK_REPORT:   "Daily Report",
-    TASK_MOO_TUE:  "MOO Fill Check (Tue)",
-    TASK_MOO_WED:  "MOO Fill Check (Wed)",
-    TASK_SP_DAILY: "SP500 Daily Check (Stop/Gap/Dip)",
+    TASK_UPDATE:     "Data Update",
+    TASK_REBAL_SR:   "ETF Rebalance (Sector Rotation)",
+    TASK_REBAL_SP:   "Stocks Rebalance (Momentum)",
+    TASK_REPORT:     "Daily Report",
+    TASK_MOO_TUE:    "MOO Fill Check (Tue)",
+    TASK_MOO_WED:    "MOO Fill Check (Wed)",
+    TASK_SP_DAILY:   "SP500 Daily Check (Stop/Gap/Dip)",
+    TASK_GW_RESTART: "Gateway Daily Restart (IBC)",
 }
 
 # SR ETFs (for classifying holdings) — R1.3：單一來源在 ib_fetcher
@@ -625,13 +631,14 @@ class ControlPanel(tk.Tk):
         self._section_label_inline(tasks_wrapper, "Scheduled Tasks")
         self.task_cards: dict[str, TaskCard] = {}
         task_defs = [
-            (TASK_UPDATE,    "Data Update",          "Daily 04:30 TW = 16:30 ET"),
-            (TASK_SP_DAILY,  "SP500 Daily Check",    "Mon-Fri 16:00 TW = 04:00 ET"),
-            (TASK_REBAL_SR,  "ETF Rebalance (SR)",   "Tue 21:00 TW = 09:00 ET"),
-            (TASK_REBAL_SP,  "Stocks Rebalance",     "Wed 21:00 TW = 09:00 ET"),
-            (TASK_MOO_TUE,   "MOO Fill (Tue)",       "Tue 21:31 TW = 09:31 ET"),
-            (TASK_MOO_WED,   "MOO Fill (Wed)",       "Wed 21:31 TW = 09:31 ET"),
-            (TASK_REPORT,    "Daily Report",          "Daily 04:40 TW = 16:40 ET"),
+            (TASK_GW_RESTART, "Gateway Restart (IBC)", "Daily 06:00 TW"),
+            (TASK_UPDATE,     "Data Update",           "Daily 04:30 TW = 16:30 ET"),
+            (TASK_SP_DAILY,   "SP500 Daily Check",     "Mon-Fri 16:00 TW = 04:00 ET"),
+            (TASK_REBAL_SR,   "ETF Rebalance (SR)",    "Tue 21:00 TW = 09:00 ET"),
+            (TASK_REBAL_SP,   "Stocks Rebalance",      "Wed 21:00 TW = 09:00 ET"),
+            (TASK_MOO_TUE,    "MOO Fill (Tue)",        "Tue 21:31 TW = 09:31 ET"),
+            (TASK_MOO_WED,    "MOO Fill (Wed)",        "Wed 21:31 TW = 09:31 ET"),
+            (TASK_REPORT,     "Daily Report",          "Daily 04:40 TW = 16:40 ET"),
         ]
         for tn, lbl, timing in task_defs:
             card = TaskCard(
@@ -1276,13 +1283,15 @@ class ControlPanel(tk.Tk):
     def _install_scheduler(self):
         if not messagebox.askyesno(
             "Install All Tasks",
-            "Install ALL 6 scheduled tasks?\n\n"
-            "  1. QuantCore_DataUpdate_Daily    (Daily 04:30)\n"
-            "  2. QuantCore_SR_Rebalance_Tue    (ETF  Tue 21:00)\n"
-            "  3. QuantCore_SP500_Rebalance_Wed (Stocks Wed 21:00)\n"
-            "  4. QuantCore_MOO_Fill_Tue        (MOO Check Tue 21:31)\n"
-            "  5. QuantCore_MOO_Fill_Wed        (MOO Check Wed 21:31)\n"
-            "  6. QuantCore_DailyReport         (Daily 04:40)\n\n"
+            "Install ALL 8 scheduled tasks?\n\n"
+            "  1. QuantCore_GW_DailyRestart     (Daily 06:00)\n"
+            "  2. QuantCore_DataUpdate_Daily    (Daily 04:30)\n"
+            "  3. QuantCore_SP500_DailyCheck    (Mon-Fri 16:00)\n"
+            "  4. QuantCore_SR_Rebalance_Tue    (ETF  Tue 21:00)\n"
+            "  5. QuantCore_SP500_Rebalance_Wed (Stocks Wed 21:00)\n"
+            "  6. QuantCore_MOO_Fill_Tue        (MOO Check Tue 21:31)\n"
+            "  7. QuantCore_MOO_Fill_Wed        (MOO Check Wed 21:31)\n"
+            "  8. QuantCore_DailyReport         (Daily 04:40)\n\n"
             "Continue?"
         ):
             return
@@ -1291,8 +1300,9 @@ class ControlPanel(tk.Tk):
         self._log("[>] Installing all tasks...")
 
         def _do():
-            for tn in [TASK_UPDATE, TASK_REBAL_SR, TASK_REBAL_SP,
-                       TASK_MOO_TUE, TASK_MOO_WED, TASK_REPORT, TASK_SP_DAILY]:
+            for tn in [TASK_GW_RESTART, TASK_UPDATE, TASK_SP_DAILY,
+                       TASK_REBAL_SR, TASK_REBAL_SP,
+                       TASK_MOO_TUE, TASK_MOO_WED, TASK_REPORT]:
                 out = install_single_task(tn)
                 self._log(f"  {out}")
             self._log("[OK] All tasks installed. Refreshing...")

@@ -84,10 +84,7 @@ class GatewayMonitor:
         用於「從斷線恢復」才發的通知。
     on_disconnected : callable(name, reason) | None
         每次從「online」變「offline」的第一瞬間觸發（不包含重連失敗的後續）。
-        用於第 0 分鐘的斷線通知。
-    on_still_offline : callable(name, minutes, reason) | None
-        10 分鐘 / 20 分鐘後仍 offline 時觸發。
-        用於「連續斷線提醒」。
+        每次斷線只發一次通知；不會持續提醒仍在 offline。
 
     Callbacks 都在 worker thread 被呼叫 — GUI consumer 需自己 marshal 回主執行緒。
     """
@@ -98,22 +95,15 @@ class GatewayMonitor:
         on_state_change: Optional[Callable[[str, str], None]] = None,
         on_connected: Optional[Callable[[str], None]] = None,
         on_disconnected: Optional[Callable[[str, str], None]] = None,
-        on_still_offline: Optional[Callable[[str, int, str], None]] = None,
     ):
         self._account_names = list(account_names)
         self._on_state_change = on_state_change
         self._on_connected = on_connected
         self._on_disconnected = on_disconnected
-        self._on_still_offline = on_still_offline
 
         self._stop_flag = False
         self._threads: dict[str, threading.Thread] = {}
         self._last_state: dict[str, str] = {}   # name -> 'init' | 'connecting' | 'online' | 'offline'
-
-        # pending reminder threads：name -> list[threading.Thread]
-        # 我們用自製 sleep-and-check 的 thread 而不是 tk.after，這樣本 class 完全不依賴 Tk
-        self._reminder_threads: dict[str, list[threading.Thread]] = {}
-        self._reminder_cancel: dict[str, threading.Event] = {}
 
     # ── Public API ─────────────────────────────────────────
 
@@ -132,14 +122,9 @@ class GatewayMonitor:
         停止所有監測 thread 並等待收尾。
 
         - 設 stop flag，loop 內會在下一次 `ib.sleep(5)` 迴圈檢查後退出
-        - 取消所有 pending reminders
         - 最多等 `timeout` 秒讓 worker thread 自己退出
         """
         self._stop_flag = True
-        # Cancel 所有 pending reminders
-        for name in list(self._reminder_cancel.keys()):
-            self._cancel_reminders(name)
-        # 等 worker threads 收尾
         deadline = time.time() + timeout
         for name, t in list(self._threads.items()):
             remaining = max(0.1, deadline - time.time())
@@ -229,11 +214,9 @@ class GatewayMonitor:
                 log.warning(f"[GatewayMonitor] on_state_change({name}) raised: {e}")
 
     def _on_connected_event(self, name: str) -> None:
-        """連線成功時：更新狀態 + 取消 reminders + 觸發 on_connected（非 init）"""
+        """連線成功時：更新狀態 + 觸發 on_connected（非 init）"""
         prev = self._last_state.get(name, "init")
         self._set_state(name, "online")
-        # 取消任何 pending reminders（從斷線恢復的情境）
-        self._cancel_reminders(name)
         # 只在「從斷線恢復」時才 fire on_connected（避免 init 時發 reconnect 通知）
         if prev == "offline" and self._on_connected:
             try:
@@ -242,60 +225,12 @@ class GatewayMonitor:
                 log.warning(f"[GatewayMonitor] on_connected({name}) raised: {e}")
 
     def _on_disconnected_event(self, name: str, reason: str) -> None:
-        """斷線時：更新狀態 + 啟動 10/20 min reminder"""
+        """斷線時：更新狀態，只在第一次從 online → offline 時發一次通知"""
         prev = self._last_state.get(name, "init")
         self._set_state(name, "offline")
-        # 只在「從連線變斷線」的第一瞬間啟動提醒（避免重連 flapping 多次排程）
-        if prev != "offline":
-            if self._on_disconnected:
-                try:
-                    self._on_disconnected(name, reason)
-                except Exception as e:
-                    log.warning(f"[GatewayMonitor] on_disconnected({name}) raised: {e}")
-            self._schedule_reminders(name, reason)
-
-    # ── 10/20 分鐘 reminder 排程 ───────────────────────────────
-
-    def _schedule_reminders(self, name: str, reason: str) -> None:
-        """為指定帳戶排 10/20 分鐘提醒。用純 Python thread 實作，不依賴 Tk。"""
-        if self._on_still_offline is None:
-            return
-
-        self._cancel_reminders(name)
-
-        cancel_event = threading.Event()
-        self._reminder_cancel[name] = cancel_event
-
-        threads = []
-        for minutes in (10, 20):
-            t = threading.Thread(
-                target=self._reminder_worker,
-                args=(name, minutes, reason, cancel_event),
-                daemon=True,
-                name=f"GatewayReminder-{name}-{minutes}min",
-            )
-            t.start()
-            threads.append(t)
-        self._reminder_threads[name] = threads
-
-    def _reminder_worker(self, name: str, minutes: int, reason: str,
-                          cancel_event: threading.Event) -> None:
-        """Sleep N 分鐘然後檢查是否仍 offline → 觸發 callback"""
-        # cancel_event.wait(timeout) 會在被 set 時立刻返回 True（= 取消）
-        # 或在 timeout 後回傳 False（= 可繼續）
-        cancelled = cancel_event.wait(timeout=minutes * 60.0)
-        if cancelled or self._stop_flag:
-            return
-        # 仍 offline 才發
-        if self._last_state.get(name) == "offline" and self._on_still_offline:
+        # 只在「從連線變斷線」的第一瞬間觸發通知（避免重連 flapping 重複發）
+        if prev != "offline" and self._on_disconnected:
             try:
-                self._on_still_offline(name, minutes, reason)
+                self._on_disconnected(name, reason)
             except Exception as e:
-                log.warning(f"[GatewayMonitor] on_still_offline({name},{minutes}) raised: {e}")
-
-    def _cancel_reminders(self, name: str) -> None:
-        """取消指定帳戶的所有 pending reminders"""
-        ev = self._reminder_cancel.pop(name, None)
-        if ev is not None:
-            ev.set()
-        self._reminder_threads.pop(name, None)
+                log.warning(f"[GatewayMonitor] on_disconnected({name}) raised: {e}")

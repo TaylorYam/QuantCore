@@ -852,25 +852,16 @@ class ControlPanel(tk.Tk):
                 )
             self.after(0, _fire)
 
-        def on_still_offline(name, minutes, reason):
-            def _fire():
-                self._tg_notify(
-                    f"🔴 <b>{name}</b> Gateway still OFFLINE ({minutes} min)\n"
-                    f"<code>{reason}</code>"
-                )
-            self.after(0, _fire)
-
         self._gw_monitor = GatewayMonitor(
             account_names=account_names,
             on_state_change=on_state,
             on_connected=on_connected,
             on_disconnected=on_disconnected,
-            on_still_offline=on_still_offline,
         )
         self._gw_monitor.start()
 
     def _stop_gateway_monitors(self):
-        """Panel 關閉時：請 GatewayMonitor 清乾淨（disconnect + cancel reminders）"""
+        """Panel 關閉時：請 GatewayMonitor 清乾淨（disconnect 所有 persistent 連線）"""
         mon = getattr(self, "_gw_monitor", None)
         if mon is not None:
             mon.stop(timeout=3.0)

@@ -1,15 +1,23 @@
 """
-QuantCore — Gateway 持久連線監測（S9 從 control_panel 抽出）
+QuantCore — Gateway 連線監測（S9 從 control_panel 抽出，2026-04-16 移除自動重啟）
 
-每個帳戶一條背景 thread，各自維持與 IB Gateway 的長壽命連線。
-透過 callback 回傳狀態變化給 GUI（Tk Panel）或任何其他 consumer。
+每個帳戶一條背景 thread，維持一條與 IB Gateway 的長壽命連線。
+連線一旦斷掉就發一次通知然後 thread 退出 — **不自動重連、不自動重啟**。
+要恢復監測必須重啟 Panel 本身。
+
+為什麼不自動重連？
+  - 2026-04-15 事故證明：反覆 connect 失敗會在 Gateway 10.41 留下 CLOSE_WAIT
+    socket，累積到 2-3 個 Gateway 的 accept thread 就整個卡死、全帳戶 API dead。
+  - IBC 3.23.0 在 Gateway 10.41 上 UI scraper 壞掉，任何 auto-restart 路徑
+    （CommandServer RESTART、AutoRestartTime、ReloginAfter...）都通往同一個壞
+    UI scraper，沒一個能繞過。
+  - 結論：Gateway restart / reconnect 全部改為「手動」——斷了就斷了，使用者
+    自己從 Panel 的 Start Gateway 按鈕或 IBC 手動啟動，完事後重開 Panel。
 
 設計原則：
-  - 事件驅動（不靠 polling）— connect 成功 / `ib.isConnected()` 變 False 即觸發 callback
-  - Reconnect backoff：10s → 30s → 60s → 60s ...
-  - 所有 IB 連線在 `stop()` 時清楚 disconnect，避免殭屍 client slot
+  - 事件驅動：connect 成功 / `ib.isConnected()` 變 False 即觸發 callback
+  - 所有 IB 連線在 `stop()` 或 thread 退出時清楚 disconnect，避免殭屍 socket
   - Callback 在 worker thread 內被呼叫；GUI consumer 需自己 marshal 回主 thread
-    （通常透過 `tk.Tk.after(0, fn)`）
 
 Usage
 ─────
@@ -19,7 +27,7 @@ Usage
         print(f"{name} online")
 
     def on_disconnected(name, reason):
-        print(f"{name} offline: {reason}")
+        print(f"{name} offline: {reason}")   # fired once, no retry notifications
 
     def on_state_change(name, state):
         # state = "connecting" | "online" | "offline"
@@ -51,12 +59,6 @@ from account_utils import ROLE_MONITOR
 
 log = logging.getLogger(__name__)
 
-# Reconnect backoff schedule（秒）
-# R4.1: 首次失敗用 3 秒快速重試，處理 Panel 啟動時 Gateway 正在 ready 的 race —
-#       避免首次 race-loss 就卡進 10→30→60s 長 backoff 讓 UI 誤顯 OFFLINE。
-#       第二次以後照原本的 10→30→60→60 schedule。
-BACKOFF_SCHEDULE = [3, 10, 30, 60, 60]
-
 # 連線維持迴圈的 poll 週期
 POLL_INTERVAL_SEC = 5
 
@@ -66,10 +68,13 @@ CONNECT_TIMEOUT_SEC = 10
 
 class GatewayMonitor:
     """
-    多帳戶 IB Gateway 持久連線監測器。
+    多帳戶 IB Gateway 連線監測器（單次 connect，無自動重連）。
 
-    每個帳戶啟動一條 daemon thread，維持與 Gateway 的長壽命 IB 連線。
-    連線斷掉時自動 backoff 重連，並透過 callbacks 通知 consumer。
+    每個帳戶啟動一條 daemon thread：
+      1. 連一次 Gateway。連上就進 heartbeat 維持迴圈。
+      2. 連線斷掉（heartbeat 偵測到 isConnected False，或 connect 直接失敗）
+         → 觸發 on_disconnected callback → thread 退出。
+      3. thread 退出後不會重啟；要重新監測必須重開 Panel 本身。
 
     Parameters
     ----------
@@ -77,14 +82,13 @@ class GatewayMonitor:
         要監測的帳戶名稱清單（每個都會從 accounts.json 解析）
     on_state_change : callable(name, state) | None
         任何狀態變化時都觸發。state ∈ {"connecting", "online", "offline"}
-        無論是不是第一次連上、無論是不是從斷線恢復，每個狀態進入都會呼叫。
         GUI 用它來更新卡片顏色。
     on_connected : callable(name) | None
-        每次連線成功時觸發（**不包含第一次 init**）。
-        用於「從斷線恢復」才發的通知。
+        因為不再有重連，這個 callback 實際上不會被觸發（保留簽名以免破壞
+        caller 的程式碼；可以傳 None）。
     on_disconnected : callable(name, reason) | None
-        每次從「online」變「offline」的第一瞬間觸發（不包含重連失敗的後續）。
-        每次斷線只發一次通知；不會持續提醒仍在 offline。
+        連線第一次從 online 變 offline（或首次 connect 失敗）時觸發**一次**。
+        同一個 thread 不會再發第二次通知。
 
     Callbacks 都在 worker thread 被呼叫 — GUI consumer 需自己 marshal 回主執行緒。
     """
@@ -108,7 +112,7 @@ class GatewayMonitor:
     # ── Public API ─────────────────────────────────────────
 
     def start(self) -> None:
-        """啟動所有監測 thread"""
+        """啟動所有監測 thread（每帳戶一條，各自只 connect 一次）"""
         self._stop_flag = False
         for name in self._account_names:
             self._last_state[name] = "init"
@@ -121,7 +125,7 @@ class GatewayMonitor:
         """
         停止所有監測 thread 並等待收尾。
 
-        - 設 stop flag，loop 內會在下一次 `ib.sleep(5)` 迴圈檢查後退出
+        - 設 stop flag，heartbeat 迴圈在下一次 `ib.sleep(5)` 檢查後退出
         - 最多等 `timeout` 秒讓 worker thread 自己退出
         """
         self._stop_flag = True
@@ -140,67 +144,44 @@ class GatewayMonitor:
         """回傳目前狀態：'init' | 'connecting' | 'online' | 'offline'"""
         return self._last_state.get(name, "init")
 
-    # ── Worker thread：單一帳戶的持久監測迴圈 ───────────────
+    # ── Worker thread：單一帳戶的監測迴圈（一次 connect，不重試）──
 
     def _monitor_loop(self, name: str) -> None:
-        """背景 thread：維持與指定帳戶 Gateway 的持久 IB 連線 + 斷線自動重連"""
+        """背景 thread：連一次 Gateway，維持 heartbeat，斷了就通知後退出。"""
         asyncio.set_event_loop(asyncio.new_event_loop())
 
-        attempt = 0
+        ib = IB()
+        try:
+            # 每次 start 都重建 ctx，讓 accounts.json 改動能被套用
+            ctx = AccountCtx.from_name(name, ROLE_MONITOR)
 
-        while not self._stop_flag:
-            ib = IB()
+            self._set_state(name, "connecting")
+            ib.connect(ctx.host, ctx.port, clientId=ctx.client_id,
+                       timeout=CONNECT_TIMEOUT_SEC)
+
+            self._on_connected_event(name)
+
+            # 連線維持：ib.sleep 驅動 event loop，斷線時 isConnected 變 False
+            while ib.isConnected() and not self._stop_flag:
+                ib.sleep(POLL_INTERVAL_SEC)
+
+            # 跳出迴圈：不是 stop 就是斷線
+            if not self._stop_flag:
+                self._on_disconnected_event(name, "connection lost")
+        except Exception as e:
+            err = str(e) or type(e).__name__
+            self._on_disconnected_event(name, err)
+        finally:
+            # ib.disconnect() 是 idempotent — 即使 connect 本身 timeout 也安全。
+            # 必須呼叫，否則 ib_insync 底層 TCP socket 會半開 → Gateway 累積
+            # CLOSE_WAIT → accept thread 卡死（2026-04-15 事故 root cause）。
             try:
-                # 每次重連都重建 ctx，萬一 accounts.json 被改也會自動套用新值
-                ctx = AccountCtx.from_name(name, ROLE_MONITOR)
+                ib.disconnect()
+            except Exception:
+                pass
 
-                # 標記 connecting
-                self._set_state(name, "connecting")
-
-                ib.connect(ctx.host, ctx.port, clientId=ctx.client_id,
-                           timeout=CONNECT_TIMEOUT_SEC)
-                attempt = 0  # 重連計數歸零
-
-                # 通知 connected（區分第一次 vs 重連由 _on_connected_event 處理）
-                self._on_connected_event(name)
-
-                # 連線維持迴圈：ib.sleep 會處理 event loop，斷線時 isConnected 會變 False
-                while ib.isConnected() and not self._stop_flag:
-                    ib.sleep(POLL_INTERVAL_SEC)
-
-                # 跳出迴圈：不是 stop 就是斷線
-                if not self._stop_flag:
-                    self._on_disconnected_event(name, "connection lost")
-            except Exception as e:
-                err = str(e) or type(e).__name__
-                self._on_disconnected_event(name, err)
-            finally:
-                # Always call ib.disconnect() — even when ib.isConnected() is
-                # False (e.g. TimeoutError during connect). ib_insync keeps
-                # the underlying TCP socket half-open in that case, and
-                # leaving it unclosed causes the server to accumulate
-                # CLOSE_WAIT sockets. Gateway 10.41 stalls its accept thread
-                # after ~2-3 leaked sockets, bricking API handshakes for the
-                # whole session (see 2026-04-15 21:25 incident log).
-                #
-                # ib.disconnect() is idempotent — safe to call on a never-
-                # connected or already-disconnected IB instance.
-                try:
-                    ib.disconnect()
-                except Exception:
-                    pass
-
-            if self._stop_flag:
-                break
-
-            # Backoff 後重試
-            delay = BACKOFF_SCHEDULE[min(attempt, len(BACKOFF_SCHEDULE) - 1)]
-            attempt += 1
-            # 分段 sleep 以便快速響應 stop
-            for _ in range(delay):
-                if self._stop_flag:
-                    break
-                time.sleep(1)
+        # thread 結束。**不重啟、不 retry**。
+        # 恢復監測需要使用者手動重啟 Panel（本 class 的 start() 會被再呼叫一次）。
 
     # ── 狀態變化處理 + callback 觸發 ─────────────────────────
 
@@ -214,10 +195,11 @@ class GatewayMonitor:
                 log.warning(f"[GatewayMonitor] on_state_change({name}) raised: {e}")
 
     def _on_connected_event(self, name: str) -> None:
-        """連線成功時：更新狀態 + 觸發 on_connected（非 init）"""
+        """連線成功時：更新狀態 + (理論上)觸發 on_connected。
+        因為現在不重連，on_connected 實際永遠不會 fire（prev 一定是 'init' 或
+        'connecting'，不是 'offline'），但保留判斷避免未來重啟機制回來時行為不對。"""
         prev = self._last_state.get(name, "init")
         self._set_state(name, "online")
-        # 只在「從斷線恢復」時才 fire on_connected（避免 init 時發 reconnect 通知）
         if prev == "offline" and self._on_connected:
             try:
                 self._on_connected(name)
@@ -225,10 +207,10 @@ class GatewayMonitor:
                 log.warning(f"[GatewayMonitor] on_connected({name}) raised: {e}")
 
     def _on_disconnected_event(self, name: str, reason: str) -> None:
-        """斷線時：更新狀態，只在第一次從 online → offline 時發一次通知"""
+        """斷線時：更新狀態，只在第一次從 online → offline 時發一次通知。
+        (thread 本來就會退出、不會發第二次，這裡的 guard 是多餘保險)"""
         prev = self._last_state.get(name, "init")
         self._set_state(name, "offline")
-        # 只在「從連線變斷線」的第一瞬間觸發通知（避免重連 flapping 重複發）
         if prev != "offline" and self._on_disconnected:
             try:
                 self._on_disconnected(name, reason)

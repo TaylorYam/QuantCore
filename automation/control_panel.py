@@ -838,18 +838,26 @@ class ControlPanel(tk.Tk):
                 ts = datetime.now().strftime("%H:%M:%S")
                 self.after(0, lambda: self.gw_last_lbl.config(text=f"last: {ts}"))
 
+        # Telegram 通知：只針對 Rosa 發（Taylor / Yvonne 跳過）
+        # Rosa 是 native Gateway，掉線需要使用者手動介入；Taylor / Yvonne 由 IBC
+        # 管理，比較容易閃一下就恢復，不值得洗 Telegram。UI 紅綠燈和 Output Log
+        # 對三個帳戶都會更新，不受這個 filter 影響。
+        TG_NOTIFY_ACCOUNTS = {"Rosa"}
+
         def on_connected(name):
             def _fire():
                 self._log(f"[GW] {name} reconnected")
-                self._tg_notify(f"✅ <b>{name}</b> Gateway reconnected")
+                if name in TG_NOTIFY_ACCOUNTS:
+                    self._tg_notify(f"✅ <b>{name}</b> Gateway reconnected")
             self.after(0, _fire)
 
         def on_disconnected(name, reason):
             def _fire():
                 self._log(f"[GW] {name} OFFLINE — {reason}")
-                self._tg_notify(
-                    f"🔴 <b>{name}</b> Gateway disconnected\n<code>{reason}</code>"
-                )
+                if name in TG_NOTIFY_ACCOUNTS:
+                    self._tg_notify(
+                        f"🔴 <b>{name}</b> Gateway disconnected\n<code>{reason}</code>"
+                    )
             self.after(0, _fire)
 
         self._gw_monitor = GatewayMonitor(

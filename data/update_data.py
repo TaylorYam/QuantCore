@@ -57,7 +57,7 @@ def _extract_ticker(raw: pd.DataFrame, tk: str) -> pd.DataFrame | None:
     相容 yfinance < 1.0（raw["Open"][tk]）和 >= 1.0（raw[tk]["Open"] 或 MultiIndex）。
     """
     try:
-        cols = ["Open", "High", "Low", "Close", "Volume"]
+        cols = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
         if raw.columns.nlevels == 2:
             # MultiIndex columns
             top_level = raw.columns.get_level_values(0).unique()
@@ -92,8 +92,8 @@ def _download_ohlcv(ticker: str, start: str, end: str,
             return None
         raw.index = pd.to_datetime(raw.index).tz_localize(None).normalize()
         raw.index.name = "Date"
-        cols = ["Open", "High", "Low", "Close", "Volume"]
-        df = pd.DataFrame({c: raw[c] if c in raw.columns else 0 for c in cols})
+        cols = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
+        df = pd.DataFrame({c: raw[c] for c in cols if c in raw.columns})
         df = df[~df.index.duplicated(keep="last")].sort_index()
         df = df.dropna(subset=["Close"])
         return df if not df.empty else None

@@ -453,11 +453,38 @@ class ControlPanel(tk.Tk):
         self.after(1500, self._schedule_rosa_poll)
         # TAYLOR / YVONNE 週二/三 20:05 台北驗證手動登入（一次性、各發一封）
         self.after(2000, self._schedule_ty_check)
-        # Panel 關閉時乾淨 disconnect 所有監測連線
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        # System tray icon — 點 X 不殺 app，縮到 tray 繼續跑監控
+        self.after(2500, self._start_tray)
+        # Panel 視窗 X = withdraw（藏起來但 Tk loop 活著；真退出走 tray>離開）
+        self.protocol("WM_DELETE_WINDOW", self._on_window_close)
 
-    def _on_close(self):
-        """視窗關閉前的清理：斷開所有監測連線，避免 zombie client slot"""
+    def _on_window_close(self):
+        """視窗 X 按鈕：藏起視窗，**Tk loop 繼續跑** → ROSA poll / TY check
+        / GatewayMonitor 全部都還活著。真退出走 tray > 離開（_quit_app）。"""
+        try:
+            self._log("[>] Window hidden to system tray (monitoring continues)")
+        except Exception:
+            pass
+        try:
+            self.withdraw()
+        except Exception:
+            pass
+
+    def _show_window(self):
+        """Tray 點擊時呼叫：deiconify + zoom(maximize) + lift + focus_force。
+        從 tray 喚回的視窗一律最大化，跟首次啟動行為一致 — 隱藏前若有手動
+        縮小過，使用者通常仍期望「點 tray = 看完整面板」。"""
+        try:
+            self.deiconify()
+            self.state("zoomed")
+            self.lift()
+            self.focus_force()
+        except Exception:
+            pass
+
+    def _quit_app(self):
+        """Tray > 離開 / 致命錯誤時呼叫：全套清理（cancel timers → stop monitors
+        → stop tray → release lockfile → destroy Tk）。"""
         try:
             self._cancel_rosa_poll()
         except Exception:
@@ -472,9 +499,59 @@ class ControlPanel(tk.Tk):
         except Exception:
             pass
         try:
+            tray = getattr(self, "_tray", None)
+            if tray is not None:
+                tray.stop()
+        except Exception:
+            pass
+        try:
+            from single_instance import release_lock
+            lockfile = getattr(self, "_lockfile_path", None)
+            if lockfile is not None:
+                release_lock(lockfile)
+        except Exception:
+            pass
+        try:
             self.destroy()
         except Exception:
             pass
+
+    # Backwards-compat shim — anything still calling _on_close (legacy code
+    # paths, untouched callers in this 1500-line file) gets the full quit.
+    _on_close = _quit_app
+
+    def _start_tray(self):
+        """啟動 system tray icon。Soft-fail: pystray 失敗就 log warning 並把
+        WM_DELETE_WINDOW 還原成完整 quit（FR-T9），panel 仍可正常使用。"""
+        try:
+            from tray_controller import TrayController
+            from tray_icons import ensure_tray_icons
+
+            assets_dir = BASE_DIR / "assets" / "tray"
+            base_ico = BASE_DIR / "quantcore.ico"
+            ensure_tray_icons(assets_dir, base_ico)
+
+            self._tray = TrayController(
+                assets_dir=assets_dir,
+                on_show_window=lambda: self.after(0, self._show_window),
+                on_quit=lambda: self.after(0, self._quit_app),
+            )
+            ok = self._tray.start()
+            if not ok:
+                self._tray = None
+                self._fallback_to_legacy_close("tray controller start returned False")
+        except Exception as e:
+            self._tray = None
+            self._fallback_to_legacy_close(f"tray init raised {e!r}")
+
+    def _fallback_to_legacy_close(self, reason: str):
+        """Soft-fail recovery: re-bind X to full quit so the panel is still
+        cleanly closeable when the tray didn't come up."""
+        try:
+            self._log(f"[GW] tray unavailable ({reason}) — X button reverts to full quit")
+        except Exception:
+            pass
+        self.protocol("WM_DELETE_WINDOW", self._quit_app)
 
     # ── 建構 UI ─────────────────────────────────────────────
 
@@ -849,6 +926,13 @@ class ControlPanel(tk.Tk):
             if state == "online":
                 ts = datetime.now().strftime("%H:%M:%S")
                 self.after(0, lambda: self.gw_last_lbl.config(text=f"last: {ts}"))
+            # ROSA 狀態變化 → 重畫 system tray icon（gray/green/red）+ tooltip
+            if name == "Rosa":
+                tray = getattr(self, "_tray", None)
+                if tray is not None:
+                    ts_short = datetime.now().strftime("%H:%M")
+                    self.after(0, lambda s=state, t=ts_short:
+                               tray.update_state(s, t))
 
         # Disconnect / reconnect callbacks only update the Output Log + UI dot.
         # Telegram for ROSA is now driven by the 30-min market-window poller
@@ -1554,6 +1638,34 @@ class ControlPanel(tk.Tk):
 
 
 # ════════════════════════════════════════════════════════════
+def _lockfile_path() -> Path:
+    """Same lockfile path used by the single-instance check + the panel's
+    quit-time release."""
+    import tempfile
+    return Path(tempfile.gettempdir()) / "quantcore_panel.lock"
+
+
 if __name__ == "__main__":
+    from single_instance import acquire_lock
+    from tkinter import messagebox as _mb
+    import tkinter as _tk
+
+    _LOCKFILE = _lockfile_path()
+    if not acquire_lock(_LOCKFILE):
+        # Another live panel is already running. Pop a tiny temp Tk just
+        # for the messagebox, then exit so we don't construct two
+        # GatewayMonitors fighting over the same client_id.
+        _tmp = _tk.Tk()
+        _tmp.withdraw()
+        _mb.showinfo(
+            "QuantCore",
+            "QuantCore is already running.\n\nCheck your system tray.",
+            parent=_tmp,
+        )
+        _tmp.destroy()
+        sys.exit(0)
+
     app = ControlPanel()
+    # Stash so _quit_app can release_lock on shutdown.
+    app._lockfile_path = _LOCKFILE
     app.mainloop()

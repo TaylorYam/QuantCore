@@ -63,3 +63,6 @@ automation/jts.ini
 .agents/
 .continue/
 skills-lock.json
+
+# Generated tray icon assets (rebuilt on first launch from quantcore.ico)
+automation/assets/tray/*.png

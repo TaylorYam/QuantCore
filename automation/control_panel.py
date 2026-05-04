@@ -449,11 +449,23 @@ class ControlPanel(tk.Tk):
         self.refresh_all()
         # 啟動 Gateway 持久監測連線（每帳戶一條，斷線自動重連 + Telegram 通知）
         self.after(500, self._start_gateway_monitors)
+        # ROSA 市場時段斷線輪詢（與持久監測平行；只對齊 21:00–05:00 台北窗口）
+        self.after(1500, self._schedule_rosa_poll)
+        # TAYLOR / YVONNE 週二/三 20:05 台北驗證手動登入（一次性、各發一封）
+        self.after(2000, self._schedule_ty_check)
         # Panel 關閉時乾淨 disconnect 所有監測連線
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _on_close(self):
         """視窗關閉前的清理：斷開所有監測連線，避免 zombie client slot"""
+        try:
+            self._cancel_rosa_poll()
+        except Exception:
+            pass
+        try:
+            self._cancel_ty_check()
+        except Exception:
+            pass
         try:
             self._log("[>] Shutting down gateway monitors...")
             self._stop_gateway_monitors()
@@ -838,27 +850,16 @@ class ControlPanel(tk.Tk):
                 ts = datetime.now().strftime("%H:%M:%S")
                 self.after(0, lambda: self.gw_last_lbl.config(text=f"last: {ts}"))
 
-        # Telegram 通知：只針對 Rosa 發（Taylor / Yvonne 跳過）
-        # Rosa 是 native Gateway，掉線需要使用者手動介入；Taylor / Yvonne 由 IBC
-        # 管理，比較容易閃一下就恢復，不值得洗 Telegram。UI 紅綠燈和 Output Log
-        # 對三個帳戶都會更新，不受這個 filter 影響。
-        TG_NOTIFY_ACCOUNTS = {"Rosa"}
-
+        # Disconnect / reconnect callbacks only update the Output Log + UI dot.
+        # Telegram for ROSA is now driven by the 30-min market-window poller
+        # (see _schedule_rosa_poll / rosa_poll module), not the event-driven
+        # callback path — so a flapping connection during off-hours doesn't
+        # spam the channel.
         def on_connected(name):
-            def _fire():
-                self._log(f"[GW] {name} reconnected")
-                if name in TG_NOTIFY_ACCOUNTS:
-                    self._tg_notify(f"✅ <b>{name}</b> Gateway reconnected")
-            self.after(0, _fire)
+            self.after(0, lambda: self._log(f"[GW] {name} reconnected"))
 
         def on_disconnected(name, reason):
-            def _fire():
-                self._log(f"[GW] {name} OFFLINE — {reason}")
-                if name in TG_NOTIFY_ACCOUNTS:
-                    self._tg_notify(
-                        f"🔴 <b>{name}</b> Gateway disconnected\n<code>{reason}</code>"
-                    )
-            self.after(0, _fire)
+            self.after(0, lambda: self._log(f"[GW] {name} OFFLINE — {reason}"))
 
         self._gw_monitor = GatewayMonitor(
             account_names=account_names,
@@ -873,6 +874,171 @@ class ControlPanel(tk.Tk):
         mon = getattr(self, "_gw_monitor", None)
         if mon is not None:
             mon.stop(timeout=3.0)
+
+    # ── ROSA 30-min market-window poller ─────────────────────
+    #
+    # Pure logic lives in rosa_poll.py — this section is the Tk plumbing
+    # that schedules ticks + marshals the heavy work onto a daemon thread
+    # so the UI never freezes on a 12-second β-retry wait.
+
+    def _schedule_rosa_poll(self):
+        """啟動 ROSA 輪詢：若 panel 開啟瞬間已落在台北 21:00–05:00 交易窗口內，
+        立刻跑一次 tick；否則排到下一個有效 tick（next_rosa_poll_time）。"""
+        from zoneinfo import ZoneInfo
+        from market_calendar import trading_session_date_for
+
+        self._rosa_poll_after_id = None
+        now = datetime.now(ZoneInfo("Asia/Taipei"))
+
+        if trading_session_date_for(now) is not None:
+            # 已在窗口 — 立即跑一次（在背景 thread；下面 _arm_next 會排下一個）
+            self._log("[GW] Rosa poll: panel start inside window → immediate tick")
+            threading.Thread(target=self._rosa_poll_run, daemon=True).start()
+        else:
+            self._log("[GW] Rosa poll: panel start outside window → scheduling")
+        self._arm_next_rosa_poll(now)
+
+    def _arm_next_rosa_poll(self, now_taipei):
+        """算下一個 tick 的 ms delay 並用 self.after() 排程。Tk 的 after() 接受
+        int ms — 我們把 datetime 差轉成 ms。"""
+        from rosa_poll import next_rosa_poll_time
+        nxt = next_rosa_poll_time(now_taipei)
+        delay_ms = max(1, int((nxt - now_taipei).total_seconds() * 1000))
+        self._rosa_poll_after_id = self.after(delay_ms, self._rosa_poll_tick)
+        self._log(f"[GW] Rosa poll: next tick at {nxt.strftime('%Y-%m-%d %H:%M %Z')}")
+
+    def _rosa_poll_tick(self):
+        """Tk after() callback. Spawns a daemon thread (so the 12s β-retry
+        wait doesn't freeze the UI) then immediately schedules the next tick."""
+        from zoneinfo import ZoneInfo
+        threading.Thread(target=self._rosa_poll_run, daemon=True).start()
+        self._arm_next_rosa_poll(datetime.now(ZoneInfo("Asia/Taipei")))
+
+    def _rosa_poll_run(self):
+        """Background-thread body: invoke pure rosa_poll_decision and
+        marshal any resulting alert back to the Tk thread for log + telegram.
+
+        Wrapped in try/except so a panel close during the 12-second β-retry
+        wait doesn't bubble a Tk-already-destroyed error up the daemon."""
+        from zoneinfo import ZoneInfo
+        from rosa_poll import rosa_poll_decision
+
+        mon = getattr(self, "_gw_monitor", None)
+        if mon is None:
+            return  # GatewayMonitor not yet started — skip this cycle
+
+        now = datetime.now(ZoneInfo("Asia/Taipei"))
+        msg = rosa_poll_decision(
+            now_taipei=now,
+            is_online=lambda: mon.is_online("Rosa"),
+            restart=lambda: mon.restart_account_thread("Rosa"),
+            sleep=time.sleep,
+        )
+        ts = now.strftime("%H:%M")
+        try:
+            if msg is None:
+                self.after(0, lambda: self._log(f"[GW] Rosa poll {ts} → ok"))
+            else:
+                self.after(0, lambda m=msg: (
+                    self._log(f"[GW] Rosa poll {ts} → ALERT"),
+                    self._tg_notify(m),
+                ))
+        except Exception:
+            pass  # panel destroyed mid-tick — drop the result silently
+
+    def _cancel_rosa_poll(self):
+        """_on_close hook — kill any pending after() callback so a closed
+        panel doesn't fire a zombie tick."""
+        after_id = getattr(self, "_rosa_poll_after_id", None)
+        if after_id is not None:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+            self._rosa_poll_after_id = None
+
+    # ── TAYLOR / YVONNE Tue/Wed 20:05 verification ──────────
+    #
+    # Pure logic in ty_check.py — this section is the Tk plumbing that
+    # schedules the trigger + runs the verifications on a daemon thread
+    # (so the 10-second cold-connect timeout doesn't freeze the UI).
+
+    TY_CHECK_ACCOUNTS = ("Taylor", "Yvonne")
+
+    def _schedule_ty_check(self):
+        """Schedule the next Tue/Wed 20:05 verification."""
+        from zoneinfo import ZoneInfo
+        self._ty_check_after_id = None
+        self._arm_next_ty_check(datetime.now(ZoneInfo("Asia/Taipei")))
+
+    def _arm_next_ty_check(self, now_taipei):
+        from ty_check import next_ty_check_time
+        nxt = next_ty_check_time(now_taipei)
+        delay_ms = max(1, int((nxt - now_taipei).total_seconds() * 1000))
+        self._ty_check_after_id = self.after(delay_ms, self._ty_check_tick)
+        self._log(f"[GW] TY check: next at {nxt.strftime('%Y-%m-%d %H:%M %Z')}")
+
+    def _ty_check_tick(self):
+        """Tk after() callback — fans out one verification per account on
+        daemon threads, then immediately schedules the next tick.
+
+        Trust the scheduler to land on a valid Tue/Wed (next_ty_check_time
+        skips holidays), so no double-check needed here."""
+        from zoneinfo import ZoneInfo
+        for name in self.TY_CHECK_ACCOUNTS:
+            threading.Thread(
+                target=self._ty_verify_one, args=(name,), daemon=True,
+            ).start()
+        self._arm_next_ty_check(datetime.now(ZoneInfo("Asia/Taipei")))
+
+    def _ty_verify_one(self, name: str):
+        """Run one verification. Hybrid: if GatewayMonitor's persistent
+        connection already says ONLINE, that's heartbeat-confirmed proof of
+        life — skip the cold-connect to avoid a clientId clash. Otherwise
+        fire a fresh connect attempt (10s timeout) and report the outcome."""
+        from ty_check import format_ty_message, verify_one_account
+
+        mon = getattr(self, "_gw_monitor", None)
+        if mon is not None and mon.is_online(name):
+            msg = format_ty_message(name, success=True)
+        else:
+            msg = verify_one_account(name, lambda n=name: self._cold_connect(n))
+
+        try:
+            self.after(0, lambda m=msg, n=name: (
+                self._log(f"[GW] TY check {n} → "
+                          f"{'ok' if '✅' in m else 'ALERT'}"),
+                self._tg_notify(m),
+            ))
+        except Exception:
+            pass  # panel destroyed mid-verify — drop result silently
+
+    def _cold_connect(self, name: str) -> None:
+        """Open a fresh IB connection to `name` and immediately disconnect.
+        Raises on connect failure — verify_one_account turns that into the
+        red Telegram message."""
+        from ib_insync import IB
+        from account_ctx import AccountCtx
+        from account_utils import ROLE_MONITOR
+
+        ctx = AccountCtx.from_name(name, ROLE_MONITOR)
+        ib = IB()
+        try:
+            ib.connect(ctx.host, ctx.port, clientId=ctx.client_id, timeout=10)
+        finally:
+            try:
+                ib.disconnect()
+            except Exception:
+                pass
+
+    def _cancel_ty_check(self):
+        after_id = getattr(self, "_ty_check_after_id", None)
+        if after_id is not None:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+            self._ty_check_after_id = None
 
     # ── Gateway Status UI 狀態更新 ─────────────────────────
 

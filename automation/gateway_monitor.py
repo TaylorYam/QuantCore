@@ -13,6 +13,9 @@ QuantCore — Gateway 連線監測（S9 從 control_panel 抽出，2026-04-16 �
     UI scraper，沒一個能繞過。
   - 結論：Gateway restart / reconnect 全部改為「手動」——斷了就斷了，使用者
     自己從 Panel 的 Start Gateway 按鈕或 IBC 手動啟動，完事後重開 Panel。
+  - 例外：`restart_account_thread(name)` 提供節制的 on-demand 重連入口（單次
+    嘗試、不阻塞、拒絕在已 alive thread 上重複 spawn），由 ROSA 30 分輪詢呼叫；
+    其節制節奏與 2026-04-15 的『反覆 connect』失敗模式不同。
 
 設計原則：
   - 事件驅動：connect 成功 / `ib.isConnected()` 變 False 即觸發 callback
@@ -143,6 +146,27 @@ class GatewayMonitor:
     def get_state(self, name: str) -> str:
         """回傳目前狀態：'init' | 'connecting' | 'online' | 'offline'"""
         return self._last_state.get(name, "init")
+
+    def restart_account_thread(self, name: str) -> bool:
+        """β recovery primitive: re-spawn the worker thread for `name` if the
+        previous one has died (or was never started). Refuses if the existing
+        thread is still alive — we never want two `_monitor_loop`s for the
+        same account fighting over the same client_id.
+
+        Returns True iff a fresh thread was spawned. Returns immediately;
+        does NOT wait for connect to complete — the caller is expected to
+        sleep a few seconds then poll `is_online(name)`.
+        """
+        existing = self._threads.get(name)
+        if existing is not None and existing.is_alive():
+            return False
+        # Reset state so the new thread starts from a clean slate.
+        self._last_state[name] = "init"
+        t = threading.Thread(target=self._monitor_loop, args=(name,),
+                             daemon=True, name=f"GatewayMonitor-{name}")
+        self._threads[name] = t
+        t.start()
+        return True
 
     # ── Worker thread：單一帳戶的監測迴圈（一次 connect，不重試）──
 

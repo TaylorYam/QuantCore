@@ -127,6 +127,10 @@ python -m backtest.run_all --start 2019-01-01 --quantstats
 
 ```bash
 pip install pandas numpy yfinance ib_insync matplotlib quantstats openpyxl
+# Optional — accurate NYSE holiday awareness for the ROSA market-window
+# poller. If omitted, control_panel falls back to a hardcoded 2026-2027
+# NYSE holiday list (warning logged at startup).
+pip install pandas_market_calendars
 ```
 
 ### 設定

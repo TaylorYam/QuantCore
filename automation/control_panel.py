@@ -956,6 +956,11 @@ class ControlPanel(tk.Tk):
 
         def on_disconnected(name, reason):
             self.after(0, lambda: self._log(f"[GW] {name} OFFLINE — {reason}"))
+            # ROSA: 排一次性 recovery 嘗試 — 涵蓋 06:00 台北自動重啟（窗口
+            # 外、rosa_poll 不會跑）等情境。10 分鐘給 IB Gateway 完成重啟
+            # 的緩衝；成功後 on_connected → on_state → tray 自動翻綠。
+            if name == "Rosa":
+                self.after(10 * 60 * 1000, self._rosa_one_shot_recovery)
 
         self._gw_monitor = GatewayMonitor(
             account_names=account_names,
@@ -1052,6 +1057,26 @@ class ControlPanel(tk.Tk):
             except Exception:
                 pass
             self._rosa_poll_after_id = None
+
+    def _rosa_one_shot_recovery(self):
+        """Fired 10 min after a ROSA disconnect (any time of day, including
+        outside the 21:00–05:00 polling window). Skips if ROSA is already
+        back online — `restart_account_thread` itself also refuses to spawn
+        on a still-alive thread, so this is double safety, not redundant."""
+        mon = getattr(self, "_gw_monitor", None)
+        if mon is None:
+            return
+        if mon.is_online("Rosa"):
+            self._log("[GW] Rosa one-shot recovery: already online, skip")
+            return
+        self._log("[GW] Rosa one-shot recovery: attempting reconnect")
+        # Spawn in daemon thread — `restart_account_thread` itself returns
+        # immediately, but if any future variant blocks we don't want to
+        # freeze the Tk loop.
+        threading.Thread(
+            target=lambda: mon.restart_account_thread("Rosa"),
+            daemon=True,
+        ).start()
 
     # ── TAYLOR / YVONNE Tue/Wed 20:05 verification ──────────
     #

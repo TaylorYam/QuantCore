@@ -801,6 +801,13 @@ class ControlPanel(tk.Tk):
     # ── IB 即時刷新 ────────────────────────────────────────
 
     def _refresh_ib_live(self):
+        # 防止 race：同一個 clientId 同時只能連 Gateway 一條，
+        # 多次觸發（連點按鈕、切帳戶又按 Refresh IB）會讓後到的 connect
+        # 把先到的踢掉，timeout 那筆回 NAV=0 蓋掉成功那筆的 UI。
+        if getattr(self, "_ib_refresh_running", False):
+            self._log("[!] IB refresh already running — skipped")
+            return
+        self._ib_refresh_running = True
         self._log("Connecting to IB Gateway...")
         threading.Thread(target=self._ib_live_thread, daemon=True).start()
 
@@ -811,8 +818,11 @@ class ControlPanel(tk.Tk):
             acct = self.selected_account.get()
             self.after(0, lambda: self._log(f"  Fetching account [{acct}] ..."))
             pf = fetch_ib_portfolio(acct)
-            if pf.get("error"):
-                self.after(0, lambda: self._log(f"[X] IB error: {pf['error']}"))
+            # 用 available 判斷成功與否：asyncio.TimeoutError 的 str(e) 是 ""，
+            # 只看 error 欄位會被空字串繞過，導致 NAV=0 蓋掉 UI。
+            if not pf.get("available"):
+                err = pf.get("error") or "connection failed (no message)"
+                self.after(0, lambda e=err: self._log(f"[X] IB error: {e}"))
                 return
             self.after(0, lambda p=pf: self.portfolio_view.update(p))
             src = pf.get("source", "")
@@ -843,6 +853,8 @@ class ControlPanel(tk.Tk):
                 ))
         except Exception as e:
             self.after(0, lambda: self._log(f"[X] IB refresh failed: {e}"))
+        finally:
+            self._ib_refresh_running = False
 
     # ── 資料刷新 ──────────────────────────────────────────
 

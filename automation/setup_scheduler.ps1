@@ -31,26 +31,29 @@ schtasks /create /tn $t1 `
 if ($LASTEXITCODE -eq 0) { Write-Host "OK  Task1: $t1  (Daily 04:30)" }
 else { Write-Host "FAIL Task1 exit=$LASTEXITCODE" }
 
-# ── Task 2: 週二 SR 調倉（台灣 21:00 = 美東 09:00 EDT，MOO 截止 09:28）────
+# ── Task 2: 週二 Rebal（台灣 21:00 = 美東 09:00 EDT，MOO 截止 09:28）─────
+#   --mode all：SR rebal + SP500 hold + SkewLS threshold check
+#   單一 process 內合併三策略 target、一輪 MOO 下單，避免 clientId 衝突
 $t2 = "QuantCore_SR_Rebalance_Tue"
 $s2 = "$ScriptDir\rebalance_ib.py"
 schtasks /delete /tn $t2 /f 2>$null
 schtasks /create /tn $t2 `
-    /tr "`"$PythonExe`" `"$s2`" --mode sr --account all" `
+    /tr "`"$PythonExe`" `"$s2`" --mode all --account all" `
     /sc weekly /d TUE /st 21:00 `
     /rl HIGHEST /ru SYSTEM /f
-if ($LASTEXITCODE -eq 0) { Write-Host "OK  Task2: $t2  (Tue 21:00 --mode sr)" }
+if ($LASTEXITCODE -eq 0) { Write-Host "OK  Task2: $t2  (Tue 21:00 --mode all)" }
 else { Write-Host "FAIL Task2 exit=$LASTEXITCODE" }
 
-# ── Task 3: 週三 SP500 調倉（台灣 21:00 = 美東 09:00 EDT）─────────────────
+# ── Task 3: 週三 Rebal（台灣 21:00 = 美東 09:00 EDT）─────────────────────
+#   --mode all：SR hold + SP500 rebal + SkewLS threshold check
 $t3 = "QuantCore_SP500_Rebalance_Wed"
 $s3 = "$ScriptDir\rebalance_ib.py"
 schtasks /delete /tn $t3 /f 2>$null
 schtasks /create /tn $t3 `
-    /tr "`"$PythonExe`" `"$s3`" --mode sp500 --account all" `
+    /tr "`"$PythonExe`" `"$s3`" --mode all --account all" `
     /sc weekly /d WED /st 21:00 `
     /rl HIGHEST /ru SYSTEM /f
-if ($LASTEXITCODE -eq 0) { Write-Host "OK  Task3: $t3  (Wed 21:00 --mode sp500)" }
+if ($LASTEXITCODE -eq 0) { Write-Host "OK  Task3: $t3  (Wed 21:00 --mode all)" }
 else { Write-Host "FAIL Task3 exit=$LASTEXITCODE" }
 
 # ── Task 4: 每日持倉報告（台灣 04:40 = 資料更新後 10 分鐘）─────────────────
@@ -98,14 +101,28 @@ schtasks /create /tn $t7 `
 if ($LASTEXITCODE -eq 0) { Write-Host "OK  Task7: $t7  (Mon-Fri 16:00)" }
 else { Write-Host "FAIL Task7 exit=$LASTEXITCODE" }
 
+# ── Task 8: Skew LS threshold check（Mon/Thu/Fri 21:00 TW）──────────────
+#   Tue/Wed 不跑：Tue/Wed 由 Task 2/3 (--mode all) 一併處理 SkewLS check
+#   只在「沒 SR/SP500 rebal」的 weekday 獨立跑，避免 clientId 衝突
+$t8 = "QuantCore_SkewLS_DailyCheck"
+$s8 = "$ScriptDir\rebalance_ib.py"
+schtasks /delete /tn $t8 /f 2>$null
+schtasks /create /tn $t8 `
+    /tr "`"$PythonExe`" `"$s8`" --mode skewls --account all" `
+    /sc weekly /d "MON,THU,FRI" /st 21:00 `
+    /rl HIGHEST /ru SYSTEM /f
+if ($LASTEXITCODE -eq 0) { Write-Host "OK  Task8: $t8  (Mon/Thu/Fri 21:00 --mode skewls)" }
+else { Write-Host "FAIL Task8 exit=$LASTEXITCODE" }
+
 Write-Host ""
 Write-Host "=========================================="
 Write-Host "  Schedule (Taiwan Summer Time):"
 Write-Host "  04:30  Data Update        (Daily)"
 Write-Host "  04:40  Daily Report       (Daily)"
 Write-Host "  16:00  SP500 Daily Check  (Mon-Fri, stop/gap/dip)"
-Write-Host "  21:00  SR Rebalance       (Tuesday)"
-Write-Host "  21:00  SP500 Rebalance    (Wednesday)"
+Write-Host "  21:00  Tue Rebalance      (Tue, --mode all = SR + SkewLS check)"
+Write-Host "  21:00  Wed Rebalance      (Wed, --mode all = SP500 + SkewLS check)"
+Write-Host "  21:00  SkewLS Check       (Mon/Thu/Fri)"
 Write-Host "  21:31  MOO Fill Check     (Tue + Wed)"
 Write-Host "=========================================="
 Write-Host "Done."

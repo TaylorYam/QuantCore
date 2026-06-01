@@ -2,14 +2,18 @@
 以管理員權限安裝所有 QuantCore 排程任務（使用 New-ScheduledTask cmdlet）。
 執行後會彈出 UAC 提權視窗，結果寫入 temp/install_all_tasks_result.txt。
 
-包含 7 個任務：
+包含 8 個任務：
   1. Data Update          Daily 04:30
   2. Daily Report         Daily 04:40
   3. SP500 Daily Check    Mon-Fri 16:00 (stop loss/gap/dip)
-  4. SR Rebalance         Tue 21:00
-  5. SP500 Rebalance      Wed 21:00
+  4. Tue Rebalance        Tue 21:00 (--mode all: SR + SP500 hold + SkewLS check)
+  5. Wed Rebalance        Wed 21:00 (--mode all: SR hold + SP500 + SkewLS check)
   6. MOO Fill Check Tue   Tue 21:31
   7. MOO Fill Check Wed   Wed 21:31
+  8. SkewLS Check         Mon/Thu/Fri 21:00 (threshold; no-op if alloc_skewls=0)
+
+  Tue/Wed 用 --mode all 在單一 process 內合併三策略，避免與獨立 SkewLS task
+  同時跑時 clientId 衝突（IB 一個 clientId 不能同時兩條連線）。
 """
 import sys, os, ctypes, tempfile
 
@@ -60,13 +64,13 @@ $trig = New-ScheduledTaskTrigger -Weekly `
     -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At "16:00"
 $log += Install-Task "QuantCore_SP500_DailyCheck" '"{scripts['sp_daily']}" --account all' $trig
 
-# Task 4: SR Rebalance (Tue 21:00)
+# Task 4: Tue Rebalance (Tue 21:00, --mode all = SR + SP500 hold + SkewLS check)
 $trig = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Tuesday -At "21:00"
-$log += Install-Task "QuantCore_SR_Rebalance_Tue" '"{scripts['rebalance']}" --mode sr --account all' $trig
+$log += Install-Task "QuantCore_SR_Rebalance_Tue" '"{scripts['rebalance']}" --mode all --account all' $trig
 
-# Task 5: SP500 Rebalance (Wed 21:00)
+# Task 5: Wed Rebalance (Wed 21:00, --mode all = SR hold + SP500 + SkewLS check)
 $trig = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Wednesday -At "21:00"
-$log += Install-Task "QuantCore_SP500_Rebalance_Wed" '"{scripts['rebalance']}" --mode sp500 --account all' $trig
+$log += Install-Task "QuantCore_SP500_Rebalance_Wed" '"{scripts['rebalance']}" --mode all --account all' $trig
 
 # Task 6: MOO Fill Tue (Tue 21:31)
 $trig = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Tuesday -At "21:31"
@@ -75,6 +79,11 @@ $log += Install-Task "QuantCore_MOO_Fill_Tue" '"{scripts['moo_check']}" --accoun
 # Task 7: MOO Fill Wed (Wed 21:31)
 $trig = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Wednesday -At "21:31"
 $log += Install-Task "QuantCore_MOO_Fill_Wed" '"{scripts['moo_check']}" --account all' $trig
+
+# Task 8: SkewLS Check (Mon/Thu/Fri 21:00; Tue/Wed 由 Task 4/5 --mode all 涵蓋)
+$trig = New-ScheduledTaskTrigger -Weekly `
+    -DaysOfWeek Monday,Thursday,Friday -At "21:00"
+$log += Install-Task "QuantCore_SkewLS_DailyCheck" '"{scripts['rebalance']}" --mode skewls --account all' $trig
 
 # Verify
 $log += ""

@@ -192,49 +192,82 @@ def compute_sp500_weights(current_sp500_holdings: list[str],
     return get_sp500_weights(current_sp500_holdings, ctx.name)
 
 
-def combine_targets(nav: float, sr_wgt: dict, sp500_wgt: dict,
-                    prices: dict, ctx: AccountCtx) -> list:
+def compute_skewls_weights(ctx: AccountCtx) -> tuple[dict, str]:
     """
-    合併兩個策略的目標權重，計算每個標的的目標股數。
+    取 Sector Skew LS 最新目標權重（live 模式）— ticker-level signed weights。
 
-    SR 持倉：target_shares = NAV × alloc_sr × weight / price
-    SP500 持倉：target_shares = NAV × alloc_sp500 × weight / price
+    S16：thin wrapper 包 `signals.get_skewls_weights()`。
+    回傳 dict 含 long sector ETF (正權重)、long inverse ETF (正權重)、
+    XLC direct short (負權重)。未套 threshold gating。
+    """
+    from signals import get_skewls_weights
+    return get_skewls_weights()
 
-    兩個策略使用不同標的池（ETF vs 個股），不會衝突。
+
+def combine_targets(nav: float, sr_wgt: dict, sp500_wgt: dict,
+                    prices: dict, ctx: AccountCtx,
+                    skewls_wgt: dict | None = None) -> dict:
+    """
+    合併三個策略的目標權重，計算每個標的的目標股數。
+
+    SR 持倉：    target_shares = NAV × alloc_sr     × weight / price
+    SP500 持倉： target_shares = NAV × alloc_sp500  × weight / price
+    Skew LS：    target_shares = NAV × alloc_skewls × signed_weight / price
+                  (XLC 的 weight < 0 → target_shares < 0 → IB SELL → 自動 SHORT)
+
+    三策略共用同一檔 ticker 時 target_shares **直接加總**
+    (pure-function combine，CONTEXT.md 已釘住此約定)，IB 自動 net 多空。
     """
     alloc_sr    = ctx.alloc_sr
     alloc_sp500 = ctx.alloc_sp500
+    alloc_skewls = ctx.alloc_skewls
 
-    targets = {}  # symbol -> {'shares': int, 'strategy': str}
+    targets = {}  # symbol -> {'shares': int, 'strategy': str, 'alloc_w': float}
 
     def _valid_price(p) -> bool:
         return p is not None and np.isfinite(p) and p > 0
 
-    # SR 部位（ETF）
+    def _add(sym: str, shares: int, strategy_tag: str, alloc_w: float) -> None:
+        """add shares + 合併 strategy tag (使用 '+' 分隔)"""
+        if sym in targets:
+            targets[sym]['shares']   += shares
+            targets[sym]['alloc_w']  += alloc_w
+            existing = targets[sym]['strategy'].split('+')
+            if strategy_tag not in existing:
+                targets[sym]['strategy'] = '+'.join(existing + [strategy_tag])
+        else:
+            targets[sym] = {'shares': shares, 'strategy': strategy_tag,
+                            'alloc_w': alloc_w}
+
+    # SR 部位（ETF, long-only）
     for sym, w in sr_wgt.items():
         price = prices.get(sym, 0)
         if not _valid_price(price):
             log.warning(f"  {sym}: no price, skipping (SR)")
             continue
         shares = int(nav * alloc_sr * w / price)
-        targets[sym] = {'shares': shares, 'strategy': 'SR',
-                        'alloc_w': alloc_sr * w}
+        _add(sym, shares, 'SR', alloc_sr * w)
 
-    # SP500 部位（個股）
+    # SP500 部位（個股, long-only）
     for sym, w in sp500_wgt.items():
         price = prices.get(sym, 0)
         if not _valid_price(price):
             log.warning(f"  {sym}: no price, skipping (SP500)")
             continue
         shares = int(nav * alloc_sp500 * w / price)
-        if sym in targets:
-            # 罕見：同一標的出現在兩個策略中（如 SPY dip-buy）
-            targets[sym]['shares'] += shares
-            targets[sym]['strategy'] = 'SR+SP500'
-            targets[sym]['alloc_w'] += alloc_sp500 * w
-        else:
-            targets[sym] = {'shares': shares, 'strategy': 'SP500',
-                            'alloc_w': alloc_sp500 * w}
+        _add(sym, shares, 'SP500', alloc_sp500 * w)
+
+    # Skew LS 部位（sector ETF / inverse ETF long + XLC short）
+    if skewls_wgt:
+        for sym, w in skewls_wgt.items():
+            price = prices.get(sym, 0)
+            if not _valid_price(price):
+                log.warning(f"  {sym}: no price, skipping (SkewLS)")
+                continue
+            # signed: w 可為負 (XLC) → shares 為負 → IB 自動 SHORT
+            # int(round(...)) 避免 negative truncation 不對稱
+            shares = int(round(nav * alloc_skewls * w / price))
+            _add(sym, shares, 'SkewLS', alloc_skewls * w)
 
     return targets
 
@@ -244,11 +277,16 @@ def combine_targets(nav: float, sr_wgt: dict, sp500_wgt: dict,
 def _send_tg_report(nav, order_list, placed, trades, fill_results,
                     pos_detail, prices, sr_wgt, sp500_wgt,
                     sr_signal_date, sp500_signal_date, elapsed, error_msg,
-                    ctx: AccountCtx):
+                    ctx: AccountCtx,
+                    skewls_wgt: dict | None = None,
+                    skewls_signal_date: str = "N/A",
+                    skewls_triggered: bool | None = None,
+                    skewls_delta: float | None = None):
     dry_run     = ctx.dry_run
     acct_name   = ctx.name
     alloc_sr    = ctx.alloc_sr
     alloc_sp500 = ctx.alloc_sp500
+    alloc_skewls = ctx.alloc_skewls
     order_type  = ctx.order_type
     leverage    = ctx.leverage
     tg_token    = ctx.tg_token
@@ -261,9 +299,15 @@ def _send_tg_report(nav, order_list, placed, trades, fill_results,
         f"<b>{acct_tag}{dry_tag}QuantCore Combo — {status}</b>",
         f"Date: {date.today()}",
         f"SR Signal: {sr_signal_date}  |  SP500 Signal: {sp500_signal_date}",
-        f"Alloc: SR {alloc_sr:.0%} + SP500 {alloc_sp500:.0%} = {alloc_sr+alloc_sp500:.0%}",
-        f"Order: {order_type}  |  Leverage: {leverage}x",
     ]
+    if alloc_skewls > 0:
+        lines.append(f"SkewLS Signal: {skewls_signal_date}")
+
+    alloc_line = (f"Alloc: SR {alloc_sr:.0%} + SP500 {alloc_sp500:.0%}"
+                  + (f" + SkewLS {alloc_skewls:.0%}" if alloc_skewls > 0 else "")
+                  + f" = {leverage:.0%}")
+    lines.append(alloc_line)
+    lines.append(f"Order: {order_type}  |  Leverage: {leverage}x")
 
     # NAV + 槓桿部位規模
     if nav is not None:
@@ -281,6 +325,21 @@ def _send_tg_report(nav, order_list, placed, trades, fill_results,
         lines.append(f"\n<b>SP500 目標 ({alloc_sp500:.0%}):</b>")
         for sym, w in sorted(sp500_wgt.items(), key=lambda x: -x[1]):
             lines.append(f"  {sym}: {w*100:.1f}%  (→ {alloc_sp500*w*100:.1f}% of NAV)")
+
+    # Skew LS 目標
+    if skewls_wgt and alloc_skewls > 0:
+        gate_tag = ""
+        if skewls_triggered is not None:
+            mark = "✅ 觸發" if skewls_triggered else "⏸ 維持"
+            gate_tag = f"  [threshold {mark}"
+            if skewls_delta is not None:
+                gate_tag += f", Δ={skewls_delta:.3f}"
+            gate_tag += "]"
+        lines.append(f"\n<b>SkewLS 目標 ({alloc_skewls:.0%}){gate_tag}:</b>")
+        for sym, w in sorted(skewls_wgt.items(), key=lambda x: -abs(x[1])):
+            tag = "SHORT" if w < 0 else "LONG "
+            lines.append(f"  {tag} {sym}: {w*100:+.1f}%  "
+                         f"(→ {alloc_skewls*w*100:+.1f}% of NAV)")
 
     # 委託結果
     if not placed:
@@ -342,9 +401,17 @@ def _send_tg_report(nav, order_list, placed, trades, fill_results,
 # ── 主流程 ────────────────────────────────────────────────────────────────────
 def main(mode: str, ctx: AccountCtx):
     """
-    mode = "sr"    → 只調 Sector Rotation（週二）
-    mode = "sp500" → 只調 SP500 Momentum（週三）
-    mode = "both"  → 兩個都調（手動用）
+    mode = "sr"     → 只調 Sector Rotation（週二）；SP500 + SkewLS 維持
+    mode = "sp500"  → 只調 SP500 Momentum（週三）；SR + SkewLS 維持
+    mode = "skewls" → 只調 Skew LS（每天 threshold check）；SR + SP500 維持
+    mode = "both"   → SR + SP500（手動用，legacy）；SkewLS 維持
+    mode = "all"    → 三策略全跑（SkewLS 仍有 threshold gate）
+
+    Skew LS 行為：當 mode in ("skewls", "all") 時做 threshold check：
+      - Delta > REBAL_THRESHOLD → 用 today_target + 更新 state
+      - 否則 → 用 state['last_target']（維持上次持倉），不更新 state
+    其他 mode 自動用 state['last_target'] 作為 Skew LS 貢獻，
+    確保 SR/SP500 rebal 不會誤砍 Skew LS 倉位（pure-function combine）。
 
     ctx 為 AccountCtx，從 __main__ block 建立並傳入。
     """
@@ -352,12 +419,20 @@ def main(mode: str, ctx: AccountCtx):
     order_type  = ctx.order_type
     alloc_sr    = ctx.alloc_sr
     alloc_sp500 = ctx.alloc_sp500
+    alloc_skewls = ctx.alloc_skewls
     leverage    = ctx.leverage
     acct_name   = ctx.name
 
-    run_sr    = mode in ("sr", "both")
-    run_sp500 = mode in ("sp500", "both")
-    mode_label = {"sr": "SR Only", "sp500": "SP500 Only", "both": "Both"}[mode]
+    # SR 訊號是 pure function、跨週 stable，所有 mode 都算 (用於 combine 正確處理 overlap)
+    # SP500 訊號可能 mutate state（dip-buy 觸發）→ 只在 sp500/both/all 跑
+    # SkewLS threshold check 只在 skewls/all 跑（其他 mode 用 last_target 維持持倉）
+    run_sr      = True
+    run_sp500   = mode in ("sp500", "both", "all")
+    run_skewls  = mode in ("skewls", "all")
+    mode_label = {
+        "sr": "SR Only", "sp500": "SP500 Only",
+        "skewls": "SkewLS Only", "both": "SR+SP500", "all": "All 3",
+    }[mode]
 
     start_ts     = datetime.now()
     nav          = None
@@ -369,13 +444,21 @@ def main(mode: str, ctx: AccountCtx):
     error_msg    = None
     sr_wgt       = {}
     sp500_wgt    = {}
+    skewls_wgt   = {}              # ticker-level signed weights for combine_targets
+    skewls_target_today = {}       # raw signal output (for state save)
+    skewls_triggered = None        # None = 該 mode 不檢查；T/F = 檢查過
+    skewls_delta = None
     sr_signal_date    = "N/A"
     sp500_signal_date = "N/A"
+    skewls_signal_date = "N/A"
 
     log.info(f"{'='*60}")
     log.info(f"  QuantCore Rebalance  {date.today()}  [{mode_label}]")
     log.info(f"  dry_run={dry_run}  order_type={order_type}")
-    log.info(f"  Alloc: SR {alloc_sr:.0%} + SP500 {alloc_sp500:.0%} = {alloc_sr+alloc_sp500:.0%}")
+    alloc_summary = (f"  Alloc: SR {alloc_sr:.0%} + SP500 {alloc_sp500:.0%}"
+                     + (f" + SkewLS {alloc_skewls:.0%}" if alloc_skewls > 0 else "")
+                     + f" = {leverage:.0%}")
+    log.info(alloc_summary)
     log.info(f"{'='*60}")
 
     try:
@@ -384,7 +467,7 @@ def main(mode: str, ctx: AccountCtx):
             log.info("Step 1: Computing Sector Rotation target weights...")
             sr_wgt, sr_signal_date = compute_sr_weights(ctx=ctx)
         else:
-            log.info("Step 1: SR skipped (sp500 mode)")
+            log.info("Step 1: SR skipped")
 
         # ── 2. 連線 IB ───────────────────────────────────────────────────────
         log.info("Step 2: Connecting to IB Gateway...")
@@ -431,15 +514,46 @@ def main(mode: str, ctx: AccountCtx):
             sp500_wgt, sp500_signal_date = compute_sp500_weights(
                 current_sp500_holdings, acct_name, ctx=ctx)
         else:
-            log.info("Step 4: SP500 skipped (sr mode)")
-            # SR only 模式：保留 SP500 現有持倉不動
+            log.info("Step 4: SP500 skipped")
+            # 非 SP500 mode：保留 SP500 現有持倉不動
             for sym in current_sp500_holdings:
                 sp500_wgt[sym] = 0  # 佔位用，不會產生 order
+
+        # ── 4b. Skew LS：threshold check + 選 today_target or state ─────────
+        # 不論哪個 mode，只要 alloc_skewls > 0 就需要把 SkewLS 部位納入 combine_targets，
+        # 否則 SR/SP500 rebal 會誤砍 SkewLS 倉位。
+        import skewls_state
+        from strategies.sector_skew_ls import config as skewls_cfg
+        skewls_threshold = skewls_cfg.REBAL_THRESHOLD
+
+        if alloc_skewls > 0:
+            state = skewls_state.load_state(acct_name)
+            if run_skewls:
+                log.info("Step 4b: Computing Skew LS target + threshold check...")
+                skewls_target_today, skewls_signal_date = compute_skewls_weights(ctx=ctx)
+                skewls_triggered, skewls_delta = skewls_state.should_rebal(
+                    state, skewls_target_today, skewls_threshold,
+                )
+                log.info(f"  SkewLS threshold: Δ={skewls_delta:.4f}  "
+                         f"vs {skewls_threshold} → {'TRIGGER' if skewls_triggered else 'hold'}")
+                if skewls_triggered:
+                    skewls_wgt = skewls_target_today
+                else:
+                    skewls_wgt = dict(state.get("last_target", {}))
+                    skewls_signal_date = state.get("last_target_date") or skewls_signal_date
+            else:
+                log.info("Step 4b: SkewLS not checked (mode={}), hold last state".format(mode))
+                skewls_wgt = dict(state.get("last_target", {}))
+                skewls_signal_date = state.get("last_target_date") or "N/A"
+        else:
+            log.info("Step 4b: SkewLS disabled (alloc_skewls = 0)")
+            skewls_wgt = {}
 
         # ── 5. 即時報價 ─────────────────────────────────────────────────────
         all_syms = list(set(
             list(sr_wgt.keys()) +
             list(sp500_wgt.keys()) +
+            list(skewls_wgt.keys()) +
             list(current_pos.keys())
         ))
         log.info(f"Step 5: Getting prices for {len(all_syms)} symbols...")
@@ -448,23 +562,24 @@ def main(mode: str, ctx: AccountCtx):
         # ── 6. 合併目標 + 計算差額 ──────────────────────────────────────────
         log.info("Step 6: Computing targets and deltas...")
 
-        # 依 mode 決定哪些標的要計算目標、哪些保持不動
-        if mode == "both":
-            targets = combine_targets(nav, sr_wgt, sp500_wgt, prices, ctx=ctx)
-        elif mode == "sr":
-            # 只算 SR 目標，SP500 持倉維持現狀
-            targets = combine_targets(nav, sr_wgt, {}, prices, ctx=ctx)
-            # SP500 持倉標記為「保持現狀」→ target = 現有股數
+        # SR 訊號永遠加入 combine（stable 跨週、與 SkewLS sector ETF overlap 需要它）
+        # SkewLS 在 step 4b 已決定 skewls_wgt (today_target 或 last_target)
+        # SP500 只在 run_sp500=True 時加入，否則 hold 模式（無 SkewLS overlap，可安全 override）
+        sp500_wgt_for_combine = sp500_wgt if run_sp500 else {}
+        targets = combine_targets(nav, sr_wgt, sp500_wgt_for_combine, prices,
+                                   ctx=ctx, skewls_wgt=skewls_wgt)
+
+        # 非 SP500 mode：把 SP500 持股 target 改回 current（hold）
+        # SP500 universe 與 SR/SkewLS 完全分離（個股 vs ETF），override 安全
+        if not run_sp500:
             for sym in current_sp500_holdings:
-                targets[sym] = {'shares': int(current_pos[sym]),
-                                'strategy': 'SP500 (hold)', 'alloc_w': 0}
-        elif mode == "sp500":
-            # 只算 SP500 目標，SR 持倉維持現狀
-            targets = combine_targets(nav, {}, sp500_wgt, prices, ctx=ctx)
-            # SR 持倉標記為「保持現狀」→ target = 現有股數
-            for sym in current_sr_holdings:
-                targets[sym] = {'shares': int(current_pos[sym]),
-                                'strategy': 'SR (hold)', 'alloc_w': 0}
+                if sym not in targets:
+                    targets[sym] = {'shares': int(current_pos[sym]),
+                                    'strategy': 'SP500 (hold)', 'alloc_w': 0}
+                else:
+                    # 罕見：SP500 dip-buy ticker (SPY/SSO) 同時被 SR 或 SkewLS 用
+                    # 此時保留 combined target (SR/SkewLS 貢獻)，不額外加 SP500 hold
+                    targets[sym]['strategy'] = targets[sym]['strategy'] + '|SP500-hold'
 
         order_list = []
 
@@ -487,8 +602,12 @@ def main(mode: str, ctx: AccountCtx):
             strategy      = targets.get(sym, {}).get('strategy', 'EXIT')
 
             # REBALANCE_THRESHOLD 過濾：小於 3% NAV 漂移不動作
-            # 例外：完全清倉（target=0）或從無到有建倉（current=0）必須執行
-            if delta != 0 and target_shares > 0 and curr_shares > 0:
+            # 例外：清倉（target=0）/ 開倉（current=0）/ 翻向（long↔short）必須執行
+            same_direction = (
+                target_shares != 0 and curr_shares != 0
+                and (target_shares > 0) == (curr_shares > 0)
+            )
+            if delta != 0 and same_direction:
                 drift_val = abs(delta) * price
                 drift_pct = drift_val / nav if nav > 0 else 0
                 if drift_pct < rebal_thresh:
@@ -549,6 +668,23 @@ def main(mode: str, ctx: AccountCtx):
         log.info("Step 9: Fetching positions detail for P&L...")
         pos_detail = get_positions_detail(ib, ctx=ctx)
 
+        # ── 10. Skew LS state 更新（成功觸發 + 有下單時）────────────────
+        if run_skewls and skewls_triggered and alloc_skewls > 0:
+            try:
+                state = skewls_state.load_state(acct_name)
+                state = skewls_state.update_after_rebal(
+                    state,
+                    new_target=skewls_target_today,
+                    signal_date=skewls_signal_date,
+                    rebal_date=str(date.today()),
+                )
+                skewls_state.save_state(acct_name, state)
+                log.info(f"Step 10: SkewLS state updated → "
+                         f"last_target_date={skewls_signal_date}")
+            except Exception as e:
+                log.error(f"  SkewLS state save failed: {e}", exc_info=True)
+                # 不 raise — state 寫入失敗不該阻擋交易完成回報
+
         log.info(f"{'='*60}")
         log.info(f"  Rebalance Done  [{mode_label}]")
         log.info(f"{'='*60}")
@@ -564,7 +700,10 @@ def main(mode: str, ctx: AccountCtx):
 
         # ── Excel 交易記錄 ────────────────────────────────────────────────
         if placed:
-            signal_str = f"SR:{sr_signal_date} SP500:{sp500_signal_date}"
+            signal_parts = [f"SR:{sr_signal_date}", f"SP500:{sp500_signal_date}"]
+            if alloc_skewls > 0:
+                signal_parts.append(f"SkewLS:{skewls_signal_date}")
+            signal_str = " ".join(signal_parts)
             for o in placed:
                 strat = o.get('strategy', 'Unknown')
                 append_trade_log([o], fill_results, signal_str,
@@ -588,16 +727,22 @@ def main(mode: str, ctx: AccountCtx):
             elapsed=elapsed,
             error_msg=error_msg,
             ctx=ctx,
+            skewls_wgt=skewls_wgt,
+            skewls_signal_date=skewls_signal_date,
+            skewls_triggered=skewls_triggered,
+            skewls_delta=skewls_delta,
         )
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="QuantCore Rebalance")
-    parser.add_argument("--mode", choices=["sr", "sp500", "both"],
+    parser.add_argument("--mode", choices=["sr", "sp500", "skewls", "both", "all"],
                         default="both",
-                        help="sr=Sector Rotation only (Tue), "
-                             "sp500=SP500 Momentum only (Wed), "
-                             "both=all (default)")
+                        help="sr=Sector Rotation (Tue), "
+                             "sp500=SP500 Momentum (Wed), "
+                             "skewls=Sector Skew LS (daily threshold check), "
+                             "both=SR+SP500 (legacy), "
+                             "all=SR+SP500+SkewLS")
     parser.add_argument("--order-type", choices=["MKT", "MOO", "LMT"],
                         default=None,
                         help="Override order type from ctx (e.g. MKT for manual intraday)")

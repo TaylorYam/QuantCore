@@ -34,7 +34,7 @@ from tkinter import messagebox
 from typing import Callable
 
 from sync_position import SyncPlan
-from ib_fetcher import SR_ETFS
+from ib_fetcher import SR_ETFS, SKEWLS_INVERSE_TICKERS
 
 
 # Expected theme keys (documented for callers)
@@ -88,18 +88,40 @@ class SyncPreviewWindow:
 
         self._log(f"{'─' * 40}")
         self._log(f"  Strategy Target (理論持倉)")
+
+        def _strat_sh(alloc: float, w: float, px: float) -> int:
+            """Strategy-only target shares (pre-combine). Avoids double-count
+            display when the same ticker appears in multiple strategies."""
+            return int(round(plan.nav * alloc * w / px)) if px > 0 else 0
+
+        def _overlap_note(sym: str, strat_sh: int) -> str:
+            combined = targets.get(sym, {}).get('shares', 0)
+            if combined == strat_sh:
+                return ""
+            return f"  [combined w/ overlap: {combined:+d}sh]"
+
         if plan.sr_wgt:
             self._log(f"  SR ({ctx.alloc_sr:.0%} of NAV):")
             for sym, w in sorted(plan.sr_wgt.items(), key=lambda x: -x[1]):
                 px = prices.get(sym, 0)
-                t_sh = targets.get(sym, {}).get('shares', 0)
-                self._log(f"    {sym:<6s} {w*100:5.1f}%  → {t_sh:4d}sh @ ${px:.2f}")
+                t_sh = _strat_sh(ctx.alloc_sr, w, px)
+                self._log(f"    {sym:<6s} {w*100:5.1f}%  → {t_sh:4d}sh @ ${px:.2f}"
+                          f"{_overlap_note(sym, t_sh)}")
         if plan.sp500_wgt:
             self._log(f"  SP500 ({ctx.alloc_sp500:.0%} of NAV):")
             for sym, w in sorted(plan.sp500_wgt.items(), key=lambda x: -x[1]):
                 px = prices.get(sym, 0)
-                t_sh = targets.get(sym, {}).get('shares', 0)
-                self._log(f"    {sym:<6s} {w*100:5.1f}%  → {t_sh:4d}sh @ ${px:.2f}")
+                t_sh = _strat_sh(ctx.alloc_sp500, w, px)
+                self._log(f"    {sym:<6s} {w*100:5.1f}%  → {t_sh:4d}sh @ ${px:.2f}"
+                          f"{_overlap_note(sym, t_sh)}")
+        if plan.skewls_wgt:
+            self._log(f"  SkewLS ({ctx.alloc_skewls:.0%} of NAV):")
+            for sym, w in sorted(plan.skewls_wgt.items(), key=lambda x: -abs(x[1])):
+                px = prices.get(sym, 0)
+                t_sh = _strat_sh(ctx.alloc_skewls, w, px)
+                direction = "SHORT" if w < 0 else "LONG "
+                self._log(f"    {direction} {sym:<6s} {w*100:+5.1f}%  → {t_sh:+4d}sh @ ${px:.2f}"
+                          f"{_overlap_note(sym, t_sh)}")
 
         strategy_syms = [s for s in plan.current_pos
                          if s not in plan.current_other_holdings]
@@ -140,8 +162,10 @@ class SyncPreviewWindow:
         hdr.pack(fill="x")
         tk.Label(hdr, text=f"Sync Position — {ctx.name}",
                  font=("Segoe UI", 13, "bold"), bg=t["accent"], fg=t["text"]).pack(anchor="w")
-        tk.Label(hdr,
-                 text=f"NAV: ${plan.nav:,.0f}   |   SR: {plan.sr_date}   |   SP500: {plan.sp500_date}",
+        hdr_text = f"NAV: ${plan.nav:,.0f}   |   SR: {plan.sr_date}   |   SP500: {plan.sp500_date}"
+        if ctx.alloc_skewls > 0:
+            hdr_text += f"   |   SkewLS: {plan.skewls_date}"
+        tk.Label(hdr, text=hdr_text,
                  font=("Segoe UI", 9), bg=t["accent"], fg=t["text_dim"]).pack(anchor="w")
 
         # Scrollable main region
@@ -175,6 +199,7 @@ class SyncPreviewWindow:
         t = self.t
         alloc_sr = plan.ctx.alloc_sr
         alloc_sp500 = plan.ctx.alloc_sp500
+        alloc_skewls = plan.ctx.alloc_skewls
         prices = plan.prices
         targets = plan.targets
 
@@ -183,6 +208,17 @@ class SyncPreviewWindow:
         tk.Label(sec, text="Strategy Target (理論持倉)",
                  font=("Segoe UI", 10, "bold"),
                  bg=t["bg"], fg=t["accent_hl"]).pack(anchor="w")
+
+        def _strat_sh(alloc: float, w: float, px: float) -> int:
+            """Strategy-only target shares (pre-combine). Avoids double-count
+            display when the same ticker appears in multiple strategies."""
+            return int(round(plan.nav * alloc * w / px)) if px > 0 else 0
+
+        def _overlap_note(sym: str, strat_sh: int) -> str:
+            combined = targets.get(sym, {}).get('shares', 0)
+            if combined == strat_sh:
+                return ""
+            return f"  [combined: {combined:+d}sh]"
 
         # SR targets
         if plan.sr_wgt:
@@ -193,11 +229,12 @@ class SyncPreviewWindow:
                      bg=t["bg2"], fg=t["blue"]).pack(anchor="w")
             for sym, w in sorted(plan.sr_wgt.items(), key=lambda x: -x[1]):
                 px = prices.get(sym, 0)
-                t_shares = targets.get(sym, {}).get('shares', 0)
+                t_shares = _strat_sh(alloc_sr, w, px)
                 t_val = t_shares * px
                 tk.Label(
                     sr_frame,
-                    text=f"  {sym:<6s}  {w*100:5.1f}%  →  {t_shares:4d}sh  @ ${px:.2f}  = ${t_val:,.0f}",
+                    text=f"  {sym:<6s}  {w*100:5.1f}%  →  {t_shares:4d}sh  @ ${px:.2f}  = ${t_val:,.0f}"
+                         f"{_overlap_note(sym, t_shares)}",
                     font=("Consolas", 9), bg=t["bg2"], fg=t["text"],
                 ).pack(anchor="w")
 
@@ -210,15 +247,35 @@ class SyncPreviewWindow:
                      bg=t["bg2"], fg=t["green"]).pack(anchor="w")
             for sym, w in sorted(plan.sp500_wgt.items(), key=lambda x: -x[1]):
                 px = prices.get(sym, 0)
-                t_shares = targets.get(sym, {}).get('shares', 0)
+                t_shares = _strat_sh(alloc_sp500, w, px)
                 t_val = t_shares * px
                 tk.Label(
                     sp_frame,
-                    text=f"  {sym:<6s}  {w*100:5.1f}%  →  {t_shares:4d}sh  @ ${px:.2f}  = ${t_val:,.0f}",
+                    text=f"  {sym:<6s}  {w*100:5.1f}%  →  {t_shares:4d}sh  @ ${px:.2f}  = ${t_val:,.0f}"
+                         f"{_overlap_note(sym, t_shares)}",
                     font=("Consolas", 9), bg=t["bg2"], fg=t["text"],
                 ).pack(anchor="w")
 
-        if not plan.sr_wgt and not plan.sp500_wgt:
+        # SkewLS targets (signed: 含 long inverse ETFs + XLC short)
+        if plan.skewls_wgt:
+            sk_frame = tk.Frame(sec, bg=t["bg2"], padx=8, pady=4)
+            sk_frame.pack(fill="x", pady=(2, 2))
+            tk.Label(sk_frame, text=f"Skew LS ({alloc_skewls:.0%} of NAV)",
+                     font=("Consolas", 9, "bold"),
+                     bg=t["bg2"], fg=t["red"]).pack(anchor="w")
+            for sym, w in sorted(plan.skewls_wgt.items(), key=lambda x: -abs(x[1])):
+                px = prices.get(sym, 0)
+                t_shares = _strat_sh(alloc_skewls, w, px)
+                t_val = t_shares * px
+                direction = "SHORT" if w < 0 else "LONG "
+                tk.Label(
+                    sk_frame,
+                    text=f"  {direction} {sym:<6s}  {w*100:+5.1f}%  →  {t_shares:+4d}sh  @ ${px:.2f}  = ${t_val:+,.0f}"
+                         f"{_overlap_note(sym, t_shares)}",
+                    font=("Consolas", 9), bg=t["bg2"], fg=t["text"],
+                ).pack(anchor="w")
+
+        if not plan.sr_wgt and not plan.sp500_wgt and not plan.skewls_wgt:
             tk.Label(sec, text="  (no target positions — all cash)",
                      font=("Consolas", 9),
                      bg=t["bg"], fg=t["text_dim"]).pack(anchor="w")
@@ -248,8 +305,13 @@ class SyncPreviewWindow:
                 shares = int(current_pos[sym])
                 px = prices.get(sym, 0)
                 val = shares * px
-                tag = "SR" if sym in SR_ETFS else "SP500"
-                tag_color = t["blue"] if sym in SR_ETFS else t["green"]
+                # 三策略分類：inverse ETF 或 sector ETF 負部位 → SkewLS
+                if sym in SKEWLS_INVERSE_TICKERS or (sym in SR_ETFS and shares < 0):
+                    tag, tag_color = "SkewLS", t["red"]
+                elif sym in SR_ETFS:
+                    tag, tag_color = "SR", t["blue"]
+                else:
+                    tag, tag_color = "SP500", t["green"]
                 in_target = sym in targets
                 mark = "" if in_target else "  ← not in target"
                 mark_color = t["text"] if in_target else t["red"]

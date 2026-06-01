@@ -40,14 +40,18 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class SyncOrder:
-    """單一預計執行的同步委託"""
+    """單一預計執行的同步委託。
+
+    qty 永遠為 abs(delta) > 0 (送到 IB 的數量)；action 已記錄方向。
+    target / current 可為**負數**（XLC short 等）— 預覽 UI 應顯示符號。
+    """
     symbol: str
-    action: str          # 'BUY' | 'SELL'
-    qty: int             # > 0
+    action: str          # 'BUY' | 'SELL'  (IB 從 current 推斷 SHORT/COVER)
+    qty: int             # > 0 (絕對值)
     price: float         # 預覽時的參考價（signal_date 前一天收盤或即時報價）
-    strategy: str        # 'SR' | 'SP500' | 'SR+SP500' | 'SP500 (hold)' | etc.
-    target: int          # 理論目標股數
-    current: int         # 當前實際股數
+    strategy: str        # 'SR' | 'SP500' | 'SkewLS' | 'SR+SkewLS' | 'SP500 (hold)' | etc.
+    target: int          # 理論目標股數 (可為負，XLC short)
+    current: int         # 當前實際股數 (可為負，已 short)
 
 
 @dataclass
@@ -64,8 +68,11 @@ class SyncPlan:
     sp500_date: str
     prices: dict[str, float]
     targets: dict[str, dict]          # symbol -> {'shares', 'strategy', 'alloc_w'}
-    current_pos: dict[str, float]     # symbol -> shares
+    current_pos: dict[str, float]     # symbol -> shares (可為負)
     current_other_holdings: list[str] # 手動持倉（排除在 rebalance 外）
+    # SkewLS 欄位（S19）— 沒啟用時為 {} / 'N/A'
+    skewls_wgt:  dict[str, float] = field(default_factory=dict)
+    skewls_date: str = "N/A"
 
 
 # ── Compute phase ─────────────────────────────────────────────────────
@@ -111,6 +118,15 @@ def compute_sync_plan(
     _log("  Computing SR weights...")
     sr_wgt, sr_date = signals.get_sr_weights()
 
+    # 1b. SkewLS 目標權重 — Sync Pos 是「強制同步到最新 target」，不套 threshold gating
+    #     使用者按 Sync 就是要把帳戶拉到 today's target，所以 ignore state file 中的
+    #     last_target，直接用最新訊號。事後 submit 成功時會更新 state 給未來 threshold 用。
+    skewls_wgt: dict[str, float] = {}
+    skewls_date = "N/A"
+    if ctx.alloc_skewls > 0:
+        _log("  Computing Skew LS weights...")
+        skewls_wgt, skewls_date = signals.get_skewls_weights()
+
     # 2. 連 IB
     _log("  Connecting to IB...")
     ib = ib_fetcher.connect(ctx)
@@ -122,10 +138,16 @@ def compute_sync_plan(
         # 3. 分辨 SR vs SP500 vs 手動持倉
         sp500_universe = signals.get_sp500_universe()
         sr_etf_set = ib_fetcher.SR_ETFS
+        # SkewLS universe = sector ETFs (overlap with SR) + 10 inverse ETFs
+        # 既然 SR 已涵蓋 sector ETFs，這裡只需把 inverse ETFs 排除在 "other" 之外
+        from strategies.sector_skew_ls import config as skewls_cfg
+        skewls_inv_set = set(skewls_cfg.INVERSE_TICKERS)
         current_sp500_holdings = [s for s in current_pos
                                    if s not in sr_etf_set and s in sp500_universe]
         current_other_holdings = [s for s in current_pos
-                                   if s not in sr_etf_set and s not in sp500_universe]
+                                   if s not in sr_etf_set
+                                   and s not in skewls_inv_set
+                                   and s not in sp500_universe]
 
         # 4. SP500 目標權重
         _log("  Computing SP500 weights...")
@@ -134,14 +156,18 @@ def compute_sync_plan(
 
         # 5. 取報價
         all_syms = list(set(
-            list(sr_wgt.keys()) + list(sp500_wgt.keys()) + list(current_pos.keys())
+            list(sr_wgt.keys()) +
+            list(sp500_wgt.keys()) +
+            list(skewls_wgt.keys()) +
+            list(current_pos.keys())
         ))
         _log(f"  Getting prices for {len(all_syms)} symbols...")
         prices = ib_fetcher.get_prices(ib, all_syms, ctx)
 
-        # 6. 合併目標（呼叫 rebalance_ib 的 combine_targets 共用邏輯）
+        # 6. 合併三策略目標（呼叫 rebalance_ib 的 combine_targets 共用邏輯）
         import rebalance_ib as reb
-        targets = reb.combine_targets(nav, sr_wgt, sp500_wgt, prices, ctx=ctx)
+        targets = reb.combine_targets(nav, sr_wgt, sp500_wgt, prices, ctx=ctx,
+                                       skewls_wgt=skewls_wgt)
 
     finally:
         try:
@@ -171,6 +197,8 @@ def compute_sync_plan(
         targets=targets,
         current_pos=current_pos,
         current_other_holdings=current_other_holdings,
+        skewls_wgt=skewls_wgt,
+        skewls_date=skewls_date,
     )
 
 
@@ -203,8 +231,13 @@ def _build_order_list(
         delta = target_shares - curr_shares
         strategy = targets.get(sym, {}).get('strategy', 'EXIT')
 
-        # Threshold 過濾（只對「調整」不對「清倉」/「建倉」）
-        if delta != 0 and target_shares > 0 and curr_shares > 0:
+        # Threshold 過濾（同向才適用：long-long 或 short-short）
+        # 例外：清倉 (target=0) / 開倉 (current=0) / 翻向 (long↔short) 必執行
+        same_direction = (
+            target_shares != 0 and curr_shares != 0
+            and (target_shares > 0) == (curr_shares > 0)
+        )
+        if delta != 0 and same_direction:
             drift_val = abs(delta) * price
             drift_pct = drift_val / nav if nav > 0 else 0
             if drift_pct < rebal_thresh:
@@ -330,6 +363,25 @@ def submit_sync_orders(
         fill_results = []
         if trades:
             fill_results = reb.check_fills(trades)
+
+        # 6. SkewLS state 更新（Sync Pos = 強制同步，所以即使非 threshold-triggered 也存）
+        #    這樣下次 scheduled threshold check 才有正確 baseline。
+        if plan.skewls_wgt and plan.ctx.alloc_skewls > 0:
+            try:
+                import skewls_state
+                from datetime import date as _date
+                state = skewls_state.load_state(plan.ctx.name)
+                state = skewls_state.update_after_rebal(
+                    state,
+                    new_target=plan.skewls_wgt,
+                    signal_date=plan.skewls_date,
+                    rebal_date=str(_date.today()),
+                )
+                skewls_state.save_state(plan.ctx.name, state)
+                _log(f"  SkewLS state updated → last_target_date={plan.skewls_date}")
+            except Exception as e:
+                log.error(f"SkewLS state save failed: {e}", exc_info=True)
+                # 不 raise — state 寫入失敗不該阻擋送單流程
 
     finally:
         try:

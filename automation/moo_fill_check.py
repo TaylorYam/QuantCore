@@ -51,6 +51,34 @@ from account_ctx import AccountCtx
 import ib_fetcher
 
 
+def _classify_direction(action: str, post_position: float,
+                         filled_qty: int) -> tuple[str, str]:
+    """
+    根據 fill action 與 post-fill IB position 判斷方向。
+
+    回傳 (icon, action_tag)。
+      SELL + post<0 → 🔻 SHORT  (新開/加碼空單)
+      SELL + post>=0 → 🔴 SELL  (清長/減長)
+      BUY  + post>0  → 🟢 BUY   (加碼/新開多單)
+      BUY  + post<=0 → 💚 COVER (回補空單；post=0 表示全平，post<0 表示部分回補)
+
+    Skew LS XLC 短倉的常見訊息：
+      開倉： SELL XLC → 🔻 SHORT
+      平倉： BUY  XLC → 💚 COVER
+    """
+    if action == 'SELL':
+        if post_position < -0.5:    # 視為 short (避免浮點誤差)
+            return "🔻", "SHORT"
+        return "🔴", "SELL "
+    # action == 'BUY'
+    if post_position > 0.5:
+        return "🟢", "BUY  "
+    if filled_qty > 0:
+        # post ≤ 0 + 有成交 → 必然是 cover (從 short 平回 0 或仍是 short)
+        return "💚", "COVER"
+    return "🟢", "BUY  "
+
+
 def main(ctx: AccountCtx):
     """MOO 成交回報。所有設定從 ctx 取得。"""
     account    = ctx.account
@@ -100,6 +128,15 @@ def main(ctx: AccountCtx):
                 _tg(msg, token=tg_token, chat_id=tg_chat_id)
             return
 
+        # 抓 post-fill 部位（用於判斷 SHORT / COVER 方向）
+        try:
+            positions_after = {p.contract.symbol: float(p.position)
+                                for p in ib.positions(account)
+                                if p.contract.secType == 'STK'}
+        except Exception as e:
+            log.warning(f"Failed to fetch post-fill positions: {e}")
+            positions_after = {}
+
         # 組裝報告
         acct_tag = f"[{acct_name}] " if acct_name else ""
         lines = [
@@ -111,8 +148,10 @@ def main(ctx: AccountCtx):
         ]
 
         all_filled = True
-        total_buy_val = 0.0
-        total_sell_val = 0.0
+        total_buy_val   = 0.0   # 含 BUY + COVER (現金流出)
+        total_sell_val  = 0.0   # 含 SELL + SHORT (現金流入)
+        total_short_val = 0.0   # 純 SHORT 開倉（單獨統計，方便看 short notional）
+        total_cover_val = 0.0   # 純 COVER 平倉
 
         for t in moo_trades:
             sym    = t.contract.symbol
@@ -121,45 +160,66 @@ def main(ctx: AccountCtx):
             status = t.orderStatus.status
             filled = int(t.orderStatus.filled)
             avg_px = t.orderStatus.avgFillPrice
+            post_pos = positions_after.get(sym, 0.0)
 
             if filled < qty:
                 all_filled = False
 
             fill_val = filled * avg_px if avg_px else 0
+
+            # 狀態 icon（成交完成度）
+            if status == 'Filled':
+                stat_icon = "✅"
+            elif status == 'Cancelled':
+                stat_icon = "🚫"
+            elif filled > 0:
+                stat_icon = "⚠️"
+            else:
+                stat_icon = "⏳"
+
+            # 方向 icon + tag（含 SHORT / COVER 辨識）
+            dir_icon, action_tag = _classify_direction(action, post_pos, filled)
+
+            # 累計現金流
             if action == 'BUY':
                 total_buy_val += fill_val
-            else:
+                if action_tag.strip() == 'COVER':
+                    total_cover_val += fill_val
+            else:  # SELL
                 total_sell_val += fill_val
+                if action_tag.strip() == 'SHORT':
+                    total_short_val += fill_val
 
-            # 狀態 icon
-            if status == 'Filled':
-                icon = "✅"
-            elif status == 'Cancelled':
-                icon = "🚫"
-            elif filled > 0:
-                icon = "⚠️"  # 部分成交
-            else:
-                icon = "⏳"  # 未成交
-
-            action_tag = "🔴 SELL" if action == 'SELL' else "🟢 BUY "
             px_str = f"@ ${avg_px:.2f}" if avg_px and avg_px > 0 else ""
             val_str = f"  ~${fill_val:,.0f}" if fill_val > 0 else ""
+            # post-fill position 後綴 (短倉用負號顯示)
+            if abs(post_pos) > 0.5:
+                pos_suffix = f"  → {int(post_pos):+d}sh"
+            else:
+                pos_suffix = "  → flat"
 
             lines.append(
-                f"  {icon} {action_tag} {filled}/{qty}sh"
-                f"  {sym}  {px_str}{val_str}"
+                f"  {stat_icon} {dir_icon} {action_tag} {filled}/{qty}sh"
+                f"  {sym}  {px_str}{val_str}{pos_suffix}"
                 f"  [{status}]"
             )
-            log.info(f"  {action} {sym}: {filled}/{qty}sh @ ${avg_px:.2f} [{status}]")
+            log.info(f"  {action_tag.strip()} {sym}: {filled}/{qty}sh "
+                     f"@ ${avg_px:.2f}  post={post_pos:+.0f}  [{status}]")
 
         # 彙總
         lines.append("")
         overall = "✅ 全部成交" if all_filled else "⚠️ 有未完成委託"
         lines.append(f"<b>{overall}</b>")
         if total_sell_val > 0:
-            lines.append(f"  賣出金額: ${total_sell_val:,.0f}")
+            sell_label = "賣出金額"
+            if total_short_val > 0:
+                sell_label += f"（含開空 ${total_short_val:,.0f}）"
+            lines.append(f"  {sell_label}: ${total_sell_val:,.0f}")
         if total_buy_val > 0:
-            lines.append(f"  買入金額: ${total_buy_val:,.0f}")
+            buy_label = "買入金額"
+            if total_cover_val > 0:
+                buy_label += f"（含回補 ${total_cover_val:,.0f}）"
+            lines.append(f"  {buy_label}: ${total_buy_val:,.0f}")
         net = total_sell_val - total_buy_val
         if total_sell_val > 0 or total_buy_val > 0:
             sign = "+" if net >= 0 else ""
@@ -248,7 +308,17 @@ if __name__ == '__main__':
     else:
         names = [args.account]
 
+    failures = []
     for name in names:
-        ctx = AccountCtx.from_name(name, ROLE_MOO_CHECK)
-        log.info(f">>> Account: {ctx.name} ({ctx.account}) port={ctx.port} <<<")
-        main(ctx=ctx)
+        try:
+            ctx = AccountCtx.from_name(name, ROLE_MOO_CHECK)
+            log.info(f">>> Account: {ctx.name} ({ctx.account}) port={ctx.port} <<<")
+            main(ctx=ctx)
+        except Exception as e:
+            failures.append((name, str(e)))
+            log.error(f"Account {name} failed (continuing to next): {e}")
+
+    if failures:
+        log.error(f"MOO fill check finished with {len(failures)} failure(s): "
+                  + "; ".join(f"{n}={msg}" for n, msg in failures))
+        sys.exit(1)

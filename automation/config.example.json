@@ -9,6 +9,7 @@
   "wait_fill_sec": 30,
   "alloc_sr": 0.7,
   "alloc_sp500": 0.5,
+  "alloc_skewls": 0.0,
   "leverage": 1.2,
   "telegram_token": "",
   "telegram_chat_id": "",

@@ -64,15 +64,18 @@ def get_account_config(name: str) -> dict:
     if 'port' in acct:
         merged['port'] = acct['port']
     # 可覆蓋的其他欄位
-    for key in ('host', 'alloc_sr', 'alloc_sp500', 'dry_run',
+    for key in ('host', 'alloc_sr', 'alloc_sp500', 'alloc_skewls', 'dry_run',
                 'order_type', 'outside_rth', 'wait_fill_sec',
                 'telegram_token', 'telegram_chat_id'):
         if key in acct:
             merged[key] = acct[key]
 
-    # leverage 自動推導：永遠 = alloc_sr + alloc_sp500（避免顯示與實際脫節）
+    # leverage 自動推導：永遠 = alloc_sr + alloc_sp500 + alloc_skewls
+    # (避免顯示與實際脫節)。新策略 alloc_skewls 預設 0 → 既有帳戶 leverage 不變。
     merged['leverage'] = round(
-        merged.get('alloc_sr', 0) + merged.get('alloc_sp500', 0), 2
+        merged.get('alloc_sr', 0) +
+        merged.get('alloc_sp500', 0) +
+        merged.get('alloc_skewls', 0), 2
     )
 
     return merged

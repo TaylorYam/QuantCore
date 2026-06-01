@@ -16,7 +16,8 @@ import math
 import pytest
 
 
-def _make_ctx(alloc_sr: float = 0.80, alloc_sp500: float = 0.50):
+def _make_ctx(alloc_sr: float = 0.80, alloc_sp500: float = 0.50,
+              alloc_skewls: float = 0.0):
     """Build an AccountCtx directly without going through from_name()."""
     from account_ctx import AccountCtx
     return AccountCtx(
@@ -31,6 +32,7 @@ def _make_ctx(alloc_sr: float = 0.80, alloc_sp500: float = 0.50):
         wait_fill_sec=30,
         alloc_sr=alloc_sr,
         alloc_sp500=alloc_sp500,
+        alloc_skewls=alloc_skewls,
         price_feed_port=4002,
         tg_token="",
         tg_chat_id="",
@@ -204,3 +206,100 @@ def test_full_portfolio_multiple_tickers():
     # All tagged as SR
     for sym in targets:
         assert targets[sym]["strategy"] == "SR"
+
+
+# ── SkewLS 3rd-strategy coverage（S18）────────────────────────────────────
+
+def test_skewls_inverse_etf_long_contributes_positive_shares():
+    """Skew LS long inverse ETF (e.g., REW) 應產生正股數，且 strategy 標記為 SkewLS。"""
+    from rebalance_ib import combine_targets
+    ctx = _make_ctx(alloc_sr=0.0, alloc_sp500=0.0, alloc_skewls=0.30)
+
+    targets = combine_targets(
+        nav=100_000,
+        sr_wgt={}, sp500_wgt={},
+        prices={"REW": 50.0},
+        ctx=ctx,
+        skewls_wgt={"REW": 0.10},  # 10% (strategy-normalized)
+    )
+
+    # $100k × 0.30 × 0.10 / $50 = 60 shares
+    assert targets["REW"]["shares"] == 60
+    assert targets["REW"]["strategy"] == "SkewLS"
+
+
+def test_skewls_xlc_short_contributes_negative_shares():
+    """Skew LS XLC direct short (負權重) → target_shares 為負 → IB 自動 SELL_SHORT。"""
+    from rebalance_ib import combine_targets
+    ctx = _make_ctx(alloc_sr=0.0, alloc_sp500=0.0, alloc_skewls=0.30)
+
+    targets = combine_targets(
+        nav=100_000,
+        sr_wgt={}, sp500_wgt={},
+        prices={"XLC": 80.0},
+        ctx=ctx,
+        skewls_wgt={"XLC": -0.05},  # -5% (short)
+    )
+
+    # $100k × 0.30 × (-0.05) / $80 = -18.75 → round = -19
+    assert targets["XLC"]["shares"] == -19
+    assert targets["XLC"]["strategy"] == "SkewLS"
+
+
+def test_skewls_overlap_with_sr_sums_correctly():
+    """XLK 被 SR (long via momentum) AND SkewLS (long via skew) 同時看好時，
+    target_shares = SR + SkewLS。"""
+    from rebalance_ib import combine_targets
+    ctx = _make_ctx(alloc_sr=0.80, alloc_sp500=0.0, alloc_skewls=0.30)
+
+    targets = combine_targets(
+        nav=100_000,
+        sr_wgt={"XLK": 0.20},        # 20% of SR alloc
+        sp500_wgt={},
+        prices={"XLK": 100.0},
+        ctx=ctx,
+        skewls_wgt={"XLK": 0.27},    # 27% of SkewLS strategy weight
+    )
+
+    # SR:    $100k × 0.80 × 0.20 / $100 = 160
+    # Skew: $100k × 0.30 × 0.27 / $100 = 81
+    # Total: 241
+    assert targets["XLK"]["shares"] == 241
+    assert "SR" in targets["XLK"]["strategy"]
+    assert "SkewLS" in targets["XLK"]["strategy"]
+
+
+def test_skewls_disabled_when_alloc_zero():
+    """alloc_skewls=0 → 即使傳 skewls_wgt 也沒任何 target shares。"""
+    from rebalance_ib import combine_targets
+    ctx = _make_ctx(alloc_sr=0.0, alloc_sp500=0.0, alloc_skewls=0.0)
+
+    targets = combine_targets(
+        nav=100_000,
+        sr_wgt={}, sp500_wgt={},
+        prices={"REW": 50.0, "XLC": 80.0},
+        ctx=ctx,
+        skewls_wgt={"REW": 0.10, "XLC": -0.05},
+    )
+
+    # alloc_skewls=0 → 所有 SkewLS target shares = 0
+    assert targets.get("REW", {}).get("shares", 0) == 0
+    assert targets.get("XLC", {}).get("shares", 0) == 0
+
+
+def test_skewls_wgt_none_omits_strategy():
+    """skewls_wgt=None → 沒任何 SkewLS 處理；symbol 不在 targets。"""
+    from rebalance_ib import combine_targets
+    ctx = _make_ctx(alloc_sr=0.80, alloc_sp500=0.0, alloc_skewls=0.30)
+
+    targets = combine_targets(
+        nav=100_000,
+        sr_wgt={"XLK": 1.0}, sp500_wgt={},
+        prices={"XLK": 100.0, "REW": 50.0},
+        ctx=ctx,
+        skewls_wgt=None,    # not provided
+    )
+
+    assert "XLK" in targets  # SR only
+    assert targets["XLK"]["strategy"] == "SR"
+    assert "REW" not in targets  # SkewLS not run

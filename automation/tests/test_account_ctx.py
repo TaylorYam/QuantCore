@@ -27,6 +27,7 @@ def test_from_name_taylor(fake_config):
     assert ctx.host == "127.0.0.1"
     assert ctx.alloc_sr == 0.80
     assert ctx.alloc_sp500 == 0.50
+    assert ctx.alloc_skewls == 0.0    # 預設 0，不影響 live
     assert ctx.dry_run is True
     assert ctx.order_type == "MOO"
     assert ctx.tg_token == "FAKE_TOKEN"
@@ -43,27 +44,43 @@ def test_from_name_rosa(fake_config):
 
 
 def test_from_name_yvonne_has_override_allocs(fake_config):
-    """Yvonne has alloc_sr=0.75 / alloc_sp500=0.45 in fake_accounts,
-    overriding the base config values (0.80 / 0.50)."""
+    """Yvonne has alloc_sr=0.75 / alloc_sp500=0.45 / alloc_skewls=0.30 in
+    fake_accounts, overriding the base config values (0.80 / 0.50 / 0.0)."""
     from account_ctx import AccountCtx
     from account_utils import ROLE_REBALANCE
 
     ctx = AccountCtx.from_name("Yvonne", ROLE_REBALANCE)
     assert ctx.alloc_sr == 0.75
     assert ctx.alloc_sp500 == 0.45
+    assert ctx.alloc_skewls == 0.30
 
 
 def test_leverage_is_sum_of_allocs(fake_config):
-    """`leverage` is a computed property = alloc_sr + alloc_sp500.
+    """`leverage` is a computed property = alloc_sr + alloc_sp500 + alloc_skewls.
     Prevents display-vs-execution drift (the bug we fixed in S2)."""
     from account_ctx import AccountCtx
     from account_utils import ROLE_REBALANCE
 
     taylor = AccountCtx.from_name("Taylor", ROLE_REBALANCE)
+    # alloc_skewls=0 → leverage 與既有實盤一致
     assert taylor.leverage == pytest.approx(1.30, abs=1e-9)
 
     yvonne = AccountCtx.from_name("Yvonne", ROLE_REBALANCE)
-    assert yvonne.leverage == pytest.approx(0.75 + 0.45, abs=1e-9)
+    assert yvonne.leverage == pytest.approx(0.75 + 0.45 + 0.30, abs=1e-9)
+
+
+def test_alloc_skewls_default_is_zero(fake_config):
+    """新策略加入時，現有 Taylor / Rosa 帳戶 alloc_skewls 必須 = 0，
+    以確保升級不改動 live 行為（feedback-live-config memory rule）。"""
+    from account_ctx import AccountCtx
+    from account_utils import ROLE_REBALANCE
+
+    for name in ("Taylor", "Rosa"):
+        ctx = AccountCtx.from_name(name, ROLE_REBALANCE)
+        assert ctx.alloc_skewls == 0.0, (
+            f"{name} alloc_skewls must default 0 to preserve live behavior; "
+            f"got {ctx.alloc_skewls}"
+        )
 
 
 def test_frozen_cannot_mutate(fake_config):

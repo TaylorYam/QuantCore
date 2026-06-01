@@ -310,19 +310,86 @@ def get_sp500_weights(current_sp500_holdings: list[str],
     return wgt, sig_date_str
 
 
+# ── Sector Skew LS ────────────────────────────────────────────────────────
+
+def get_skewls_weights(as_of_date: Optional[pd.Timestamp] = None
+                        ) -> tuple[dict, str]:
+    """
+    取 Sector Skew LS 最新目標權重（live 模式）。
+
+    回傳 ticker-level signed weights：
+      - Long sector ETF (XLK / XLF / ...): 正權重
+      - Long inverse ETF (REW / SEF / ...): 正權重 (= 對 sector short 的 proxy)
+      - Direct short XLC: 負權重
+
+    **不套 threshold gating** — caller (rebalance_ib) 對照 `skewls_state_{account}.json`
+    state file 判斷是否觸發 rebalance (delta > REBAL_THRESHOLD)。
+
+    Parameters
+    ----------
+    as_of_date : pd.Timestamp | None
+        模擬「在某個歷史日期計算訊號」用，預設 None = 用最新可用資料。
+        主要供 sync_position 和 unit test 使用。
+
+    Returns
+    -------
+    (weights_dict, signal_date_str)
+        weights_dict: {symbol: signed_weight}
+            正值 = 多單 (sector ETF 或 inverse ETF)
+            負值 = 空單 (XLC direct short)
+        signal_date_str: 'YYYY-MM-DD' (= 用來算訊號的最後一筆 close 日期)
+
+    Notes
+    -----
+    當訊號未成熟 (rolling window 不足) 回傳空 dict，caller 應視為 "no-op"。
+    """
+    from strategies.sector_skew_ls.signal import get_latest_weights_live
+
+    wgt, sig_date = get_latest_weights_live(as_of_date=as_of_date)
+
+    log.info(f"Skew LS signal date: {sig_date.date()}")
+    if not wgt:
+        log.warning("  Skew LS: signal not ready (insufficient history)")
+    else:
+        for sym, w in sorted(wgt.items(), key=lambda x: -abs(x[1])):
+            direction = "SHORT" if w < 0 else "LONG "
+            log.info(f"  Skew {direction} {sym}: {w*100:+5.1f}%")
+
+    return wgt, str(sig_date.date())
+
+
 # ── SP500 Universe helper（常被 callers 重複實作）─────────────────────────
 
-def get_sp500_universe() -> set[str]:
+def get_sp500_universe(historical: bool = True) -> set[str]:
     """
-    回傳當前 S&P 500 成分股清單 + SPY/SSO（熊市 dip-buy 標的）。
+    回傳 S&P 500 成分股清單（含 SPY/SSO 熊市 dip-buy 標的）。
 
-    用於 callers 分類 IB 持倉歸屬哪個策略。
+    Parameters
+    ----------
+    historical : bool, default True
+        True  → 所有歷史日期的成分股聯集（涵蓋曾經在 SP500 但已被踢出的股票，
+                例如 STX 2018 被移除、WDC 2024 被移除）。用於分類 IB 持倉。
+        False → 只取最新日期的當前成分股清單。用於 SP500 strategy 選股。
+
+    用於 callers 分類 IB 持倉歸屬：歷史聯集確保使用者過去由 SP500 strategy 買進、
+    現在仍持有但已不在當前 SP500 的股票會被正確歸入「Stock Holdings (MOM)」
+    bucket，而非誤判為「Other」。
     """
     from strategies.sp500_momentum.selection import SelectionEngine
     from strategies.sp500_momentum import config as sp_cfg, utils
     selector = SelectionEngine()
-    spy_df = utils.load_benchmark(sp_cfg.ETF_DIR / "SPY.csv")
-    universe = set(selector.get_constituents(spy_df.index[-1]))
+
+    universe: set[str] = set()
+    df = selector.constituents_df
+    if historical and not df.empty:
+        # 聯集所有歷史日期的成分股
+        for val in df.values.flatten():
+            if isinstance(val, str):
+                universe.add(val.replace(".txt", "").strip())
+    else:
+        spy_df = utils.load_benchmark(sp_cfg.ETF_DIR / "SPY.csv")
+        universe = set(selector.get_constituents(spy_df.index[-1]))
+
     universe |= {'SPY', 'SSO'}
     return universe
 

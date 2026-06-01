@@ -36,7 +36,9 @@ class AccountCtx:
     單一帳戶的完整 runtime config 快照。
 
     所有欄位皆為 immutable。需要不同帳戶就建立新的 ctx。
-    `leverage` 為 computed field：永遠 = alloc_sr + alloc_sp500，不接受獨立設定值。
+    `leverage` 為 computed field：永遠 = alloc_sr + alloc_sp500 + alloc_skewls，
+    不接受獨立設定值。詳細語意見 [CONTEXT.md](../CONTEXT.md) 與
+    [docs/adr/0001-alloc-skew-factor-exposure.md](../docs/adr/0001-alloc-skew-factor-exposure.md)。
     """
     # ── Account identity ─────────────────────────────────────
     name: str                    # 人類可讀名稱，如 "Taylor"
@@ -54,8 +56,9 @@ class AccountCtx:
     wait_fill_sec: int           # 等待成交回報秒數
 
     # ── Strategy allocation ──────────────────────────────────
-    alloc_sr: float              # Sector Rotation 分配（0.0-1.0+）
-    alloc_sp500: float           # SP500 Momentum 分配
+    alloc_sr: float              # Sector Rotation 分配（0.0-1.0+），long-only
+    alloc_sp500: float           # SP500 Momentum 分配，long-only
+    alloc_skewls: float          # Sector Skew LS 分配，多空（inverse proxy + XLC direct short）
 
     # ── Data feed ────────────────────────────────────────────
     price_feed_port: int         # 備援報價 port（有 MD 訂閱的帳戶）
@@ -67,8 +70,13 @@ class AccountCtx:
     # ── Computed fields ──────────────────────────────────────
     @property
     def leverage(self) -> float:
-        """Total leverage = SR 分配 + SP500 分配（顯示用，下單不依賴這個值）"""
-        return round(self.alloc_sr + self.alloc_sp500, 4)
+        """
+        Total leverage = SR + SP500 + Skew LS 分配（顯示用，下單不依賴這個值）。
+
+        注意：Skew LS 透過 Inverse Proxy 用 2x 反向 ETF，IB 端真實 margin 占用
+        會略低於此 derived value（α-semantics，見 ADR-0001）。
+        """
+        return round(self.alloc_sr + self.alloc_sp500 + self.alloc_skewls, 4)
 
     # ── Factory ──────────────────────────────────────────────
     @classmethod
@@ -97,7 +105,8 @@ class AccountCtx:
             wait_fill_sec  = int(cfg.get('wait_fill_sec', 30)),
             alloc_sr       = float(cfg.get('alloc_sr', 0.80)),
             alloc_sp500    = float(cfg.get('alloc_sp500', 0.50)),
-            price_feed_port= int(cfg.get('price_feed_port', 7497)),
+            alloc_skewls   = float(cfg.get('alloc_skewls', 0.0)),
+            price_feed_port= int(cfg.get('price_feed_port', 4002)),
             tg_token       = cfg.get('telegram_token', ''),
             tg_chat_id     = cfg.get('telegram_chat_id', ''),
         )

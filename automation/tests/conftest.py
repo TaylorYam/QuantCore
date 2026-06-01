@@ -41,6 +41,7 @@ FAKE_BASE_CONFIG = {
     "wait_fill_sec": 30,
     "alloc_sr": 0.80,
     "alloc_sp500": 0.50,
+    "alloc_skewls": 0.0,
     "leverage": 1.30,
     "price_feed_port": 4002,
     "telegram_token": "FAKE_TOKEN",
@@ -50,15 +51,15 @@ FAKE_BASE_CONFIG = {
 FAKE_ACCOUNTS = [
     {
         "name": "Taylor", "account": "U17800779", "port": 4001,
-        "alloc_sr": 0.80, "alloc_sp500": 0.50,
+        "alloc_sr": 0.80, "alloc_sp500": 0.50, "alloc_skewls": 0.0,
     },
     {
         "name": "Rosa", "account": "U12770188", "port": 4002,
-        "alloc_sr": 0.80, "alloc_sp500": 0.50,
+        "alloc_sr": 0.80, "alloc_sp500": 0.50, "alloc_skewls": 0.0,
     },
     {
         "name": "Yvonne", "account": "U18807005", "port": 4003,
-        "alloc_sr": 0.75, "alloc_sp500": 0.45,
+        "alloc_sr": 0.75, "alloc_sp500": 0.45, "alloc_skewls": 0.30,
     },
 ]
 

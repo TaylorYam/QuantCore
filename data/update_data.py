@@ -21,7 +21,9 @@ STOCK_DIR = ROOT / "stocks"
 
 SECTOR_ETFS = ["XLK","XLF","XLV","XLE","XLI","XLY","XLB","XLP","XLU","XLC","XLRE"]
 BENCHMARKS  = ["SPY","SSO","QQQ"]
-ALL_ETFS    = SECTOR_ETFS + BENCHMARKS
+# Skew LS 用：9 檔 ProShares UltraShort (2x) + SEF/REK (1x)，XLC 直接放空無 inverse ETF
+INVERSE_ETFS = ["REW","SEF","RXD","ERY","SIJ","SCC","SMN","SZK","SDP","REK"]
+ALL_ETFS    = SECTOR_ETFS + BENCHMARKS + INVERSE_ETFS
 VIX_TICKER  = "^VIX"
 
 TODAY = str(date.today())

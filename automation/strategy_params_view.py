@@ -18,9 +18,9 @@ Public API:
         theme, fonts, btn_factory,
         on_toggle_dry_run=..., on_save=...,
     )
-    view.update_cfg(cfg_dict)   # refresh from cfg (dry_run, alloc_sr, alloc_sp500)
+    view.update_cfg(cfg_dict)   # refresh from cfg (dry_run, alloc_sr, alloc_sp500, alloc_skewls)
     view.update_data_date(str)  # set "Last: YYYY-MM-DD"
-    sr, sp = view.get_alloc()   # read slider values
+    sr, sp, sk = view.get_alloc()   # read slider values (3-tuple)
 
 Note: Settings + Params live in different grid cells in Panel, so the view
 takes two parents. Everything else is bundled inside one class for cohesion.
@@ -168,6 +168,27 @@ class StrategyParamsView:
         )
         self.sp_pct_lbl.pack(side="left")
 
+        # Skew LS allocation (S22)
+        row_sk = tk.Frame(frame, bg=t["bg2"])
+        row_sk.pack(fill="x", pady=2)
+        tk.Label(
+            row_sk, text="SkewLS", font=f["label"],
+            bg=t["bg2"], fg=t["red"], width=8, anchor="w",
+        ).pack(side="left")
+        self.sk_scale = tk.Scale(
+            row_sk, from_=0.0, to=1.0, resolution=0.05,
+            orient="horizontal", length=140,
+            bg=t["bg2"], fg=t["text"], troughcolor=t["bg3"],
+            highlightbackground=t["bg2"], font=f["small"],
+            command=self._on_alloc_change,
+        )
+        self.sk_scale.pack(side="left", padx=4)
+        self.sk_pct_lbl = tk.Label(
+            row_sk, text="0%", font=f["badge"],
+            bg=t["bg2"], fg=t["red"],
+        )
+        self.sk_pct_lbl.pack(side="left")
+
         # Exposure + Save
         row_lev = tk.Frame(frame, bg=t["bg2"])
         row_lev.pack(fill="x", pady=(3, 2))
@@ -208,29 +229,38 @@ class StrategyParamsView:
         # Allocations
         alloc_sr = cfg.get("alloc_sr", 0.80)
         alloc_sp = cfg.get("alloc_sp500", 0.50)
+        alloc_sk = cfg.get("alloc_skewls", 0.0)
         self.sr_scale.set(alloc_sr)
         self.sp_scale.set(alloc_sp)
-        self._update_alloc_display(alloc_sr, alloc_sp)
+        self.sk_scale.set(alloc_sk)
+        self._update_alloc_display(alloc_sr, alloc_sp, alloc_sk)
 
     def update_data_date(self, date_str: str) -> None:
         self.data_date_lbl.config(text=f"Last: {date_str}")
 
-    def get_alloc(self) -> Tuple[float, float]:
-        """Return (sr, sp) slider values rounded to 2 decimals."""
-        return round(self.sr_scale.get(), 2), round(self.sp_scale.get(), 2)
+    def get_alloc(self) -> Tuple[float, float, float]:
+        """Return (sr, sp, skewls) slider values rounded to 2 decimals."""
+        return (
+            round(self.sr_scale.get(), 2),
+            round(self.sp_scale.get(), 2),
+            round(self.sk_scale.get(), 2),
+        )
 
     # ── Internal: slider display ─────────────────────────────
 
     def _on_alloc_change(self, _=None) -> None:
         sr = self.sr_scale.get()
         sp = self.sp_scale.get()
-        self._update_alloc_display(sr, sp)
+        sk = self.sk_scale.get()
+        self._update_alloc_display(sr, sp, sk)
 
-    def _update_alloc_display(self, alloc_sr: float, alloc_sp: float) -> None:
+    def _update_alloc_display(self, alloc_sr: float, alloc_sp: float,
+                              alloc_sk: float = 0.0) -> None:
         t = self.t
-        total = alloc_sr + alloc_sp
+        total = alloc_sr + alloc_sp + alloc_sk
         self.sr_pct_lbl.config(text=f"{alloc_sr:.0%}")
         self.sp_pct_lbl.config(text=f"{alloc_sp:.0%}")
+        self.sk_pct_lbl.config(text=f"{alloc_sk:.0%}")
         self.lev_lbl.config(text=f"{total:.0%} ({total:.1f}x)")
 
         if total > 1.0:

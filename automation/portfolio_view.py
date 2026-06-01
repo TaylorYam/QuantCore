@@ -22,7 +22,7 @@ import math
 import tkinter as tk
 from typing import Optional
 
-from ib_fetcher import SR_ETFS
+from ib_fetcher import SR_ETFS, ETF_TICKERS
 
 
 _REQUIRED_THEME_KEYS = {
@@ -271,7 +271,8 @@ class PortfolioView:
         colors = []
         ei, si = 0, 0
         for h in sorted_h:
-            if h["symbol"] in SR_ETFS:
+            # ETF bucket 涵蓋 SR sector + SkewLS inverse (Issue 2 Option 2)
+            if h["symbol"] in ETF_TICKERS:
                 colors.append(etf_blues[ei % len(etf_blues)])
                 ei += 1
             else:

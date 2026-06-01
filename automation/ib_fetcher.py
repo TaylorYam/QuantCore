@@ -42,6 +42,23 @@ SR_ETFS: set[str] = {
     'XLP', 'XLU', 'XLC', 'XLRE',
 }
 
+# Skew LS 反向 ETF 清單 — 與 SR_ETFS 一起歸入 ETF Holdings (Issue 2 Option 2)
+# 同 strategies/sector_skew_ls/config.py INVERSE_TICKERS
+# 確保 strategies 套件可 import — 即使 ib_fetcher 被獨立 import (測試環境等)
+import sys as _sys
+from pathlib import Path as _Path
+_ROOT_DIR = _Path(__file__).parent.parent
+if str(_ROOT_DIR) not in _sys.path:
+    _sys.path.insert(0, str(_ROOT_DIR))
+try:
+    from strategies.sector_skew_ls import config as _skewls_cfg
+    SKEWLS_INVERSE_TICKERS: set[str] = set(_skewls_cfg.INVERSE_TICKERS)
+except Exception:
+    SKEWLS_INVERSE_TICKERS = set()
+
+# 所有「ETF Holdings」bucket 涵蓋的 ticker (= SR sector + SkewLS inverse)
+ETF_TICKERS: set[str] = SR_ETFS | SKEWLS_INVERSE_TICKERS
+
 
 # ── 低階：IB 連線 + 單項查詢 ────────────────────────────────────────────
 
@@ -250,7 +267,8 @@ def fetch_portfolio(ctx: AccountCtx) -> dict:
                     "mkt_val": mkt_val, "upnl": upnl, "upnl_pct": upnl_pct,
                 }
 
-                if sym in SR_ETFS:
+                # ETF bucket 涵蓋 SR sector + SkewLS inverse (Issue 2 Option 2)
+                if sym in ETF_TICKERS:
                     result["etf_holdings"].append(entry)
                     result["strategy_mktval"] += mkt_val
                 elif sp500_universe and sym in sp500_universe:

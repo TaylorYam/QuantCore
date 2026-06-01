@@ -59,45 +59,53 @@ from portfolio_view import PortfolioView
 from panel_task_cards import TaskCard, TradesView
 from strategy_params_view import StrategyParamsView
 
-TASK_UPDATE    = "QuantCore_DataUpdate_Daily"
-TASK_REBAL_SR  = "QuantCore_SR_Rebalance_Tue"
-TASK_REBAL_SP  = "QuantCore_SP500_Rebalance_Wed"
-TASK_REPORT    = "QuantCore_DailyReport"
-TASK_MOO_TUE   = "QuantCore_MOO_Fill_Tue"
-TASK_MOO_WED   = "QuantCore_MOO_Fill_Wed"
-TASK_SP_DAILY  = "QuantCore_SP500_DailyCheck"
+TASK_UPDATE      = "QuantCore_DataUpdate_Daily"
+TASK_REBAL_SR    = "QuantCore_SR_Rebalance_Tue"
+TASK_REBAL_SP    = "QuantCore_SP500_Rebalance_Wed"
+TASK_REPORT      = "QuantCore_DailyReport"
+TASK_MOO_TUE     = "QuantCore_MOO_Fill_Tue"
+TASK_MOO_WED     = "QuantCore_MOO_Fill_Wed"
+TASK_SP_DAILY    = "QuantCore_SP500_DailyCheck"
+# S22/S23：Skew LS threshold check（M-F 21:00 TW，多數日 no-op）
+TASK_REBAL_SKEWLS = "QuantCore_SkewLS_DailyCheck"
 
 # 每個任務的 schtasks 安裝參數 (name -> schedule_args)
+# Tue/Wed 由 SR/SP500 task 用 --mode all 涵蓋（含 SkewLS check），避免 clientId 衝突
+# SkewLS 獨立 task 只在 Mon/Thu/Fri 跑
 TASK_SCHTASK_ARGS = {
-    TASK_UPDATE:   "/sc daily /st 04:30",
-    TASK_REBAL_SR: "/sc weekly /d TUE /st 21:00",
-    TASK_REBAL_SP: "/sc weekly /d WED /st 21:00",
-    TASK_REPORT:   "/sc daily /st 04:40",
-    TASK_MOO_TUE:  "/sc weekly /d TUE /st 21:31",
-    TASK_MOO_WED:  "/sc weekly /d WED /st 21:31",
-    TASK_SP_DAILY: "/sc weekly /d MON,TUE,WED,THU,FRI /st 16:00",
+    TASK_UPDATE:      "/sc daily /st 04:30",
+    TASK_REBAL_SR:    "/sc weekly /d TUE /st 21:00",
+    TASK_REBAL_SP:    "/sc weekly /d WED /st 21:00",
+    TASK_REPORT:      "/sc daily /st 04:40",
+    TASK_MOO_TUE:     "/sc weekly /d TUE /st 21:31",
+    TASK_MOO_WED:     "/sc weekly /d WED /st 21:31",
+    TASK_SP_DAILY:    "/sc weekly /d MON,TUE,WED,THU,FRI /st 16:00",
+    TASK_REBAL_SKEWLS:"/sc weekly /d MON,THU,FRI /st 21:00",
 }
 
 # 每個任務對應的腳本與參數
+# Tue/Wed 用 --mode all 把三策略在單一 process 內算完再合併送 MOO，避免 race condition
 TASK_SCRIPT_ARGS = {
-    TASK_UPDATE:   ("update_data.py",       ""),
-    TASK_REBAL_SR: ("rebalance_ib.py",      "--mode sr --account all"),
-    TASK_REBAL_SP: ("rebalance_ib.py",      "--mode sp500 --account all"),
-    TASK_REPORT:   ("daily_report.py",      "--account all"),
-    TASK_MOO_TUE:  ("moo_fill_check.py",    "--account all"),
-    TASK_MOO_WED:  ("moo_fill_check.py",    "--account all"),
-    TASK_SP_DAILY: ("sp500_daily_check.py", "--account all"),
+    TASK_UPDATE:      ("update_data.py",       ""),
+    TASK_REBAL_SR:    ("rebalance_ib.py",      "--mode all --account all"),
+    TASK_REBAL_SP:    ("rebalance_ib.py",      "--mode all --account all"),
+    TASK_REPORT:      ("daily_report.py",      "--account all"),
+    TASK_MOO_TUE:     ("moo_fill_check.py",    "--account all"),
+    TASK_MOO_WED:     ("moo_fill_check.py",    "--account all"),
+    TASK_SP_DAILY:    ("sp500_daily_check.py", "--account all"),
+    TASK_REBAL_SKEWLS:("rebalance_ib.py",      "--mode skewls --account all"),
 }
 
 # 友善顯示名稱
 TASK_LABELS = {
-    TASK_UPDATE:   "Data Update",
-    TASK_REBAL_SR: "ETF Rebalance (Sector Rotation)",
-    TASK_REBAL_SP: "Stocks Rebalance (Momentum)",
-    TASK_REPORT:   "Daily Report",
-    TASK_MOO_TUE:  "MOO Fill Check (Tue)",
-    TASK_MOO_WED:  "MOO Fill Check (Wed)",
-    TASK_SP_DAILY: "SP500 Daily Check (Stop/Gap/Dip)",
+    TASK_UPDATE:      "Data Update",
+    TASK_REBAL_SR:    "Tue Rebalance (SR + SkewLS check)",
+    TASK_REBAL_SP:    "Wed Rebalance (SP500 + SkewLS check)",
+    TASK_REPORT:      "Daily Report",
+    TASK_MOO_TUE:     "MOO Fill Check (Tue)",
+    TASK_MOO_WED:     "MOO Fill Check (Wed)",
+    TASK_SP_DAILY:    "SP500 Daily Check (Stop/Gap/Dip)",
+    TASK_REBAL_SKEWLS:"SkewLS Check (Mon/Thu/Fri)",
 }
 
 # SR ETFs (for classifying holdings) — R1.3：單一來源在 ib_fetcher
@@ -127,17 +135,15 @@ MAGENTA   = "#a855f7"
 # ════════════════════════════════════════════════════════════
 
 def _load_sp500_universe() -> set:
-    """載入當前 S&P 500 成分股清單"""
+    """載入 S&P 500 成分股「歷史聯集」（含 SPY/SSO）。
+
+    用歷史聯集而非當前清單：使用者透過 SP500 strategy 買進的個股，
+    若該檔被 SP500 移除 (如 WDC 2024, STX 2018)，仍需正確歸類為
+    "Stock Holdings (MOM)"，而非誤判為 "Other"。
+    """
     try:
-        import pandas as pd
-        ref = BASE_DIR.parent / "data" / "reference" / "sp500_constituents_daily_2015_2026.xlsx"
-        if not ref.exists():
-            return set()
-        df = pd.read_excel(ref, index_col=0, parse_dates=True)
-        if df.empty:
-            return set()
-        row = df.iloc[-1]
-        return set(row.dropna().values) | {'SPY', 'SSO'}
+        from signals import get_sp500_universe
+        return get_sp500_universe(historical=True)
     except Exception:
         return set()
 
@@ -181,7 +187,9 @@ def read_latest_portfolio() -> dict:
                 "upnl": float(row["UnrealPnL"]),
                 "upnl_pct": float(row["UnrealPnL%"]),
             }
-            if sym in SR_ETFS:
+            # ETF bucket 涵蓋 SR sector + SkewLS inverse (Issue 2 Option 2)
+            from ib_fetcher import ETF_TICKERS
+            if sym in ETF_TICKERS:
                 result["etf_holdings"].append(entry)
                 result["strategy_mktval"] += entry["mkt_val"]
             elif _SP500_UNIVERSE and sym in _SP500_UNIVERSE:
@@ -714,13 +722,14 @@ class ControlPanel(tk.Tk):
         self._section_label_inline(tasks_wrapper, "Scheduled Tasks")
         self.task_cards: dict[str, TaskCard] = {}
         task_defs = [
-            (TASK_UPDATE,    "Data Update",          "Daily 04:30 TW = 16:30 ET"),
-            (TASK_SP_DAILY,  "SP500 Daily Check",    "Mon-Fri 16:00 TW = 04:00 ET"),
-            (TASK_REBAL_SR,  "ETF Rebalance (SR)",   "Tue 21:00 TW = 09:00 ET"),
-            (TASK_REBAL_SP,  "Stocks Rebalance",     "Wed 21:00 TW = 09:00 ET"),
-            (TASK_MOO_TUE,   "MOO Fill (Tue)",       "Tue 21:31 TW = 09:31 ET"),
-            (TASK_MOO_WED,   "MOO Fill (Wed)",       "Wed 21:31 TW = 09:31 ET"),
-            (TASK_REPORT,    "Daily Report",          "Daily 04:40 TW = 16:40 ET"),
+            (TASK_UPDATE,       "Data Update",                "Daily 04:30 TW = 16:30 ET"),
+            (TASK_SP_DAILY,     "SP500 Daily Check",          "Mon-Fri 16:00 TW = 04:00 ET"),
+            (TASK_REBAL_SR,     "Tue Rebalance (SR+Skew)",    "Tue 21:00 TW = 09:00 ET (--mode all)"),
+            (TASK_REBAL_SP,     "Wed Rebalance (SP500+Skew)", "Wed 21:00 TW = 09:00 ET (--mode all)"),
+            (TASK_REBAL_SKEWLS, "SkewLS Check (M/Th/F)",      "Mon/Thu/Fri 21:00 TW = 09:00 ET"),
+            (TASK_MOO_TUE,      "MOO Fill (Tue)",             "Tue 21:31 TW = 09:31 ET"),
+            (TASK_MOO_WED,      "MOO Fill (Wed)",             "Wed 21:31 TW = 09:31 ET"),
+            (TASK_REPORT,       "Daily Report",               "Daily 04:40 TW = 16:40 ET"),
         ]
         for tn, lbl, timing in task_defs:
             card = TaskCard(
@@ -1201,19 +1210,40 @@ class ControlPanel(tk.Tk):
             daemon=True,
         ).start()
 
-    # ── Check Now 按鈕：顯示「已在監控中」狀態 ────────────
+    # ── Check Now 按鈕：對 dead monitor thread 重新 spawn + 探測 ──
 
     def _refresh_gateway_status(self):
-        """Check Now 按鈕：對每個帳戶顯示目前監測狀態（由 GatewayMonitor 維護）"""
+        """Check Now 按鈕：對每個帳戶**重新探測** Gateway 連線。
+
+        Monitor 設計為「連一次失敗就停」(避免 2026-04-15 反覆 connect 卡 Gateway)，
+        但使用者場景：開 Panel 時 Gateway 未啟動 → monitor 失敗退出 → 後續登入
+        Gateway 後 Panel 仍紅燈。這個按鈕呼叫 `restart_account_thread()` 為每個
+        dead 的 monitor thread 重新 spawn → 重新嘗試連線。
+
+        對於還活著的 monitor thread (連線正常 / 正在 connecting)，restart 會被
+        拒絕、保留現有 thread；只更新 UI 顯示目前狀態。
+        """
         mon = getattr(self, "_gw_monitor", None)
         if mon is None:
             return
+        respawned = 0
+        kept_alive = 0
         for a in self._accounts_meta:
             name = a["name"]
-            state = mon.get_state(name)
-            self._gw_ui_state(name, state if state != "init" else "connecting")
+            if mon.restart_account_thread(name):
+                # Dead thread → spawn 新的 → UI 顯示「正在連線」
+                respawned += 1
+                self._gw_ui_state(name, "connecting")
+            else:
+                # Thread 還活著（可能 online 或正在 connecting），保留 + 顯示現狀
+                kept_alive += 1
+                state = mon.get_state(name)
+                self._gw_ui_state(name, state if state != "init" else "connecting")
         ts = datetime.now().strftime("%H:%M:%S")
         self.gw_last_lbl.config(text=f"last: {ts}")
+        if respawned > 0:
+            self._log(f"[>] Re-probing {respawned} Gateway(s)... "
+                      f"(state callback will update colour shortly)")
 
     def _get_account_arg(self) -> str:
         """取得當前選中帳戶的 --account 參數"""
@@ -1375,6 +1405,8 @@ class ControlPanel(tk.Tk):
     def refresh_all(self):
         self._log("Refreshing...")
         threading.Thread(target=self._refresh_thread, daemon=True).start()
+        # 一併重新探測 Gateway 連線（dead monitor thread 重 spawn）
+        self.after(50, self._refresh_gateway_status)
 
     def _refresh_thread(self):
         # 1. Task states
@@ -1562,14 +1594,20 @@ class ControlPanel(tk.Tk):
     def _install_scheduler(self):
         if not messagebox.askyesno(
             "Install All Tasks",
-            "Install ALL 7 scheduled tasks?\n\n"
+            "Install ALL 8 scheduled tasks?\n\n"
             "  1. QuantCore_DataUpdate_Daily    (Daily 04:30)\n"
             "  2. QuantCore_SP500_DailyCheck    (Mon-Fri 16:00)\n"
-            "  3. QuantCore_SR_Rebalance_Tue    (ETF  Tue 21:00)\n"
-            "  4. QuantCore_SP500_Rebalance_Wed (Stocks Wed 21:00)\n"
-            "  5. QuantCore_MOO_Fill_Tue        (MOO Check Tue 21:31)\n"
-            "  6. QuantCore_MOO_Fill_Wed        (MOO Check Wed 21:31)\n"
-            "  7. QuantCore_DailyReport         (Daily 04:40)\n\n"
+            "  3. QuantCore_SR_Rebalance_Tue    (Tue 21:00 --mode all,\n"
+            "     SR rebal + SP500 hold + SkewLS check)\n"
+            "  4. QuantCore_SP500_Rebalance_Wed (Wed 21:00 --mode all,\n"
+            "     SR hold + SP500 rebal + SkewLS check)\n"
+            "  5. QuantCore_SkewLS_DailyCheck   (Mon/Thu/Fri 21:00)\n"
+            "     (no-op if alloc_skewls = 0)\n"
+            "  6. QuantCore_MOO_Fill_Tue        (MOO Check Tue 21:31)\n"
+            "  7. QuantCore_MOO_Fill_Wed        (MOO Check Wed 21:31)\n"
+            "  8. QuantCore_DailyReport         (Daily 04:40)\n\n"
+            "Tue/Wed 用 --mode all 在單一 process 內算完三策略再送 MOO，\n"
+            "避免與 SkewLS daily check 同時跑時的 clientId 衝突。\n\n"
             "Continue?"
         ):
             return
@@ -1579,7 +1617,7 @@ class ControlPanel(tk.Tk):
 
         def _do():
             for tn in [TASK_UPDATE, TASK_SP_DAILY,
-                       TASK_REBAL_SR, TASK_REBAL_SP,
+                       TASK_REBAL_SR, TASK_REBAL_SP, TASK_REBAL_SKEWLS,
                        TASK_MOO_TUE, TASK_MOO_WED, TASK_REPORT]:
                 out = install_single_task(tn)
                 self._log(f"  {out}")
@@ -1619,34 +1657,53 @@ class ControlPanel(tk.Tk):
     def _save_params(self):
         try:
             acct = self.selected_account.get()
-            new_sr, new_sp = self.strategy_view.get_alloc()
-            total  = new_sr + new_sp
+            new_sr, new_sp, new_sk = self.strategy_view.get_alloc()
+            total  = new_sr + new_sp + new_sk
 
-            if total > 2.0:
-                messagebox.showwarning("Warning", f"Total exposure {total:.0%} exceeds 200%!")
+            if total > 2.5:
+                messagebox.showwarning("Warning", f"Total exposure {total:.0%} exceeds 250%!")
                 return
 
-            msg = (f"Save parameters for [{acct}]?\n\n"
-                   f"  ETF Allocation:    {new_sr:.0%}\n"
-                   f"  Stocks Allocation: {new_sp:.0%}\n"
-                   f"  Total Exposure:   {total:.0%} ({total:.1f}x)\n")
-            if total > 1.0:
-                msg += f"  Borrow:           {total-1:.0%}\n"
-            msg += "\n(Only this account's settings will be changed.)"
+            # Skew LS 從 0 上升到 >0 是首次啟用 → 強提示，避免誤觸發實盤短倉
+            cfg_before = get_account_config(acct)
+            old_sk = cfg_before.get("alloc_skewls", 0.0)
+            first_enable_skewls = old_sk == 0.0 and new_sk > 0.0
 
-            if not messagebox.askyesno("Confirm", msg):
+            msg_lines = [
+                f"Save parameters for [{acct}]?\n",
+                f"  ETF Allocation:    {new_sr:.0%}",
+                f"  Stocks Allocation: {new_sp:.0%}",
+                f"  SkewLS Allocation: {new_sk:.0%}"
+                + ("  ← FIRST ENABLE (XLC short!)" if first_enable_skewls else ""),
+                f"  Total Exposure:   {total:.0%} ({total:.1f}x)",
+            ]
+            if total > 1.0:
+                msg_lines.append(f"  Borrow:           {total-1:.0%}")
+            msg_lines.append("\n(Only this account's settings will be changed.)")
+            if first_enable_skewls:
+                msg_lines.append(
+                    "\n!! WARNING: Skew LS includes XLC SHORT positions.\n"
+                    "Ensure this IB account supports short selling (margin account)."
+                )
+
+            if not messagebox.askyesno("Confirm", "\n".join(msg_lines)):
                 return
 
             # 寫入該帳戶在 accounts.json 的 override
             update_account_config(acct, {
-                "alloc_sr":    new_sr,
-                "alloc_sp500": new_sp,
+                "alloc_sr":     new_sr,
+                "alloc_sp500":  new_sp,
+                "alloc_skewls": new_sk,
             })
 
             # 重新讀回該帳戶的合併 config 來刷新 UI
             cfg = get_account_config(acct)
             self.strategy_view.update_cfg(cfg)
-            self._log(f"[OK] [{acct}] Params saved: ETF={new_sr:.0%}  Stocks={new_sp:.0%}  Leverage={total:.1f}x")
+            self._log(
+                f"[OK] [{acct}] Params saved: "
+                f"ETF={new_sr:.0%}  Stocks={new_sp:.0%}  SkewLS={new_sk:.0%}"
+                f"  Leverage={total:.1f}x"
+            )
 
         except Exception as e:
             messagebox.showerror("Error", f"Save failed:\n{e}")

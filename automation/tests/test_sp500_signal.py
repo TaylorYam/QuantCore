@@ -160,3 +160,46 @@ def test_already_counted_does_not_advance_counter():
 
     _, _, ns = get_latest_weights_live([], state, as_of_date="2024-06-07")
     assert ns["bull_weeks_counter"] == 1  # unchanged
+
+
+# ── get_preview_weights (state-free preview core, shared by 3 UI tools) ──
+
+@skip_no_data
+def test_preview_bull_rotation_structure():
+    """Bull date, no holdings → ≤ TARGET_HOLDINGS new picks, weights sum ≈ 1."""
+    from strategies.sp500_momentum.signal import get_preview_weights
+    from strategies.sp500_momentum import config as sp_cfg
+
+    weights, info = get_preview_weights([], as_of_date="2024-06-07")
+    assert 0 < len(weights) <= sp_cfg.TARGET_HOLDINGS
+    assert sum(weights.values()) == pytest.approx(1.0, abs=1e-6)
+    assert all(info[t]["status"] == "new" for t in weights)
+
+
+@skip_no_data
+def test_preview_bear_returns_sentinel():
+    """Bear date → no positions and a _BEAR sentinel (no state machine, no dip-buy)."""
+    from strategies.sp500_momentum.signal import get_preview_weights
+
+    weights, info = get_preview_weights(["AAPL"], as_of_date="2022-06-17")
+    assert weights == {}
+    assert info == {"_BEAR": {"status": "bear"}}
+
+
+@skip_no_data
+def test_preview_not_constituent_flagged():
+    """A holding that isn't an S&P 500 constituent is flagged, not silently dropped."""
+    from strategies.sp500_momentum.signal import get_preview_weights
+
+    _, info = get_preview_weights(["FOOBARXYZ"], as_of_date="2024-06-07")
+    assert info["FOOBARXYZ"]["status"] == "not_constituent"
+
+
+@skip_no_data
+def test_preview_is_state_free():
+    """The preview takes no state and mutates nothing — pure (holdings, date) -> view."""
+    from strategies.sp500_momentum.signal import get_preview_weights
+
+    w1, i1 = get_preview_weights(["AMD"], as_of_date="2024-06-07")
+    w2, i2 = get_preview_weights(["AMD"], as_of_date="2024-06-07")
+    assert w1 == w2 and i1 == i2

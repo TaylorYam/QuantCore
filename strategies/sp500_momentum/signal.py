@@ -274,3 +274,124 @@ def get_latest_weights_live(
         log.info(f"    {sym}: {w*100:.1f}%")
 
     return wgt, signal_date, state
+
+
+def get_preview_weights(
+    current_holdings: list[str],
+    as_of_date: pd.Timestamp | None = None,
+) -> tuple[dict, dict]:
+    """
+    State-free SP500 preview —— 給 UI/preview 工具用的「現在 ranking 怎麼樣」快照。
+
+    與 get_latest_weights_live 是兩種互補的 view：
+      - get_latest_weights_live：live 路徑，跑完整 bull-confirm/dip-buy 狀態機，
+        signal_date = 上一個排程調倉日，需要 per-account state。
+      - get_preview_weights：**不跑狀態機**（熊市直接清空、不做 dip-buy），
+        signal_date = 最新收盤，不需要 state，並附帶每檔的結構化進出說明。
+
+    這個核心原本被 automation/portfolio_calc、shared/portfolio_calc、shared/dashboard
+    各複製一份（~95% 雷同）；收斂到此一處。各 caller 自己把 info 格式化成自己的
+    語言字串（中文 / English），所以「計算」共用、「呈現」各自保留。
+
+    Returns
+    -------
+    (weights, info)
+        weights : {ticker: weight_0to1}；熊市或無選股時為空 dict。
+        info[ticker] = {
+            "status": "kept" | "new" | "dropped_rank" | "dropped_ema" | "not_constituent",
+            "rank":   int (1-based；不在 ranked 時為 999),
+            "slope":  float (adj_slope),
+            "atr_pct": float,
+            "price":  float,
+            "exit_ema": float,
+        }
+        熊市時 info = {"_BEAR": {"status": "bear"}}（caller 自行決定如何呈現）。
+
+    Note
+    ----
+    blacklist 由 SelectionEngine.get_constituents 在 scan 上游處理（依日期移除），
+    所以這裡不需要、也沒有第二道 blacklist 過濾。
+    """
+    selector = SelectionEngine()
+    spy_df = utils.load_benchmark(sp_cfg.ETF_DIR / "SPY.csv")
+    sso_df = utils.load_benchmark(sp_cfg.ETF_DIR / "SSO.csv")
+    regime = MarketRegime(spy_df, sso_df)
+
+    if as_of_date is None:
+        signal_date = spy_df.index[-1]
+    else:
+        as_of = pd.Timestamp(as_of_date).normalize()
+        idx = spy_df.index[spy_df.index <= as_of]
+        signal_date = idx[-1] if len(idx) else spy_df.index[-1]
+
+    mkt = regime.get_state(signal_date)
+    if mkt and mkt["SPY_Close"] < mkt["SPY_MA200"]:
+        return {}, {"_BEAR": {"status": "bear"}}
+
+    ranked = selector.scan_market(signal_date, sp_cfg.LOOKBACK)
+    if not ranked:
+        return {}, {}
+
+    rank_map = {r["ticker"]: i + 1 for i, r in enumerate(ranked)}
+    top_set = set(x["ticker"] for x in ranked[:sp_cfg.SELL_RANK_THRESHOLD])
+    by_ticker = {r["ticker"]: r for r in ranked}
+
+    def _below_ema(r: dict) -> bool:
+        px, ema = r.get("price", 0), r.get("exit_ema", 0)
+        return px > 0 and ema > 0 and px < ema
+
+    def _row_info(r: dict, status: str) -> dict:
+        return {
+            "status":   status,
+            "rank":     rank_map.get(r["ticker"], 999),
+            "slope":    r.get("adj_slope", 0.0),
+            "atr_pct":  r.get("atr_pct", 0.0),
+            "price":    r.get("price", 0.0),
+            "exit_ema": r.get("exit_ema", 0.0),
+        }
+
+    # ── 現有持股：保留 or 賣出 ───────────────────────────────────────
+    survivors: list[dict] = []
+    info: dict = {}
+    for sym in current_holdings:
+        r = by_ticker.get(sym)
+        if r is None:
+            info[sym] = {"status": "not_constituent", "rank": 999,
+                         "slope": 0.0, "atr_pct": 0.0, "price": 0.0, "exit_ema": 0.0}
+            continue
+        if _below_ema(r):
+            info[sym] = _row_info(r, "dropped_ema")
+        elif sym not in top_set:
+            info[sym] = _row_info(r, "dropped_rank")
+        else:
+            survivors.append(r)
+
+    # ── 補足至 TARGET_HOLDINGS ───────────────────────────────────────
+    survivor_syms = {r["ticker"] for r in survivors}
+    new_picks: list[dict] = []
+    for r in ranked:
+        if len(survivors) + len(new_picks) >= sp_cfg.TARGET_HOLDINGS:
+            break
+        sym = r["ticker"]
+        if sym in survivor_syms:
+            continue
+        if _below_ema(r):
+            continue
+        if r.get("adj_slope", 0) >= sp_cfg.MAX_ADJ_SLOPE:
+            continue
+        new_picks.append(r)
+
+    selected = survivors + new_picks
+    if not selected:
+        return {}, info
+
+    # ── ATR 反比例加權 ───────────────────────────────────────────────
+    atrs = [max(r.get("atr", 0.01), 0.001) for r in selected]
+    inv = [1.0 / a for a in atrs]
+    total = sum(inv)
+    weights = {r["ticker"]: iv / total for r, iv in zip(selected, inv)}
+
+    for r in selected:
+        info[r["ticker"]] = _row_info(r, "kept" if r["ticker"] in survivor_syms else "new")
+
+    return weights, info

@@ -23,7 +23,7 @@ import pytest
 def _has_sp500_data() -> bool:
     """Check if the SP500 constituents + ETF data files exist locally."""
     root = Path(__file__).resolve().parent.parent.parent
-    ref = root / "data" / "reference" / "sp500_constituents_daily_2015_2026.xlsx"
+    ref = root / "data" / "reference" / "sp500_constituents_daily.xlsx"
     spy = root / "data" / "etfs" / "SPY.csv"
     return ref.exists() and spy.exists()
 

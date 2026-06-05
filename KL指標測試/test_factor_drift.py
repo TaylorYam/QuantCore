@@ -30,7 +30,7 @@ from kl_divergence import compute_kl  # noqa: E402  僅引入 compute_kl
 # ── 資料路徑 ──────────────────────────────────────────────────────────────────
 _PROJECT_ROOT   = Path(__file__).parent.parent.resolve()
 _STOCKS_DIR     = _PROJECT_ROOT / "data" / "stocks"
-_CONSTITUENTS   = _PROJECT_ROOT / "data" / "reference" / "sp500_constituents_daily_2015_2026.xlsx"
+_CONSTITUENTS   = _PROJECT_ROOT / "data" / "reference" / "sp500_constituents_daily.xlsx"
 _SPY_CSV        = _PROJECT_ROOT / "data" / "etfs" / "SPY.csv"
 _OUTPUT_DIR     = _SCRIPT_DIR / "output"
 

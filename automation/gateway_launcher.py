@@ -1,152 +1,94 @@
 """
-QuantCore — IBC Gateway 啟動器
-從 Control Panel 或命令列啟動指定帳戶的 IB Gateway（透過 IBC）。
+QuantCore — IB Gateway 啟動器（手動版本，不透過 IBC）
+
+2026-06-01 完全棄用 IBC，全部走原生 Gateway。每個帳戶獨立 Gateway 安裝
+（multi-install model），相互不干擾：
+
+    TAYLOR  C:\\IB-TAYLOR\\ibgateway\\
+    YVONNE  C:\\IB-YIYI\\ibgateway\\
+    ROSA    C:\\Jts\\ibgateway\\1041\\   (尚未遷移，仍用舊共享 binary)
+
+啟動方式：直接執行 ibgateway.exe，傳 -J-DjtsConfigDir=<settings_dir> 指定
+TWS 設定路徑。第一次啟動需要使用者**手動輸入帳密 + 2FA**；登入後 Gateway 內建
+每日 token-based auto-restart（不需 2FA），週日由 ColdRestart 觸發、需手動
+2FA 一次。
+
+棄用 IBC 的原因：IBC 3.23.0 在 Gateway 10.41 的 UI scraper 找不到 Auto
+Restart 控件（"could not find auto logoff/restart time controls"），加上
+Issue #345 的 token-based re-login 卡死。Gateway 10.45 把 UI 加回來了，
+直接用原生功能即可，IBC 反而是負擔。
 """
 
-import subprocess, sys, os, logging
-from datetime import date
+import logging
+import subprocess
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-# IBC stdout/stderr 寫入檔案 — 之前丟 DEVNULL 結果 auto-restart 出問題完全沒線索
-IBC_LOG_DIR = Path(__file__).parent / "logs"
-IBC_LOG_DIR.mkdir(exist_ok=True)
+# ── 每帳戶獨立 Gateway 安裝路徑 ──────────────────────────────────────────────
+# Taylor / Yvonne 已遷移到 Gateway 10.45 個別安裝。
+# Rosa 暫留舊的 10.41 共享 binary，未來再遷移到 C:\IB-ROSA\ibgateway\。
+LEGACY_GATEWAY_DIR = Path(r"C:\Jts\ibgateway\1041")
 
-
-def _open_ibc_log(account_name: str):
-    """每帳戶一個 daily IBC log。回傳開啟的檔案 handle（append mode）。"""
-    log_path = IBC_LOG_DIR / f"ibc_{account_name.lower()}_{date.today():%Y%m%d}.log"
-    # buffering=1 = line-buffered — Java IBC 寫一行就 flush 一行，方便 tail
-    return open(log_path, "a", buffering=1, encoding="utf-8", errors="replace")
-
-JAVA_EXE = r"c:\users\kelvi\appdata\local\programs\common\i4j_jres\oda-jk0qgtemvssflllp\17.0.10.0.101-zulu_64\bin\java.exe"
-GATEWAY_JARS = Path(r"C:\Jts\ibgateway\1041\jars")
-GATEWAY_I4J = Path(r"C:\Jts\ibgateway\1041\.install4j\i4jruntime.jar")
-IBC_JAR = Path(r"C:\IBC\IBC.jar")
-GATEWAY_EXE = Path(r"C:\Jts\ibgateway\1041\ibgateway.exe")
-
-# 帳戶 → IBC config 對應
-ACCOUNT_IBC_CONFIG = {
-    "TAYLOR": Path(r"C:\Jts\gateway_a\ibc\config.ini"),
-    "ROSA":   Path(r"C:\Jts\gateway_b\ibc\config.ini"),
-    "YVONNE": Path(r"C:\Jts\gateway_c\ibc\config.ini"),
+ACCOUNT_GATEWAY_DIR = {
+    "TAYLOR": Path(r"C:\IB-TAYLOR\ibgateway"),  # 10.45 個別安裝
+    "YVONNE": Path(r"C:\IB-YIYI\ibgateway"),    # 10.45 個別安裝
+    "ROSA":   LEGACY_GATEWAY_DIR,               # 10.41 共享舊裝
 }
 
+# Settings dir = Gateway 安裝路徑（jts.ini / autorestart token 都在 install 內）。
+# Rosa 暫維持舊 settings 路徑直到完成遷移。
 ACCOUNT_SETTINGS_DIR = {
-    "TAYLOR": Path(r"C:\Jts\gateway_a"),
+    "TAYLOR": Path(r"C:\IB-TAYLOR\ibgateway"),
+    "YVONNE": Path(r"C:\IB-YIYI\ibgateway"),
     "ROSA":   Path(r"C:\Jts\gateway_b"),
-    "YVONNE": Path(r"C:\Jts\gateway_c"),
 }
 
-# 哪些帳戶用 IBC，哪些手動
-IBC_MANAGED = {"TAYLOR", "YVONNE"}   # Taylor / Yvonne 用 IBC
-MANUAL_MANAGED = {"ROSA"}            # Rosa 手動 Gateway
 
-
-def _build_classpath() -> str:
-    cp = ""
-    for jar in sorted(GATEWAY_JARS.glob("*.jar")):
-        cp += f";{jar}"
-    cp += f";{GATEWAY_I4J};{IBC_JAR}"
-    return cp
-
-
-def _restore_exe():
-    """IBC 會把 ibgateway.exe 改名，啟動前先恢復"""
-    renamed = GATEWAY_EXE.parent / "ibgateway1.exe"
-    if renamed.exists() and not GATEWAY_EXE.exists():
-        renamed.rename(GATEWAY_EXE)
+def _restore_exe(gateway_dir: Path):
+    """Gateway shutdown 後有時會把 ibgateway.exe 改名 ibgateway1.exe，啟動前還原。"""
+    exe = gateway_dir / "ibgateway.exe"
+    renamed = gateway_dir / "ibgateway1.exe"
+    if renamed.exists() and not exe.exists():
+        renamed.rename(exe)
 
 
 def start_gateway(account_name: str) -> subprocess.Popen | None:
     """
     啟動指定帳戶的 IB Gateway。
-    IBC 管理的帳戶用 Java 啟動 IBC；手動帳戶用 ibgateway.exe 啟動。
-    回傳 Popen 物件。
+
+    第一次啟動會跳登入畫面，需手動輸入帳密 + IBKR Mobile 2FA。
+    之後 Gateway 自己 daily auto-restart，週日 ColdRestart 需要再一次 2FA。
+
+    回傳 Popen 物件，None 表示失敗。
     """
     account_name = account_name.upper()
     settings_dir = ACCOUNT_SETTINGS_DIR.get(account_name)
+    gateway_dir = ACCOUNT_GATEWAY_DIR.get(account_name)
 
-    if not settings_dir:
+    if not gateway_dir:
         log.error(f"Unknown account: {account_name}")
         return None
-
-    if account_name in IBC_MANAGED:
-        return _start_ibc(account_name)
-    else:
-        return _start_native(account_name)
-
-
-def _start_ibc(account_name: str) -> subprocess.Popen | None:
-    """透過 IBC 啟動 Gateway"""
-    config_ini = ACCOUNT_IBC_CONFIG.get(account_name)
-    settings_dir = ACCOUNT_SETTINGS_DIR.get(account_name)
-
-    if not config_ini or not config_ini.exists():
-        log.error(f"IBC config not found: {config_ini}")
+    if not gateway_dir.exists():
+        log.error(f"Gateway install dir not found: {gateway_dir}")
         return None
 
-    _restore_exe()
-
-    cp = _build_classpath()
-    cmd = [
-        str(JAVA_EXE),
-        "-cp", cp,
-        f"-DjtsConfigDir={settings_dir}",
-        "-Xmx768m",
-        "-Dsun.awt.nopixfmt=true",
-        "-Dsun.java2d.noddraw=true",
-        "-Dswing.boldMetal=false",
-        # Java 17 模組封裝：解除 Gateway 需要的反射權限
-        # （修復「Select second factor device」對話框 crash）
-        "--add-opens=java.desktop/java.awt=ALL-UNNAMED",
-        "--add-opens=java.desktop/javax.swing=ALL-UNNAMED",
-        "--add-opens=java.desktop/sun.awt=ALL-UNNAMED",
-        "--add-opens=java.base/java.lang=ALL-UNNAMED",
-        "--add-opens=java.base/java.util=ALL-UNNAMED",
-        "ibcalpha.ibc.IbcGateway",
-        str(config_ini),
-        "live",
-    ]
-
-    si = subprocess.STARTUPINFO()
-    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    si.wShowWindow = 0
-
-    # 把 IBC stdout/stderr 寫入 logs/ibc_<account>_<date>.log
-    # 之前用 DEVNULL，結果 04-11~04-13 auto-restart 沒 fire 完全查不到原因
-    log_fp = _open_ibc_log(account_name)
-    log_fp.write(
-        f"\n{'='*70}\n"
-        f"IBC start for {account_name}  cfg={config_ini}\n"
-        f"{'='*70}\n"
-    )
-    proc = subprocess.Popen(
-        cmd, stdout=log_fp, stderr=subprocess.STDOUT,
-        startupinfo=si,
-    )
-    log.info(
-        f"IBC Gateway [{account_name}] started, PID={proc.pid} "
-        f"log={log_fp.name}"
-    )
-    return proc
-
-
-def _start_native(account_name: str) -> subprocess.Popen | None:
-    """直接啟動原生 Gateway（不透過 IBC）"""
-    settings_dir = ACCOUNT_SETTINGS_DIR.get(account_name)
-
-    if not GATEWAY_EXE.exists():
-        _restore_exe()
+    _restore_exe(gateway_dir)
+    gateway_exe = gateway_dir / "ibgateway.exe"
+    if not gateway_exe.exists():
+        log.error(f"ibgateway.exe not found in {gateway_dir}")
+        return None
 
     cmd = [
-        str(GATEWAY_EXE),
+        str(gateway_exe),
         f"-J-DjtsConfigDir={settings_dir}",
     ]
 
     proc = subprocess.Popen(cmd)
-    log.info(f"Native Gateway [{account_name}] started, PID={proc.pid}")
+    log.info(
+        f"Gateway [{account_name}] started, PID={proc.pid}, "
+        f"install={gateway_dir}, settings={settings_dir}"
+    )
     return proc
 
 
@@ -154,6 +96,6 @@ if __name__ == "__main__":
     import argparse
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser()
-    parser.add_argument("account", help="Account name (A, B)")
+    parser.add_argument("account", help="Account name (TAYLOR, ROSA, YVONNE)")
     args = parser.parse_args()
     start_gateway(args.account)

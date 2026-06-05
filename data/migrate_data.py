@@ -114,7 +114,7 @@ print("\n" + "=" * 60)
 print("PART 2  SP500 成分股轉換（.txt → .csv）")
 
 # 排除非股票檔案
-SKIP = {"SPY.txt","SSO.txt","QQQ.txt","sp500_constituents_daily_2015_2026.xlsx",
+SKIP = {"SPY.txt","SSO.txt","QQQ.txt","sp500_constituents_daily.xlsx",
         "us_trading_days.xlsx"}
 
 stock_files = [f for f in SP500_SRC.iterdir()
@@ -172,7 +172,7 @@ print("\n" + "=" * 60)
 print("PART 3  複製參考檔案")
 
 REF_FILES = [
-    SP500_SRC / "sp500_constituents_daily_2015_2026.xlsx",
+    SP500_SRC / "sp500_constituents_daily.xlsx",
     SP500_SRC / "us_trading_days.xlsx",
 ]
 

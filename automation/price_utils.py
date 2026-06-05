@@ -52,7 +52,7 @@ def load_csv_close(symbol: str) -> float:
 
 def robust_get_prices(ib, symbols: list,
                       host: str = '127.0.0.1',
-                      price_feed_port: int | None = 7497,
+                      price_feed_port: int | None = 4002,
                       verbose_log=None) -> dict:
     """
     多層 fallback 取得 symbols 的報價，回傳 {sym: price} 或 0（全部失敗時）。
@@ -63,7 +63,7 @@ def robust_get_prices(ib, symbols: list,
         已連線的 IB 實例（本帳戶）
     symbols : list[str]
     host : str
-    price_feed_port : int, 預設 7497 (Rosa)
+    price_feed_port : int, 預設 4002 (Rosa)
         若本帳戶無即時訂閱，會在此 port 另開連線抓價
         設為 None 或與 ib.client.port 相同則跳過此步
     verbose_log : callable(str) or None

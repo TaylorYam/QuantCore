@@ -82,109 +82,36 @@ def get_sp500_weights(current_holdings: list[str]) -> tuple[dict[str, float], di
     """
     回傳 (weights, metadata)
     metadata[sym] = 人類可讀的進出原因字串
+
+    計算核心已收斂到 strategies.sp500_momentum.signal.get_preview_weights
+    （3 個 preview 工具共用 state-free 計算）；這裡只負責把結構化 info
+    格式化成中文字串。
     """
-    import pandas as pd
-    from strategies.sp500_momentum import config as sp_cfg, utils
-    from strategies.sp500_momentum.selection import SelectionEngine
-    from strategies.sp500_momentum.market_regime import MarketRegime
+    from strategies.sp500_momentum.signal import get_preview_weights
+    from strategies.sp500_momentum import config as sp_cfg
 
-    spy_df = utils.load_benchmark(sp_cfg.ETF_DIR / "SPY.csv")
-    sso_df = utils.load_benchmark(sp_cfg.ETF_DIR / "SSO.csv")
-    regime  = MarketRegime(spy_df, sso_df)
-    signal_date = spy_df.index[-1]
+    weights, info = get_preview_weights(current_holdings)
+    if "_BEAR" in info:
+        return {}, {}  # 熊市：維持原行為（無 metadata）
 
-    state = regime.get_state(signal_date)
-    if state and state["SPY_Close"] < state["SPY_MA200"]:
-        return {}, {}  # 熊市
-
-    engine = SelectionEngine()
-    ranked = engine.scan_market(signal_date, sp_cfg.LOOKBACK)
-    if not ranked:
-        return {}, {}
-
-    # 建立 rank index 查詢表 {ticker: rank_no (1-based)}
-    rank_map = {r["ticker"]: i + 1 for i, r in enumerate(ranked)}
-
-    top_tickers = [x["ticker"] for x in ranked][:sp_cfg.SELL_RANK_THRESHOLD]
-    top_set     = set(top_tickers)
-    blacklist   = set(getattr(sp_cfg, 'BLACKLIST', []))
-
-    def _below_ema(r: dict) -> bool:
-        px  = r.get("price", 0)
-        ema = r.get("exit_ema", 0)
-        return px > 0 and ema > 0 and px < ema
-
-    def _get_row(sym: str) -> dict | None:
-        for r in ranked:
-            if r["ticker"] == sym:
-                return r
-        return None
-
-    # Rank buffer：現有持股還在 top 20 且未跌破 EMA50 → 保留
-    survivors = []
-    dropped_meta: dict[str, str] = {}  # 現有持股被排除的原因
-
-    for sym in current_holdings:
-        r = _get_row(sym)
-        if r is None:
-            dropped_meta[sym] = "不在 S&P500 成分股名單"
-            continue
-        rank_no = rank_map.get(sym, 999)
-        if _below_ema(r):
-            ema_val = r.get("exit_ema", 0)
-            px      = r.get("price", 0)
-            dropped_meta[sym] = (f"跌破 EMA50（收 ${px:.2f}，EMA50 ${ema_val:.2f}），"
-                                 f"Rank #{rank_no}")
-        elif sym not in top_set:
-            dropped_meta[sym] = (f"排名跌出 Top {sp_cfg.SELL_RANK_THRESHOLD}"
-                                 f"（當前 Rank #{rank_no}，"
-                                 f"slope={r.get('adj_slope', 0):.3f}）")
-        else:
-            survivors.append(r)
-
-    # 補足至 TARGET_HOLDINGS
-    survivor_syms = {r["ticker"] for r in survivors}
-    new_picks = []
-    for r in ranked:
-        if len(survivors) + len(new_picks) >= sp_cfg.TARGET_HOLDINGS:
-            break
-        sym = r["ticker"]
-        if sym in blacklist or sym in survivor_syms:
-            continue
-        if _below_ema(r):
-            continue
-        slope = r.get("adj_slope", 0)
-        if slope >= sp_cfg.MAX_ADJ_SLOPE:
-            continue
-        new_picks.append(r)
-
-    selected = survivors + new_picks
-    if not selected:
-        return {}, dropped_meta
-
-    # ATR 反比例加權
-    atrs  = [max(r.get("atr", 0.01), 0.001) for r in selected]
-    inv   = [1.0 / a for a in atrs]
-    total = sum(inv)
-    weights = {r["ticker"]: iv / total for r, iv in zip(selected, inv)}
-
-    # 每支選中股票的進場原因
-    selected_meta: dict[str, str] = {}
-    survivor_syms_set = {r["ticker"] for r in survivors}
-    for r in selected:
-        sym     = r["ticker"]
-        rank_no = rank_map.get(sym, 999)
-        slope   = r.get("adj_slope", 0)
-        atr_pct = r.get("atr_pct", 0)
-        if sym in survivor_syms_set:
-            selected_meta[sym] = (f"Buffer 保留，Rank #{rank_no}，"
-                                  f"slope={slope:.3f}，ATR={atr_pct:.1f}%")
-        else:
-            selected_meta[sym] = (f"新進場，Rank #{rank_no}，"
-                                  f"slope={slope:.3f}，ATR={atr_pct:.1f}%")
-
-    all_meta = {**dropped_meta, **selected_meta}
-    return weights, all_meta
+    meta: dict[str, str] = {}
+    for sym, d in info.items():
+        st = d["status"]
+        if st == "not_constituent":
+            meta[sym] = "不在 S&P500 成分股名單"
+        elif st == "dropped_ema":
+            meta[sym] = (f"跌破 EMA50（收 ${d['price']:.2f}，EMA50 ${d['exit_ema']:.2f}），"
+                         f"Rank #{d['rank']}")
+        elif st == "dropped_rank":
+            meta[sym] = (f"排名跌出 Top {sp_cfg.SELL_RANK_THRESHOLD}"
+                         f"（當前 Rank #{d['rank']}，slope={d['slope']:.3f}）")
+        elif st == "kept":
+            meta[sym] = (f"Buffer 保留，Rank #{d['rank']}，"
+                         f"slope={d['slope']:.3f}，ATR={d['atr_pct']:.1f}%")
+        elif st == "new":
+            meta[sym] = (f"新進場，Rank #{d['rank']}，"
+                         f"slope={d['slope']:.3f}，ATR={d['atr_pct']:.1f}%")
+    return weights, meta
 
 
 # ── 工具 ───────────────────────────────────────────────────────────────────────

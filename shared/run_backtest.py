@@ -33,7 +33,7 @@ if ROOT not in sys.path:
 import pandas as pd
 from pathlib import Path
 
-from backtest.combo   import to_equity_curves
+from backtest.combo   import to_equity_curves, combine_50_50
 from backtest.metrics import compute, annual_returns, print_table
 from backtest.charts  import plot_equity_curves
 
@@ -105,32 +105,9 @@ def run_benchmark(start_date=None, end_date=None):
     return ret
 
 
-# ── 50/50 月初重設組合（不開槓桿）──────────────────────────────────────────────
-
-def combine_50_50(ret_sr, ret_sp):
-    """月初重設 50/50，月內自由漂移，無槓桿無融資成本。"""
-    df = pd.DataFrame({"sr": ret_sr, "sp": ret_sp}).dropna()
-    month_start_set = set(
-        df.index.to_series().groupby(df.index.to_period("M")).first().values
-    )
-
-    results = []
-    w_sr, w_sp = 0.5, 0.5
-
-    for date, row in df.iterrows():
-        if date in month_start_set:
-            w_sr, w_sp = 0.5, 0.5
-
-        daily_ret = w_sr * row["sr"] + w_sp * row["sp"]
-
-        nav_sr = w_sr * (1 + row["sr"])
-        nav_sp = w_sp * (1 + row["sp"])
-        w_sr = nav_sr
-        w_sp = nav_sp
-
-        results.append(daily_ret)
-
-    return pd.Series(results, index=df.index, name="50/50 Monthly")
+# ── 50/50 月初重設組合 ─────────────────────────────────────────────────────────
+# combine_50_50 已收斂到 backtest.combo（與舊本地版數學等價：50/50 時 borrow=0、
+# financing=0），於檔案頂端 import，不再本地重抄。
 
 
 # ── 主流程 ──────────────────────────────────────────────────────────────────

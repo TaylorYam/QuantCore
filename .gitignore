@@ -43,8 +43,9 @@ automation/logs/
 automation/config.json
 automation/accounts.json
 
-# Runtime state（每帳戶 SP500 bull counter / dip state）
+# Runtime state（每帳戶 SP500 bull counter / dip state、SkewLS state）
 automation/sp500_state_*.json
+automation/skewls_state_*.json
 
 # Dev / audit tests
 automation/_audit_test.py
@@ -53,6 +54,7 @@ automation/_audit_test.py
 automation/charts/
 automation/*.xlsx
 automation/*.xlsx.bak
+automation/*.bak_*
 
 # IB / IBC config
 jts.ini

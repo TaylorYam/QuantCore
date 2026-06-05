@@ -83,79 +83,27 @@ def get_sr_weights() -> dict[str, float]:
 
 
 def get_sp500_weights(current_holdings):
-    import pandas as pd
-    from strategies.sp500_momentum import config as sp_cfg, utils
-    from strategies.sp500_momentum.selection import SelectionEngine
-    from strategies.sp500_momentum.market_regime import MarketRegime
+    """State-free SP500 preview; computation shared with
+    strategies.sp500_momentum.signal.get_preview_weights (English labels here)."""
+    from strategies.sp500_momentum.signal import get_preview_weights
 
-    spy_df = utils.load_benchmark(sp_cfg.ETF_DIR / "SPY.csv")
-    sso_df = utils.load_benchmark(sp_cfg.ETF_DIR / "SSO.csv")
-    regime = MarketRegime(spy_df, sso_df)
-    signal_date = spy_df.index[-1]
-
-    state = regime.get_state(signal_date)
-    if state and state["SPY_Close"] < state["SPY_MA200"]:
+    weights, info = get_preview_weights(current_holdings)
+    if "_BEAR" in info:
         return {}, {"_BEAR": "SPY < MA200, Bear mode, liquidate stocks"}
 
-    engine = SelectionEngine()
-    ranked = engine.scan_market(signal_date, sp_cfg.LOOKBACK)
-    if not ranked:
-        return {}, {}
-
-    rank_map = {r["ticker"]: i + 1 for i, r in enumerate(ranked)}
-    top_set = set(x["ticker"] for x in ranked[:sp_cfg.SELL_RANK_THRESHOLD])
-
-    def _below_ema(r):
-        px, ema = r.get("price", 0), r.get("exit_ema", 0)
-        return px > 0 and ema > 0 and px < ema
-
-    def _get_row(sym):
-        for r in ranked:
-            if r["ticker"] == sym:
-                return r
-        return None
-
-    survivors, dropped_meta = [], {}
-    for sym in current_holdings:
-        r = _get_row(sym)
-        if r is None:
-            dropped_meta[sym] = "Not in S&P500"
-            continue
-        rn = rank_map.get(sym, 999)
-        if _below_ema(r):
-            dropped_meta[sym] = f"Below EMA50 (${r.get('price',0):.2f} < ${r.get('exit_ema',0):.2f}), Rank #{rn}"
-        elif sym not in top_set:
-            dropped_meta[sym] = f"Rank dropped (#{rn}, slope={r.get('adj_slope',0):.3f})"
-        else:
-            survivors.append(r)
-
-    survivor_syms = {r["ticker"] for r in survivors}
-    new_picks = []
-    for r in ranked:
-        if len(survivors) + len(new_picks) >= sp_cfg.TARGET_HOLDINGS:
-            break
-        sym = r["ticker"]
-        if sym in survivor_syms or _below_ema(r) or r.get("adj_slope", 0) >= sp_cfg.MAX_ADJ_SLOPE:
-            continue
-        new_picks.append(r)
-
-    selected = survivors + new_picks
-    if not selected:
-        return {}, dropped_meta
-
-    atrs = [max(r.get("atr", 0.01), 0.001) for r in selected]
-    inv = [1.0 / a for a in atrs]
-    total = sum(inv)
-    weights = {r["ticker"]: iv / total for r, iv in zip(selected, inv)}
-
-    sel_meta = {}
-    for r in selected:
-        sym, rn = r["ticker"], rank_map.get(r["ticker"], 999)
-        slope, atr_pct = r.get("adj_slope", 0), r.get("atr_pct", 0)
-        tag = "Keep" if sym in survivor_syms else "New"
-        sel_meta[sym] = f"{tag}, Rank #{rn}, slope={slope:.3f}, ATR={atr_pct:.1f}%"
-
-    return weights, {**dropped_meta, **sel_meta}
+    meta = {}
+    for sym, d in info.items():
+        st = d["status"]
+        if st == "not_constituent":
+            meta[sym] = "Not in S&P500"
+        elif st == "dropped_ema":
+            meta[sym] = f"Below EMA50 (${d['price']:.2f} < ${d['exit_ema']:.2f}), Rank #{d['rank']}"
+        elif st == "dropped_rank":
+            meta[sym] = f"Rank dropped (#{d['rank']}, slope={d['slope']:.3f})"
+        else:  # kept / new
+            tag = "Keep" if st == "kept" else "New"
+            meta[sym] = f"{tag}, Rank #{d['rank']}, slope={d['slope']:.3f}, ATR={d['atr_pct']:.1f}%"
+    return weights, meta
 
 
 # ── 資料狀態檢查 ─────────────────────────────────────────────────────────────

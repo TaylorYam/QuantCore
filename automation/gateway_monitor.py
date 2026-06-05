@@ -8,14 +8,22 @@ QuantCore — Gateway 連線監測（S9 從 control_panel 抽出，2026-04-16 �
 為什麼不自動重連？
   - 2026-04-15 事故證明：反覆 connect 失敗會在 Gateway 10.41 留下 CLOSE_WAIT
     socket，累積到 2-3 個 Gateway 的 accept thread 就整個卡死、全帳戶 API dead。
-  - IBC 3.23.0 在 Gateway 10.41 上 UI scraper 壞掉，任何 auto-restart 路徑
-    （CommandServer RESTART、AutoRestartTime、ReloginAfter...）都通往同一個壞
-    UI scraper，沒一個能繞過。
   - 結論：Gateway restart / reconnect 全部改為「手動」——斷了就斷了，使用者
-    自己從 Panel 的 Start Gateway 按鈕或 IBC 手動啟動，完事後重開 Panel。
+    自己從 Panel 的 Start Gateway 按鈕啟動，完事後重開 Panel。
   - 例外：`restart_account_thread(name)` 提供節制的 on-demand 重連入口（單次
     嘗試、不阻塞、拒絕在已 alive thread 上重複 spawn），由 ROSA 30 分輪詢呼叫；
     其節制節奏與 2026-04-15 的『反覆 connect』失敗模式不同。
+
+歷史 (2026-04-15 → 2026-06-01)：原本架構透過 IBC 3.23.0 管理 Taylor / Yvonne
+Gateway，但 IBC 在 Gateway 10.41 的 UI scraper 找不到 Auto Restart 控件
+（"could not find auto logoff/restart time controls"），任何 IBC 觸發的
+auto-restart 路徑（CommandServer RESTART、AutoRestartTime、ReloginAfter…）
+都通往那個壞 scraper，沒一個能繞過。
+
+2026-06-01 解法：升級到 Gateway 10.45（UI 把 Auto Restart 加回來），同時
+完全棄用 IBC，三個帳戶都改用「個別 Gateway 安裝 + 原生 daily auto-restart」
+（multi-install model；見 `gateway_launcher.py` 頂端 docstring）。Sunday
+ColdRestart 仍需手動 2FA 一次，這是 IBKR 安全機制不可避免。
 
 設計原則：
   - 事件驅動：connect 成功 / `ib.isConnected()` 變 False 即觸發 callback

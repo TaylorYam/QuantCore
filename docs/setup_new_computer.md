@@ -47,7 +47,7 @@ C:\QuantCore\
 ├── data\
 │   ├── stocks\       ← 500+ 支個股 CSV（2015–present）
 │   ├── etfs\         ← SPY, SSO, XLK, XLF ... VIX CSV
-│   └── reference\    ← sp500_constituents_daily_2015_2026.xlsx
+│   └── reference\    ← sp500_constituents_daily.xlsx
 │                        us_trading_days.xlsx
 ```
 

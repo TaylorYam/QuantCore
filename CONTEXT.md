@@ -69,3 +69,5 @@ _Avoid_: Naked short
 - 「leverage」曾被當成「可獨立設定的欄位」考慮過（grilling Q1）— 解決：永遠是 derived，調 leverage 必須透過調 alloc
 - 「alloc_skewls = 0.3」是 factor exposure 還是 capital usage（grilling Q3）— 解決為 factor exposure，見 [ADR-0001](docs/adr/0001-alloc-skew-factor-exposure.md)
 - 「SP500 [[Constituents]] 怎麼保持最新」原本無自動化機制，靜態 Excel `_2015_2026.xlsx`（grilling 2026-06-01）— 解決為 on-demand Wikipedia fetch + dense reconstruction，見 [ADR-0002](docs/adr/0002-sp500-constituents-on-demand-refresh.md)
+- 「同 sector SR + SkewLS 是否要 net？例如 SR LONG XLK 同時 SkewLS LONG REW」（2026-06-01）— 7 年 backtest 顯示 netted 全 alloc 全年敗（-28~-52 bps/yr，leverage drift alpha 大於 friction 省），rejected，維持 pure-function combine，見 [ADR-0003](docs/adr/0003-sector-level-netting-rejected.md)
+- 「SkewLS 部位 < 3% 或 5% NAV 是否該 skip 不建？省 \$1 min commission」（2026-06-01）— 7 年 backtest sweep 顯示 Yvonne 實況 alloc 下 threshold ≥ 1% 全部負分（3% Sharpe -0.060、5% Sharpe -0.099），friction 省 13 bps/yr 被 alpha loss 60 bps/yr 完全淹沒（小部位是 diversification 一環不是 noise），rejected，見 [ADR-0004](docs/adr/0004-min-position-filter-rejected.md)

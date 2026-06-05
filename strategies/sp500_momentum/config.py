@@ -11,7 +11,7 @@ ETF_DIR   = Path("C:/QuantCore-master/data/etfs")     # 基準 ETF（SPY, SSO）
 REF_DIR   = Path("C:/QuantCore-master/data/reference")
 
 # 參考檔案
-CONST_FILE     = "sp500_constituents_daily_2015_2026.xlsx"
+CONST_FILE     = "sp500_constituents_daily.xlsx"
 TRADING_DAYS_FILE = "us_trading_days.xlsx"
 
 # ── 回測時間範圍 ───────────────────────────────────────────────

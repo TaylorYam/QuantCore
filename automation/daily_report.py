@@ -26,7 +26,7 @@ from excel_logger import append_daily_snapshot
 from equity_chart import generate_equity_chart
 
 # ── 日誌 ──────────────────────────────────────────────────────────────────────
-from log_setup import setup_logging
+from log_setup import setup_logging, quiet_ib_console
 log = logging.getLogger(__name__)
 
 from ib_insync import IB, Stock, util
@@ -268,7 +268,7 @@ def main(ctx: AccountCtx):
 
 if __name__ == '__main__':
     setup_logging("daily")
-    util.logToConsole(logging.WARNING)
+    quiet_ib_console()
     import argparse
     parser = argparse.ArgumentParser(description="QuantCore Daily Report")
     parser.add_argument("--account", required=True,

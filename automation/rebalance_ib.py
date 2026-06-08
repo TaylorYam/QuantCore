@@ -49,7 +49,7 @@ if str(ROOT_DIR) not in sys.path:
 from excel_logger import append_trade_log
 
 # ── 日誌設定 ──────────────────────────────────────────────────────────────────
-from log_setup import setup_logging
+from log_setup import setup_logging, quiet_ib_console
 log = logging.getLogger(__name__)
 
 # ── IB 連線工具 ───────────────────────────────────────────────────────────────
@@ -725,7 +725,7 @@ def main(mode: str, ctx: AccountCtx):
 
 if __name__ == '__main__':
     setup_logging("rebalance")
-    util.logToConsole(logging.WARNING)
+    quiet_ib_console()
     parser = argparse.ArgumentParser(description="QuantCore Rebalance")
     parser.add_argument("--mode", choices=["sr", "sp500", "skewls", "both", "all"],
                         default="both",

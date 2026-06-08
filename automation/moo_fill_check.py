@@ -24,7 +24,7 @@ LOG_DIR  = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
 
 # ── 日誌設定 ──────────────────────────────────────────────────────────────────
-from log_setup import setup_logging
+from log_setup import setup_logging, quiet_ib_console
 log = logging.getLogger(__name__)
 
 from ib_insync import util
@@ -284,7 +284,7 @@ def _report_from_fills(fills, tg_token: str, tg_chat_id: str):
 
 if __name__ == '__main__':
     setup_logging("moo_fill")
-    util.logToConsole(logging.WARNING)
+    quiet_ib_console()
     import argparse
     parser = argparse.ArgumentParser(description="QuantCore MOO Fill Check")
     parser.add_argument("--account", required=True,

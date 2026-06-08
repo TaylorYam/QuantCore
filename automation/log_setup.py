@@ -48,3 +48,16 @@ def setup_logging(prefix: str, *, level: int = logging.INFO,
         force=True,
     )
     return log_file
+
+
+def quiet_ib_console(level: int = logging.WARNING) -> None:
+    """Quiet ib_insync's console chatter WITHOUT losing INFO file logs.
+
+    ``ib_insync.util.logToConsole(level)`` lowers the ROOT logger to ``level``,
+    which suppresses the INFO records our FileHandler is meant to capture
+    (this regressed daily_report on 2026-06-08). Restore root to INFO after.
+    Call AFTER setup_logging(), from a script's entry point.
+    """
+    from ib_insync import util
+    util.logToConsole(level)
+    logging.root.setLevel(logging.INFO)

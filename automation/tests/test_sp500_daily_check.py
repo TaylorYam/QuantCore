@@ -184,3 +184,36 @@ def test_importing_rebalance_ib_does_not_hijack_root_logger():
             "import added a FileHandler to root"
     finally:
         root.handlers[:] = saved
+
+
+def test_quiet_ib_console_preserves_info_file_logging(tmp_path):
+    """Regression (2026-06-08): quiet_ib_console must NOT suppress INFO in files.
+
+    ib_insync.util.logToConsole(WARNING) lowers the root logger to WARNING; the
+    helper restores INFO so daily_report / moo_fill / rebalance keep full audit
+    logs. Replicates the real setup (a FileHandler present) where the bug bit.
+    """
+    import logging
+    pytest.importorskip("ib_insync")
+    from log_setup import quiet_ib_console
+    logf = tmp_path / "t.log"
+    saved = logging.root.handlers[:]
+    saved_level = logging.root.level
+    try:
+        logging.basicConfig(level=logging.INFO,
+                            handlers=[logging.FileHandler(logf, encoding="utf-8")],
+                            force=True)
+        quiet_ib_console()
+        assert logging.root.level == logging.INFO
+        logging.getLogger("audit").info("position-dump-should-be-logged")
+        for h in logging.root.handlers:
+            h.flush()
+        assert "position-dump-should-be-logged" in logf.read_text(encoding="utf-8")
+    finally:
+        for h in logging.root.handlers:
+            try:
+                h.close()
+            except Exception:
+                pass
+        logging.root.handlers[:] = saved
+        logging.root.setLevel(saved_level)

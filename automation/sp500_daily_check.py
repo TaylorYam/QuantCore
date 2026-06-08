@@ -2,10 +2,10 @@
 """
 SP500 Momentum — 每日檢查腳本
 
-回測 backtester 在每個交易日執行下列檢查（非只有 rebalance day）：
-  1. _check_stop_loss:   前收盤 < 成本 × (1 - STOP_LOSS_PCT) → 隔日開盤出場
-  2. _check_gap_exit:    abs(gap) ≥ GAP_EXIT_PCT → 隔日開盤出場
-  3. _check_bear_sso_logic: 熊市 dip-buy 觸發（每日檢查 SPY DD）
+每個美股交易日執行：熊市 dip-buy 觸發（每日檢查 SPY 回撤 DD）。
+
+註：固定 20% 停損與 50% 跳空出場已於 ADR-0004 移除（8 年回測零貢獻、
+跳空從未觸發）；個股出場改由週三的 EMA50/排名 rotation 處理。
 
 Live 模式下這個腳本每個美股交易日執行一次（建議美東 04:00 AM = 台灣 16:00），
 若觸發任何動作則立即送 LMT 單（outsideRth=True）。
@@ -15,8 +15,8 @@ Live 模式下這個腳本每個美股交易日執行一次（建議美東 04:00
   python sp500_daily_check.py --account all     # 所有帳戶
 
 注意：
-  - 此腳本只處理 stop loss / gap exit / dip-buy 觸發
-  - 完整的 rotation 輪動由 rebalance_ib.py 週三執行
+  - 此腳本現在只處理熊市 dip-buy 觸發
+  - 個股出場（含原停損/跳空）與 rotation 輪動皆由 rebalance_ib.py 週三執行
   - 不使用 MOO 單（盤外用 LMT）
 """
 
@@ -50,63 +50,6 @@ def _prev_trading_day(d):
     return cur
 
 
-def evaluate_exits(sp500_holdings, positions, avg_costs, histories,
-                   ref_date, prior_date, *, stop_loss_pct, gap_exit_pct,
-                   skip_tickers=()):
-    """Pure stop-loss / gap-exit decision for the Reference Close session.
-
-    Reference Close (= most recent completed session = data ``index[-1]``) is
-    the close we evaluate; the resulting order executes at the next open — the
-    live Execution Session, which is NOT in the data because ``update_data``
-    only writes completed sessions after the close. See ADR-0003.
-
-    Parameters
-    ----------
-    histories  : callable(ticker) -> DataFrame (Open/Close indexed by date)
-    ref_date   : the Reference Close session
-    prior_date : the session before ref_date (gap baseline), or None
-
-    Returns ``(orders, missing)`` — ``missing`` lists held tickers with no
-    ``ref_date`` row; the caller must alert (those positions go unchecked).
-    """
-    orders, missing = [], []
-    skip = set(skip_tickers)
-    for ticker in sp500_holdings:
-        if ticker in skip:
-            continue
-        avg_cost = avg_costs.get(ticker, 0)
-        if avg_cost <= 0:
-            continue
-        df = histories(ticker)
-        if df is None or ref_date not in df.index:
-            missing.append(ticker)
-            continue
-        qty = int(positions.get(ticker, 0))
-        if qty == 0:
-            continue
-        ref_close = float(df.loc[ref_date, 'Close'])
-        # Stop loss: Reference Close below cost threshold
-        if ref_close < avg_cost * (1 - stop_loss_pct):
-            orders.append({
-                'symbol': ticker, 'action': 'SELL', 'qty': qty,
-                'reason': f'Stop loss ({ref_close:.2f}<{avg_cost:.2f}*{1 - stop_loss_pct:.2f})',
-            })
-            continue  # already exiting — don't double up with a gap exit
-        # Gap exit: Reference Close session opened with a gap vs its prior close
-        if prior_date is not None and prior_date in df.index and 'Open' in df.columns:
-            prior_close = float(df.loc[prior_date, 'Close'])
-            ref_open = float(df.loc[ref_date, 'Open'])
-            if prior_close > 0 and ref_open > 0:
-                gap = (ref_open - prior_close) / prior_close
-                if abs(gap) >= gap_exit_pct:
-                    direction = 'Up' if gap > 0 else 'Down'
-                    orders.append({
-                        'symbol': ticker, 'action': 'SELL', 'qty': qty,
-                        'reason': f'Gap exit ({gap * 100:+.1f}% {direction})',
-                    })
-    return orders, missing
-
-
 def run_daily_check(account_name: str):
     """單一帳戶的每日檢查。S6：account_name 為必填，ctx 一律建立。"""
     import rebalance_ib as reb     # 仍需要：place_orders, check_fills
@@ -118,7 +61,7 @@ def run_daily_check(account_name: str):
     # S7：config / utils 是資料載入 helper（不是策略 business logic），可保留
     from strategies.sp500_momentum import config as sp_cfg, utils
     # S7：MarketRegime / SelectionEngine 走 signals 統一入口
-    from signals import get_market_regime_state, get_ticker_history
+    from signals import get_market_regime_state
 
     ctx = AccountCtx.from_name(account_name, ROLE_MOO_CHECK)
     tag = f"[{account_name}]"
@@ -204,27 +147,9 @@ def run_daily_check(account_name: str):
         pos_detail = ib_fetcher.get_positions_detail(ib, ctx)
         avg_costs = {p.contract.symbol: float(p.avgCost) for p in pos_detail}
 
-        # ── Step 1+2: 停損 / 跳空出場（純函式，讀 Reference Close = index[-1]）──
-        dip_tickers = {sp_cfg.DIP_BUY_TICKER, 'SPY', 'SSO'}
-        orders, missing = evaluate_exits(
-            sp500_holdings, current_pos, avg_costs, get_ticker_history,
-            ref_date, prior_date,
-            stop_loss_pct=sp_cfg.STOP_LOSS_PCT,
-            gap_exit_pct=sp_cfg.GAP_EXIT_PCT,
-            skip_tickers=dip_tickers,
-        )
-        for o in orders:
-            log.info(f"  {o['reason']}: SELL {o['qty']}sh {o['symbol']}")
-        # 持倉缺 Reference Close 資料 = 該倉本次未受保護 → 告警（不再靜默跳過）
-        if missing:
-            log.warning(f"  UNPROTECTED (no {ref_date.date()} close): {missing}")
-            try:
-                from notify import tg_send as _tg
-                _tg(f"⚠️ {tag} 日度風控：持倉 {missing} 缺 {ref_date.date()} 收盤資料，"
-                    f"本次未檢查停損/跳空，請人工確認。",
-                    token=ctx.tg_token, chat_id=ctx.tg_chat_id)
-            except Exception as e:
-                log.warning(f"  alert send failed: {e}")
+        # 停損 / 跳空出場已移除（ADR-0004）：個股出場改由週三 rotation 處理。
+        # 本腳本只剩下方的熊市 dip-buy 檢查。
+        orders = []
 
         # ── Step 3: 熊市 dip-buy 每日檢查 ──────────────────────────
         state = load_state(account_name)

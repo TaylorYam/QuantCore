@@ -104,11 +104,6 @@ class SP500Backtester:
                 bar = "*" * (pct // 5) + " " * (20 - pct // 5)
                 print(f"\r[{bar}{pct:3d}%] {i+1} of {total} completed", end="", flush=True)
 
-            if i > 0:
-                prev = trading_days[i - 1]
-                self._check_stop_loss(date, prev)
-                self._check_gap_exit(date, prev)
-
             self._update_equity(date)
             self._check_bear_sso_logic(date)
 
@@ -401,44 +396,8 @@ class SP500Backtester:
                                   f"熊市抄底 -{level*100:.0f}% ({dip_ticker})")
                         self.dip_state[level] = True
 
-    # ── 停損 / 跳空出場 ───────────────────────────────────────────────────────
-
-    def _check_stop_loss(self, date, prev_date):
-        for ticker in list(self.holdings):
-            if self._is_dip(ticker):
-                continue
-            prev_close = self._get_price(ticker, prev_date, use_open=False)
-            avg_cost   = self.avg_costs.get(ticker, 0)
-            if avg_cost > 0 and prev_close > 0:
-                if prev_close < avg_cost * (1 - config.STOP_LOSS_PCT):
-                    open_price = self._get_price(ticker, date, use_open=True)
-                    if open_price > 0:
-                        self._sell(ticker, date, open_price, self.holdings[ticker],
-                                   f"停損 (前收:{prev_close:.2f}<成本:{avg_cost:.2f})")
-                        self.target_weights.pop(ticker, None)
-
-    def _check_gap_exit(self, date, prev_date):
-        for ticker in list(self.holdings):
-            if self._is_dip(ticker):
-                continue
-            try:
-                prev_idx = self.calendar.get_loc(prev_date)
-                if prev_idx <= 0:
-                    continue
-                day_before = self.calendar[prev_idx - 1]
-                close_before = self._get_price(ticker, day_before, use_open=False)
-                open_prev    = self._get_price(ticker, prev_date, use_open=True)
-                if close_before > 0 and open_prev > 0:
-                    gap = (open_prev - close_before) / close_before
-                    if abs(gap) >= config.GAP_EXIT_PCT:
-                        open_curr = self._get_price(ticker, date, use_open=True)
-                        if open_curr > 0:
-                            direction = "Up" if gap > 0 else "Down"
-                            self._sell(ticker, date, open_curr, self.holdings[ticker],
-                                       f"跳空出場 ({gap*100:+.1f}% {direction})")
-                            self.target_weights.pop(ticker, None)
-            except (KeyError, IndexError):
-                continue
+    # 停損 / 跳空出場已移除（ADR-0004）：8 年回測證實 20% 停損零貢獻、
+    # 跳空 50% 從未觸發；個股出場改由 _unified_rebalance 的 EMA50/排名輪動處理。
 
     # ── 交易執行 ──────────────────────────────────────────────────────────────
 

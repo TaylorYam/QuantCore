@@ -51,11 +51,11 @@ _Avoid_: Naked short
 _Avoid_: Today, Trade day（"today" 在 live 與 backtest 語意不同，是 off-by-one 的根源）
 
 **前收 (Reference Close)**:
-觸發一筆 [[日度風控 (Daily Risk Check)]] 動作的收盤價，來自「最近一個**已收盤**的 session」。停損比 Reference Close vs 成本；跳空比 Reference Close 當盤 open vs 其前一盤 close。在 live 盤前，Reference Close（已收）與 [[執行盤 (Execution Session)]]（未開）是**相鄰但不同**的兩盤；回測中兩者是相鄰的兩個歷史日，這個對稱性的破壞即 off-by-one bug 的成因。
+「最近一個**已收盤**的 session」的收盤，= 資料最後一列 `index[-1]`。用於 [[日度風控 (Daily Risk Check)]] 的資料新鮮度 guard、dip-buy 的 regime 判斷，以及 daily_report 的部位標價（[ADR-0003](docs/adr/0003-live-daily-risk-timing-and-marking.md)）。在 live 盤前，Reference Close（已收）與 [[執行盤 (Execution Session)]]（未開）是**相鄰但不同**的兩盤。
 _Avoid_: 前一日, Previous bar
 
 **日度風控 (Daily Risk Check)**:
-[[SP500]] 每個交易日盤前跑一次的部位保護：停損（[[前收 (Reference Close)]] < 成本 × (1−`STOP_LOSS_PCT`)）、跳空出場、熊市 dip-buy 觸發。與週三的 rotation 調倉分離——rotation 換股、Daily Risk Check 只砍/抄底。觸發即在 [[執行盤 (Execution Session)]] 送 LMT（outsideRTH）。
+[[SP500]] 每個交易日盤前跑一次的檢查。原含停損 / 跳空出場 / 熊市 dip-buy，但停損與跳空已移除（[ADR-0004](docs/adr/0004-remove-sp500-fixed-stop-and-gap-exit.md)：回測零貢獻 + 製造 whipsaw），**現在只剩熊市 dip-buy 觸發**。個股出場改由週三 rotation（EMA50/排名）負責。觸發即在 [[執行盤 (Execution Session)]] 送 LMT（outsideRTH）。
 _Avoid_: Daily check, Stop loss job
 
 ## Relationships
@@ -83,3 +83,4 @@ _Avoid_: Daily check, Stop loss job
 - 「alloc_skewls = 0.3」是 factor exposure 還是 capital usage（grilling Q3）— 解決為 factor exposure，見 [ADR-0001](docs/adr/0001-alloc-skew-factor-exposure.md)
 - 「SP500 [[Constituents]] 怎麼保持最新」原本無自動化機制，靜態 Excel `_2015_2026.xlsx`（grilling 2026-06-01）— 解決為 on-demand Wikipedia fetch + dense reconstruction，見 [ADR-0002](docs/adr/0002-sp500-constituents-on-demand-refresh.md)
 - [[日度風控 (Daily Risk Check)]] 把 [[執行盤 (Execution Session)]] 誤當成「資料最後一列」、[[前收 (Reference Close)]] 誤抓成倒數第二列，導致週五破停損線、週一卻不出場（grilling 2026-06-07）— 解決為 Reference Close = 最近已收盤 session（資料最後一列），含 staleness halt-guard 與報告同源標價，見 [ADR-0003](docs/adr/0003-live-daily-risk-timing-and-marking.md)
+- 接續上點：8 年回測證實 20% 停損零貢獻、50% 跳空從未觸發，且 live 週二 `--mode all` 會用舊訊號把停損掉的股票買回（whipsaw，CIEN 2026-06）— 解決為**整個移除** SP500 固定停損與跳空出場，個股出場只由週三 rotation 負責，見 [ADR-0004](docs/adr/0004-remove-sp500-fixed-stop-and-gap-exit.md)

@@ -35,9 +35,9 @@ SELL_RANK_THRESHOLD = 20  # 排名跌出前 N 名則賣出
 MAX_ADJ_SLOPE     = 1.5   # 過熱保護：Adj Slope 上限
 
 # ── 風險管理 ──────────────────────────────────────────────────
-STOP_LOSS_PCT     = 0.20  # 20% 停損
-SKIP_MAX_GAP_PCT  = 0.20  # 跳空 > 20% 不買入
-GAP_EXIT_PCT      = 0.50  # 持倉跳空 > 50% 隔日開盤出場
+STOP_LOSS_PCT     = 0.20  # DEPRECATED/未使用 — 停損已移除（ADR-0004）
+SKIP_MAX_GAP_PCT  = 0.20  # 跳空 > 20% 不買入（進場過濾，保留）
+GAP_EXIT_PCT      = 0.50  # DEPRECATED/未使用 — 跳空出場已移除（ADR-0004）
 REBALANCE_THRESHOLD = 0.03  # 超重/低配 >= 3% 才調整
 MIN_BUY_AMOUNT_PCT  = 0.03  # 單次補倉最低為總權益 3%
 

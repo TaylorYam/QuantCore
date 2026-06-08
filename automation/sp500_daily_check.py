@@ -34,17 +34,77 @@ if str(ROOT_DIR) not in sys.path:
 LOG_DIR = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
 
-log_file = LOG_DIR / f"daily_check_{date.today().strftime('%Y%m%d')}.log"
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s  %(levelname)s  %(message)s',
-    handlers=[
-        logging.FileHandler(log_file, encoding='utf-8'),
-        logging.StreamHandler(sys.stdout),
-    ],
-    force=True,
-)
+from log_setup import setup_logging
+import market_calendar
 log = logging.getLogger(__name__)
+
+
+def _prev_trading_day(d):
+    """Most recent NYSE trading day strictly before date ``d``."""
+    from datetime import timedelta
+    cur = d - timedelta(days=1)
+    for _ in range(10):
+        if market_calendar.is_nyse_trading_day(cur):
+            return cur
+        cur -= timedelta(days=1)
+    return cur
+
+
+def evaluate_exits(sp500_holdings, positions, avg_costs, histories,
+                   ref_date, prior_date, *, stop_loss_pct, gap_exit_pct,
+                   skip_tickers=()):
+    """Pure stop-loss / gap-exit decision for the Reference Close session.
+
+    Reference Close (= most recent completed session = data ``index[-1]``) is
+    the close we evaluate; the resulting order executes at the next open — the
+    live Execution Session, which is NOT in the data because ``update_data``
+    only writes completed sessions after the close. See ADR-0003.
+
+    Parameters
+    ----------
+    histories  : callable(ticker) -> DataFrame (Open/Close indexed by date)
+    ref_date   : the Reference Close session
+    prior_date : the session before ref_date (gap baseline), or None
+
+    Returns ``(orders, missing)`` — ``missing`` lists held tickers with no
+    ``ref_date`` row; the caller must alert (those positions go unchecked).
+    """
+    orders, missing = [], []
+    skip = set(skip_tickers)
+    for ticker in sp500_holdings:
+        if ticker in skip:
+            continue
+        avg_cost = avg_costs.get(ticker, 0)
+        if avg_cost <= 0:
+            continue
+        df = histories(ticker)
+        if df is None or ref_date not in df.index:
+            missing.append(ticker)
+            continue
+        qty = int(positions.get(ticker, 0))
+        if qty == 0:
+            continue
+        ref_close = float(df.loc[ref_date, 'Close'])
+        # Stop loss: Reference Close below cost threshold
+        if ref_close < avg_cost * (1 - stop_loss_pct):
+            orders.append({
+                'symbol': ticker, 'action': 'SELL', 'qty': qty,
+                'reason': f'Stop loss ({ref_close:.2f}<{avg_cost:.2f}*{1 - stop_loss_pct:.2f})',
+            })
+            continue  # already exiting — don't double up with a gap exit
+        # Gap exit: Reference Close session opened with a gap vs its prior close
+        if prior_date is not None and prior_date in df.index and 'Open' in df.columns:
+            prior_close = float(df.loc[prior_date, 'Close'])
+            ref_open = float(df.loc[ref_date, 'Open'])
+            if prior_close > 0 and ref_open > 0:
+                gap = (ref_open - prior_close) / prior_close
+                if abs(gap) >= gap_exit_pct:
+                    direction = 'Up' if gap > 0 else 'Down'
+                    orders.append({
+                        'symbol': ticker, 'action': 'SELL', 'qty': qty,
+                        'reason': f'Gap exit ({gap * 100:+.1f}% {direction})',
+                    })
+    return orders, missing
 
 
 def run_daily_check(account_name: str):
@@ -74,11 +134,35 @@ def run_daily_check(account_name: str):
         log.error("SPY data too short")
         return
 
-    today_idx   = spy_df.index[-1]
-    prev_idx    = spy_df.index[-2]
-    day_before  = spy_df.index[-3] if len(spy_df) >= 3 else None
+    # Reference Close = most recent completed session = data index[-1] (ADR-0003).
+    # The Execution Session (today's live open) is NOT in the data — update_data
+    # writes only completed sessions, after the close.
+    ref_date   = spy_df.index[-1]
+    prior_date = spy_df.index[-2] if len(spy_df) >= 2 else None
 
-    mkt = get_market_regime_state(today_idx)
+    # Holiday skip: no Execution Session today → nothing to send orders into.
+    today_nyse = date.today()   # 16:00 TW run == 04:00 ET → local date == ET date
+    if not market_calendar.is_nyse_trading_day(today_nyse):
+        log.info(f"  {today_nyse} is not an NYSE trading day — daily risk check no-op")
+        return
+
+    # Staleness guard: Reference Close must be the most recent trading day strictly
+    # before today. If the data pipeline lagged/failed, abort rather than act on a
+    # stale close (ADR-0003: halt + alert, never trade on bad data).
+    expected_ref = _prev_trading_day(today_nyse)
+    if ref_date.date() != expected_ref:
+        log.error(f"  STALE DATA: SPY last bar {ref_date.date()} != expected "
+                  f"Reference Close {expected_ref}; aborting daily risk check")
+        try:
+            from notify import tg_send as _tg
+            _tg(f"⚠️ {tag} 日度風控中止：資料錯位（SPY 最後 {ref_date.date()}，"
+                f"預期 {expected_ref}）。本次未檢查停損/跳空，請人工確認資料管線。",
+                token=ctx.tg_token, chat_id=ctx.tg_chat_id)
+        except Exception as e:
+            log.warning(f"  alert send failed: {e}")
+        return
+
+    mkt = get_market_regime_state(ref_date)
     if not mkt:
         log.error("No market regime data")
         return
@@ -120,52 +204,27 @@ def run_daily_check(account_name: str):
         pos_detail = ib_fetcher.get_positions_detail(ib, ctx)
         avg_costs = {p.contract.symbol: float(p.avgCost) for p in pos_detail}
 
-        # ── Step 1: 停損檢查 ───────────────────────────────────────
-        orders = []
+        # ── Step 1+2: 停損 / 跳空出場（純函式，讀 Reference Close = index[-1]）──
         dip_tickers = {sp_cfg.DIP_BUY_TICKER, 'SPY', 'SSO'}
-
-        for ticker in sp500_holdings:
-            if ticker in dip_tickers:
-                continue  # dip 部位不檢查停損
-            avg_cost = avg_costs.get(ticker, 0)
-            if avg_cost <= 0:
-                continue
+        orders, missing = evaluate_exits(
+            sp500_holdings, current_pos, avg_costs, get_ticker_history,
+            ref_date, prior_date,
+            stop_loss_pct=sp_cfg.STOP_LOSS_PCT,
+            gap_exit_pct=sp_cfg.GAP_EXIT_PCT,
+            skip_tickers=dip_tickers,
+        )
+        for o in orders:
+            log.info(f"  {o['reason']}: SELL {o['qty']}sh {o['symbol']}")
+        # 持倉缺 Reference Close 資料 = 該倉本次未受保護 → 告警（不再靜默跳過）
+        if missing:
+            log.warning(f"  UNPROTECTED (no {ref_date.date()} close): {missing}")
             try:
-                prev_close = float(get_ticker_history(ticker).loc[prev_idx, 'Close'])
-            except Exception:
-                log.warning(f"    {ticker}: no prev close data")
-                continue
-            if prev_close < avg_cost * (1 - sp_cfg.STOP_LOSS_PCT):
-                qty = int(current_pos[ticker])
-                log.info(f"  STOP LOSS {ticker}: prev_close=${prev_close:.2f} "
-                         f"< cost*0.8=${avg_cost*0.8:.2f}")
-                orders.append({
-                    'symbol': ticker, 'action': 'SELL', 'qty': qty,
-                    'reason': f'Stop loss ({prev_close:.2f}<{avg_cost:.2f}*0.8)',
-                })
-
-        # ── Step 2: 跳空出場檢查 ───────────────────────────────────
-        if day_before is not None:
-            for ticker in sp500_holdings:
-                if ticker in dip_tickers:
-                    continue
-                try:
-                    df = get_ticker_history(ticker)
-                    close_before = float(df.loc[day_before, 'Close'])
-                    open_prev = float(df.loc[prev_idx, 'Open']) if 'Open' in df.columns else None
-                    if not open_prev or close_before <= 0:
-                        continue
-                    gap = (open_prev - close_before) / close_before
-                    if abs(gap) >= sp_cfg.GAP_EXIT_PCT:
-                        qty = int(current_pos[ticker])
-                        direction = "Up" if gap > 0 else "Down"
-                        log.info(f"  GAP EXIT {ticker}: gap={gap*100:+.1f}% {direction}")
-                        orders.append({
-                            'symbol': ticker, 'action': 'SELL', 'qty': qty,
-                            'reason': f'Gap exit ({gap*100:+.1f}%)',
-                        })
-                except Exception as e:
-                    log.warning(f"    {ticker}: gap check failed: {e}")
+                from notify import tg_send as _tg
+                _tg(f"⚠️ {tag} 日度風控：持倉 {missing} 缺 {ref_date.date()} 收盤資料，"
+                    f"本次未檢查停損/跳空，請人工確認。",
+                    token=ctx.tg_token, chat_id=ctx.tg_chat_id)
+            except Exception as e:
+                log.warning(f"  alert send failed: {e}")
 
         # ── Step 3: 熊市 dip-buy 每日檢查 ──────────────────────────
         state = load_state(account_name)
@@ -333,4 +392,5 @@ def main():
 
 
 if __name__ == '__main__':
+    setup_logging("daily_check")
     main()

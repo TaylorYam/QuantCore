@@ -24,21 +24,10 @@ LOG_DIR  = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
 
 # ── 日誌設定 ──────────────────────────────────────────────────────────────────
-log_file = LOG_DIR / f"moo_fill_{date.today().strftime('%Y%m%d')}.log"
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s  %(levelname)s  %(message)s',
-    handlers=[
-        logging.FileHandler(log_file, encoding='utf-8'),
-        logging.StreamHandler(sys.stdout),
-    ],
-    force=True,
-)
+from log_setup import setup_logging
 log = logging.getLogger(__name__)
 
 from ib_insync import util
-util.logToConsole(logging.WARNING)
-logging.root.setLevel(logging.INFO)
 
 
 # ── Telegram 通知（統一由 notify.py 提供）──────────────────────────────────
@@ -294,6 +283,8 @@ def _report_from_fills(fills, tg_token: str, tg_chat_id: str):
 
 
 if __name__ == '__main__':
+    setup_logging("moo_fill")
+    util.logToConsole(logging.WARNING)
     import argparse
     parser = argparse.ArgumentParser(description="QuantCore MOO Fill Check")
     parser.add_argument("--account", required=True,

@@ -19,16 +19,7 @@ LOG_DIR  = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
 
 # ── 日誌 ──────────────────────────────────────────────────────────────────────
-log_file = LOG_DIR / f"sinopac_{date.today().strftime('%Y%m%d')}.log"
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s  %(levelname)s  %(message)s',
-    handlers=[
-        logging.FileHandler(log_file, encoding='utf-8'),
-        logging.StreamHandler(sys.stdout),
-    ],
-    force=True,
-)
+from log_setup import setup_logging
 log = logging.getLogger(__name__)
 
 # ── 設定 ──────────────────────────────────────────────────────────────────────
@@ -155,4 +146,5 @@ def main():
 
 
 if __name__ == '__main__':
+    setup_logging("sinopac")
     main()

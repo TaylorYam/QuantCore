@@ -49,22 +49,11 @@ if str(ROOT_DIR) not in sys.path:
 from excel_logger import append_trade_log
 
 # ── 日誌設定 ──────────────────────────────────────────────────────────────────
-log_file = LOG_DIR / f"rebalance_{date.today().strftime('%Y%m%d')}.log"
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s  %(levelname)s  %(message)s',
-    handlers=[
-        logging.FileHandler(log_file, encoding='utf-8'),
-        logging.StreamHandler(sys.stdout),
-    ],
-    force=True,
-)
+from log_setup import setup_logging
 log = logging.getLogger(__name__)
 
 # ── IB 連線工具 ───────────────────────────────────────────────────────────────
 from ib_insync import IB, Stock, MarketOrder, LimitOrder, Order, util
-util.logToConsole(logging.WARNING)
-logging.root.setLevel(logging.INFO)
 
 
 # ── Telegram 通知（統一由 notify.py 提供）──────────────────────────────────
@@ -735,6 +724,8 @@ def main(mode: str, ctx: AccountCtx):
 
 
 if __name__ == '__main__':
+    setup_logging("rebalance")
+    util.logToConsole(logging.WARNING)
     parser = argparse.ArgumentParser(description="QuantCore Rebalance")
     parser.add_argument("--mode", choices=["sr", "sp500", "skewls", "both", "all"],
                         default="both",

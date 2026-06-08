@@ -46,6 +46,18 @@ _Avoid_: Hedge, Synthetic short
 [[Skew LS]] 對 XLC 的處理方式（無對應反向 ETF），透過 IB margin account `SELL` 進場、`BUY_TO_COVER` 平倉。QuantCore 第一個 short side handling — 既有 SR / SP500 都是 long-only。
 _Avoid_: Naked short
 
+**執行盤 (Execution Session)**:
+某筆訂單實際成交所對應的 NYSE session。[[SP500]] 的 [[日度風控 (Daily Risk Check)]] 在盤前送單，其 Execution Session 是「即將開盤、尚未收盤的下一盤」——因此**不存在於**收盤後才寫入的歷史資料中。
+_Avoid_: Today, Trade day（"today" 在 live 與 backtest 語意不同，是 off-by-one 的根源）
+
+**前收 (Reference Close)**:
+觸發一筆 [[日度風控 (Daily Risk Check)]] 動作的收盤價，來自「最近一個**已收盤**的 session」。停損比 Reference Close vs 成本；跳空比 Reference Close 當盤 open vs 其前一盤 close。在 live 盤前，Reference Close（已收）與 [[執行盤 (Execution Session)]]（未開）是**相鄰但不同**的兩盤；回測中兩者是相鄰的兩個歷史日，這個對稱性的破壞即 off-by-one bug 的成因。
+_Avoid_: 前一日, Previous bar
+
+**日度風控 (Daily Risk Check)**:
+[[SP500]] 每個交易日盤前跑一次的部位保護：停損（[[前收 (Reference Close)]] < 成本 × (1−`STOP_LOSS_PCT`)）、跳空出場、熊市 dip-buy 觸發。與週三的 rotation 調倉分離——rotation 換股、Daily Risk Check 只砍/抄底。觸發即在 [[執行盤 (Execution Session)]] 送 LMT（outsideRTH）。
+_Avoid_: Daily check, Stop loss job
+
 ## Relationships
 
 - 一個 **Account** 持有多個 **Strategy** 的部位
@@ -56,6 +68,7 @@ _Avoid_: Naked short
 - **Skew LS** 的 short signal → 多數透過 **Inverse Proxy** 轉長單；XLC 例外走 **Direct Short**
 - 多個 **Strategy** 在同個 **Account** 對同檔 ticker 的 target 直接加總（IB net 多空）
 - **Skew LS** 的 threshold rebal 需要 per-account state file（`skewls_state_{account}.json`）紀錄上次該策略自己的 target — 與 IB 真實部位無關（避免被其他 Strategy 的部位污染）
+- **日度風控** 的 **前收 (Reference Close)** = 最近已收盤 session；**執行盤 (Execution Session)** = 即將到來、尚未收盤的下一盤。回測中兩者是相鄰兩個歷史日；live 中 Execution Session 尚未存在於資料，故 Reference Close 必須是資料的最後一筆已收列、而非倒數第二筆
 
 ## Example dialogue
 
@@ -69,3 +82,4 @@ _Avoid_: Naked short
 - 「leverage」曾被當成「可獨立設定的欄位」考慮過（grilling Q1）— 解決：永遠是 derived，調 leverage 必須透過調 alloc
 - 「alloc_skewls = 0.3」是 factor exposure 還是 capital usage（grilling Q3）— 解決為 factor exposure，見 [ADR-0001](docs/adr/0001-alloc-skew-factor-exposure.md)
 - 「SP500 [[Constituents]] 怎麼保持最新」原本無自動化機制，靜態 Excel `_2015_2026.xlsx`（grilling 2026-06-01）— 解決為 on-demand Wikipedia fetch + dense reconstruction，見 [ADR-0002](docs/adr/0002-sp500-constituents-on-demand-refresh.md)
+- [[日度風控 (Daily Risk Check)]] 把 [[執行盤 (Execution Session)]] 誤當成「資料最後一列」、[[前收 (Reference Close)]] 誤抓成倒數第二列，導致週五破停損線、週一卻不出場（grilling 2026-06-07）— 解決為 Reference Close = 最近已收盤 session（資料最後一列），含 staleness halt-guard 與報告同源標價，見 [ADR-0003](docs/adr/0003-live-daily-risk-timing-and-marking.md)

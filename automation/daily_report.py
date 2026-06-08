@@ -26,21 +26,10 @@ from excel_logger import append_daily_snapshot
 from equity_chart import generate_equity_chart
 
 # ── 日誌 ──────────────────────────────────────────────────────────────────────
-log_file = LOG_DIR / f"daily_{date.today().strftime('%Y%m%d')}.log"
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s  %(levelname)s  %(message)s',
-    handlers=[
-        logging.FileHandler(log_file, encoding='utf-8'),
-        logging.StreamHandler(sys.stdout),
-    ],
-    force=True,
-)
+from log_setup import setup_logging
 log = logging.getLogger(__name__)
 
 from ib_insync import IB, Stock, util
-util.logToConsole(logging.WARNING)
-logging.root.setLevel(logging.INFO)
 
 # R1.3：SR ETF 常數單一來源在 ib_fetcher
 from ib_fetcher import SR_ETFS
@@ -90,6 +79,28 @@ from ib_fetcher import (
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
+def mark_at_reference_close(ib, symbols, ctx):
+    """每檔以最近官方收盤（Reference Close = CSV index[-1]）標價；CSV 缺該檔才
+    回退 IB 報價。
+
+    daily report 是 EOD 快照，正確 mark 是最近官方收盤，而非盤後/週末可能陳舊的
+    即時 tick（見 ADR-0003）。live 下單取價走 `robust_get_prices`，不受此影響。
+    """
+    from price_utils import load_csv_close
+    marks, missing = {}, []
+    for s in symbols:
+        c = load_csv_close(s)
+        if c > 0:
+            marks[s] = c
+        else:
+            missing.append(s)
+    if missing:
+        ib_prices = get_prices(ib, missing, ctx=ctx)
+        for s in missing:
+            marks[s] = ib_prices.get(s, 0)
+    return marks
+
+
 def main(ctx: AccountCtx):
     """每日持倉報告。所有設定從 ctx 取得，thread-safe。"""
     host        = ctx.host
@@ -115,7 +126,9 @@ def main(ctx: AccountCtx):
         excess_liq = acct['excess_liq']
         pos_detail = get_positions_detail(ib, ctx=ctx)
         symbols    = [p.contract.symbol for p in pos_detail]
-        prices     = get_prices(ib, symbols, ctx=ctx) if symbols else {}
+        # 標價用 Reference Close（最近官方收盤，CSV index[-1]）；IB 僅在 CSV 缺檔
+        # 時 fallback——避免週末/盤前 IB 回傳陳舊 tick 蓋過正確收盤（ADR-0003）。
+        prices     = mark_at_reference_close(ib, symbols, ctx) if symbols else {}
 
         log.info(f"NAV = ${nav:,.2f}  Cushion = {cushion:.1f}%  ExcessLiq = ${excess_liq:,.0f}")
 
@@ -254,6 +267,8 @@ def main(ctx: AccountCtx):
 
 
 if __name__ == '__main__':
+    setup_logging("daily")
+    util.logToConsole(logging.WARNING)
     import argparse
     parser = argparse.ArgumentParser(description="QuantCore Daily Report")
     parser.add_argument("--account", required=True,

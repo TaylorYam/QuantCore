@@ -222,15 +222,21 @@ class SP500Backtester:
         if config.MAX_ADJ_SLOPE is not None:
             ranked = [x for x in ranked if x.get("adj_slope", 999) < config.MAX_ADJ_SLOPE]
 
-        entry_tickers = [x["ticker"] for x in ranked]
         kept = [t for t in self.holdings
                 if not self._is_dip(t) and t not in rotation_sells]
         needed = config.TARGET_HOLDINGS - len(kept)
 
+        # ENTRY_EMA_FILTER（預設 False，ADR-0005）：WF 否決進場 EMA 過濾 —
+        # rank 優先；高排名股同輪 EMA 賣出後買回（=續抱）是刻意行為。
+        # 與 signals.py 讀同一 flag，live == backtest。
         buy_candidates = []
         if needed > 0:
-            candidates = [t for t in entry_tickers if t not in kept][:needed]
-            for ticker in candidates:
+            if getattr(config, "ENTRY_EMA_FILTER", False):
+                eligible = utils.filter_entry_eligible(ranked, exclude=set(kept))
+            else:
+                eligible = [x for x in ranked if x.get("ticker") not in kept]
+            for x in eligible[:needed]:
+                ticker = x["ticker"]
                 price = self._get_price(ticker, date, use_open=True)
                 if price > 0:
                     buy_candidates.append((ticker, price))

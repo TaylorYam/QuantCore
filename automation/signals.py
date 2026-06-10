@@ -269,13 +269,18 @@ def get_sp500_weights(current_sp500_holdings: list[str],
             kept.append(ticker)
 
     # ── Step 2: 補進新股（如果持股不足 TARGET_HOLDINGS）───────────────────
+    # ENTRY_EMA_FILTER（預設 False，ADR-0005）：WF 否決「買入候選排除跌破
+    # EXIT_EMA 者」— rank 優先，高排名股同輪 EMA 賣出後買回（=續抱）是刻意行為。
     buy_candidates = []
     needed = sp_cfg.TARGET_HOLDINGS - len(kept)
     if needed > 0:
-        candidates = [t for t in entry_tickers if t not in kept][:needed]
-        for ticker in candidates:
-            m = next((x for x in ranked_filtered if x["ticker"] == ticker), None)
-            if m and m.get("max_gap", 0) <= sp_cfg.SKIP_MAX_GAP_PCT:
+        if getattr(sp_cfg, "ENTRY_EMA_FILTER", False):
+            pool = utils.filter_entry_eligible(ranked_filtered, exclude=set(kept))
+        else:
+            pool = [x for x in ranked_filtered if x["ticker"] not in kept]
+        for m in pool[:needed]:
+            ticker = m["ticker"]
+            if m.get("max_gap", 0) <= sp_cfg.SKIP_MAX_GAP_PCT:
                 log.info(f"  BUY  {ticker}: rank={entry_tickers.index(ticker)+1}"
                          f"  adj_slope={m['adj_slope']:.3f}")
                 buy_candidates.append(ticker)

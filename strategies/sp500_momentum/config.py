@@ -32,6 +32,8 @@ LOOKBACK_ENTRY    = LOOKBACK
 LOOKBACK_EXIT     = LOOKBACK
 EXIT_EMA          = 50    # 跌破此 EMA 出場
 SELL_RANK_THRESHOLD = 20  # 排名跌出前 N 名則賣出
+ENTRY_EMA_FILTER  = False # 買入候選是否排除「收盤<EXIT_EMA」者。WF 否決（ADR-0005）：
+                          # rank 優先 — 高排名急跌股續抱/買回在 OOS 勝出；開關保留供重驗
 MAX_ADJ_SLOPE     = 1.5   # 過熱保護：Adj Slope 上限
 
 # ── 風險管理 ──────────────────────────────────────────────────

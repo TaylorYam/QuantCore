@@ -9,7 +9,7 @@
 _Avoid_: User, Client, Sub-account
 
 **Strategy**:
-一個自成體系的「訊號 → normalized 目標權重（內部 gross sum = 1.0）」產生器，不知道帳戶存在，也不知道其他 Strategy 存在。所有 Strategy 的 target 在帳戶層級加總（pure-function combine），IB 自動 net 多空。
+一個自成體系的「訊號 → normalized 目標權重（內部 gross ≤ 1.0）」產生器，不知道帳戶存在，也不知道其他 Strategy 存在。滿倉 gross = 1.0，但**持現金是合法輸出**：[[SR]] 的 WEIGHT_STEP 取整殘差（gross 0.95，歷史 13% 天數，回測同源）與 z-threshold 全空手、[[SP500]] 的等待期 / dip 階梯部分配置；[[Skew LS]] 的 gross 依 regime allocation 另行定義。所有 Strategy 的 target 在帳戶層級加總（pure-function combine），IB 自動 net 多空。
 目前定義：[[SR]]、[[SP500]]、[[Skew LS]]。
 _Avoid_: Model, Signal generator, Engine
 
@@ -93,4 +93,5 @@ _Avoid_: Rounding error（不帶方向性，掩蓋 floor 的系統性偏低）
 - [[日度風控 (Daily Risk Check)]] 把 [[執行盤 (Execution Session)]] 誤當成「資料最後一列」、[[前收 (Reference Close)]] 誤抓成倒數第二列，導致週五破停損線、週一卻不出場（grilling 2026-06-07）— 解決為 Reference Close = 最近已收盤 session（資料最後一列），含 staleness halt-guard 與報告同源標價，見 [ADR-0003](docs/adr/0003-live-daily-risk-timing-and-marking.md)
 - 接續上點：8 年回測證實 20% 停損零貢獻、50% 跳空從未觸發，且 live 週二 `--mode all` 會用舊訊號把停損掉的股票買回（whipsaw，CIEN 2026-06）— 解決為**整個移除** SP500 固定停損與跳空出場，個股出場只由週三 rotation 負責，見 [ADR-0004](docs/adr/0004-remove-sp500-fixed-stop-and-gap-exit.md)
 - 「EMA50 出場同輪被高排名再進場抵消（SELL 又 BUY 回，CIEN 2026-06-10）是 bug 還是設計？」— WF（N=8+N=7）否決進場 EMA 過濾後解決為**刻意行為**：rank 優先於 EMA，`ENTRY_EMA_FILTER=False`，見 [ADR-0005](docs/adr/0005-rank-priority-no-entry-ema-filter.md)
+- 「SR gross sum 0.95 是 bug 還是設計？」`test_get_sr_weights_sum_approximately_one` 斷言 ≈1.0 常態性失敗（2026-07-05）— 診斷：z-filter 後 raw 權重 normalize 到恰好 1.0，四捨五入至 WEIGHT_STEP（5%）後**只有 >100% 一側被強制降回**，<100% 殘差刻意留現金（例 2026-06-29：raw 0.506/0.274/0.220 → 0.50/0.25/0.20）；回測 `compute_mom_weights` 同源，11.5 年中 13.2% 天數 gross=0.95、7% 空手。解決：live 權重**不動**（改正規化會偏離已驗證回測），測試斷言改為設計界限 gross ∈ [1 − n×step/2, 1.0]，[[Strategy]] 詞條的「gross sum = 1.0」修正為「gross ≤ 1.0」；同類問題 `test_get_sr_weights_returns_non_empty`（斷言至少 1 檔持倉，熊市空手 regime 會常態性失敗）同日修正 — 空手時改驗證 z-threshold 前置條件（無 ETF 同時 z > thresh 且 score > 0），更名 `test_get_sr_weights_non_empty_or_verified_all_cash`，以 2022 熊市 6 個空手週模擬驗證通過且對非空日有鑑別力
 - 「Taylor 1 股 MU 超出理論部位」直覺（grilling 2026-07-05）— 7/1 實際數據證偽：floor 語意下 MU 為**低配 24%**、SP500 sleeve 僅部署 82%（現金拖累 ≈9% NAV）；超配只發生在 round() 的 [[Skew LS]] 小腳。命名釐清後拆成 [[理論部位 (Target Notional)]] 與 [[整數執行稅 (Integer Execution Tax)]] 兩詞。三臂 × 資金階梯研究**已完成**（`robustness/frac_sizing_report.md`）：[[整數執行稅 (Integer Execution Tax)]] 集中在小 sleeve × 高價股 — 回測 $2k 臂 −2.85pp CAGR、$11k 以上入 ±0.3pp 噪音底，但 live 實測 Taylor 當前部署率僅 89%（min 82%）≈ 每年 2.5–3pp；`int(round())` 一行改動可免費收回大部分；whipsaw 假說被三臂數據否決（3% threshold 已抑制）

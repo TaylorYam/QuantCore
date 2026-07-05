@@ -5,7 +5,8 @@ These tests depend on real data files (SP500 constituents, SPY/SSO CSVs, ETF
 price data). On machines without that data, they skip gracefully.
 
 Coverage:
-  - get_sr_weights() returns non-empty weights summing to ≈1
+  - get_sr_weights() gross within design bounds (≤1.0; WEIGHT_STEP 取整殘差留現金)
+  - get_sr_weights() non-empty, or verified all-cash (z-threshold 空手為合法輸出)
   - get_sp500_universe() contains SPY and SSO (dip-buy tickers)
   - get_market_regime_state() returns dict with required keys
   - SR_ETFS constant is single source of truth across modules
@@ -58,24 +59,81 @@ def test_sr_etfs_is_single_source_across_modules():
 # ── Data-dependent tests ─────────────────────────────────────────────
 
 @skip_no_data
-def test_get_sr_weights_returns_non_empty():
+def test_get_sr_weights_non_empty_or_verified_all_cash():
+    """SR 有持倉，或空手時 z-threshold 空手前置條件確實成立。
+
+    設計（CONTEXT.md [[Strategy]] 詞條；strategies/sector_rotation/signal.py）：
+    z-score 全數未過 MOM_ZSCORE_THRESH 時空手（空 dict）是**合法輸出** —
+    11.5 年回測中 7%（203/2891）的交易日如此，多為熊市。斷言「至少 1 檔」
+    會在熊市空手 regime 常態性失敗（同類問題見 gross bounds 測試）。
+    空 dict 時改驗證前置條件「無 ETF 同時 z > thresh 且 score > 0」，
+    以區分設計內空手與資料／管線故障造成的意外空輸出。
+    """
     from signals import get_sr_weights
 
     wgt, sig_date = get_sr_weights()
     assert isinstance(wgt, dict)
-    assert len(wgt) > 0, "SR signal should produce at least 1 position"
     assert sig_date  # non-empty string
+
+    if wgt:
+        # 有訊號日：至少 1 檔、權重皆為正（原斷言語義）
+        assert all(w > 0 for w in wgt.values())
+        return
+
+    # ── 空手：獨立重算 signal_date 當日橫截面 z-score，驗證確實無 ETF 過門檻 ──
+    import pandas as pd
+    from strategies.sector_rotation import config as sr_config
+    from strategies.sector_rotation.data_loader import load_data
+    from strategies.sector_rotation.signal import compute_mom_score
+
+    etf_close = load_data()["etf_close"]
+    trimmed = etf_close[etf_close.index <= pd.Timestamp(sig_date)]
+    assert len(trimmed) > 0, f"signal_date {sig_date} 之前無資料 — 資料載入異常"
+    assert str(trimmed.index[-1].date()) == sig_date, \
+        f"資料最後一列 {trimmed.index[-1].date()} ≠ signal_date {sig_date}"
+
+    score = compute_mom_score(trimmed).iloc[-1]
+    std = score.std()  # ddof=1，與 signal.py 的 score.std(axis=1) 同源
+    z = (score - score.mean()) / (std if std else float("nan"))
+    passing = [sym for sym in score.index
+               if z[sym] > sr_config.MOM_ZSCORE_THRESH and score[sym] > 0]
+    assert not passing, (
+        f"SR 回傳空手，但 {passing} z-score 過門檻"
+        f"（thresh={sr_config.MOM_ZSCORE_THRESH}）且動能分數 > 0 — "
+        f"空輸出不是設計內空手，疑似訊號管線故障"
+    )
 
 
 @skip_no_data
-def test_get_sr_weights_sum_approximately_one():
-    """Sector Rotation weights should sum to ≈1.0 (full allocation)."""
+def test_get_sr_weights_gross_within_design_bounds():
+    """SR gross sum 落在設計界限內：≤ 1.0，且 ≥ 1 − n×(WEIGHT_STEP/2)。
+
+    設計（strategies/sector_rotation/signal.py，回測同源）：
+      1. 過 z-threshold 的 ETF 按分數比例 normalize（raw sum = 1.0）
+      2. 各權重四捨五入到 WEIGHT_STEP（5%）
+      3. 取整後 >100% 會被強制降回；<100% 的殘差**刻意留作現金**
+    因此 gross 不是恆等於 1.0 — 歷史上 13% 的交易日 gross = 0.95
+    （例：2026-06-29 raw 0.506/0.274/0.220 三檔同時向下取整）。
+    全數未過 z-threshold 時空手（空 dict）也是合法輸出。
+    """
     from signals import get_sr_weights
+    from strategies.sector_rotation import config as sr_config
 
     wgt, _ = get_sr_weights()
     total = sum(wgt.values())
-    assert total == pytest.approx(1.0, abs=0.01), \
-        f"SR weights should sum to ~1.0, got {total:.4f}"
+    step = sr_config.WEIGHT_STEP
+
+    assert total <= 1.0 + 1e-9, \
+        f"SR gross must never exceed 1.0, got {total:.4f}"
+
+    if wgt:  # 空手（全現金）是 z-threshold 下的合法輸出
+        lower = 1.0 - len(wgt) * step / 2
+        assert total >= lower - 1e-9, \
+            (f"SR gross {total:.4f} below rounding floor {lower:.4f} "
+             f"(n={len(wgt)}, step={step}) — 超出取整殘差能解釋的範圍")
+        for sym, w in wgt.items():
+            assert abs(w / step - round(w / step)) < 1e-6, \
+                f"{sym} weight {w} is not a multiple of WEIGHT_STEP {step}"
 
 
 @skip_no_data

@@ -1,13 +1,19 @@
 """
 Pure logic for the weekday-morning 07:00 gateway Check Now.
 
-Two pieces:
+Three pieces:
   * next_morning_check_time(now)        — next Taipei 07:00 that lands on an
                                           NYSE trading day (strictly future;
                                           weekends + NYSE holidays skipped)
   * format_morning_check_message(names) — Telegram alert body, or None when
                                           nothing is offline (all gateways
                                           healthy → caller stays silent)
+  * constituents_staleness_warning(...) — Telegram warning when the ADR-0002
+                                          SP500 constituents snapshot is
+                                          stale, or None when fresh
+                                          (read_constituents_last_date is its
+                                          I/O companion — the one deliberate
+                                          exception to "this module is pure")
 
 Side effects (real IB re-probe, Tk after, Telegram send) live in
 control_panel. This module stays pure so the scheduling and message logic
@@ -23,7 +29,8 @@ date is the right and simplest key.
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
+from pathlib import Path
 
 from market_calendar import is_nyse_trading_day
 
@@ -80,4 +87,73 @@ def format_morning_check_message(offline_names: list[str]) -> str | None:
     return (
         f"⚠️ <b>Morning check 07:00</b>\n{lines}\n"
         f"<code>Check Now re-probe failed — manual Gateway restart needed</code>"
+    )
+
+
+# ── ADR-0002 constituents staleness reminder ────────────────────────
+# Refresh stays on-demand (auto-fetch rejected: Wikipedia vandalism / schema
+# risk must not silently feed live decisions). This reminder exists because
+# on-demand was forgotten for 5 weeks (2026-06/07) and stale membership
+# re-creates the CIEN misclassification class of bug. Reminder only — it
+# never fetches.
+
+CONSTITUENTS_MAX_AGE_DAYS = 7
+
+_REFRESH_CMD = "python data/refresh_constituents.py"
+
+
+def read_constituents_last_date(xlsx_path: Path) -> date | None:
+    """I/O companion for constituents_staleness_warning: newest dense-snapshot
+    date in the ADR-0002 constituents file.
+
+    Sheet layout mirrors SelectionEngine._load_constituents: snapshots live in
+    digit-named year sheets ('2015'…'2026', column A = Date); 'Summary' /
+    'Counts' are metadata. We scan column A of the newest year sheet.
+
+    Returns None when the file is missing or unreadable — halt-preference
+    convention (ADR-0003): callers alert on None instead of staying silent."""
+    try:
+        from openpyxl import load_workbook
+        wb = load_workbook(xlsx_path, read_only=True)
+        try:
+            year_sheets = sorted(s for s in wb.sheetnames if s.isdigit())
+            if not year_sheets:
+                return None
+            ws = wb[year_sheets[-1]]
+            last: date | None = None
+            for (v,) in ws.iter_rows(min_col=1, max_col=1, values_only=True):
+                if isinstance(v, datetime):
+                    last = v.date()
+                elif isinstance(v, date):
+                    last = v
+            return last
+        finally:
+            wb.close()
+    except Exception:
+        return None
+
+
+def constituents_staleness_warning(
+    last_snapshot: date | None,
+    today: date,
+    max_age_days: int = CONSTITUENTS_MAX_AGE_DAYS,
+) -> str | None:
+    """Telegram warning body when the SP500 constituents snapshot is older
+    than max_age_days (or unreadable), None when fresh enough.
+
+    Age is measured in calendar days: the refresh cadence ADR-0002 suggests
+    is "before the weekly Wednesday SP500 rebalance", so 7 calendar days is
+    one missed cycle — warn from the first missed week onward."""
+    if last_snapshot is None:
+        return (
+            "⚠️ <b>SP500 constituents</b> 快照日期無法讀取（檔案缺失或格式異常）"
+            f"— 請跑 <code>{_REFRESH_CMD}</code>"
+        )
+    age_days = (today - last_snapshot).days
+    if age_days <= max_age_days:
+        return None
+    return (
+        f"⚠️ <b>SP500 constituents</b> 已 {age_days} 天未更新"
+        f"（最後快照 {last_snapshot.isoformat()}）"
+        f"— 請跑 <code>{_REFRESH_CMD}</code>"
     )

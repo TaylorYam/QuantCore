@@ -1213,7 +1213,10 @@ class ControlPanel(tk.Tk):
 
         Wrapped in try/except so a panel close during the settle wait doesn't
         bubble a Tk-already-destroyed error up the daemon."""
-        from morning_check import MORNING_SETTLE_SEC, format_morning_check_message
+        from morning_check import (MORNING_SETTLE_SEC,
+                                   constituents_staleness_warning,
+                                   format_morning_check_message,
+                                   read_constituents_last_date)
 
         mon = getattr(self, "_gw_monitor", None)
         if mon is None:
@@ -1234,6 +1237,24 @@ class ControlPanel(tk.Tk):
                 ))
         except Exception:
             pass  # panel destroyed mid-check — drop the result silently
+
+        # ADR-0002 constituents staleness reminder — independent of gateway
+        # state (a stale snapshot matters precisely on days everything else
+        # is healthy). Reminder only; refresh stays on-demand.
+        from zoneinfo import ZoneInfo
+        from strategies.sp500_momentum import config as sp_cfg
+        warn = constituents_staleness_warning(
+            read_constituents_last_date(sp_cfg.REF_DIR / sp_cfg.CONST_FILE),
+            datetime.now(ZoneInfo("Asia/Taipei")).date(),
+        )
+        if warn is not None:
+            try:
+                self.after(0, lambda w=warn: (
+                    self._log("[GW] Morning check → constituents stale"),
+                    self._tg_notify(w),
+                ))
+            except Exception:
+                pass  # panel destroyed mid-check — drop the result silently
 
     def _cancel_morning_check(self):
         after_id = getattr(self, "_morning_check_after_id", None)

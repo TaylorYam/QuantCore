@@ -155,3 +155,103 @@ def test_settle_exceeds_connect_timeout():
     from morning_check import MORNING_SETTLE_SEC
     from gateway_monitor import CONNECT_TIMEOUT_SEC
     assert MORNING_SETTLE_SEC > CONNECT_TIMEOUT_SEC
+
+
+# ── constituents_staleness_warning: fresh vs stale vs unreadable ───
+
+def test_staleness_fresh_returns_none():
+    """Snapshot younger than the max age → silent."""
+    from morning_check import constituents_staleness_warning
+    assert constituents_staleness_warning(date(2026, 7, 3), date(2026, 7, 5)) is None
+
+
+def test_staleness_exactly_max_age_returns_none():
+    """Boundary: age == max_age_days is still fresh (one refresh cycle =
+    7 calendar days; warn only from the first *missed* week onward)."""
+    from morning_check import constituents_staleness_warning
+    assert constituents_staleness_warning(
+        date(2026, 6, 28), date(2026, 7, 5), max_age_days=7) is None
+
+
+def test_staleness_over_max_age_warns_with_age_and_date():
+    from morning_check import constituents_staleness_warning
+    msg = constituents_staleness_warning(date(2026, 6, 1), date(2026, 7, 5))
+    assert msg is not None
+    assert "34 天" in msg                       # age spelled out
+    assert "2026-06-01" in msg                  # last snapshot named
+    assert "refresh_constituents" in msg        # actionable command
+
+
+def test_staleness_none_snapshot_warns_unreadable():
+    """Halt-preference (ADR-0003 convention): unreadable file alerts rather
+    than staying silent."""
+    from morning_check import constituents_staleness_warning
+    msg = constituents_staleness_warning(None, date(2026, 7, 5))
+    assert msg is not None
+    assert "無法讀取" in msg
+    assert "refresh_constituents" in msg
+
+
+def test_staleness_warning_never_claims_to_autofetch():
+    """ADR-0002 keeps refresh on-demand — the reminder must ask the operator
+    to run it, not imply the system will."""
+    from morning_check import constituents_staleness_warning
+    msg = constituents_staleness_warning(date(2026, 6, 1), date(2026, 7, 5))
+    assert "python data/refresh_constituents.py" in msg
+
+
+# ── read_constituents_last_date: xlsx I/O companion ────────────────
+
+def _const_workbook():
+    """Minimal ADR-0002-shaped workbook: metadata sheets + digit year sheets
+    (same layout SelectionEngine._load_constituents expects)."""
+    from openpyxl import Workbook
+    wb = Workbook()
+    wb.active.title = "Summary"
+    wb.active.append(["Metric", "Value"])
+    return wb
+
+
+def test_read_last_date_returns_newest_snapshot_of_newest_year(tmp_path):
+    from morning_check import read_constituents_last_date
+    wb = _const_workbook()
+    ws25 = wb.create_sheet("2025")
+    ws25.append(["Date", "T1"])
+    ws25.append([datetime(2025, 12, 31), "AAPL"])
+    ws26 = wb.create_sheet("2026")
+    ws26.append(["Date", "T1"])
+    ws26.append([datetime(2026, 6, 29), "AAPL"])
+    ws26.append([datetime(2026, 7, 1), "AAPL"])
+    p = tmp_path / "const.xlsx"
+    wb.save(p)
+    assert read_constituents_last_date(p) == date(2026, 7, 1)
+
+
+def test_read_last_date_ignores_metadata_sheets(tmp_path):
+    """'Summary'/'Counts' are not snapshots — only digit-named year sheets
+    count (mirrors the loader's `s.isdigit()` filter)."""
+    from morning_check import read_constituents_last_date
+    wb = _const_workbook()
+    counts = wb.create_sheet("Counts")
+    counts.append([datetime(2099, 1, 1), "not a snapshot"])
+    ws = wb.create_sheet("2026")
+    ws.append(["Date", "T1"])
+    ws.append([datetime(2026, 6, 1), "AAPL"])
+    p = tmp_path / "const.xlsx"
+    wb.save(p)
+    assert read_constituents_last_date(p) == date(2026, 6, 1)
+
+
+def test_read_last_date_missing_file_returns_none(tmp_path):
+    from morning_check import read_constituents_last_date
+    assert read_constituents_last_date(tmp_path / "nope.xlsx") is None
+
+
+def test_read_last_date_no_year_sheets_returns_none(tmp_path):
+    """Metadata-only / malformed workbook → None → caller emits the
+    unreadable warning instead of a bogus age."""
+    from morning_check import read_constituents_last_date
+    wb = _const_workbook()
+    p = tmp_path / "empty.xlsx"
+    wb.save(p)
+    assert read_constituents_last_date(p) is None

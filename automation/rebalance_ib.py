@@ -243,7 +243,10 @@ def combine_targets(nav: float, sr_wgt: dict, sp500_wgt: dict,
         if not _valid_price(price):
             log.warning(f"  {sym}: no price, skipping (SP500)")
             continue
-        shares = int(nav * alloc_sp500 * w / price)
+        # int(round(...)) 而非 floor:高價股 × 小 sleeve 時 floor 系統性低配
+        # (Taylor 實測部署率 82~89%),round 誤差對稱 → 長期抵消
+        # 三臂回測驗證見 robustness/frac_sizing_report.md (2026-07-05)
+        shares = int(round(nav * alloc_sp500 * w / price))
         _add(sym, shares, 'SP500', alloc_sp500 * w)
 
     # Skew LS 部位（sector ETF / inverse ETF long + XLC short）

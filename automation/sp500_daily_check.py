@@ -172,7 +172,8 @@ def run_daily_check(account_name: str):
                 if dip_price > 0:
                     total_new_alloc = sum(a for _, a in newly_triggered)
                     target_val = total_new_alloc * nav * ctx.alloc_sp500
-                    qty = int(target_val / dip_price)
+                    # round 同 rebalance_ib SP500 sizing(frac_sizing_report.md)
+                    qty = int(round(target_val / dip_price))
                     if qty > 0:
                         log.info(f"  NEW dip-buy: {qty}sh {dip_ticker} "
                                  f"(~${qty*dip_price:,.0f}, {total_new_alloc*100:.0f}% of SP500 alloc)")

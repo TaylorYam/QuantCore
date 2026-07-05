@@ -58,6 +58,14 @@ _Avoid_: 前一日, Previous bar
 [[SP500]] 每個交易日盤前跑一次的檢查。原含停損 / 跳空出場 / 熊市 dip-buy，但停損與跳空已移除（[ADR-0004](docs/adr/0004-remove-sp500-fixed-stop-and-gap-exit.md)：回測零貢獻 + 製造 whipsaw），**現在只剩熊市 dip-buy 觸發**。個股出場改由週三 rotation（EMA50/排名）負責。觸發即在 [[執行盤 (Execution Session)]] 送 LMT（outsideRTH）。
 _Avoid_: Daily check, Stop loss job
 
+**理論部位 (Target Notional)**:
+單一 [[Account]] 對單一標的「取整前」的目標金額 = NAV × [[Allocation]] × Strategy weight。與 rebalance log 裡的 `target=Xsh`（取整**後**股數）是不同的東西——混用兩者是「1 股超出理論部位」這類誤判的根源。
+_Avoid_: 目標部位（與 log 的 `target=Xsh` 混淆）、應有部位
+
+**整數執行稅 (Integer Execution Tax)**:
+[[理論部位 (Target Notional)]] 與整數股執行結果之間的系統性缺口。floor 取整（SR）→ 恆低配 + 現金拖累；round 取整（[[SP500]] 自 2026-07-05、[[Skew LS]]）→ 對稱 ±半股誤差、可超配。高價股 × 小預算時最重，隨權益複利上升而遞減。量化見 `robustness/frac_sizing_report.md`。
+_Avoid_: Rounding error（不帶方向性，掩蓋 floor 的系統性偏低）
+
 ## Relationships
 
 - 一個 **Account** 持有多個 **Strategy** 的部位
@@ -85,3 +93,4 @@ _Avoid_: Daily check, Stop loss job
 - [[日度風控 (Daily Risk Check)]] 把 [[執行盤 (Execution Session)]] 誤當成「資料最後一列」、[[前收 (Reference Close)]] 誤抓成倒數第二列，導致週五破停損線、週一卻不出場（grilling 2026-06-07）— 解決為 Reference Close = 最近已收盤 session（資料最後一列），含 staleness halt-guard 與報告同源標價，見 [ADR-0003](docs/adr/0003-live-daily-risk-timing-and-marking.md)
 - 接續上點：8 年回測證實 20% 停損零貢獻、50% 跳空從未觸發，且 live 週二 `--mode all` 會用舊訊號把停損掉的股票買回（whipsaw，CIEN 2026-06）— 解決為**整個移除** SP500 固定停損與跳空出場，個股出場只由週三 rotation 負責，見 [ADR-0004](docs/adr/0004-remove-sp500-fixed-stop-and-gap-exit.md)
 - 「EMA50 出場同輪被高排名再進場抵消（SELL 又 BUY 回，CIEN 2026-06-10）是 bug 還是設計？」— WF（N=8+N=7）否決進場 EMA 過濾後解決為**刻意行為**：rank 優先於 EMA，`ENTRY_EMA_FILTER=False`，見 [ADR-0005](docs/adr/0005-rank-priority-no-entry-ema-filter.md)
+- 「Taylor 1 股 MU 超出理論部位」直覺（grilling 2026-07-05）— 7/1 實際數據證偽：floor 語意下 MU 為**低配 24%**、SP500 sleeve 僅部署 82%（現金拖累 ≈9% NAV）；超配只發生在 round() 的 [[Skew LS]] 小腳。命名釐清後拆成 [[理論部位 (Target Notional)]] 與 [[整數執行稅 (Integer Execution Tax)]] 兩詞。三臂 × 資金階梯研究**已完成**（`robustness/frac_sizing_report.md`）：[[整數執行稅 (Integer Execution Tax)]] 集中在小 sleeve × 高價股 — 回測 $2k 臂 −2.85pp CAGR、$11k 以上入 ±0.3pp 噪音底，但 live 實測 Taylor 當前部署率僅 89%（min 82%）≈ 每年 2.5–3pp；`int(round())` 一行改動可免費收回大部分；whipsaw 假說被三臂數據否決（3% threshold 已抑制）

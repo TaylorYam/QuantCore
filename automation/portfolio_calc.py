@@ -605,7 +605,8 @@ class PortfolioCalc(tk.Tk):
             for sym, w in cache["sp500"].items():
                 budget = sp_budget * w
                 price  = self._find_price(sym, current)
-                shares = int(budget / price) if price > 0 else 0
+                # round 同 live SP500 sizing(rebalance_ib.combine_targets)
+                shares = int(round(budget / price)) if price > 0 else 0
                 targets.append({"symbol": sym, "category": "Stocks(MOM)",
                                  "shares": shares, "weight": w,
                                  "budget": budget, "price": price})

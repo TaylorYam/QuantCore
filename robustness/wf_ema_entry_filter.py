@@ -27,7 +27,7 @@ from strategies.sp500_momentum.backtester import SP500Backtester
 
 OUT_DIR = Path("C:/QuantCore-master/reports/sp500_momentum")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-RUN_DATE = "2026-06-10"          # 由 caller 固定，避免跨日重跑改名
+RUN_DATE = "2026-07-05"          # 由 caller 固定，避免跨日重跑改名
 
 spy = utils.load_benchmark(cfg.ETF_DIR / "SPY.csv")
 sso = utils.load_benchmark(cfg.ETF_DIR / "SSO.csv")

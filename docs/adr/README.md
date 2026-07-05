@@ -14,3 +14,4 @@
 | [0006](0006-sector-level-netting-rejected.md) | Sector-level netting — rejected（leverage drift alpha > friction 省） | rejected |
 | [0007](0007-min-position-filter-rejected.md) | SkewLS min-position filter — rejected（小部位是 diversification） | rejected |
 | [0008](0008-live-combine-no-weight-level-extraction-rejected.md) | Live combine 不抽 weight-level pure function — rejected | rejected |
+| [0009](0009-constituents-gated-auto-refresh.md) | Constituents 每週 gated 自動 refresh（supersede 0002 的 on-demand-only） | accepted |

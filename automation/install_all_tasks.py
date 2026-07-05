@@ -2,7 +2,7 @@
 以管理員權限安裝所有 QuantCore 排程任務（使用 New-ScheduledTask cmdlet）。
 執行後會彈出 UAC 提權視窗，結果寫入 temp/install_all_tasks_result.txt。
 
-包含 8 個任務：
+包含 9 個任務：
   1. Data Update          Daily 04:30
   2. Daily Report         Daily 04:40
   3. SP500 Daily Check    Mon-Fri 16:00 (stop loss/gap/dip)
@@ -11,6 +11,7 @@
   6. MOO Fill Check Tue   Tue 21:31
   7. MOO Fill Check Wed   Wed 21:31
   8. SkewLS Check         Mon/Thu/Fri 21:00 (threshold; no-op if alloc_skewls=0)
+  9. Constituents Refresh Wed 04:50 (--auto gated：全綠才寫入，異常告警不寫，ADR-0009)
 
   Tue/Wed 用 --mode all 在單一 process 內合併三策略，避免與獨立 SkewLS task
   同時跑時 clientId 衝突（IB 一個 clientId 不能同時兩條連線）。
@@ -27,6 +28,8 @@ scripts = {
     'daily_rep':   os.path.join(script_dir, 'daily_report.py'),
     'moo_check':   os.path.join(script_dir, 'moo_fill_check.py'),
     'sp_daily':    os.path.join(script_dir, 'sp500_daily_check.py'),
+    'const_ref':   os.path.normpath(os.path.join(script_dir, '..', 'data',
+                                                 'refresh_constituents.py')),
 }
 
 log_file = os.path.join(tempfile.gettempdir(), "install_all_tasks_result.txt")
@@ -85,6 +88,11 @@ $trig = New-ScheduledTaskTrigger -Weekly `
     -DaysOfWeek Monday,Thursday,Friday -At "21:00"
 $log += Install-Task "QuantCore_SkewLS_DailyCheck" '"{scripts['rebalance']}" --mode skewls --account all' $trig
 
+# Task 9: Constituents Refresh (Wed 04:50, gated --auto: 全綠才寫入, ADR-0009;
+#         04:50 避開 04:40 DailyReport, 距週三 21:00 SP500 調倉 ~16h 人工餘裕)
+$trig = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Wednesday -At "04:50"
+$log += Install-Task "QuantCore_ConstituentsRefresh_Wed" '"{scripts['const_ref']}" --auto' $trig
+
 # Verify
 $log += ""
 $log += "=" * 50
@@ -125,8 +133,12 @@ if ret > 32:
         time.sleep(1)
         if os.path.exists(log_file):
             time.sleep(1)  # 等寫入完成
-            with open(log_file, encoding='utf-8') as f:
-                print(f.read())
+            # utf-8-sig 吃掉 PowerShell Out-File 的 BOM；errors=replace 防 cp950
+            # console 印 Unicode 直接炸（結果檔本身仍是完整 UTF-8）
+            with open(log_file, encoding='utf-8-sig') as f:
+                content = f.read()
+            print(content.encode(sys.stdout.encoding or 'utf-8',
+                                 errors='replace').decode(sys.stdout.encoding or 'utf-8'))
             break
     else:
         print("(timeout waiting for result — check log manually)")

@@ -68,6 +68,8 @@ TASK_MOO_WED     = "QuantCore_MOO_Fill_Wed"
 TASK_SP_DAILY    = "QuantCore_SP500_DailyCheck"
 # S22/S23：Skew LS threshold check（M-F 21:00 TW，多數日 no-op）
 TASK_REBAL_SKEWLS = "QuantCore_SkewLS_DailyCheck"
+# ADR-0009：constituents gated 自動 refresh（週三 04:50，全綠才寫入）
+TASK_CONST_REFRESH = "QuantCore_ConstituentsRefresh_Wed"
 
 # 每個任務的 schtasks 安裝參數 (name -> schedule_args)
 # Tue/Wed 由 SR/SP500 task 用 --mode all 涵蓋（含 SkewLS check），避免 clientId 衝突
@@ -81,6 +83,7 @@ TASK_SCHTASK_ARGS = {
     TASK_MOO_WED:     "/sc weekly /d WED /st 21:31",
     TASK_SP_DAILY:    "/sc weekly /d MON,TUE,WED,THU,FRI /st 16:00",
     TASK_REBAL_SKEWLS:"/sc weekly /d MON,THU,FRI /st 21:00",
+    TASK_CONST_REFRESH:"/sc weekly /d WED /st 04:50",
 }
 
 # 每個任務對應的腳本與參數
@@ -94,6 +97,7 @@ TASK_SCRIPT_ARGS = {
     TASK_MOO_WED:     ("moo_fill_check.py",    "--account all"),
     TASK_SP_DAILY:    ("sp500_daily_check.py", "--account all"),
     TASK_REBAL_SKEWLS:("rebalance_ib.py",      "--mode skewls --account all"),
+    TASK_CONST_REFRESH:("..\\data\\refresh_constituents.py", "--auto"),
 }
 
 # 友善顯示名稱
@@ -106,6 +110,7 @@ TASK_LABELS = {
     TASK_MOO_WED:     "MOO Fill Check (Wed)",
     TASK_SP_DAILY:    "SP500 Daily Check (Stop/Gap/Dip)",
     TASK_REBAL_SKEWLS:"SkewLS Check (Mon/Thu/Fri)",
+    TASK_CONST_REFRESH:"Constituents Refresh (Wed, gated)",
 }
 
 # SR ETFs (for classifying holdings) — R1.3：單一來源在 ib_fetcher
@@ -736,6 +741,7 @@ class ControlPanel(tk.Tk):
             (TASK_MOO_TUE,      "MOO Fill (Tue)",             "Tue 21:31 TW = 09:31 ET"),
             (TASK_MOO_WED,      "MOO Fill (Wed)",             "Wed 21:31 TW = 09:31 ET"),
             (TASK_REPORT,       "Daily Report",               "Daily 04:40 TW = 16:40 ET"),
+            (TASK_CONST_REFRESH,"Constituents Refresh",       "Wed 04:50 TW (gated, ADR-0009)"),
         ]
         for tn, lbl, timing in task_defs:
             card = TaskCard(

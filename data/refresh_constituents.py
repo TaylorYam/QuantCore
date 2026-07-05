@@ -521,6 +521,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="On-demand SP500 constituents refresh")
     parser.add_argument("--dry-run", action="store_true",
                         help="Fetch + show diff but do not write")
+    parser.add_argument("--auto", action="store_true",
+                        help="Gated non-interactive mode (ADR-0009): apply only "
+                             "when every gate passes with zero soft warnings; "
+                             "any anomaly → no write + Telegram alert (exit 2)")
     args = parser.parse_args()
 
     log("=" * 72)
@@ -590,17 +594,34 @@ def main() -> None:
         log("Dry run -- no writes.")
         return
 
-    # Phase 6: confirm
-    prompt = "Apply these changes? [y/N]: "
-    if soft_warns:
-        prompt = "Soft warnings above. Apply anyway? [y/N]: "
-    try:
-        resp = input(prompt).strip().lower()
-    except EOFError:
-        resp = ""
-    if resp != "y":
-        log("Aborted by user -- no writes.")
-        return
+    # Phase 6: confirm (interactive) / soft-warn gate (auto, ADR-0009)
+    if args.auto:
+        # Gated 自動模式：hard halts 已在上面 die()；soft warning 是「該有人看」
+        # 的訊號（G3 大量變動 = vandalism 特徵、G5 rename 疑似）→ 不寫入、告警、
+        # exit 2，人工 review 後手動跑。全綠才無人值守寫入。
+        if soft_warns:
+            log("AUTO: soft warnings present -- not writing, manual review needed.",
+                level="ERROR")
+            tg_notify(
+                "<b>SP500 refresh：soft warnings，未寫入</b>\n"
+                f"Gap: {last_date.date()} → {today.date()}"
+                f"（+{len(new_tickers)} −{len(removed_tickers)}）\n"
+                f"<code>{html.escape(chr(10).join(soft_warns))}</code>\n"
+                "請人工 review：python data/refresh_constituents.py"
+            )
+            sys.exit(2)
+        log("AUTO: all gates green, zero soft warnings -- applying.")
+    else:
+        prompt = "Apply these changes? [y/N]: "
+        if soft_warns:
+            prompt = "Soft warnings above. Apply anyway? [y/N]: "
+        try:
+            resp = input(prompt).strip().lower()
+        except EOFError:
+            resp = ""
+        if resp != "y":
+            log("Aborted by user -- no writes.")
+            return
 
     # Phase 7: apply
     try:

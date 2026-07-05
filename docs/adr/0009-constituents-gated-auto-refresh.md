@@ -26,3 +26,4 @@ supersedes-in-part: 0002-sp500-constituents-on-demand-refresh.md
 - 例行週三無人值守更新，Telegram 收 diff 報告；異常週收告警並人工介入 — 人的角色從「記得跑」變成「被叫時看」。
 - 殘餘風險：**通過全部 gates 的精緻 vandalism** 會被自動寫入 — 與手動跑時人眼掃過 gate 輸出的防護差異極小，且 diff 報告使其可在下次調倉前被發現。若未來 Wikipedia schema 反覆 break 或出現 gate 穿透案例，重評（可能改 iShares IVV 源，ADR-0002 曾拒因依賴成本）。
 - ADR-0002 的 gates、staging/atomic 寫入、dense reconstruction 設計**全部不變** — 本 ADR 只讓渡「觸發方式」：on-demand-only → 排程 gated。
+- **Ticker 改名的處理（2026-07-05 補，同日 SATS→ECHO 實案）**：Wikipedia changes 表明文規定 ticker changes 不入表 → 改名永遠不會出現在事件源，G1 對每次改名都會結構性 fail（`--auto` 會照設計告警不寫）。解法 = `--rename OLD=NEW[:date]` **受監督**參數：操作員查證後把改名注入成合成事件，走同一條管線（diff、G4、G5 必 warn、G1 復核），禁與 `--auto` 併用。不是 ADR-0002 拒絕的 sidecar — 無第二資料源，寫入後 snapshot 仍是唯一 truth。全自動改名推斷（CIK/名稱比對）評估過，對年頻 1-2 次的事件過度工程化，reject。

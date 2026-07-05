@@ -53,7 +53,10 @@ STOCK_HIST_START = "2015-01-01"
 # ── Sanity gate thresholds ───────────────────────────────────────────────────
 GAP_LIMIT_DAYS    = 180     # G2
 CHANGES_SOFT_WARN = 10      # G3
-RENAME_KEYWORDS   = ["rename", "merger", "acqui", "private", "spin-off", "spinoff"]
+# "spun off" 補 2026-06-29 HONA 列的實際用語（"spun off" 不含 "spin-off"/"spinoff"）；
+# "ticker" 抓 symbol rename 列（如 2026-06-24 SATS→ECHO）
+RENAME_KEYWORDS   = ["rename", "merger", "acqui", "private", "spin-off", "spinoff",
+                     "spun off", "ticker"]
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 LOG_DIR.mkdir(exist_ok=True, parents=True)
@@ -259,8 +262,11 @@ def reconstruct_gap(
     For each trading_day in (last_date, today], apply all events with effective
     Date <= trading_day to the running constituents set.
     """
+    # 邊界含 last_date（>=）：上次 snapshot 當天才登錄的事件（例 2026-06-01 FDXF
+    # 納入列 vs 同日跑的 refresh）用 > 會被永遠跳過。事件套用是 set.add/discard
+    # （冪等），已反映在 snapshot 裡的同日事件重放 = no-op，安全。
     gap_events = changes_df[
-        (changes_df["Date"] > last_date) & (changes_df["Date"] <= today)
+        (changes_df["Date"] >= last_date) & (changes_df["Date"] <= today)
     ].sort_values("Date").reset_index(drop=True)
 
     gap_tdays = trading_days[(trading_days > last_date) & (trading_days <= today)]
@@ -341,6 +347,42 @@ def gate_g5_rename_detect(gap_events: pd.DataFrame) -> list[str]:
     if warnings:
         return ["G5 rename / M&A keyword WARN -- verify these are real add/removes, not symbol renames:"] + warnings
     return []
+
+
+# ── Operator-supervised ticker renames (--rename) ────────────────────────────
+# Wikipedia 的 changes 表明文規定「ticker changes are not changes to the index
+# and should not be in this table」→ 改名永遠不會出現在事件源，G1 會結構性
+# fail（例 2026-06-24 SATS→ECHO）。--rename 讓操作員把「已人工查證的改名」注入
+# 成合成事件，走完全相同的管線（diff 顯示、G4 存在性、G5 keyword、G1 復核）。
+# 不是 sidecar：不建第二資料源，寫入後 snapshot 仍是唯一 source of truth。
+# 監督性質 → 禁止與 --auto 併用。
+
+def parse_rename_args(rename_args: "list[str] | None") -> list[tuple[str, str, "pd.Timestamp | None"]]:
+    """'OLD=NEW[:YYYY-MM-DD]' → (old, new, effective_date|None)。壞格式 raise ValueError。"""
+    out: list[tuple[str, str, "pd.Timestamp | None"]] = []
+    for spec in rename_args or []:
+        body, _, datepart = spec.partition(":")
+        old, sep, new = body.partition("=")
+        old, new = old.strip().upper(), new.strip().upper()
+        if not sep or not old or not new or old == new:
+            raise ValueError(f"--rename expects OLD=NEW[:YYYY-MM-DD], got: {spec!r}")
+        when = pd.Timestamp(datepart) if datepart else None
+        out.append((old, new, when))
+    return out
+
+
+def inject_rename_events(changes_df: pd.DataFrame,
+                         renames: list[tuple[str, str, "pd.Timestamp | None"]],
+                         default_date: pd.Timestamp) -> pd.DataFrame:
+    """把 --rename 追加成合成 add/remove 事件列（Reason 含 'ticker rename' →
+    G5 必定 soft-warn，逼出人工確認）。"""
+    rows = [{"Date": (when if when is not None else default_date),
+             "Added_Ticker": new, "Removed_Ticker": old,
+             "Reason": f"Operator-supervised ticker rename {old}->{new} (--rename)."}
+            for old, new, when in renames]
+    if not rows:
+        return changes_df
+    return pd.concat([changes_df, pd.DataFrame(rows)], ignore_index=True)
 
 
 # ── Diff display ─────────────────────────────────────────────────────────────
@@ -525,7 +567,19 @@ def main() -> None:
                         help="Gated non-interactive mode (ADR-0009): apply only "
                              "when every gate passes with zero soft warnings; "
                              "any anomaly → no write + Telegram alert (exit 2)")
+    parser.add_argument("--rename", action="append", metavar="OLD=NEW[:YYYY-MM-DD]",
+                        help="Operator-supervised ticker rename (repeatable). "
+                             "Injected as a synthetic event through the normal "
+                             "pipeline; incompatible with --auto (supervised = "
+                             "a human confirms the diff)")
     args = parser.parse_args()
+
+    if args.auto and args.rename:
+        die("--rename is supervised-only -- do not combine with --auto")
+    try:
+        renames = parse_rename_args(args.rename)
+    except ValueError as e:
+        die(str(e))
 
     log("=" * 72)
     log(f"  SP500 Constituents Refresh  {date.today()}")
@@ -546,6 +600,18 @@ def main() -> None:
     if today <= last_date:
         log("Already up to date -- no trading days in gap.")
         return
+
+    # Phase 1.5: operator-supervised renames → 合成事件（先驗證再注入）
+    if renames:
+        for old, new, when in renames:
+            if new not in current_today:
+                die(f"--rename {old}={new}: {new} not in Wikipedia current membership")
+            if old not in last_constituents:
+                die(f"--rename {old}={new}: {old} not in last snapshot ({last_date.date()})")
+        changes_df = inject_rename_events(changes_df, renames, default_date=today)
+        for old, new, when in renames:
+            log(f"  --rename injected: {old} -> {new}  "
+                f"(effective {when.date() if when is not None else today.date()})")
 
     # Phase 2: G2 (must check before reconstruction)
     hard_halts: list[str] = []

@@ -461,6 +461,8 @@ class ControlPanel(tk.Tk):
         self.after(1500, self._schedule_rosa_poll)
         # TAYLOR / YVONNE 週二/三 20:05 台北驗證手動登入（一次性、各發一封）
         self.after(2000, self._schedule_ty_check)
+        # 每平日（NYSE 交易日）07:00 台北自動 Check Now — 刷新所有 Gateway 連線
+        self.after(2200, self._schedule_morning_check)
         # System tray icon — 點 X 不殺 app，縮到 tray 繼續跑監控
         self.after(2500, self._start_tray)
         # Panel 視窗 X = withdraw（藏起來但 Tk loop 活著；真退出走 tray>離開）
@@ -499,6 +501,10 @@ class ControlPanel(tk.Tk):
             pass
         try:
             self._cancel_ty_check()
+        except Exception:
+            pass
+        try:
+            self._cancel_morning_check()
         except Exception:
             pass
         try:
@@ -1169,6 +1175,74 @@ class ControlPanel(tk.Tk):
             except Exception:
                 pass
             self._ty_check_after_id = None
+
+    # ── 每平日（NYSE 交易日）07:00 台北自動 Check Now ──────────
+    #
+    # Pure logic in morning_check.py — this section is the Tk plumbing that
+    # schedules the 07:00 tick, fires the *same* refresh as the Check Now
+    # button on the main thread, then waits off-thread for the re-probe to
+    # settle and pushes a Telegram alert ONLY when an account is offline
+    # (all-green stays silent so the channel isn't spammed every weekday).
+
+    def _schedule_morning_check(self):
+        """Schedule the next NYSE-trading-day 07:00 Taipei gateway check."""
+        from zoneinfo import ZoneInfo
+        self._morning_check_after_id = None
+        self._arm_next_morning_check(datetime.now(ZoneInfo("Asia/Taipei")))
+
+    def _arm_next_morning_check(self, now_taipei):
+        from morning_check import next_morning_check_time
+        nxt = next_morning_check_time(now_taipei)
+        delay_ms = max(1, int((nxt - now_taipei).total_seconds() * 1000))
+        self._morning_check_after_id = self.after(delay_ms, self._morning_check_tick)
+        self._log(f"[GW] Morning check: next at {nxt.strftime('%Y-%m-%d %H:%M %Z')}")
+
+    def _morning_check_tick(self):
+        """Tk after() callback. Fires the Check Now refresh on the main
+        thread (UI-safe), spawns a daemon thread to wait for connects to
+        settle + alert if offline, then schedules the next trading-day tick."""
+        from zoneinfo import ZoneInfo
+        self._log("[GW] Morning check 07:00 → re-probing all Gateways")
+        self._refresh_gateway_status()   # identical to the Check Now button
+        threading.Thread(target=self._morning_check_followup, daemon=True).start()
+        self._arm_next_morning_check(datetime.now(ZoneInfo("Asia/Taipei")))
+
+    def _morning_check_followup(self):
+        """Background-thread body: wait for the re-probe to settle, collect
+        any accounts still offline, and push one Telegram alert if so.
+
+        Wrapped in try/except so a panel close during the settle wait doesn't
+        bubble a Tk-already-destroyed error up the daemon."""
+        from morning_check import MORNING_SETTLE_SEC, format_morning_check_message
+
+        mon = getattr(self, "_gw_monitor", None)
+        if mon is None:
+            return  # GatewayMonitor not yet started — skip this cycle
+        time.sleep(MORNING_SETTLE_SEC)
+
+        offline = [a["name"] for a in self._accounts_meta
+                   if not mon.is_online(a["name"])]
+        msg = format_morning_check_message(offline)
+        try:
+            if msg is None:
+                self.after(0, lambda: self._log("[GW] Morning check → all online"))
+            else:
+                self.after(0, lambda m=msg, n=offline: (
+                    self._log(f"[GW] Morning check → ALERT "
+                              f"({len(n)} offline: {', '.join(n)})"),
+                    self._tg_notify(m),
+                ))
+        except Exception:
+            pass  # panel destroyed mid-check — drop the result silently
+
+    def _cancel_morning_check(self):
+        after_id = getattr(self, "_morning_check_after_id", None)
+        if after_id is not None:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+            self._morning_check_after_id = None
 
     # ── Gateway Status UI 狀態更新 ─────────────────────────
 

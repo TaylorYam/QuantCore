@@ -38,6 +38,10 @@ _Avoid_: Weight, Capital share, Position size
 帳戶的總曝險倍數，derived value，永遠 = `alloc_sr + alloc_sp500 + alloc_skewls`。UI 顯示用，**非可獨立設定的欄位**。注意：因為 [[Inverse Proxy]] 的 2x 反向 ETF 用一半資金即達同樣風險曝險，IB 帳戶實際 margin 占用會略低於此值。
 _Avoid_: Gearing, Total exposure (作 derived 顯示時可以；作獨立欄位時不行)
 
+**Combine**:
+把多個 [[Strategy]] 的 target 在單一 [[Account]] 匯總成 per-ticker 目標股數的運算：每個 Strategy 先各自以 NAV × [[Allocation]] × weight ÷ price 取整成股數，再對同 ticker 加總（live 實作 = `rebalance_ib.combine_targets`）。per-strategy 取整是 load-bearing，不可先合權重再取整（[ADR-0008](docs/adr/0008-live-combine-no-weight-level-extraction-rejected.md)）。與 backtest 的 return-level combine（`backtest/combo.py`）是不同層的運算，刻意不共用。
+_Avoid_: Merge, Netting（sector-level netting 是被否決的另一提案，見 [ADR-0006](docs/adr/0006-sector-level-netting-rejected.md)）
+
 **Inverse Proxy**:
 [[Skew LS]] 把空頭部位轉成反向 ETF 多單的轉換（9 檔 ProShares 2x、SEF/REK 1x）。Long position，IB 端走既有 BUY/SELL 路徑。
 _Avoid_: Hedge, Synthetic short
@@ -74,7 +78,7 @@ _Avoid_: Rounding error（不帶方向性，掩蓋 floor 的系統性偏低）
 - 每個 **Strategy** 都有自己的 **Constituents**（時間函數）與 **Universe**（歷史聯集）
 - **SP500** 的 **Constituents** 隨 S&P index rebalance 變動；**SR** / **Skew LS** 的 **Constituents** 固定
 - **Skew LS** 的 short signal → 多數透過 **Inverse Proxy** 轉長單；XLC 例外走 **Direct Short**
-- 多個 **Strategy** 在同個 **Account** 對同檔 ticker 的 target 直接加總（IB net 多空）
+- 多個 **Strategy** 在同個 **Account** 的 target 由 **Combine** 匯總成 per-ticker 目標股數（per-strategy 取整後加總；IB net 多空）
 - **Skew LS** 的 threshold rebal 需要 per-account state file（`skewls_state_{account}.json`）紀錄上次該策略自己的 target — 與 IB 真實部位無關（避免被其他 Strategy 的部位污染）
 - **日度風控** 的 **前收 (Reference Close)** = 最近已收盤 session；**執行盤 (Execution Session)** = 即將到來、尚未收盤的下一盤。回測中兩者是相鄰兩個歷史日；live 中 Execution Session 尚未存在於資料，故 Reference Close 必須是資料的最後一筆已收列、而非倒數第二筆
 
@@ -90,9 +94,9 @@ _Avoid_: Rounding error（不帶方向性，掩蓋 floor 的系統性偏低）
 - 「leverage」曾被當成「可獨立設定的欄位」考慮過（grilling Q1）— 解決：永遠是 derived，調 leverage 必須透過調 alloc
 - 「alloc_skewls = 0.3」是 factor exposure 還是 capital usage（grilling Q3）— 解決為 factor exposure，見 [ADR-0001](docs/adr/0001-alloc-skew-factor-exposure.md)
 - 「SP500 [[Constituents]] 怎麼保持最新」原本無自動化機制，靜態 Excel `_2015_2026.xlsx`（grilling 2026-06-01）— 解決為 on-demand Wikipedia fetch + dense reconstruction，見 [ADR-0002](docs/adr/0002-sp500-constituents-on-demand-refresh.md)
-- 「同 sector SR + SkewLS 是否要 net？例如 SR LONG XLK 同時 SkewLS LONG REW」（2026-06-01）— 7 年 backtest 顯示 netted 全 alloc 全年敗（-28~-52 bps/yr，leverage drift alpha 大於 friction 省），rejected，維持 pure-function combine，見 [ADR-0003](docs/adr/0003-sector-level-netting-rejected.md)
-- 「SkewLS 部位 < 3% 或 5% NAV 是否該 skip 不建？省 \$1 min commission」（2026-06-01）— 7 年 backtest sweep 顯示 Yvonne 實況 alloc 下 threshold ≥ 1% 全部負分（3% Sharpe -0.060、5% Sharpe -0.099），friction 省 13 bps/yr 被 alpha loss 60 bps/yr 完全淹沒（小部位是 diversification 一環不是 noise），rejected，見 [ADR-0004](docs/adr/0004-min-position-filter-rejected.md)
-- 「live [[Combine]] 是否該抽 weight-level pure function 與 backtest 共用」（架構 review 2026-06-05）— rejected，per-strategy 整數 rounding 是 load-bearing（`int(a)+int(b) ≠ int(a+b)`，SR/SkewLS sector ETF 常重疊），且 `combine_targets` 已測透、backtest combine 在 return level 本就不同運算，見 [ADR-0005](docs/adr/0005-live-combine-no-weight-level-extraction-rejected.md)
+- 「同 sector SR + SkewLS 是否要 net？例如 SR LONG XLK 同時 SkewLS LONG REW」（2026-06-01）— 7 年 backtest 顯示 netted 全 alloc 全年敗（-28~-52 bps/yr，leverage drift alpha 大於 friction 省），rejected，維持 pure-function combine，見 [ADR-0006](docs/adr/0006-sector-level-netting-rejected.md)
+- 「SkewLS 部位 < 3% 或 5% NAV 是否該 skip 不建？省 \$1 min commission」（2026-06-01）— 7 年 backtest sweep 顯示 Yvonne 實況 alloc 下 threshold ≥ 1% 全部負分（3% Sharpe -0.060、5% Sharpe -0.099），friction 省 13 bps/yr 被 alpha loss 60 bps/yr 完全淹沒（小部位是 diversification 一環不是 noise），rejected，見 [ADR-0007](docs/adr/0007-min-position-filter-rejected.md)
+- 「live [[Combine]] 是否該抽 weight-level pure function 與 backtest 共用」（架構 review 2026-06-05）— rejected，per-strategy 整數 rounding 是 load-bearing（`int(a)+int(b) ≠ int(a+b)`，SR/SkewLS sector ETF 常重疊），且 `combine_targets` 已測透、backtest combine 在 return level 本就不同運算，見 [ADR-0008](docs/adr/0008-live-combine-no-weight-level-extraction-rejected.md)
 - [[日度風控 (Daily Risk Check)]] 把 [[執行盤 (Execution Session)]] 誤當成「資料最後一列」、[[前收 (Reference Close)]] 誤抓成倒數第二列，導致週五破停損線、週一卻不出場（grilling 2026-06-07）— 解決為 Reference Close = 最近已收盤 session（資料最後一列），含 staleness halt-guard 與報告同源標價，見 [ADR-0003](docs/adr/0003-live-daily-risk-timing-and-marking.md)
 - 接續上點：8 年回測證實 20% 停損零貢獻、50% 跳空從未觸發，且 live 週二 `--mode all` 會用舊訊號把停損掉的股票買回（whipsaw，CIEN 2026-06）— 解決為**整個移除** SP500 固定停損與跳空出場，個股出場只由週三 rotation 負責，見 [ADR-0004](docs/adr/0004-remove-sp500-fixed-stop-and-gap-exit.md)
 - 「EMA50 出場同輪被高排名再進場抵消（SELL 又 BUY 回，CIEN 2026-06-10）是 bug 還是設計？」— WF（N=8+N=7）否決進場 EMA 過濾後解決為**刻意行為**：rank 優先於 EMA，`ENTRY_EMA_FILTER=False`，見 [ADR-0005](docs/adr/0005-rank-priority-no-entry-ema-filter.md)

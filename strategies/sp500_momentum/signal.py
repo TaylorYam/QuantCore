@@ -25,6 +25,7 @@ SP500 Momentum — live 訊號入口（get_latest_weights_live）
   4. REBALANCE_WEEKS gate：只有 rotation week 才執行 rotation
   5. rotation 流程：保留 top 20 內且未跌破 EMA50 的持股，補滿 TARGET_HOLDINGS
   6. ATR 反比例權重
+（5-6 的決策唯一實作在 rotation.py — live 與 backtest 同一顆腦，本函式是 caller）
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ import logging
 import pandas as pd
 
 from . import config as sp_cfg
+from . import rotation
 from . import utils
 from .selection import SelectionEngine
 from .market_regime import MarketRegime
@@ -194,60 +196,42 @@ def get_latest_weights_live(
             return {}, signal_date, state
         metrics = [selector.calculate_metrics(t, signal_date, sp_cfg.LOOKBACK)
                    for t in kept]
-        metrics = [m for m in metrics if m and m.get("atr_pct", 0) > 0]
-        if not metrics:
+        wgt = rotation.atr_weights([m for m in metrics if m])
+        if not wgt:
             return {}, signal_date, state
-        inv_sum = sum(1 / m["atr_pct"] for m in metrics)
-        wgt = {m["ticker"]: (1 / m["atr_pct"]) / inv_sum for m in metrics}
         return wgt, signal_date, state
 
-    # ── Rotation week：完整 rotation 流程 ───────────────────────────────
+    # ── Rotation week：完整 rotation 流程（決策一顆腦 = rotation.py）────
     ranked = selector.scan_market(signal_date, sp_cfg.LOOKBACK)
-    top_tickers = [x["ticker"] for x in ranked][:sp_cfg.SELL_RANK_THRESHOLD]
 
-    # 過熱過濾（買入候選用）
-    ranked_filtered = [x for x in ranked
-                       if x.get("adj_slope", 999) < sp_cfg.MAX_ADJ_SLOPE]
-    entry_tickers = [x["ticker"] for x in ranked_filtered]
-
-    log.info(f"  Top {sp_cfg.SELL_RANK_THRESHOLD} tickers: {top_tickers[:10]}...")
+    log.info(f"  Top {sp_cfg.SELL_RANK_THRESHOLD} tickers: "
+             f"{[x['ticker'] for x in ranked][:sp_cfg.SELL_RANK_THRESHOLD][:10]}...")
 
     # ── Step 1: 判斷現有持股保留 or 賣出 ─────────────────────────────────
     # 排除 dip 標的（牛市確認時已 reset，但留個保險）
     non_dip_holdings = [t for t in current_holdings
                         if t != sp_cfg.DIP_BUY_TICKER]
+    sell_reasons = dict(rotation.rotation_sells(non_dip_holdings, ranked))
     kept = []
     for ticker in non_dip_holdings:
-        reason = None
-        if ticker not in top_tickers:
-            reason = f"排名跌出前{sp_cfg.SELL_RANK_THRESHOLD}名"
-        else:
-            m = next((x for x in ranked if x["ticker"] == ticker), None)
-            if m and m["price"] < m["exit_ema"]:
-                reason = f"跌破EMA{sp_cfg.EXIT_EMA}"
-
-        if reason:
-            log.info(f"  SELL {ticker}: {reason}")
+        if ticker in sell_reasons:
+            log.info(f"  SELL {ticker}: {sell_reasons[ticker]}")
         else:
             log.info(f"  KEEP {ticker}: still in top {sp_cfg.SELL_RANK_THRESHOLD}")
             kept.append(ticker)
 
     # ── Step 2: 補進新股（如果持股不足 TARGET_HOLDINGS）───────────────────
-    # ENTRY_EMA_FILTER（預設 False，ADR-0005）：WF 否決「買入候選排除跌破
-    # EXIT_EMA 者」— rank 優先，高排名股同輪 EMA 賣出後買回（=續抱）是刻意行為。
-    buy_candidates = []
-    needed = sp_cfg.TARGET_HOLDINGS - len(kept)
-    if needed > 0:
-        if getattr(sp_cfg, "ENTRY_EMA_FILTER", False):
-            pool = utils.filter_entry_eligible(ranked_filtered, exclude=set(kept))
-        else:
-            pool = [x for x in ranked_filtered if x["ticker"] not in kept]
-        for m in pool[:needed]:
-            ticker = m["ticker"]
-            if m.get("max_gap", 0) <= sp_cfg.SKIP_MAX_GAP_PCT:
-                log.info(f"  BUY  {ticker}: rank={entry_tickers.index(ticker)+1}"
-                         f"  adj_slope={m['adj_slope']:.3f}")
-                buy_candidates.append(ticker)
+    # ENTRY_EMA_FILTER / 過熱過濾語意見 rotation.rotation_buys（ADR-0005）。
+    buy_candidates = rotation.rotation_buys(kept, ranked)
+    if buy_candidates:
+        # log-only：BUY 行的 rank 沿用歷史語意 = 過熱過濾後名單的 1-based 位置
+        entry_tickers = [x["ticker"] for x in ranked
+                         if sp_cfg.MAX_ADJ_SLOPE is None
+                         or x.get("adj_slope", 999) < sp_cfg.MAX_ADJ_SLOPE]
+        by_ticker = {x["ticker"]: x for x in ranked}
+        for ticker in buy_candidates:
+            log.info(f"  BUY  {ticker}: rank={entry_tickers.index(ticker)+1}"
+                     f"  adj_slope={by_ticker[ticker]['adj_slope']:.3f}")
 
     # ── Step 3: ATR 反比例權重 ───────────────────────────────────────────
     final_tickers = kept + buy_candidates
@@ -259,15 +243,13 @@ def get_latest_weights_live(
     for t in final_tickers:
         m = next((x for x in ranked if x["ticker"] == t), None) or \
             selector.calculate_metrics(t, signal_date, sp_cfg.LOOKBACK)
-        if m and m.get("atr_pct", 0) > 0:
+        if m:
             metrics.append(m)
 
-    if not metrics:
+    wgt = rotation.atr_weights(metrics)
+    if not wgt:
         log.info("  SP500: no valid metrics for weight calculation")
         return {}, signal_date, state
-
-    inv_sum = sum(1 / m["atr_pct"] for m in metrics)
-    wgt = {m["ticker"]: (1 / m["atr_pct"]) / inv_sum for m in metrics}
 
     log.info(f"  SP500 target weights (ATR inverse):")
     for sym, w in sorted(wgt.items(), key=lambda x: -x[1]):

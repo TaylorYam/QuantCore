@@ -59,8 +59,12 @@ _Avoid_: Today, Trade day（"today" 在 live 與 backtest 語意不同，是 off
 _Avoid_: 前一日, Previous bar
 
 **日度風控 (Daily Risk Check)**:
-[[SP500]] 每個交易日盤前跑一次的檢查。原含停損 / 跳空出場 / 熊市 dip-buy，但停損與跳空已移除（[ADR-0004](docs/adr/0004-remove-sp500-fixed-stop-and-gap-exit.md)：回測零貢獻 + 製造 whipsaw），**現在只剩熊市 dip-buy 觸發**。個股出場改由週三 rotation（EMA50/排名）負責。觸發即在 [[執行盤 (Execution Session)]] 送 LMT（outsideRTH）。
+[[SP500]] 每個交易日盤前跑一次的檢查。原含停損 / 跳空出場 / 熊市 dip-buy，但停損與跳空已移除（[ADR-0004](docs/adr/0004-remove-sp500-fixed-stop-and-gap-exit.md)：回測零貢獻 + 製造 whipsaw），**現在只剩熊市 dip-buy 觸發**。個股出場改由週三 [[Rotation]] 負責。觸發即在 [[執行盤 (Execution Session)]] 送 LMT（outsideRTH）。
 _Avoid_: Daily check, Stop loss job
+
+**Rotation**:
+[[SP500]] 每週三的持股輪動決策：持股「排名跌出前 20（SELL_RANK_THRESHOLD）」或「跌破 EMA50（EXIT_EMA）」者賣出，缺額依動能排名補足（過熱 adj_slope ≥ MAX_ADJ_SLOPE 不佔名額），以 ATR 反比配權。rank 優先於 EMA — 同輪賣出又買回 = 續抱是刻意行為（[ADR-0005](docs/adr/0005-rank-priority-no-entry-ema-filter.md)）；個股出場只由 Rotation 負責（[ADR-0004](docs/adr/0004-remove-sp500-fixed-stop-and-gap-exit.md)）。唯一實作 `strategies/sp500_momentum/rotation.py`；live（signal.py）、backtest（backtester.py 與 frac-sizing 研究）皆為 caller，execution 關切（成交價、資金、取整、kept 的執行回饋）留在 caller。
+_Avoid_: Rebalance（帳戶層 [[Combine]]+下單那一步）、選股（上游 ranking 是 SelectionEngine 的事）
 
 **理論部位 (Target Notional)**:
 單一 [[Account]] 對單一標的「取整前」的目標金額 = NAV × [[Allocation]] × Strategy weight。與 rebalance log 裡的 `target=Xsh`（取整**後**股數）是不同的東西——混用兩者是「1 股超出理論部位」這類誤判的根源。

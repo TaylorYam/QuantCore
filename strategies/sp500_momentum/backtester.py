@@ -11,6 +11,7 @@ import numpy as np
 from . import config
 from .selection    import SelectionEngine
 from .market_regime import MarketRegime
+from . import rotation
 from . import utils
 
 
@@ -196,55 +197,47 @@ class SP500Backtester:
     # ── 選股輔助 ──────────────────────────────────────────────────────────────
 
     def _get_rotation_sells(self, date, signal_date):
-        ranked        = self.selector.scan_market(signal_date, config.LOOKBACK)
-        top_tickers   = [x["ticker"] for x in ranked][:config.SELL_RANK_THRESHOLD]
-        current       = [t for t in self.holdings
-                         if not self._is_dip(t) and t != "SPY"]
+        """輪動賣出：決策 = rotation.rotation_sells；此處只補 execution 資訊
+        （成交價、股數；price<=0 賣不掉者本輪視同續抱 — 模擬層現實）。"""
+        ranked  = self.selector.scan_market(signal_date, config.LOOKBACK)
+        current = [t for t in self.holdings
+                   if not self._is_dip(t) and t != "SPY"]
         sells = []
-        for ticker in current:
-            reason = None
-            if ticker not in top_tickers:
-                reason = f"排名跌出前{config.SELL_RANK_THRESHOLD}名"
-            else:
-                m = next((x for x in ranked if x["ticker"] == ticker), None)
-                if m and m["price"] < m["exit_ema"]:
-                    reason = f"跌破EMA{config.EXIT_EMA}"
-            if reason:
-                price = self._get_price(ticker, date, use_open=True)
-                if price > 0:
-                    sells.append((ticker, self.holdings[ticker], price, reason))
+        for ticker, reason in rotation.rotation_sells(current, ranked):
+            price = self._get_price(ticker, date, use_open=True)
+            if price > 0:
+                sells.append((ticker, self.holdings[ticker], price, reason))
         return sells
 
     def _get_buy_candidates(self, date, signal_date, rotation_sells):
+        """補位買入 + ATR 權重：決策 = rotation.rotation_buys / atr_weights。
+
+        kept 從 execution 後持倉推得（賣不掉者視同保留、佔補位名額）—
+        與 live 的純決策 kept 有意不同，是模擬層的執行回饋。
+        metrics 沿歷史語意先查「過熱濾後」的 ranked：被濾掉的過熱 kept
+        持股 fallback 到 execution-date calculate_metrics（live 查的是
+        未濾 ranked、用 signal-date 值 — 已知的 caller 間資料存取差異，
+        rotation core 不介入 metrics 組裝）。"""
         ranked = self.selector.scan_market(signal_date, config.LOOKBACK)
-
-        # 過熱過濾
-        if config.MAX_ADJ_SLOPE is not None:
-            ranked = [x for x in ranked if x.get("adj_slope", 999) < config.MAX_ADJ_SLOPE]
-
         kept = [t for t in self.holdings
                 if not self._is_dip(t) and t not in rotation_sells]
-        needed = config.TARGET_HOLDINGS - len(kept)
 
-        # ENTRY_EMA_FILTER（預設 False，ADR-0005）：WF 否決進場 EMA 過濾 —
-        # rank 優先；高排名股同輪 EMA 賣出後買回（=續抱）是刻意行為。
-        # 與 signals.py 讀同一 flag，live == backtest。
         buy_candidates = []
-        if needed > 0:
-            if getattr(config, "ENTRY_EMA_FILTER", False):
-                eligible = utils.filter_entry_eligible(ranked, exclude=set(kept))
-            else:
-                eligible = [x for x in ranked if x.get("ticker") not in kept]
-            for x in eligible[:needed]:
-                ticker = x["ticker"]
-                price = self._get_price(ticker, date, use_open=True)
-                if price > 0:
-                    buy_candidates.append((ticker, price))
+        for ticker in rotation.rotation_buys(kept, ranked):
+            price = self._get_price(ticker, date, use_open=True)
+            if price > 0:
+                buy_candidates.append((ticker, price))
+
+        if config.MAX_ADJ_SLOPE is not None:
+            lookup = [x for x in ranked
+                      if x.get("adj_slope", 999) < config.MAX_ADJ_SLOPE]
+        else:
+            lookup = ranked
 
         all_tickers = kept + [t for t, _ in buy_candidates]
         metrics = []
         for t in all_tickers:
-            m = next((x for x in ranked if x["ticker"] == t), None) or \
+            m = next((x for x in lookup if x["ticker"] == t), None) or \
                 self.selector.calculate_metrics(t, date, config.LOOKBACK)
             if m and m.get("atr_pct", 0) > 0:
                 metrics.append(m)
@@ -319,11 +312,9 @@ class SP500Backtester:
     # ── ATR 反比例權重 ────────────────────────────────────────────────────────
 
     def _calc_atr_weights(self, candidates: list[dict]) -> dict:
-        valid = [c for c in candidates if c.get("atr_pct", 0) > 0]
-        if not valid:
-            return {}
-        inv_sum = sum(1 / c["atr_pct"] for c in valid)
-        return {c["ticker"]: (1 / c["atr_pct"]) / inv_sum for c in valid}
+        """委派 rotation.atr_weights；method 殼保留（frac_sizing_study
+        的 subclass 直接呼叫此名）。"""
+        return rotation.atr_weights(candidates)
 
     # ── 熊市 / SSO 邏輯 ───────────────────────────────────────────────────────
 

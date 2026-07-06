@@ -70,6 +70,7 @@ from ib_fetcher import (
     get_positions_detail,
     get_prices,
     SR_ETFS,  # R1.3：SR ETF 常數單一來源
+    SKEWLS_INVERSE_TICKERS,
 )
 
 
@@ -488,11 +489,16 @@ def main(mode: str, ctx: AccountCtx):
         _sp500_universe = get_sp500_universe()
 
         # 分辨當前持股：SR ETFs vs SP500 個股 vs 其他（手動操作，排除在外）
+        # SkewLS inverse ETF 是策略持倉，不得歸入「其他」— 否則持有後即凍結
+        # （不加碼/不減碼/不出場；2026-06 三次 threshold 觸發皆單腿執行）。
+        # 與 sync_position 的分類同義。
         current_sr_holdings = [sym for sym in current_pos if sym in SR_ETFS]
         current_sp500_holdings = [sym for sym in current_pos
                                   if sym not in SR_ETFS and sym in _sp500_universe]
         current_other_holdings = [sym for sym in current_pos
-                                  if sym not in SR_ETFS and sym not in _sp500_universe]
+                                  if sym not in SR_ETFS
+                                  and sym not in SKEWLS_INVERSE_TICKERS
+                                  and sym not in _sp500_universe]
         log.info(f"  SR holdings:    {current_sr_holdings or '(none)'}")
         log.info(f"  SP500 holdings: {current_sp500_holdings or '(none)'}")
         if current_other_holdings:

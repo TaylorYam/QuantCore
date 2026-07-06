@@ -176,6 +176,73 @@ def test_report_submitted_line():
     assert "🔴" not in text
 
 
+# ── 同策略合計偏離升級（🟠 aggregate）────────────────────────────────
+
+def _yvonne_residual_rows():
+    """2026-07-06 Yvonne 實況：凍結遺留 — 單檔皆 < 3%、SkewLS 合計 ~9% NAV。"""
+    nav = 108_462
+    targets = {
+        "REW": {"shares": 263, "strategy": "SkewLS"},
+        "ERY": {"shares": 171, "strategy": "SkewLS"},
+        "REK": {"shares": 91, "strategy": "SkewLS"},
+        "SDP": {"shares": 127, "strategy": "SkewLS"},
+        "SMN": {"shares": 44, "strategy": "SkewLS"},
+        "XLC": {"shares": 24, "strategy": "SkewLS"},
+        "XLI": {"shares": 51, "strategy": "SR"},
+    }
+    current = {"REW": 85, "ERY": 316, "REK": 209, "SDP": 63, "SMN": 66,
+               "XLC": 2, "XLI": 62}
+    prices = {"REW": 12.6, "ERY": 13.2, "REK": 15.6, "SDP": 22.0,
+              "SMN": 20.1, "XLC": 108.0, "XLI": 190.0}
+    return _rows(targets, current, (), prices, nav=nav)
+
+
+def test_aggregate_drift_escalates_to_orange():
+    """凍結遺留的形狀：單檔皆綠、同策略合計 ≥6% → 🟠 必須現形。"""
+    from rebalance_plan import drift_report_lines
+    rows = _yvonne_residual_rows()
+    assert all(r.category == "within_threshold" for r in rows), \
+        "前提：每一檔都在門檻內（隱形偏離場景）"
+    text = "\n".join(drift_report_lines(rows))
+    assert "🟠 SkewLS 合計偏離" in text
+    assert "排程不會自動修" in text and "Sync Pos" in text
+    assert "Σ 偏離 by 策略: SkewLS" in text
+    assert "無異常" not in text, "有 🟠 時不得說無異常"
+
+
+def test_aggregate_below_warn_shows_sigma_only():
+    from rebalance_plan import drift_report_lines
+    rows = _rows(
+        targets={"BBB": {"shares": 60, "strategy": "SR"}},
+        current={"BBB": 50},
+        prices={"BBB": 100.0},
+    )   # SR 合計 1% < 6%
+    text = "\n".join(drift_report_lines(rows))
+    assert "🟠" not in text
+    assert "Σ 偏離 by 策略: SR 1.0%" in text
+    assert "無異常" in text
+
+
+def test_aggregate_excludes_submitted():
+    """已送單（開盤即修）不計入 standing 合計 — 送單當晚不得誤報 🟠。"""
+    from rebalance_plan import strategy_drift_totals, verify_execution
+    rows = verify_execution(
+        [_actionable_row(sym=s, delta=178) for s in ("REW", "ERY", "REK")],
+        [{"symbol": s, "action": "BUY", "qty": 178}
+         for s in ("REW", "ERY", "REK")])
+    assert strategy_drift_totals(rows) == {}
+
+
+def test_strategy_totals_grouping():
+    from rebalance_plan import strategy_drift_totals
+    rows = _yvonne_residual_rows()
+    totals = strategy_drift_totals(rows)
+    assert set(totals) == {"SkewLS", "SR"}
+    assert totals["SkewLS"] == pytest.approx(
+        sum(r.drift_pct for r in rows if r.strategy == "SkewLS"))
+    assert totals["SkewLS"] >= 0.06 > totals["SR"]
+
+
 # ── 6/5 凍結事故重演（end-to-end regression）─────────────────────────
 
 def test_freeze_incident_would_have_alarmed_same_night():

@@ -442,6 +442,27 @@ def verify_execution(rows: list[DeltaRow],
     return out
 
 
+# 同策略合計偏離的升級門檻 = per-ticker REBALANCE_THRESHOLD 的 2 倍。
+# 抓「單檔皆 < 3% 但同策略多檔同向累積」的隱形偏離（凍結遺留的形狀）—
+# 這種偏離 scheduled rebalance 永遠不會自動修（每檔都過不了門檻）。
+DRIFT_AGG_WARN = 0.06
+
+
+def strategy_drift_totals(rows: list[DeltaRow]) -> dict[str, float]:
+    """各策略 tag 的合計偏離（%NAV）。
+
+    計 within_threshold / actionable / excluded_conflict；
+    submitted 排除（已送單、開盤即修，非 standing 偏離）。
+    tag 依 row.strategy 原字串分組（'SR+SkewLS' 自成一組）。
+    """
+    totals: dict[str, float] = {}
+    for r in rows:
+        if r.category in ("within_threshold", "actionable",
+                          "excluded_conflict"):
+            totals[r.strategy] = totals.get(r.strategy, 0.0) + r.drift_pct
+    return totals
+
+
 def drift_report_lines(rows: list[DeltaRow]) -> list[str]:
     """對帳報表渲染（TG / panel log 共用；純文字，一行一項）。"""
     red       = [r for r in rows if r.category in ("actionable",
@@ -460,6 +481,20 @@ def drift_report_lines(rows: list[DeltaRow]) -> list[str]:
             lines.append(f"  {r.symbol} [{r.strategy}]: 應 {tgt} 實 {r.current}"
                          f"（差 {r.delta:+d} 股, {r.drift_pct*100:.1f}% NAV）"
                          f"— {r.reason}")
+
+    # 同策略累積偏離升級（單檔皆綠也要現形）
+    totals = strategy_drift_totals(rows)
+    agg_warn = {s: t for s, t in totals.items() if t >= DRIFT_AGG_WARN}
+    for strat, tot in sorted(agg_warn.items(), key=lambda x: -x[1]):
+        grp = [r for r in rows
+               if r.strategy == strat
+               and r.category in ("within_threshold", "actionable",
+                                  "excluded_conflict")]
+        note = ("、單檔皆低於門檻 — 排程不會自動修，請 Sync Pos 或等 TRIGGER"
+                if all(r.category == "within_threshold" for r in grp) else "")
+        lines.append(f"🟠 {strat} 合計偏離 {tot*100:.1f}% NAV"
+                     f"（{len(grp)} 檔累積{note}）")
+
     if submitted:
         lines.append(f"🕐 已送單待成交 {len(submitted)} 檔: "
                      + ", ".join(f"{r.symbol}{r.delta:+d}" for r in submitted))
@@ -468,10 +503,14 @@ def drift_report_lines(rows: list[DeltaRow]) -> list[str]:
         lines.append(f"🟡 門檻內漂移 {len(yellow)} 檔（最大: "
                      + ", ".join(f"{r.symbol} {r.drift_pct*100:.1f}%"
                                  for r in top) + "）")
+    if totals:
+        lines.append("Σ 偏離 by 策略: " + " | ".join(
+            f"{s} {t*100:.1f}%"
+            for s, t in sorted(totals.items(), key=lambda x: -x[1])))
     if no_price:
         lines.append("⚠️ 無報價跳過: " + ", ".join(r.symbol for r in no_price))
     if manual:
         lines.append("⚪ 手動排除: " + ", ".join(r.symbol for r in manual))
     lines.append(f"✅ 對齊 {aligned_n} 檔"
-                 + ("" if red else "，無異常"))
+                 + ("" if (red or agg_warn) else "，無異常"))
     return lines

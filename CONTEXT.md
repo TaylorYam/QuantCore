@@ -78,6 +78,10 @@ _Avoid_: 目標部位（與 log 的 `target=Xsh` 混淆）、應有部位
 [[理論部位 (Target Notional)]] 與整數股執行結果之間的系統性缺口。floor 取整（SR）→ 恆低配 + 現金拖累；round 取整（[[SP500]] 自 2026-07-05、[[Skew LS]]）→ 對稱 ±半股誤差、可超配。高價股 × 小預算時最重，隨權益複利上升而遞減。量化見 `robustness/frac_sizing_report.md`。
 _Avoid_: Rounding error（不帶方向性，掩蓋 floor 的系統性偏低）
 
+**值班 (Watch)**:
+Panel 的三個定時監控統稱：Rosa poll（台北 21:00–05:00 市場窗每 30 分輪詢）、TY check（週二・三 20:05 開盤前驗證手動登入）、Morning check（NYSE 交易日 07:00 健檢 + constituents staleness 提醒）。排程＋派工唯一實作 = `automation/monitor_engine.py`（MonitorEngine + 三張 spec，ports 注入 I/O）；「該不該警報」的純決策與 `next_*_time` 排程計算在 rosa_poll / ty_check / morning_check 各自模組；`control_panel` 只是 Tk adapter（after 計時、worker 結果 marshal 回主線程、Telegram 出口）。防洪紀律：Gateway 斷線**事件不直發 TG**，Rosa 警報一律經 30 分輪詢 gate — 盤外 flapping 不洗版；事件路徑只有斷線 10 分鐘後的一次性 recovery（schedule_once）。
+_Avoid_: Monitoring（與 GatewayMonitor 心跳連線層混淆）、Alarm job
+
 ## Relationships
 
 - 一個 **Account** 持有多個 **Strategy** 的部位

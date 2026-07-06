@@ -462,12 +462,15 @@ class ControlPanel(tk.Tk):
         self.refresh_all()
         # 啟動 Gateway 持久監測連線（每帳戶一條，斷線自動重連 + Telegram 通知）
         self.after(500, self._start_gateway_monitors)
+        # 值班監控（排程+派工在 monitor_engine，panel 只供 Tk adapter）。
+        # 引擎物件先建好 — gateway 斷線事件（500ms 起）隨時可能 schedule_once。
+        self._mon_engine = self._build_monitor_engine()
         # ROSA 市場時段斷線輪詢（與持久監測平行；只對齊 21:00–05:00 台北窗口）
-        self.after(1500, self._schedule_rosa_poll)
+        self.after(1500, self._start_rosa_watch)
         # TAYLOR / YVONNE 週二/三 20:05 台北驗證手動登入（一次性、各發一封）
-        self.after(2000, self._schedule_ty_check)
+        self.after(2000, self._start_ty_watch)
         # 每平日（NYSE 交易日）07:00 台北自動 Check Now — 刷新所有 Gateway 連線
-        self.after(2200, self._schedule_morning_check)
+        self.after(2200, self._start_morning_watch)
         # System tray icon — 點 X 不殺 app，縮到 tray 繼續跑監控
         self.after(2500, self._start_tray)
         # Panel 視窗 X = withdraw（藏起來但 Tk loop 活著；真退出走 tray>離開）
@@ -501,15 +504,9 @@ class ControlPanel(tk.Tk):
         """Tray > 離開 / 致命錯誤時呼叫：全套清理（cancel timers → stop monitors
         → stop tray → release lockfile → destroy Tk）。"""
         try:
-            self._cancel_rosa_poll()
-        except Exception:
-            pass
-        try:
-            self._cancel_ty_check()
-        except Exception:
-            pass
-        try:
-            self._cancel_morning_check()
+            eng = getattr(self, "_mon_engine", None)
+            if eng is not None:
+                eng.stop_all()
         except Exception:
             pass
         try:
@@ -981,7 +978,11 @@ class ControlPanel(tk.Tk):
             # 外、rosa_poll 不會跑）等情境。10 分鐘給 IB Gateway 完成重啟
             # 的緩衝；成功後 on_connected → on_state → tray 自動翻綠。
             if name == "Rosa":
-                self.after(10 * 60 * 1000, self._rosa_one_shot_recovery)
+                import monitor_engine as me
+                self._mon_engine.schedule_once(
+                    10 * 60 * 1000,
+                    me.rosa_recovery_worker(self._monitor_env,
+                                            self._monitor_spawn))
 
         self._gw_monitor = GatewayMonitor(
             account_names=account_names,
@@ -997,163 +998,64 @@ class ControlPanel(tk.Tk):
         if mon is not None:
             mon.stop(timeout=3.0)
 
-    # ── ROSA 30-min market-window poller ─────────────────────
+    # ── 值班監控（Rosa poll / TY check / Morning check）────────
     #
-    # Pure logic lives in rosa_poll.py — this section is the Tk plumbing
-    # that schedules ticks + marshals the heavy work onto a daemon thread
-    # so the UI never freezes on a 12-second β-retry wait.
-
-    def _schedule_rosa_poll(self):
-        """啟動 ROSA 輪詢：若 panel 開啟瞬間已落在台北 21:00–05:00 交易窗口內，
-        立刻跑一次 tick；否則排到下一個有效 tick（next_rosa_poll_time）。"""
-        from zoneinfo import ZoneInfo
-        from market_calendar import trading_session_date_for
-
-        self._rosa_poll_after_id = None
-        now = datetime.now(ZoneInfo("Asia/Taipei"))
-
-        if trading_session_date_for(now) is not None:
-            # 已在窗口 — 立即跑一次（在背景 thread；下面 _arm_next 會排下一個）
-            self._log("[GW] Rosa poll: panel start inside window → immediate tick")
-            threading.Thread(target=self._rosa_poll_run, daemon=True).start()
-        else:
-            self._log("[GW] Rosa poll: panel start outside window → scheduling")
-        self._arm_next_rosa_poll(now)
-
-    def _arm_next_rosa_poll(self, now_taipei):
-        """算下一個 tick 的 ms delay 並用 self.after() 排程。Tk 的 after() 接受
-        int ms — 我們把 datetime 差轉成 ms。"""
-        from rosa_poll import next_rosa_poll_time
-        nxt = next_rosa_poll_time(now_taipei)
-        delay_ms = max(1, int((nxt - now_taipei).total_seconds() * 1000))
-        self._rosa_poll_after_id = self.after(delay_ms, self._rosa_poll_tick)
-        self._log(f"[GW] Rosa poll: next tick at {nxt.strftime('%Y-%m-%d %H:%M %Z')}")
-
-    def _rosa_poll_tick(self):
-        """Tk after() callback. Spawns a daemon thread (so the 12s β-retry
-        wait doesn't freeze the UI) then immediately schedules the next tick."""
-        from zoneinfo import ZoneInfo
-        threading.Thread(target=self._rosa_poll_run, daemon=True).start()
-        self._arm_next_rosa_poll(datetime.now(ZoneInfo("Asia/Taipei")))
-
-    def _rosa_poll_run(self):
-        """Background-thread body: invoke pure rosa_poll_decision and
-        marshal any resulting alert back to the Tk thread for log + telegram.
-
-        Wrapped in try/except so a panel close during the 12-second β-retry
-        wait doesn't bubble a Tk-already-destroyed error up the daemon."""
-        from zoneinfo import ZoneInfo
-        from rosa_poll import rosa_poll_decision
-
-        mon = getattr(self, "_gw_monitor", None)
-        if mon is None:
-            return  # GatewayMonitor not yet started — skip this cycle
-
-        now = datetime.now(ZoneInfo("Asia/Taipei"))
-        msg = rosa_poll_decision(
-            now_taipei=now,
-            is_online=lambda: mon.is_online("Rosa"),
-            restart=lambda: mon.restart_account_thread("Rosa"),
-            sleep=time.sleep,
-        )
-        ts = now.strftime("%H:%M")
-        try:
-            if msg is None:
-                self.after(0, lambda: self._log(f"[GW] Rosa poll {ts} → ok"))
-            else:
-                self.after(0, lambda m=msg: (
-                    self._log(f"[GW] Rosa poll {ts} → ALERT"),
-                    self._tg_notify(m),
-                ))
-        except Exception:
-            pass  # panel destroyed mid-tick — drop the result silently
-
-    def _cancel_rosa_poll(self):
-        """_on_close hook — kill any pending after() callback so a closed
-        panel doesn't fire a zombie tick."""
-        after_id = getattr(self, "_rosa_poll_after_id", None)
-        if after_id is not None:
-            try:
-                self.after_cancel(after_id)
-            except Exception:
-                pass
-            self._rosa_poll_after_id = None
-
-    def _rosa_one_shot_recovery(self):
-        """Fired 10 min after a ROSA disconnect (any time of day, including
-        outside the 21:00–05:00 polling window). Skips if ROSA is already
-        back online — `restart_account_thread` itself also refuses to spawn
-        on a still-alive thread, so this is double safety, not redundant."""
-        mon = getattr(self, "_gw_monitor", None)
-        if mon is None:
-            return
-        if mon.is_online("Rosa"):
-            self._log("[GW] Rosa one-shot recovery: already online, skip")
-            return
-        self._log("[GW] Rosa one-shot recovery: attempting reconnect")
-        # Spawn in daemon thread — `restart_account_thread` itself returns
-        # immediately, but if any future variant blocks we don't want to
-        # freeze the Tk loop.
-        threading.Thread(
-            target=lambda: mon.restart_account_thread("Rosa"),
-            daemon=True,
-        ).start()
-
-    # ── TAYLOR / YVONNE Tue/Wed 20:05 verification ──────────
-    #
-    # Pure logic in ty_check.py — this section is the Tk plumbing that
-    # schedules the trigger + runs the verifications on a daemon thread
-    # (so the 10-second cold-connect timeout doesn't freeze the UI).
+    # 排程 + 派工唯一實作在 monitor_engine（候選 5 下沉）；純決策與排程
+    # 計算在 rosa_poll / ty_check / morning_check。這裡只剩 Tk adapter：
+    # after() 計時、worker 結果 marshal 回主線程、Telegram 出口。
 
     TY_CHECK_ACCOUNTS = ("Taylor", "Yvonne")
 
-    def _schedule_ty_check(self):
-        """Schedule the next Tue/Wed 20:05 verification."""
+    def _build_monitor_engine(self):
+        """建 MonitorEngine + Tk adapter env。只建物件不排程 —
+        specs 由 _start_*_watch 在 init 尾端錯峰啟動。"""
         from zoneinfo import ZoneInfo
-        self._ty_check_after_id = None
-        self._arm_next_ty_check(datetime.now(ZoneInfo("Asia/Taipei")))
+        import monitor_engine as me
 
-    def _arm_next_ty_check(self, now_taipei):
-        from ty_check import next_ty_check_time
-        nxt = next_ty_check_time(now_taipei)
-        delay_ms = max(1, int((nxt - now_taipei).total_seconds() * 1000))
-        self._ty_check_after_id = self.after(delay_ms, self._ty_check_tick)
-        self._log(f"[GW] TY check: next at {nxt.strftime('%Y-%m-%d %H:%M %Z')}")
+        def marshal_log(msg: str) -> None:
+            try:
+                self.after(0, lambda: self._log(msg))
+            except Exception:
+                pass  # panel destroyed mid-tick — drop the result silently
 
-    def _ty_check_tick(self):
-        """Tk after() callback — fans out one verification per account on
-        daemon threads, then immediately schedules the next tick.
+        def marshal_notify(msg: str) -> None:
+            try:
+                self.after(0, lambda: self._tg_notify(msg))
+            except Exception:
+                pass  # panel destroyed mid-tick — drop the result silently
 
-        Trust the scheduler to land on a valid Tue/Wed (next_ty_check_time
-        skips holidays), so no double-check needed here."""
-        from zoneinfo import ZoneInfo
-        for name in self.TY_CHECK_ACCOUNTS:
-            threading.Thread(
-                target=self._ty_verify_one, args=(name,), daemon=True,
-            ).start()
-        self._arm_next_ty_check(datetime.now(ZoneInfo("Asia/Taipei")))
+        self._monitor_env = me.MonitorEnv(
+            monitor_ready=lambda: getattr(self, "_gw_monitor", None) is not None,
+            is_online=lambda n: self._gw_monitor.is_online(n),
+            restart=lambda n: self._gw_monitor.restart_account_thread(n),
+            cold_connect=self._cold_connect,
+            accounts=lambda: [a["name"] for a in self._accounts_meta],
+            refresh_ui=self._refresh_gateway_status,
+            log=marshal_log,
+            notify=marshal_notify,
+            now=lambda: datetime.now(ZoneInfo("Asia/Taipei")),
+        )
+        self._monitor_spawn = (
+            lambda fn: threading.Thread(target=fn, daemon=True).start())
+        return me.MonitorEngine(
+            self._monitor_env,
+            schedule=lambda ms, fn: self.after(ms, fn),
+            cancel=self.after_cancel,
+            spawn=self._monitor_spawn,
+        )
 
-    def _ty_verify_one(self, name: str):
-        """Run one verification. Hybrid: if GatewayMonitor's persistent
-        connection already says ONLINE, that's heartbeat-confirmed proof of
-        life — skip the cold-connect to avoid a clientId clash. Otherwise
-        fire a fresh connect attempt (10s timeout) and report the outcome."""
-        from ty_check import format_ty_message, verify_one_account
+    def _start_rosa_watch(self):
+        import monitor_engine as me
+        self._mon_engine.start(me.rosa_poll_spec(self._monitor_env))
 
-        mon = getattr(self, "_gw_monitor", None)
-        if mon is not None and mon.is_online(name):
-            msg = format_ty_message(name, success=True)
-        else:
-            msg = verify_one_account(name, lambda n=name: self._cold_connect(n))
+    def _start_ty_watch(self):
+        import monitor_engine as me
+        self._mon_engine.start(
+            me.ty_check_spec(self._monitor_env, self.TY_CHECK_ACCOUNTS))
 
-        try:
-            self.after(0, lambda m=msg, n=name: (
-                self._log(f"[GW] TY check {n} → "
-                          f"{'ok' if '✅' in m else 'ALERT'}"),
-                self._tg_notify(m),
-            ))
-        except Exception:
-            pass  # panel destroyed mid-verify — drop result silently
+    def _start_morning_watch(self):
+        import monitor_engine as me
+        self._mon_engine.start(me.morning_check_spec(self._monitor_env))
 
     def _cold_connect(self, name: str) -> None:
         """Open a fresh IB connection to `name` and immediately disconnect.
@@ -1172,104 +1074,6 @@ class ControlPanel(tk.Tk):
                 ib.disconnect()
             except Exception:
                 pass
-
-    def _cancel_ty_check(self):
-        after_id = getattr(self, "_ty_check_after_id", None)
-        if after_id is not None:
-            try:
-                self.after_cancel(after_id)
-            except Exception:
-                pass
-            self._ty_check_after_id = None
-
-    # ── 每平日（NYSE 交易日）07:00 台北自動 Check Now ──────────
-    #
-    # Pure logic in morning_check.py — this section is the Tk plumbing that
-    # schedules the 07:00 tick, fires the *same* refresh as the Check Now
-    # button on the main thread, then waits off-thread for the re-probe to
-    # settle and pushes a Telegram alert ONLY when an account is offline
-    # (all-green stays silent so the channel isn't spammed every weekday).
-
-    def _schedule_morning_check(self):
-        """Schedule the next NYSE-trading-day 07:00 Taipei gateway check."""
-        from zoneinfo import ZoneInfo
-        self._morning_check_after_id = None
-        self._arm_next_morning_check(datetime.now(ZoneInfo("Asia/Taipei")))
-
-    def _arm_next_morning_check(self, now_taipei):
-        from morning_check import next_morning_check_time
-        nxt = next_morning_check_time(now_taipei)
-        delay_ms = max(1, int((nxt - now_taipei).total_seconds() * 1000))
-        self._morning_check_after_id = self.after(delay_ms, self._morning_check_tick)
-        self._log(f"[GW] Morning check: next at {nxt.strftime('%Y-%m-%d %H:%M %Z')}")
-
-    def _morning_check_tick(self):
-        """Tk after() callback. Fires the Check Now refresh on the main
-        thread (UI-safe), spawns a daemon thread to wait for connects to
-        settle + alert if offline, then schedules the next trading-day tick."""
-        from zoneinfo import ZoneInfo
-        self._log("[GW] Morning check 07:00 → re-probing all Gateways")
-        self._refresh_gateway_status()   # identical to the Check Now button
-        threading.Thread(target=self._morning_check_followup, daemon=True).start()
-        self._arm_next_morning_check(datetime.now(ZoneInfo("Asia/Taipei")))
-
-    def _morning_check_followup(self):
-        """Background-thread body: wait for the re-probe to settle, collect
-        any accounts still offline, and push one Telegram alert if so.
-
-        Wrapped in try/except so a panel close during the settle wait doesn't
-        bubble a Tk-already-destroyed error up the daemon."""
-        from morning_check import (MORNING_SETTLE_SEC,
-                                   constituents_staleness_warning,
-                                   format_morning_check_message,
-                                   read_constituents_last_date)
-
-        mon = getattr(self, "_gw_monitor", None)
-        if mon is None:
-            return  # GatewayMonitor not yet started — skip this cycle
-        time.sleep(MORNING_SETTLE_SEC)
-
-        offline = [a["name"] for a in self._accounts_meta
-                   if not mon.is_online(a["name"])]
-        msg = format_morning_check_message(offline)
-        try:
-            if msg is None:
-                self.after(0, lambda: self._log("[GW] Morning check → all online"))
-            else:
-                self.after(0, lambda m=msg, n=offline: (
-                    self._log(f"[GW] Morning check → ALERT "
-                              f"({len(n)} offline: {', '.join(n)})"),
-                    self._tg_notify(m),
-                ))
-        except Exception:
-            pass  # panel destroyed mid-check — drop the result silently
-
-        # ADR-0002 constituents staleness reminder — independent of gateway
-        # state (a stale snapshot matters precisely on days everything else
-        # is healthy). Reminder only; refresh stays on-demand.
-        from zoneinfo import ZoneInfo
-        from strategies.sp500_momentum import config as sp_cfg
-        warn = constituents_staleness_warning(
-            read_constituents_last_date(sp_cfg.REF_DIR / sp_cfg.CONST_FILE),
-            datetime.now(ZoneInfo("Asia/Taipei")).date(),
-        )
-        if warn is not None:
-            try:
-                self.after(0, lambda w=warn: (
-                    self._log("[GW] Morning check → constituents stale"),
-                    self._tg_notify(w),
-                ))
-            except Exception:
-                pass  # panel destroyed mid-check — drop the result silently
-
-    def _cancel_morning_check(self):
-        after_id = getattr(self, "_morning_check_after_id", None)
-        if after_id is not None:
-            try:
-                self.after_cancel(after_id)
-            except Exception:
-                pass
-            self._morning_check_after_id = None
 
     # ── Gateway Status UI 狀態更新 ─────────────────────────
 

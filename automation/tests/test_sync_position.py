@@ -205,3 +205,39 @@ def test_sync_order_alias_preserved():
     from sync_position import SyncOrder
 
     assert SyncOrder is PlannedOrder
+
+
+def test_ignore_threshold_full_sync_includes_small_deltas():
+    """Sync Pos 全同步語意（2026-07-06 定案）：ignore_threshold=True 時
+    門檻內差額也列單 — 凍結遺留的 <3% 殘餘因此清得掉；scheduled
+    rebalance 走預設 False，3% 換手抑制不受影響。"""
+    from rebalance_plan import build_order_list
+
+    # 1% NAV 漂移：預設會被門檻濾掉（上面 test_delta_below_threshold_skipped
+    # 釘住），全同步模式必須列單
+    orders = build_order_list(
+        targets={"XLB": {"shares": 60, "strategy": "SR"}},
+        current_pos={"XLB": 50},
+        current_other_holdings=[],
+        prices={"XLB": 100.0},
+        nav=100_000,
+        ignore_threshold=True,
+    )
+    assert len(orders) == 1
+    assert orders[0].action == "BUY"
+    assert orders[0].qty == 10
+
+
+def test_ignore_threshold_keeps_manual_and_aligned_untouched():
+    """全同步只放寬門檻 — 手動持倉照樣排除、對齊的照樣不動。"""
+    from rebalance_plan import build_order_list
+
+    orders = build_order_list(
+        targets={"XLB": {"shares": 50, "strategy": "SR"}},
+        current_pos={"XLB": 50, "BTC": 3},
+        current_other_holdings=["BTC"],
+        prices={"XLB": 100.0, "BTC": 30.0},
+        nav=100_000,
+        ignore_threshold=True,
+    )
+    assert orders == []

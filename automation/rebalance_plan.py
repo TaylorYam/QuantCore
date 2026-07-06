@@ -361,10 +361,15 @@ def build_order_list(targets: dict[str, dict],
                      prices: dict[str, float],
                      nav: float,
                      log_fn=None,
-                     warn_fn=None) -> list[PlannedOrder]:
+                     warn_fn=None,
+                     ignore_threshold: bool = False) -> list[PlannedOrder]:
     """
     根據目標持倉 vs 現有持倉算出差額 order list = evaluate_deltas 的
     actionable 列（規則見該函式；判定同一顆腦）。
+
+    ignore_threshold=True（Sync Pos 全同步語意）：門檻內差額也下單 —
+    「Sync 就該拉齊」；使用者在預覽視窗逐單確認後才送。scheduled
+    rebalance 一律走預設 False（3% 門檻是設計內的換手抑制）。
 
     log_fn / warn_fn：scheduled rebalance 傳 log.info / log.warning 以保留
     歷史 log 逐字格式；Sync Pos 傳 None（預覽視窗自行顯示）。
@@ -378,7 +383,7 @@ def build_order_list(targets: dict[str, dict],
             if warn_fn:
                 warn_fn(f"  {row.symbol}: no price, skipping")
             continue
-        if row.category == "within_threshold":
+        if row.category == "within_threshold" and not ignore_threshold:
             if log_fn:
                 log_fn(
                     f"  {row.symbol} [{row.strategy}]: target={row.target:5d}sh "
@@ -393,7 +398,8 @@ def build_order_list(targets: dict[str, dict],
                 f"current={row.current:5d}sh  delta={row.delta:+d}"
             )
 
-        if row.category == "actionable":
+        if row.category == "actionable" or (
+                row.category == "within_threshold" and ignore_threshold):
             orders.append(PlannedOrder(
                 symbol=row.symbol,
                 action='BUY' if row.delta > 0 else 'SELL',

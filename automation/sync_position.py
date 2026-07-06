@@ -160,12 +160,16 @@ def compute_sync_plan(
 
     # 7. 差額 order list（唯一實作 = rebalance_plan.build_order_list；
     #    log_fn=None：預覽視窗自行顯示，不進 log）
+    #    ignore_threshold=True：Sync = 全同步拉齊，門檻內差額也列單 —
+    #    否則凍結遺留類的 <3% 殘餘永遠清不掉（2026-07-06 決定）；
+    #    使用者在預覽視窗逐單確認後才送，換手由人把關。
     orders = plan.build_order_list(
         targets=targets,
         current_pos=current_pos,
         current_other_holdings=current_other_holdings,
         prices=prices,
         nav=nav,
+        ignore_threshold=True,
     )
 
     return SyncPlan(

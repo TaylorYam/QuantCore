@@ -39,8 +39,12 @@ _Avoid_: Weight, Capital share, Position size
 _Avoid_: Gearing, Total exposure (作 derived 顯示時可以；作獨立欄位時不行)
 
 **Combine**:
-把多個 [[Strategy]] 的 target 在單一 [[Account]] 匯總成 per-ticker 目標股數的運算：每個 Strategy 先各自以 NAV × [[Allocation]] × weight ÷ price 取整成股數，再對同 ticker 加總（live 實作 = `rebalance_ib.combine_targets`）。per-strategy 取整是 load-bearing，不可先合權重再取整（[ADR-0008](docs/adr/0008-live-combine-no-weight-level-extraction-rejected.md)）。與 backtest 的 return-level combine（`backtest/combo.py`）是不同層的運算，刻意不共用。
+把多個 [[Strategy]] 的 target 在單一 [[Account]] 匯總成 per-ticker 目標股數的運算：每個 Strategy 先各自以 NAV × [[Allocation]] × weight ÷ price 取整成股數，再對同 ticker 加總（live 實作 = `automation/rebalance_plan.py::combine_targets`，`rebalance_ib.combine_targets` 為 re-export 舊路徑）。per-strategy 取整是 load-bearing，不可先合權重再取整（[ADR-0008](docs/adr/0008-live-combine-no-weight-level-extraction-rejected.md)）。與 backtest 的 return-level combine（`backtest/combo.py`）是不同層的運算，刻意不共用。
 _Avoid_: Merge, Netting（sector-level netting 是被否決的另一提案，見 [ADR-0006](docs/adr/0006-sector-level-netting-rejected.md)）
+
+**Rebalance Plan (調倉計畫)**:
+單一 [[Account]] 一次調倉的完整決策：持倉分類（[[Universe]] 語意，含 SkewLS inverse 排除）→ mode 權重選擇（非 sp500 mode 的 hold 防護、SkewLS threshold gate）→ [[Combine]] → 差額 + 3% NAV 門檻（清倉/建倉/翻向例外）→ 訂單清單（PlannedOrder）。唯一實作 `automation/rebalance_plan.py`；scheduled rebalance（`rebalance_ib`，Task Scheduler 21:00）與 panel Sync Pos（`sync_position`）皆為 caller。純 plain-data 決策 — IB 連線、訊號計算、state 檔讀寫、LMT 價、下單順序等 execution/I-O 關切全留在 caller。歷史上四件事故（CIEN stale-universe、週二 whipsaw ADR-0004、MU floor 低配、inverse 凍結）皆發生於此層而彼時零測試 — 現以 `automation/tests/test_rebalance_plan.py` regression 考題釘住。
+_Avoid_: Order list（只是最終輸出）、Rebalance（口語泛稱整個流程；指決策層時用本詞）
 
 **Inverse Proxy**:
 [[Skew LS]] 把空頭部位轉成反向 ETF 多單的轉換（9 檔 ProShares 2x、SEF/REK 1x）。Long position，IB 端走既有 BUY/SELL 路徑。

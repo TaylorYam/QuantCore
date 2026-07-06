@@ -17,7 +17,8 @@ Panel 按「Sync Pos」時的核心計算與下單邏輯。此模組只處理資
    → 建新的 LMT+outsideRTH ctx → 連 IB → 取 bid/ask 算 LMT → 下單
    → 回傳 (placed_list, fill_results)
 
-所有 IB 互動走 ib_fetcher；策略訊號走 signals；帳戶 config 走 AccountCtx。
+所有 IB 互動走 ib_fetcher；策略訊號走 signals；帳戶 config 走 AccountCtx；
+分類 / Combine / 差額決策走 rebalance_plan（與 scheduled rebalance 同一顆腦）。
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ import numpy as np
 
 from account_ctx import AccountCtx
 import ib_fetcher
+import rebalance_plan as plan
 import signals
 
 log = logging.getLogger(__name__)
@@ -38,20 +40,9 @@ log = logging.getLogger(__name__)
 
 # ── Data classes ──────────────────────────────────────────────────────
 
-@dataclass
-class SyncOrder:
-    """單一預計執行的同步委託。
-
-    qty 永遠為 abs(delta) > 0 (送到 IB 的數量)；action 已記錄方向。
-    target / current 可為**負數**（XLC short 等）— 預覽 UI 應顯示符號。
-    """
-    symbol: str
-    action: str          # 'BUY' | 'SELL'  (IB 從 current 推斷 SHORT/COVER)
-    qty: int             # > 0 (絕對值)
-    price: float         # 預覽時的參考價（signal_date 前一天收盤或即時報價）
-    strategy: str        # 'SR' | 'SP500' | 'SkewLS' | 'SR+SkewLS' | 'SP500 (hold)' | etc.
-    target: int          # 理論目標股數 (可為負，XLC short)
-    current: int         # 當前實際股數 (可為負，已 short)
+# 決策層的訂單 dataclass（唯一實作在 rebalance_plan）；
+# SyncOrder 為舊名 re-export — panel / sync_preview_window 沿用此路徑。
+SyncOrder = plan.PlannedOrder
 
 
 @dataclass
@@ -135,19 +126,11 @@ def compute_sync_plan(
         current_pos = ib_fetcher.get_positions(ib, ctx)
         _log(f"  NAV=${nav:,.0f}  positions={len(current_pos)}")
 
-        # 3. 分辨 SR vs SP500 vs 手動持倉
+        # 3. 分辨 SR vs SP500 vs 手動持倉（唯一實作 = rebalance_plan.classify_holdings）
         sp500_universe = signals.get_sp500_universe()
-        sr_etf_set = ib_fetcher.SR_ETFS
-        # SkewLS universe = sector ETFs (overlap with SR) + 10 inverse ETFs
-        # 既然 SR 已涵蓋 sector ETFs，這裡只需把 inverse ETFs 排除在 "other" 之外
-        from strategies.sector_skew_ls import config as skewls_cfg
-        skewls_inv_set = set(skewls_cfg.INVERSE_TICKERS)
-        current_sp500_holdings = [s for s in current_pos
-                                   if s not in sr_etf_set and s in sp500_universe]
-        current_other_holdings = [s for s in current_pos
-                                   if s not in sr_etf_set
-                                   and s not in skewls_inv_set
-                                   and s not in sp500_universe]
+        split = plan.classify_holdings(current_pos, sp500_universe)
+        current_sp500_holdings = split.sp500
+        current_other_holdings = split.other
 
         # 4. SP500 目標權重
         _log("  Computing SP500 weights...")
@@ -164,9 +147,8 @@ def compute_sync_plan(
         _log(f"  Getting prices for {len(all_syms)} symbols...")
         prices = ib_fetcher.get_prices(ib, all_syms, ctx)
 
-        # 6. 合併三策略目標（呼叫 rebalance_ib 的 combine_targets 共用邏輯）
-        import rebalance_ib as reb
-        targets = reb.combine_targets(nav, sr_wgt, sp500_wgt, prices, ctx=ctx,
+        # 6. 合併三策略目標（[[Combine]]，唯一實作 = rebalance_plan.combine_targets）
+        targets = plan.combine_targets(nav, sr_wgt, sp500_wgt, prices, ctx=ctx,
                                        skewls_wgt=skewls_wgt)
 
     finally:
@@ -176,8 +158,9 @@ def compute_sync_plan(
         except Exception:
             pass
 
-    # 7. 差額 order list（套 REBALANCE_THRESHOLD 過濾）
-    orders = _build_order_list(
+    # 7. 差額 order list（唯一實作 = rebalance_plan.build_order_list；
+    #    log_fn=None：預覽視窗自行顯示，不進 log）
+    orders = plan.build_order_list(
         targets=targets,
         current_pos=current_pos,
         current_other_holdings=current_other_holdings,
@@ -200,60 +183,6 @@ def compute_sync_plan(
         skewls_wgt=skewls_wgt,
         skewls_date=skewls_date,
     )
-
-
-def _build_order_list(
-    targets: dict[str, dict],
-    current_pos: dict[str, float],
-    current_other_holdings: list[str],
-    prices: dict[str, float],
-    nav: float,
-) -> list[SyncOrder]:
-    """
-    根據目標持倉 vs 現有持倉算出差額 order list。
-
-    套用 REBALANCE_THRESHOLD 過濾：單一標的漂移 < 3% NAV 不動作。
-    例外：完全清倉（target=0）或從無到有建倉（current=0）必執行。
-    """
-    from strategies.sp500_momentum import config as sp_cfg
-    rebal_thresh = sp_cfg.REBALANCE_THRESHOLD  # 0.03
-
-    all_target_syms = set(targets.keys()) | set(current_pos.keys())
-    all_target_syms -= set(current_other_holdings)
-
-    orders: list[SyncOrder] = []
-    for sym in sorted(all_target_syms):
-        price = prices.get(sym, 0)
-        if price <= 0:
-            continue
-        target_shares = targets.get(sym, {}).get('shares', 0)
-        curr_shares = int(current_pos.get(sym, 0))
-        delta = target_shares - curr_shares
-        strategy = targets.get(sym, {}).get('strategy', 'EXIT')
-
-        # Threshold 過濾（同向才適用：long-long 或 short-short）
-        # 例外：清倉 (target=0) / 開倉 (current=0) / 翻向 (long↔short) 必執行
-        same_direction = (
-            target_shares != 0 and curr_shares != 0
-            and (target_shares > 0) == (curr_shares > 0)
-        )
-        if delta != 0 and same_direction:
-            drift_val = abs(delta) * price
-            drift_pct = drift_val / nav if nav > 0 else 0
-            if drift_pct < rebal_thresh:
-                continue
-
-        if delta != 0:
-            orders.append(SyncOrder(
-                symbol=sym,
-                action='BUY' if delta > 0 else 'SELL',
-                qty=abs(delta),
-                price=price,
-                strategy=strategy,
-                target=target_shares,
-                current=curr_shares,
-            ))
-    return orders
 
 
 # ── Submit phase ──────────────────────────────────────────────────────

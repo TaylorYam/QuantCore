@@ -33,7 +33,6 @@ from datetime import date, datetime
 
 import matplotlib
 matplotlib.use('Agg')
-import numpy as np
 import pandas as pd
 
 # ── 路徑設定 ──────────────────────────────────────────────────────────────────
@@ -70,8 +69,11 @@ from ib_fetcher import (
     get_positions_detail,
     get_prices,
     SR_ETFS,  # R1.3：SR ETF 常數單一來源
-    SKEWLS_INVERSE_TICKERS,
 )
+
+# ── Rebalance 決策層（分類 / mode 權重選擇 / Combine / 差額訂單的唯一實作）
+import rebalance_plan as plan
+from rebalance_plan import combine_targets  # re-export：tests 與舊 callers 沿用此路徑
 
 
 def make_order(action: str, qty: int, lmt_price: float,
@@ -194,75 +196,8 @@ def compute_skewls_weights(ctx: AccountCtx) -> tuple[dict, str]:
     return get_skewls_weights()
 
 
-def combine_targets(nav: float, sr_wgt: dict, sp500_wgt: dict,
-                    prices: dict, ctx: AccountCtx,
-                    skewls_wgt: dict | None = None) -> dict:
-    """
-    合併三個策略的目標權重，計算每個標的的目標股數。
-
-    SR 持倉：    target_shares = NAV × alloc_sr     × weight / price
-    SP500 持倉： target_shares = NAV × alloc_sp500  × weight / price
-    Skew LS：    target_shares = NAV × alloc_skewls × signed_weight / price
-                  (XLC 的 weight < 0 → target_shares < 0 → IB SELL → 自動 SHORT)
-
-    三策略共用同一檔 ticker 時 target_shares **直接加總**
-    (pure-function combine，CONTEXT.md 已釘住此約定)，IB 自動 net 多空。
-    """
-    alloc_sr    = ctx.alloc_sr
-    alloc_sp500 = ctx.alloc_sp500
-    alloc_skewls = ctx.alloc_skewls
-
-    targets = {}  # symbol -> {'shares': int, 'strategy': str, 'alloc_w': float}
-
-    def _valid_price(p) -> bool:
-        return p is not None and np.isfinite(p) and p > 0
-
-    def _add(sym: str, shares: int, strategy_tag: str, alloc_w: float) -> None:
-        """add shares + 合併 strategy tag (使用 '+' 分隔)"""
-        if sym in targets:
-            targets[sym]['shares']   += shares
-            targets[sym]['alloc_w']  += alloc_w
-            existing = targets[sym]['strategy'].split('+')
-            if strategy_tag not in existing:
-                targets[sym]['strategy'] = '+'.join(existing + [strategy_tag])
-        else:
-            targets[sym] = {'shares': shares, 'strategy': strategy_tag,
-                            'alloc_w': alloc_w}
-
-    # SR 部位（ETF, long-only）
-    for sym, w in sr_wgt.items():
-        price = prices.get(sym, 0)
-        if not _valid_price(price):
-            log.warning(f"  {sym}: no price, skipping (SR)")
-            continue
-        shares = int(nav * alloc_sr * w / price)
-        _add(sym, shares, 'SR', alloc_sr * w)
-
-    # SP500 部位（個股, long-only）
-    for sym, w in sp500_wgt.items():
-        price = prices.get(sym, 0)
-        if not _valid_price(price):
-            log.warning(f"  {sym}: no price, skipping (SP500)")
-            continue
-        # int(round(...)) 而非 floor:高價股 × 小 sleeve 時 floor 系統性低配
-        # (Taylor 實測部署率 82~89%),round 誤差對稱 → 長期抵消
-        # 三臂回測驗證見 robustness/frac_sizing_report.md (2026-07-05)
-        shares = int(round(nav * alloc_sp500 * w / price))
-        _add(sym, shares, 'SP500', alloc_sp500 * w)
-
-    # Skew LS 部位（sector ETF / inverse ETF long + XLC short）
-    if skewls_wgt:
-        for sym, w in skewls_wgt.items():
-            price = prices.get(sym, 0)
-            if not _valid_price(price):
-                log.warning(f"  {sym}: no price, skipping (SkewLS)")
-                continue
-            # signed: w 可為負 (XLC) → shares 為負 → IB 自動 SHORT
-            # int(round(...)) 避免 negative truncation 不對稱
-            shares = int(round(nav * alloc_skewls * w / price))
-            _add(sym, shares, 'SkewLS', alloc_skewls * w)
-
-    return targets
+# ── combine_targets：實作移至 rebalance_plan.combine_targets（[[Combine]]，
+#    ADR-0008 內部不變），上方 import 已 re-export。
 
 
 # ── Telegram 報告組合 ─────────────────────────────────────────────────────────
@@ -488,17 +423,11 @@ def main(mode: str, ctx: AccountCtx):
         from signals import get_sp500_universe
         _sp500_universe = get_sp500_universe()
 
-        # 分辨當前持股：SR ETFs vs SP500 個股 vs 其他（手動操作，排除在外）
-        # SkewLS inverse ETF 是策略持倉，不得歸入「其他」— 否則持有後即凍結
-        # （不加碼/不減碼/不出場；2026-06 三次 threshold 觸發皆單腿執行）。
-        # 與 sync_position 的分類同義。
-        current_sr_holdings = [sym for sym in current_pos if sym in SR_ETFS]
-        current_sp500_holdings = [sym for sym in current_pos
-                                  if sym not in SR_ETFS and sym in _sp500_universe]
-        current_other_holdings = [sym for sym in current_pos
-                                  if sym not in SR_ETFS
-                                  and sym not in SKEWLS_INVERSE_TICKERS
-                                  and sym not in _sp500_universe]
+        # 分辨當前持股（[[Universe]] 語意；唯一實作 = rebalance_plan.classify_holdings）
+        split = plan.classify_holdings(current_pos, _sp500_universe)
+        current_sr_holdings = split.sr
+        current_sp500_holdings = split.sp500
+        current_other_holdings = split.other
         log.info(f"  SR holdings:    {current_sr_holdings or '(none)'}")
         log.info(f"  SP500 holdings: {current_sp500_holdings or '(none)'}")
         if current_other_holdings:
@@ -513,47 +442,39 @@ def main(mode: str, ctx: AccountCtx):
                 current_sp500_holdings, acct_name, ctx=ctx)
         else:
             log.info("Step 4: SP500 skipped")
-            # 非 SP500 mode：保留 SP500 現有持倉不動
-            for sym in current_sp500_holdings:
-                sp500_wgt[sym] = 0  # 佔位用，不會產生 order
+            # 非 SP500 mode：佔位權重只為把持股帶進報價清單，不會產生 order
+            sp500_wgt = plan.sp500_placeholder_weights(current_sp500_holdings)
 
         # ── 4b. Skew LS：threshold check + 選 today_target or state ─────────
         # 不論哪個 mode，只要 alloc_skewls > 0 就需要把 SkewLS 部位納入 combine_targets，
         # 否則 SR/SP500 rebal 會誤砍 SkewLS 倉位。
         import skewls_state
-        from strategies.sector_skew_ls import config as skewls_cfg
-        skewls_threshold = skewls_cfg.REBAL_THRESHOLD
 
         if alloc_skewls > 0:
             state = skewls_state.load_state(acct_name)
             if run_skewls:
                 log.info("Step 4b: Computing Skew LS target + threshold check...")
                 skewls_target_today, skewls_signal_date = compute_skewls_weights(ctx=ctx)
-                skewls_triggered, skewls_delta = skewls_state.should_rebal(
-                    state, skewls_target_today, skewls_threshold,
-                )
-                log.info(f"  SkewLS threshold: Δ={skewls_delta:.4f}  "
-                         f"vs {skewls_threshold} → {'TRIGGER' if skewls_triggered else 'hold'}")
-                if skewls_triggered:
-                    skewls_wgt = skewls_target_today
-                else:
-                    skewls_wgt = dict(state.get("last_target", {}))
-                    skewls_signal_date = state.get("last_target_date") or skewls_signal_date
             else:
                 log.info("Step 4b: SkewLS not checked (mode={}), hold last state".format(mode))
-                skewls_wgt = dict(state.get("last_target", {}))
-                skewls_signal_date = state.get("last_target_date") or "N/A"
+            sk = plan.select_skewls_weights(
+                run_skewls, alloc_skewls, state,
+                today_target=skewls_target_today,
+                today_signal_date=skewls_signal_date,
+            )
+            skewls_wgt = sk.wgt
+            skewls_signal_date = sk.signal_date
+            skewls_triggered = sk.triggered
+            skewls_delta = sk.delta
+            if run_skewls:
+                log.info(f"  SkewLS threshold: Δ={sk.delta:.4f}  "
+                         f"vs {sk.threshold} → {'TRIGGER' if sk.triggered else 'hold'}")
         else:
             log.info("Step 4b: SkewLS disabled (alloc_skewls = 0)")
             skewls_wgt = {}
 
         # ── 5. 即時報價 ─────────────────────────────────────────────────────
-        all_syms = list(set(
-            list(sr_wgt.keys()) +
-            list(sp500_wgt.keys()) +
-            list(skewls_wgt.keys()) +
-            list(current_pos.keys())
-        ))
+        all_syms = plan.plan_symbols(sr_wgt, sp500_wgt, skewls_wgt, current_pos)
         log.info(f"Step 5: Getting prices for {len(all_syms)} symbols...")
         prices = get_prices(ib, all_syms, ctx=ctx)
 
@@ -566,85 +487,31 @@ def main(mode: str, ctx: AccountCtx):
         sp500_wgt_for_combine = sp500_wgt if run_sp500 else {}
         targets = combine_targets(nav, sr_wgt, sp500_wgt_for_combine, prices,
                                    ctx=ctx, skewls_wgt=skewls_wgt)
+        targets = plan.apply_sp500_hold(targets, run_sp500,
+                                        current_sp500_holdings, current_pos)
 
-        # 非 SP500 mode：把 SP500 持股 target 改回 current（hold）
-        # SP500 universe 與 SR/SkewLS 完全分離（個股 vs ETF），override 安全
-        if not run_sp500:
-            for sym in current_sp500_holdings:
-                if sym not in targets:
-                    targets[sym] = {'shares': int(current_pos[sym]),
-                                    'strategy': 'SP500 (hold)', 'alloc_w': 0}
-                else:
-                    # 罕見：SP500 dip-buy ticker (SPY/SSO) 同時被 SR 或 SkewLS 用
-                    # 此時保留 combined target (SR/SkewLS 貢獻)，不額外加 SP500 hold
-                    targets[sym]['strategy'] = targets[sym]['strategy'] + '|SP500-hold'
-
-        order_list = []
-
-        # 處理所有策略標的（排除 OTHER 手動持倉，不會被賣出或調整）
-        # 加入 REBALANCE_THRESHOLD 過濾 — 小於 3% NAV 漂移不動作（與 backtest 一致）
-        from strategies.sp500_momentum import config as sp_cfg
-        rebal_thresh = sp_cfg.REBALANCE_THRESHOLD  # 0.03
-
-        all_target_syms = set(targets.keys()) | set(current_pos.keys())
-        all_target_syms -= set(current_other_holdings)  # 排除手動操作標的
-        for sym in all_target_syms:
-            price = prices.get(sym, 0)
-            if price <= 0:
-                log.warning(f"  {sym}: no price, skipping")
-                continue
-
-            target_shares = targets.get(sym, {}).get('shares', 0)
-            curr_shares   = int(current_pos.get(sym, 0))
-            delta         = target_shares - curr_shares
-            strategy      = targets.get(sym, {}).get('strategy', 'EXIT')
-
-            # REBALANCE_THRESHOLD 過濾：小於 3% NAV 漂移不動作
-            # 例外：清倉（target=0）/ 開倉（current=0）/ 翻向（long↔short）必須執行
-            same_direction = (
-                target_shares != 0 and curr_shares != 0
-                and (target_shares > 0) == (curr_shares > 0)
-            )
-            if delta != 0 and same_direction:
-                drift_val = abs(delta) * price
-                drift_pct = drift_val / nav if nav > 0 else 0
-                if drift_pct < rebal_thresh:
-                    log.info(
-                        f"  {sym} [{strategy}]: target={target_shares:5d}sh "
-                        f"current={curr_shares:5d}sh  delta={delta:+d}  "
-                        f"drift={drift_pct*100:.1f}% < {rebal_thresh*100:.0f}% → skip"
-                    )
-                    continue
-
-            log.info(
-                f"  {sym} [{strategy}]: target={target_shares:5d}sh "
-                f"current={curr_shares:5d}sh  delta={delta:+d}"
-            )
-
-            if delta != 0:
-                order_list.append({
-                    'symbol':    sym,
-                    'action':    'BUY' if delta > 0 else 'SELL',
-                    'qty':       abs(delta),
-                    'lmt_price': round(price * (0.9995 if delta > 0 else 1.0005), 2),
-                    'strategy':  strategy,
-                })
+        planned = plan.build_order_list(
+            targets=targets,
+            current_pos=current_pos,
+            current_other_holdings=current_other_holdings,
+            prices=prices,
+            nav=nav,
+            log_fn=log.info,
+            warn_fn=log.warning,
+        )
+        # LMT 保護價（execution 關切，留在 shell）：BUY −0.05% / SELL +0.05%
+        order_list = [{
+            'symbol':    o.symbol,
+            'action':    o.action,
+            'qty':       o.qty,
+            'lmt_price': round(o.price * (0.9995 if o.action == 'BUY' else 1.0005), 2),
+            'strategy':  o.strategy,
+        } for o in planned]
 
         # ── 7. 下單（先取消既有掛單，避免重複）─────────────────────────
         if not order_list:
             log.info("Step 7: No changes needed.")
         else:
-            # 訂單去重
-            seen_syms = set()
-            dedup_list = []
-            for o in order_list:
-                if o['symbol'] in seen_syms:
-                    log.warning(f"  duplicate order for {o['symbol']}, keeping first")
-                    continue
-                seen_syms.add(o['symbol'])
-                dedup_list.append(o)
-            order_list = dedup_list
-
             # 取消該帳戶既有掛單
             if not dry_run:
                 open_trades = ib.openTrades()

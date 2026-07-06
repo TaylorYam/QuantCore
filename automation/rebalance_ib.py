@@ -209,7 +209,8 @@ def _send_tg_report(nav, order_list, placed, trades, fill_results,
                     skewls_wgt: dict | None = None,
                     skewls_signal_date: str = "N/A",
                     skewls_triggered: bool | None = None,
-                    skewls_delta: float | None = None):
+                    skewls_delta: float | None = None,
+                    drift_lines: list[str] | None = None):
     dry_run     = ctx.dry_run
     acct_name   = ctx.name
     alloc_sr    = ctx.alloc_sr
@@ -316,6 +317,10 @@ def _send_tg_report(nav, order_list, placed, trades, fill_results,
         sign = "+" if total_upnl >= 0 else ""
         lines.append(f"  <b>未實現損益: {sign}${total_upnl:,.2f}</b>")
 
+    # 理論 vs 實際對帳（Step 9b；每次都附完整分類摘要）
+    if drift_lines:
+        lines.extend(html_mod.escape(ln) for ln in drift_lines)
+
     if error_msg:
         lines.append(f"\n<b>Error:</b> {html_mod.escape(str(error_msg)[:300])}")
 
@@ -379,6 +384,7 @@ def main(mode: str, ctx: AccountCtx):
     sr_signal_date    = "N/A"
     sp500_signal_date = "N/A"
     skewls_signal_date = "N/A"
+    drift_lines  = None            # Step 9b 理論 vs 實際對帳（TG 報告附段）
 
     log.info(f"{'='*60}")
     log.info(f"  QuantCore Rebalance  {date.today()}  [{mode_label}]")
@@ -533,6 +539,26 @@ def main(mode: str, ctx: AccountCtx):
         log.info("Step 9: Fetching positions detail for P&L...")
         pos_detail = get_positions_detail(ib, ctx=ctx)
 
+        # ── 9b. 理論 vs 實際對帳（執行驗證）─────────────────────────────
+        # MOO 開盤才成交 → 不比成交、比「送單覆蓋」：算出該動卻一張單都
+        # 沒送 = 🔴（2026-06 inverse 凍結類 bug 的當場警鈴）。
+        log.info("Step 9b: Drift verification (theory vs actual)...")
+        try:
+            fresh_pos = get_positions(ib, ctx=ctx)
+            drift_rows = plan.verify_execution(
+                plan.evaluate_deltas(targets, fresh_pos,
+                                     current_other_holdings, prices, nav),
+                placed,
+            )
+            drift_lines = plan.drift_report_lines(drift_rows)
+            for ln in drift_lines:
+                if ln:
+                    log.info(f"  {ln}")
+        except Exception as e:
+            log.error(f"  drift verification failed: {e}", exc_info=True)
+            drift_lines = ["", f"⚠️ 對帳段失敗: {e}"]
+            # 不 raise — 對帳失敗不該阻擋交易完成回報
+
         # ── 10. Skew LS state 更新（成功觸發 + 有下單時）────────────────
         if run_skewls and skewls_triggered and alloc_skewls > 0:
             try:
@@ -592,6 +618,7 @@ def main(mode: str, ctx: AccountCtx):
             elapsed=elapsed,
             error_msg=error_msg,
             ctx=ctx,
+            drift_lines=drift_lines,
             skewls_wgt=skewls_wgt,
             skewls_signal_date=skewls_signal_date,
             skewls_triggered=skewls_triggered,

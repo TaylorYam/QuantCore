@@ -620,6 +620,9 @@ class ControlPanel(tk.Tk):
         self._btn(btn_bar, "Sync Pos",
                   self._sync_position,
                   MAGENTA, padx=6, pady=3, font=self.font_small).pack(side="left", padx=(0, 2))
+        self._btn(btn_bar, "Drift Check",
+                  self._drift_check,
+                  BTN_BG, padx=6, pady=3, font=self.font_small).pack(side="left", padx=(0, 2))
         self._btn(btn_bar, "Report",
                   lambda: self._run_script_args("daily_report.py", self._get_account_arg(), "Daily Report"),
                   BTN_BG, padx=6, pady=3, font=self.font_small).pack(side="left", padx=(0, 2))
@@ -1153,6 +1156,37 @@ class ControlPanel(tk.Tk):
     def _get_account_arg(self) -> str:
         """取得當前選中帳戶的 --account 參數"""
         return f"--account {self.selected_account.get()}"
+
+    # ── Drift Check（理論 vs 實際對帳，唯讀）───────────────
+
+    def _drift_check(self):
+        """對帳：與 scheduled rebalance 的 standing 理論目標比（SkewLS 用
+        state last_target、SP500 hold 現倉），逐檔分類偏離原因輸出到
+        Output Log。唯讀 — 不下單、不寫 state。"""
+        acct = self.selected_account.get()
+        self._log(f"[>] Drift Check — 理論 vs 實際對帳 [{acct}]...")
+        threading.Thread(target=self._drift_check_thread, args=(acct,),
+                         daemon=True).start()
+
+    def _drift_check_thread(self, account_name: str):
+        try:
+            from account_utils import ROLE_REBALANCE
+            from account_ctx import AccountCtx
+            import rebalance_plan as rp
+            import sync_position as sp
+
+            def progress(msg: str):
+                self.after(0, lambda m=msg: self._log(m))
+
+            ctx = AccountCtx.from_name(account_name, ROLE_REBALANCE)
+            rows, nav = sp.compute_drift_rows(ctx, log_fn=progress)
+            report = ([f"[Drift Check] [{account_name}] NAV=${nav:,.0f}"]
+                      + [ln for ln in rp.drift_report_lines(rows) if ln])
+            self.after(0, lambda r=report: [self._log(ln) for ln in r])
+        except Exception as e:
+            err_msg = str(e)
+            self.after(0, lambda m=err_msg:
+                       self._log(f"[X] Drift Check failed: {m}"))
 
     # ── Sync Position ─────────────────────────────────────
 

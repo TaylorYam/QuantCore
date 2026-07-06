@@ -185,6 +185,77 @@ def compute_sync_plan(
     )
 
 
+# ── Drift check（理論 vs 實際對帳，唯讀）──────────────────────────────
+
+def compute_drift_rows(
+    ctx: AccountCtx,
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> tuple[list, float]:
+    """
+    連 IB 抓快照，回傳 (rebalance_plan.DeltaRow 列表, nav) — 純觀測，
+    不下單、不寫 state。
+
+    與 compute_sync_plan 的**語意差別**：sync 是「強制同步到今日訊號」；
+    對帳是「與 scheduled rebalance 的 standing 理論目標比」——
+      SR     = 今日訊號（跨週 stable）
+      SkewLS = state last_target（threshold gate 維持中的目標；今日訊號
+               尚未觸發前不算偏離）
+      SP500  = hold 現倉（只在週三 rebalance 日有新目標；平日理論 = 現倉）
+    因此平日的 🔴 = 真異常（凍結類），不會把「訊號還沒到執行日」誤報成偏離。
+    """
+    def _log(msg: str) -> None:
+        log.info(msg)
+        if log_fn:
+            try:
+                log_fn(msg)
+            except Exception:
+                pass
+
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+    _log("  Computing SR weights...")
+    sr_wgt, _sr_date = signals.get_sr_weights()
+
+    skewls_wgt: dict[str, float] = {}
+    if ctx.alloc_skewls > 0:
+        import skewls_state
+        state = skewls_state.load_state(ctx.name)
+        skewls_wgt = dict(state.get("last_target", {}))
+
+    _log("  Connecting to IB...")
+    ib = ib_fetcher.connect(ctx)
+    try:
+        nav = ib_fetcher.get_nav(ib, ctx)
+        current_pos = ib_fetcher.get_positions(ib, ctx)
+        _log(f"  NAV=${nav:,.0f}  positions={len(current_pos)}")
+
+        sp500_universe = signals.get_sp500_universe()
+        split = plan.classify_holdings(current_pos, sp500_universe)
+
+        sp500_wgt = plan.sp500_placeholder_weights(split.sp500)
+        all_syms = plan.plan_symbols(sr_wgt, sp500_wgt, skewls_wgt, current_pos)
+        _log(f"  Getting prices for {len(all_syms)} symbols...")
+        prices = ib_fetcher.get_prices(ib, all_syms, ctx)
+    finally:
+        try:
+            if ib.isConnected():
+                ib.disconnect()
+        except Exception:
+            pass
+
+    targets = plan.combine_targets(nav, sr_wgt, {}, prices, ctx=ctx,
+                                   skewls_wgt=skewls_wgt)
+    targets = plan.apply_sp500_hold(targets, run_sp500=False,
+                                    current_sp500_holdings=split.sp500,
+                                    positions=current_pos)
+    rows = plan.evaluate_deltas(targets, current_pos, split.other,
+                                prices, nav)
+    return rows, nav
+
+
 # ── Submit phase ──────────────────────────────────────────────────────
 
 def submit_sync_orders(

@@ -25,7 +25,7 @@ panel Sync Pos（sync_position.compute_sync_plan）皆為 caller —
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _replace
 
 import numpy as np
 
@@ -56,6 +56,31 @@ class HoldingsSplit:
     sr: list[str] = field(default_factory=list)      # SR sector ETF
     sp500: list[str] = field(default_factory=list)   # SP500 個股（歷史聯集）
     other: list[str] = field(default_factory=list)   # 手動持倉 — 永不調整
+
+
+@dataclass
+class DeltaRow:
+    """理論 vs 實際的單一標的對帳列（[[Rebalance Plan]] 的觀測輸出）。
+
+    category:
+      aligned            — target == current
+      within_threshold   — 差額 < REBALANCE_THRESHOLD，設計內不動作
+      actionable         — 應執行（超門檻／清倉／建倉／翻向）
+      submitted          — 應執行且本輪已送單、等成交（verify_execution 標記）
+      manual             — 手動持倉，不參與策略
+      excluded_conflict  — 被歸手動卻有策略目標 = 分類異常（凍結類 bug 指紋）
+      no_price           — 無報價，本輪跳過
+    """
+    symbol: str
+    category: str
+    reason: str            # 人話原因（TG / panel 顯示用）
+    target: int | None     # 理論目標股數；純手動持倉 = None
+    current: int
+    delta: int             # target − current（manual = 0）
+    price: float
+    drift_pct: float       # abs(delta) × price ÷ NAV
+    strategy: str
+    threshold: float       # 判定當下的 REBALANCE_THRESHOLD（顯示用）
 
 
 @dataclass
@@ -244,6 +269,92 @@ def plan_symbols(sr_wgt: dict, sp500_wgt: dict, skewls_wgt: dict,
     )
 
 
+def evaluate_deltas(targets: dict[str, dict],
+                    current_pos: dict[str, float],
+                    current_other_holdings: list[str],
+                    prices: dict[str, float],
+                    nav: float) -> list[DeltaRow]:
+    """
+    理論 vs 實際的全帳戶對帳（symbol 排序，決定性輸出）。
+
+    build_order_list 的訂單 = 本表 category == "actionable" 的列 — 分類器與
+    下單器同一顆腦，永不分家。判定規則（與歷史行為逐位相同）：
+      - 差額 < REBALANCE_THRESHOLD（同向）→ within_threshold，設計內不動作
+      - 清倉（target=0）/ 建倉（current=0）/ 翻向（long↔short）→ 必執行
+      - 手動持倉（current_other_holdings）→ manual，永不調整；
+        若同時**存在策略目標** → excluded_conflict（分類異常 — 2026-06
+        inverse 凍結事故的指紋：持倉被誤歸手動、目標單整批蒸發）
+    """
+    from strategies.sp500_momentum import config as sp_cfg
+    rebal_thresh = sp_cfg.REBALANCE_THRESHOLD  # 0.03
+
+    other = set(current_other_holdings)
+    strategy_syms = (set(targets.keys()) | set(current_pos.keys())) - other
+
+    rows: list[DeltaRow] = []
+    for sym in sorted(strategy_syms):
+        price = prices.get(sym, 0)
+        target_shares = targets.get(sym, {}).get('shares', 0)
+        curr_shares   = int(current_pos.get(sym, 0))
+        delta         = target_shares - curr_shares
+        strategy      = targets.get(sym, {}).get('strategy', 'EXIT')
+
+        if price <= 0:
+            rows.append(DeltaRow(sym, "no_price", "無報價，本輪跳過",
+                                 target_shares, curr_shares, delta,
+                                 price, 0.0, strategy, rebal_thresh))
+            continue
+        if delta == 0:
+            rows.append(DeltaRow(sym, "aligned", "對齊",
+                                 target_shares, curr_shares, 0,
+                                 price, 0.0, strategy, rebal_thresh))
+            continue
+
+        drift_pct = abs(delta) * price / nav if nav > 0 else 0
+        same_direction = (
+            target_shares != 0 and curr_shares != 0
+            and (target_shares > 0) == (curr_shares > 0)
+        )
+        if same_direction and drift_pct < rebal_thresh:
+            rows.append(DeltaRow(
+                sym, "within_threshold",
+                f"漂移 {drift_pct*100:.1f}% < {rebal_thresh*100:.0f}% 門檻，設計內不動作",
+                target_shares, curr_shares, delta,
+                price, drift_pct, strategy, rebal_thresh))
+            continue
+
+        if not same_direction:
+            if target_shares == 0:
+                reason = "清倉（不受門檻限制）"
+            elif curr_shares == 0:
+                reason = "建倉（不受門檻限制）"
+            else:
+                reason = "翻向（不受門檻限制）"
+        else:
+            reason = f"漂移 {drift_pct*100:.1f}% ≥ {rebal_thresh*100:.0f}% 門檻"
+        rows.append(DeltaRow(sym, "actionable", reason,
+                             target_shares, curr_shares, delta,
+                             price, drift_pct, strategy, rebal_thresh))
+
+    # 手動持倉列（報表用；build_order_list 一律略過）
+    for sym in sorted(other & (set(current_pos.keys()) | set(targets.keys()))):
+        curr = int(current_pos.get(sym, 0))
+        price = prices.get(sym, 0)
+        if sym in targets:
+            t = targets[sym].get('shares', 0)
+            rows.append(DeltaRow(
+                sym, "excluded_conflict",
+                "被歸手動持倉卻有策略目標 — 分類異常，請檢查 universe/清單",
+                t, curr, t - curr, price,
+                (abs(t - curr) * price / nav) if (nav > 0 and price > 0) else 0.0,
+                targets[sym].get('strategy', '?'), rebal_thresh))
+        else:
+            rows.append(DeltaRow(sym, "manual", "手動持倉，不參與策略調整",
+                                 None, curr, 0, price, 0.0, "MANUAL",
+                                 rebal_thresh))
+    return rows
+
+
 def build_order_list(targets: dict[str, dict],
                      current_pos: dict[str, float],
                      current_other_holdings: list[str],
@@ -252,66 +363,115 @@ def build_order_list(targets: dict[str, dict],
                      log_fn=None,
                      warn_fn=None) -> list[PlannedOrder]:
     """
-    根據目標持倉 vs 現有持倉算出差額 order list（symbol 排序，決定性輸出）。
-
-    套用 REBALANCE_THRESHOLD 過濾：單一標的漂移 < 3% NAV 不動作。
-    例外：清倉（target=0）/ 建倉（current=0）/ 翻向（long↔short）必執行。
-    手動持倉（current_other_holdings）永不產生訂單。
+    根據目標持倉 vs 現有持倉算出差額 order list = evaluate_deltas 的
+    actionable 列（規則見該函式；判定同一顆腦）。
 
     log_fn / warn_fn：scheduled rebalance 傳 log.info / log.warning 以保留
     歷史 log 逐字格式；Sync Pos 傳 None（預覽視窗自行顯示）。
     """
-    from strategies.sp500_momentum import config as sp_cfg
-    rebal_thresh = sp_cfg.REBALANCE_THRESHOLD  # 0.03
-
-    all_target_syms = set(targets.keys()) | set(current_pos.keys())
-    all_target_syms -= set(current_other_holdings)  # 排除手動操作標的
-
     orders: list[PlannedOrder] = []
-    for sym in sorted(all_target_syms):
-        price = prices.get(sym, 0)
-        if price <= 0:
+    for row in evaluate_deltas(targets, current_pos, current_other_holdings,
+                               prices, nav):
+        if row.category in ("manual", "excluded_conflict"):
+            continue  # 手動持倉不下單（conflict 由對帳報表警示）
+        if row.category == "no_price":
             if warn_fn:
-                warn_fn(f"  {sym}: no price, skipping")
+                warn_fn(f"  {row.symbol}: no price, skipping")
             continue
-
-        target_shares = targets.get(sym, {}).get('shares', 0)
-        curr_shares   = int(current_pos.get(sym, 0))
-        delta         = target_shares - curr_shares
-        strategy      = targets.get(sym, {}).get('strategy', 'EXIT')
-
-        # REBALANCE_THRESHOLD 過濾：小於 3% NAV 漂移不動作
-        # 例外：清倉（target=0）/ 開倉（current=0）/ 翻向（long↔short）必須執行
-        same_direction = (
-            target_shares != 0 and curr_shares != 0
-            and (target_shares > 0) == (curr_shares > 0)
-        )
-        if delta != 0 and same_direction:
-            drift_val = abs(delta) * price
-            drift_pct = drift_val / nav if nav > 0 else 0
-            if drift_pct < rebal_thresh:
-                if log_fn:
-                    log_fn(
-                        f"  {sym} [{strategy}]: target={target_shares:5d}sh "
-                        f"current={curr_shares:5d}sh  delta={delta:+d}  "
-                        f"drift={drift_pct*100:.1f}% < {rebal_thresh*100:.0f}% → skip"
-                    )
-                continue
+        if row.category == "within_threshold":
+            if log_fn:
+                log_fn(
+                    f"  {row.symbol} [{row.strategy}]: target={row.target:5d}sh "
+                    f"current={row.current:5d}sh  delta={row.delta:+d}  "
+                    f"drift={row.drift_pct*100:.1f}% < {row.threshold*100:.0f}% → skip"
+                )
+            continue
 
         if log_fn:
             log_fn(
-                f"  {sym} [{strategy}]: target={target_shares:5d}sh "
-                f"current={curr_shares:5d}sh  delta={delta:+d}"
+                f"  {row.symbol} [{row.strategy}]: target={row.target:5d}sh "
+                f"current={row.current:5d}sh  delta={row.delta:+d}"
             )
 
-        if delta != 0:
+        if row.category == "actionable":
             orders.append(PlannedOrder(
-                symbol=sym,
-                action='BUY' if delta > 0 else 'SELL',
-                qty=abs(delta),
-                price=price,
-                strategy=strategy,
-                target=target_shares,
-                current=curr_shares,
+                symbol=row.symbol,
+                action='BUY' if row.delta > 0 else 'SELL',
+                qty=abs(row.delta),
+                price=row.price,
+                strategy=row.strategy,
+                target=row.target,
+                current=row.current,
             ))
     return orders
+
+
+def verify_execution(rows: list[DeltaRow],
+                     placed_orders: list[dict]) -> list[DeltaRow]:
+    """
+    執行後驗證：把 actionable 列對照本輪實際送出的單（rebalance_ib 的
+    placed dicts）標記覆蓋狀態。MOO 單開盤才成交，故不比成交、只比送單：
+
+      - 有單且數量剛好 → submitted（🕐 等成交，正常）
+      - 完全沒有對應單 → 維持 actionable，reason 加註 ⚠️ — 凍結類 bug
+        的當場警鈴（決策層算出該動、執行層卻一張單都沒送）
+      - 部分覆蓋 → 維持 actionable，reason 註記缺口
+    """
+    net: dict[str, int] = {}
+    for o in placed_orders:
+        signed = int(o['qty']) if o['action'] == 'BUY' else -int(o['qty'])
+        net[o['symbol']] = net.get(o['symbol'], 0) + signed
+
+    out: list[DeltaRow] = []
+    for r in rows:
+        if r.category != "actionable":
+            out.append(r)
+            continue
+        covered = net.get(r.symbol, 0)
+        residual = r.delta - covered
+        if covered == 0:
+            out.append(_replace(
+                r, reason=r.reason + "；⚠️ 本輪未送出任何對應單"))
+        elif residual == 0:
+            out.append(_replace(
+                r, category="submitted",
+                reason="已送單待成交（MOO 開盤成交）"))
+        else:
+            out.append(_replace(
+                r, reason=f"已送 {covered:+d} 股、仍缺 {residual:+d} 股（部分覆蓋）"))
+    return out
+
+
+def drift_report_lines(rows: list[DeltaRow]) -> list[str]:
+    """對帳報表渲染（TG / panel log 共用；純文字，一行一項）。"""
+    red       = [r for r in rows if r.category in ("actionable",
+                                                   "excluded_conflict")]
+    submitted = [r for r in rows if r.category == "submitted"]
+    yellow    = [r for r in rows if r.category == "within_threshold"]
+    manual    = [r for r in rows if r.category == "manual"]
+    no_price  = [r for r in rows if r.category == "no_price"]
+    aligned_n = sum(1 for r in rows if r.category == "aligned")
+
+    lines = ["", "—— 理論 vs 實際 對帳 ——"]
+    if red:
+        lines.append(f"🔴 需要注意 {len(red)} 檔:")
+        for r in red:
+            tgt = "—" if r.target is None else str(r.target)
+            lines.append(f"  {r.symbol} [{r.strategy}]: 應 {tgt} 實 {r.current}"
+                         f"（差 {r.delta:+d} 股, {r.drift_pct*100:.1f}% NAV）"
+                         f"— {r.reason}")
+    if submitted:
+        lines.append(f"🕐 已送單待成交 {len(submitted)} 檔: "
+                     + ", ".join(f"{r.symbol}{r.delta:+d}" for r in submitted))
+    if yellow:
+        top = sorted(yellow, key=lambda r: -r.drift_pct)[:3]
+        lines.append(f"🟡 門檻內漂移 {len(yellow)} 檔（最大: "
+                     + ", ".join(f"{r.symbol} {r.drift_pct*100:.1f}%"
+                                 for r in top) + "）")
+    if no_price:
+        lines.append("⚠️ 無報價跳過: " + ", ".join(r.symbol for r in no_price))
+    if manual:
+        lines.append("⚪ 手動排除: " + ", ".join(r.symbol for r in manual))
+    lines.append(f"✅ 對齊 {aligned_n} 檔"
+                 + ("" if red else "，無異常"))
+    return lines

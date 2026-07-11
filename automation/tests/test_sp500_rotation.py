@@ -107,6 +107,64 @@ def test_max_adj_slope_none_disables_overheat_filter(monkeypatch):
     assert buys[0] == "HOT"
 
 
+# ── blowoff entry block（ADR-0011）───────────────────────────────────────
+
+
+def brow(ticker, kurt60, adj_slope=1.3):
+    r = row(ticker, adj_slope)
+    r["kurt60"] = kurt60
+    return r
+
+
+def test_blowoff_flag_off_is_noop():
+    """預設 False：kurt60 再高也不封鎖（characterization flag-off 等價前提）。"""
+    assert config.BLOWOFF_ENTRY_BLOCK is False or True  # 讀取不炸即可
+    hot = brow("BLOW", 99.0)
+    ranked = [hot] + make_ranked(10, 1.2)
+    if not config.BLOWOFF_ENTRY_BLOCK:
+        assert rotation.rotation_buys([], ranked)[0] == "BLOW"
+
+
+def test_blowoff_candidate_does_not_consume_slot(monkeypatch):
+    """噴出者不佔補位名額 — 與 MAX_ADJ_SLOPE 過熱同一語意（濾後取前 needed）。"""
+    monkeypatch.setattr(config, "BLOWOFF_ENTRY_BLOCK", True)
+    blow = brow("BLOW", config.BLOWOFF_KURT_MAX + 0.1)
+    ranked = [blow] + make_ranked(10, 1.2)
+    buys = rotation.rotation_buys([], ranked)
+    assert "BLOW" not in buys
+    assert buys == ["T00", "T01", "T02", "T03"]
+
+
+def test_blowoff_threshold_is_strict_greater(monkeypatch):
+    """臨界值本身（== 門檻）不封鎖 — 研究用 strict >，live 同語意。"""
+    monkeypatch.setattr(config, "BLOWOFF_ENTRY_BLOCK", True)
+    edge = brow("EDGE", config.BLOWOFF_KURT_MAX)
+    assert rotation.is_blowoff(edge) is False
+    assert rotation.rotation_buys([], [edge] + make_ranked(5, 1.2))[0] == "EDGE"
+
+
+def test_blowoff_nan_or_missing_not_blocked(monkeypatch):
+    """NaN / 缺值 = 資料不足不封鎖（與研究 blowoff_factors None 語意一致）。"""
+    monkeypatch.setattr(config, "BLOWOFF_ENTRY_BLOCK", True)
+    nan_row = brow("NANK", float("nan"))
+    missing = row("MISS", 1.35)          # 無 kurt60 鍵
+    assert rotation.is_blowoff(nan_row) is False
+    assert rotation.is_blowoff(missing) is False
+    buys = rotation.rotation_buys([], [nan_row, missing] + make_ranked(5, 1.2))
+    assert buys[:2] == ["NANK", "MISS"]
+
+
+def test_blowoff_does_not_touch_kept(monkeypatch):
+    """只擋買、不砍倉：kept 的噴出股不受影響（拆解結論 — 抱住是對的）。"""
+    monkeypatch.setattr(config, "BLOWOFF_ENTRY_BLOCK", True)
+    held_blow = brow("HELD", config.BLOWOFF_KURT_MAX + 5)
+    ranked = [held_blow] + make_ranked(10, 1.2)
+    sells = rotation.rotation_sells(["HELD"], ranked)
+    assert sells == []                   # 排名第一、價在 EMA 上 → 續抱
+    buys = rotation.rotation_buys(["HELD"], ranked)
+    assert "HELD" not in buys and len(buys) == 3
+
+
 # ── atr_weights ──────────────────────────────────────────────────────────
 
 

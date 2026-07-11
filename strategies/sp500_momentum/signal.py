@@ -361,6 +361,8 @@ def get_preview_weights(
             continue
         if r.get("adj_slope", 0) >= sp_cfg.MAX_ADJ_SLOPE:
             continue
+        if rotation.is_blowoff(r):   # ADR-0011：噴出不佔名額（與 live 同判定）
+            continue
         new_picks.append(r)
 
     selected = survivors + new_picks

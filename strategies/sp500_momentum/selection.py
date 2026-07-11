@@ -177,6 +177,15 @@ class SelectionEngine:
         price  = float(closes[-1])
         atr_pct = atr / price if price > 0 else 0.0
 
+        # 5. 噴出因子 kurt60（ADR-0011）：日報酬 rolling kurtosis。
+        #    與研究同源定義（robustness/takeprofit_common.blowoff_factors）：
+        #    Adj Close 優先、pct_change 後 dropna 取尾 60、樣本不足為 NaN
+        #    （NaN = 資料不足不封鎖）。
+        kurt_w = getattr(config, "BLOWOFF_KURT_WINDOW", 60)
+        kurt_col = "Adj Close" if "Adj Close" in hist.columns else "Close"
+        kurt_rets = hist[kurt_col].pct_change().dropna().tail(kurt_w)
+        kurt60 = float(kurt_rets.kurt()) if len(kurt_rets) == kurt_w else float("nan")
+
         result = {
             "ticker":    ticker,
             "adj_slope": adj_slope,
@@ -185,6 +194,7 @@ class SelectionEngine:
             "exit_ema":  exit_ema,
             "atr":       atr,
             "atr_pct":   atr_pct,
+            "kurt60":    kurt60,
         }
         self.metrics_cache[cache_key] = result
         return result

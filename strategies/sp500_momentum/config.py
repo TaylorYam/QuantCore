@@ -36,6 +36,17 @@ ENTRY_EMA_FILTER  = False # 買入候選是否排除「收盤<EXIT_EMA」者。W
                           # rank 優先 — 高排名急跌股續抱/買回在 OOS 勝出；開關保留供重驗
 MAX_ADJ_SLOPE     = 1.5   # 過熱保護：Adj Slope 上限
 
+# ── 噴出進場封鎖（Blowoff entry block，ADR-0011）───────────────
+# 「漲相不穩」過濾：候選股 60 日日報酬 kurtosis > 門檻者不佔補位名額，
+# 與 MAX_ADJ_SLOPE（漲太快）並列的第二道進場濾網 — 只擋買、不砍倉。
+# 門檻 = 2018-07→2026-07-09 獲利中持股 kurt60 分布 P90 錨定；WF 過 gate
+# （kurt60/skew60 × N=8/N=7 全 PASS，每折重錨門檻 10~22 漂移皆穩定勝出）。
+# 研究：robustness/takeprofit_report.md；同源定義 robustness/takeprofit_common.py。
+# 翻 flag = 策略變更，須重跑 WF 過 gate 才能改（比照 ENTRY_EMA_FILTER 紀律）。
+BLOWOFF_ENTRY_BLOCK = True    # 2026-07-11 上線（ADR-0011；characterization 全過）
+BLOWOFF_KURT_WINDOW = 60      # 日報酬 rolling kurtosis 窗口（WF 驗證值，勿單獨調）
+BLOWOFF_KURT_MAX    = 14.7712 # P90 錨定值（anchor_thresholds.json 2026-07-10）
+
 # ── 風險管理 ──────────────────────────────────────────────────
 STOP_LOSS_PCT     = 0.20  # DEPRECATED/未使用 — 停損已移除（ADR-0004）
 SKIP_MAX_GAP_PCT  = 0.20  # 跳空 > 20% 不買入（進場過濾，保留）

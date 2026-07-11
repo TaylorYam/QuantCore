@@ -67,8 +67,16 @@ _Avoid_: 前一日, Previous bar
 _Avoid_: Daily check, Stop loss job
 
 **Rotation**:
-[[SP500]] 每週三的持股輪動決策：持股「排名跌出前 20（SELL_RANK_THRESHOLD）」或「跌破 EMA50（EXIT_EMA）」者賣出，缺額依動能排名補足（過熱 adj_slope ≥ MAX_ADJ_SLOPE 不佔名額），以 ATR 反比配權。rank 優先於 EMA — 同輪賣出又買回 = 續抱是刻意行為（[ADR-0005](docs/adr/0005-rank-priority-no-entry-ema-filter.md)）；個股出場只由 Rotation 負責（[ADR-0004](docs/adr/0004-remove-sp500-fixed-stop-and-gap-exit.md)）。唯一實作 `strategies/sp500_momentum/rotation.py`；live（signal.py）、backtest（backtester.py 與 frac-sizing 研究）皆為 caller，execution 關切（成交價、資金、取整、kept 的執行回饋）留在 caller。
+[[SP500]] 每週三的持股輪動決策：持股「排名跌出前 20（SELL_RANK_THRESHOLD）」或「跌破 EMA50（EXIT_EMA）」者賣出，缺額依動能排名補足（過熱 adj_slope ≥ MAX_ADJ_SLOPE 與 [[噴出 (Blowoff)]] kurt60 > 門檻皆不佔名額，[ADR-0011](docs/adr/0011-sp500-blowoff-entry-block.md)），以 ATR 反比配權。rank 優先於 EMA — 同輪賣出又買回 = 續抱是刻意行為（[ADR-0005](docs/adr/0005-rank-priority-no-entry-ema-filter.md)）；個股出場只由 Rotation 負責（[ADR-0004](docs/adr/0004-remove-sp500-fixed-stop-and-gap-exit.md)）。唯一實作 `strategies/sp500_momentum/rotation.py`；live（signal.py）、backtest（backtester.py 與 frac-sizing 研究）皆為 caller，execution 關切（成交價、資金、取整、kept 的執行回饋）留在 caller。
 _Avoid_: Rebalance（帳戶層 [[Combine]]+下單那一步）、選股（上游 ranking 是 SelectionEngine 的事）
+
+**噴出 (Blowoff)**:
+個股價格結構脫離「穩定上漲」範圍的狀態 — live 判定 = 60 日調整後日報酬 kurtosis > P90 錨定門檻（`rotation.is_blowoff`，唯一實作；研究面另含乖離/skewness，見 `robustness/takeprofit_common.py`）。與 [[Rotation]] 既有的「過熱」（adj_slope ≥ MAX_ADJ_SLOPE，擋「漲太快」）是**不同概念、不同因子**（噴出擋「漲相不穩」——少數極端日撐起的走勢），不互相重載。出場用途已否決（[ADR-0010](docs/adr/0010-sp500-take-profit-exit-rejected.md)）；**進場封鎖**（噴出不佔 [[Rotation]] 補位名額，只擋買、不砍倉）2026-07-11 上線（[ADR-0011](docs/adr/0011-sp500-blowoff-entry-block.md)）。
+_Avoid_: 過熱（保留給 adj_slope 進場過濾）、乖離過大（研究面因子之一，非 live 判定）
+
+**停利 (Take-Profit)**:
+[[SP500]] 被否決的第三個 [[Rotation]] 賣出理由提案（獲利前提 + [[噴出 (Blowoff)]] 觸發）— 拆解回測證明出場貢獻 ≤ 0，見 [ADR-0010](docs/adr/0010-sp500-take-profit-exit-rejected.md)。個股出場維持「只由週三 Rotation 負責」（ADR-0004）。此詞條保留供未來提案比對，免重盤。
+_Avoid_: 停損（方向相反且已被 ADR-0004 移除）、過熱出場、結構出場
 
 **理論部位 (Target Notional)**:
 單一 [[Account]] 對單一標的「取整前」的目標金額 = NAV × [[Allocation]] × Strategy weight。與 rebalance log 裡的 `target=Xsh`（取整**後**股數）是不同的東西——混用兩者是「1 股超出理論部位」這類誤判的根源。
@@ -93,6 +101,7 @@ _Avoid_: Monitoring（與 GatewayMonitor 心跳連線層混淆）、Alarm job
 - 多個 **Strategy** 在同個 **Account** 的 target 由 **Combine** 匯總成 per-ticker 目標股數（per-strategy 取整後加總；IB net 多空）
 - **Skew LS** 的 threshold rebal 需要 per-account state file（`skewls_state_{account}.json`）紀錄上次該策略自己的 target — 與 IB 真實部位無關（避免被其他 Strategy 的部位污染）
 - **日度風控** 的 **前收 (Reference Close)** = 最近已收盤 session；**執行盤 (Execution Session)** = 即將到來、尚未收盤的下一盤。回測中兩者是相鄰兩個歷史日；live 中 Execution Session 尚未存在於資料，故 Reference Close 必須是資料的最後一筆已收列、而非倒數第二筆
+- **停利**（研究中）觸發 = 獲利前提 AND **噴出**；**噴出**同時使該股不佔 **Rotation** 補位名額（與既有過熱 adj_slope 過濾並列的第二道進場封鎖）
 
 ## Example dialogue
 
@@ -115,3 +124,7 @@ _Avoid_: Monitoring（與 GatewayMonitor 心跳連線層混淆）、Alarm job
 - 「SR gross sum 0.95 是 bug 還是設計？」`test_get_sr_weights_sum_approximately_one` 斷言 ≈1.0 常態性失敗（2026-07-05）— 診斷：z-filter 後 raw 權重 normalize 到恰好 1.0，四捨五入至 WEIGHT_STEP（5%）後**只有 >100% 一側被強制降回**，<100% 殘差刻意留現金（例 2026-06-29：raw 0.506/0.274/0.220 → 0.50/0.25/0.20）；回測 `compute_mom_weights` 同源，11.5 年中 13.2% 天數 gross=0.95、7% 空手。解決：live 權重**不動**（改正規化會偏離已驗證回測），測試斷言改為設計界限 gross ∈ [1 − n×step/2, 1.0]，[[Strategy]] 詞條的「gross sum = 1.0」修正為「gross ≤ 1.0」；同類問題 `test_get_sr_weights_returns_non_empty`（斷言至少 1 檔持倉，熊市空手 regime 會常態性失敗）同日修正 — 空手時改驗證 z-threshold 前置條件（無 ETF 同時 z > thresh 且 score > 0），更名 `test_get_sr_weights_non_empty_or_verified_all_cash`，以 2022 熊市 6 個空手週模擬驗證通過且對非空日有鑑別力
 - 「Taylor 1 股 MU 超出理論部位」直覺（grilling 2026-07-05）— 7/1 實際數據證偽：floor 語意下 MU 為**低配 24%**、SP500 sleeve 僅部署 82%（現金拖累 ≈9% NAV）；超配只發生在 round() 的 [[Skew LS]] 小腳。命名釐清後拆成 [[理論部位 (Target Notional)]] 與 [[整數執行稅 (Integer Execution Tax)]] 兩詞。三臂 × 資金階梯研究**已完成**（`robustness/frac_sizing_report.md`）：[[整數執行稅 (Integer Execution Tax)]] 集中在小 sleeve × 高價股 — 回測 $2k 臂 −2.85pp CAGR、$11k 以上入 ±0.3pp 噪音底，但 live 實測 Taylor 當前部署率僅 89%（min 82%）≈ 每年 2.5–3pp；`int(round())` 一行改動可免費收回大部分；whipsaw 假說被三臂數據否決（3% threshold 已抑制）
 - 「refresh_constituents 可以自動化嗎」（2026-07-05）— ADR-0002 拒絕的是 **silent** 自動污染，而現行實作全程有 gates+告警不 silent；on-demand 則已失效兩次（2026-01 CIEN、2026-06 凍 34 天）。解決為每週三 04:50 gated 自動寫入：全綠才寫+diff 報告、soft warn（G3/G5）不寫入只告警、7 天 stale 提醒轉任自動化 watchdog，見 [ADR-0009](docs/adr/0009-constituents-gated-auto-refresh.md)
+- 「停利」提案時原指純結構條件出場（乖離/skew/kurt 超標即賣，不參照獲利）（grilling 2026-07-10）— 純結構規則自相矛盾：高乖離進場的股票（STX 2026-06-03 @940）當週就會被踢出、下輪 rank 優先又買回，重演 ADR-0004 移除停損時的 whipsaw。解決：[[停利 (Take-Profit)]] = 獲利前提（回合首筆進場價 +X%）AND [[噴出 (Blowoff)]]，只在週三 Rotation 評估，噴出條件對稱封鎖進場
+- skew 方向衝突（grilling 2026-07-10）：[[Skew LS]] 在 **sector 層級做多高 skew**（skew premium），停利研究在**個股層級把高 skew 當出場訊號**（lottery/blowoff）— 同一個詞、同一 codebase、相反方向的賭注。解決：兩者是不同層級的不同異常，皆屬合法用法；個股層級高 skew 出場的有效性由回測+WF 裁決，不由類比推定
+- 「過熱」一詞不重載（grilling 2026-07-10）：既有過熱專指 adj_slope ≥ MAX_ADJ_SLOPE 的進場過濾；新的結構條件另名 [[噴出 (Blowoff)]]，兩者因子不同（迴歸斜率×r² vs 乖離/skew/kurt）、作用端不同
+- 「乖離過大該停利」直覺（研究 2026-07-11 結案）— 數據證偽且方向相反：乖離停利全 grid 慘敗（最緊門檻 CAGR 12.5% vs 32.1%），高乖離贏家是動能右尾的來源不是風險；skew/kurt 停利出場拆解後貢獻 ≤ 0（兩筆實際出場 META/PLTR 皆為壞出場）。唯一存活訊號是「噴出**進場**封鎖」（不買，但抱著的不動）且過 WF，見 [ADR-0010](docs/adr/0010-sp500-take-profit-exit-rejected.md) 與 `robustness/takeprofit_report.md`

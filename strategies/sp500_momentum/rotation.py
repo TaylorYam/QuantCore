@@ -62,6 +62,21 @@ def rotation_sells(holdings: list[str], ranked: list[dict]) -> list[tuple[str, s
     return sells
 
 
+def is_blowoff(x: dict) -> bool:
+    """
+    噴出（Blowoff）判定：kurt60 > BLOWOFF_KURT_MAX（ADR-0011）。
+
+    「漲相不穩」— 60 日日報酬 kurtosis 超過獲利中持股分布的 P90 錨定值，
+    代表近期漲勢由少數極端日撐起（財報跳空 / 軋空型噴出）。只在
+    BLOWOFF_ENTRY_BLOCK 開啟時生效；NaN / 缺值 = 非噴出（資料不足不封鎖，
+    與研究語意一致）。metrics 組裝在 SelectionEngine.calculate_metrics。
+    """
+    if not getattr(config, "BLOWOFF_ENTRY_BLOCK", False):
+        return False
+    k = x.get("kurt60")
+    return isinstance(k, float) and k == k and k > config.BLOWOFF_KURT_MAX
+
+
 def rotation_buys(kept: list[str], ranked: list[dict]) -> list[str]:
     """
     補位買入決策：把持股補滿 TARGET_HOLDINGS。
@@ -69,6 +84,10 @@ def rotation_buys(kept: list[str], ranked: list[dict]) -> list[str]:
     ENTRY_EMA_FILTER（預設 False，ADR-0005）：WF（N=8+N=7）否決「買入
     候選排除跌破 EXIT_EMA 者」— rank 優先，高排名股同輪 EMA 賣出後買回
     （=續抱）是刻意行為。翻 flag = 策略變更，須重跑 WF 過 gate 才能部署。
+
+    BLOWOFF_ENTRY_BLOCK（ADR-0011）：噴出（kurt60 > 門檻）者不佔補位名額 —
+    與過熱同一模式的第二道進場濾網，只擋買、不影響 kept。WF 過 gate
+    （停利研究副產品，robustness/takeprofit_report.md）。
 
     Parameters
     ----------
@@ -78,7 +97,8 @@ def rotation_buys(kept: list[str], ranked: list[dict]) -> list[str]:
     Returns
     -------
     [ticker] — 依動能排名序，長度 ≤ TARGET_HOLDINGS − len(kept)。
-    過熱（adj_slope ≥ MAX_ADJ_SLOPE）者不佔補位名額（濾後才取前 needed 檔）。
+    過熱（adj_slope ≥ MAX_ADJ_SLOPE）與噴出（is_blowoff）者不佔補位名額
+    （濾後才取前 needed 檔）。
     """
     needed = config.TARGET_HOLDINGS - len(kept)
     if needed <= 0:
@@ -89,6 +109,8 @@ def rotation_buys(kept: list[str], ranked: list[dict]) -> list[str]:
                     if x.get("adj_slope", 999) < config.MAX_ADJ_SLOPE]
     else:
         eligible = list(ranked)
+
+    eligible = [x for x in eligible if not is_blowoff(x)]
 
     if getattr(config, "ENTRY_EMA_FILTER", False):
         pool = utils.filter_entry_eligible(eligible, exclude=set(kept))

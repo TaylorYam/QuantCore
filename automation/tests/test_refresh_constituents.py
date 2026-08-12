@@ -20,6 +20,62 @@ import pytest
 from data.refresh_constituents import gate_g5_rename_detect, reconstruct_gap
 
 
+def test_fetch_wikipedia_reads_current_and_history_pages(monkeypatch):
+    """Wikipedia moved the changes table to a separate history page on
+    2026-08-11.  The refresh must not assume both tables share one page."""
+    import data.refresh_constituents as refresh
+
+    current_table = pd.DataFrame({"Symbol": ["AAA", "BBB"]})
+    changes_table = pd.DataFrame({
+        ("Effective Date", "Effective Date"): ["August 5, 2026"],
+        ("Added", "Ticker"): ["AAA"],
+        ("Added", "Security"): ["Alpha"],
+        ("Removed", "Ticker"): ["OLD"],
+        ("Removed", "Security"): ["Old Co"],
+        ("Reason", "Reason"): ["Market capitalization change."],
+    })
+    current_table.columns = pd.Index(current_table.columns)
+    changes_table.columns = pd.MultiIndex.from_tuples(changes_table.columns)
+    nav_table = pd.DataFrame({"vteS&P 500 companies": ["nav"]})
+
+    class Response:
+        def __init__(self, body):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return self.body.encode("utf-8")
+
+    requested = []
+
+    def fake_urlopen(request, timeout):
+        requested.append(request.full_url)
+        marker = "HISTORY" if "Historical_components" in request.full_url else "CURRENT"
+        return Response(marker)
+
+    def fake_read_html(source):
+        marker = source.getvalue()
+        return ([changes_table, nav_table] if marker == "HISTORY"
+                else [current_table, nav_table])
+
+    monkeypatch.setattr(refresh.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(refresh.pd, "read_html", fake_read_html)
+    monkeypatch.setattr(refresh, "die",
+                        lambda msg: (_ for _ in ()).throw(AssertionError(msg)))
+
+    current, changes = refresh.fetch_wikipedia()
+
+    assert current == {"AAA", "BBB"}
+    assert changes.iloc[0]["Removed_Ticker"] == "OLD"
+    assert len(requested) == 2
+    assert any("Historical_components" in url for url in requested)
+
+
 def _changes(rows):
     """rows: list of (date_str, added, removed, reason)."""
     return pd.DataFrame(

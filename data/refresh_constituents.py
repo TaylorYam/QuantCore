@@ -46,7 +46,8 @@ TRADING_DAYS_FILE = REF_DIR / "us_trading_days.xlsx"
 LOG_DIR           = ROOT / "automation" / "logs"
 TELEGRAM_CFG      = ROOT / "automation" / "config.json"
 
-WIKI_URL         = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+WIKI_CURRENT_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+WIKI_HISTORY_URL = "https://en.wikipedia.org/wiki/Historical_components_of_the_S%26P_500"
 WIKI_UA          = "QuantCore/1.0 refresh_constituents (Wikipedia REST policy: identify yourself)"
 STOCK_HIST_START = "2015-01-01"
 
@@ -98,24 +99,29 @@ def tg_notify(msg: str) -> None:
 
 
 # ── Wikipedia fetch ──────────────────────────────────────────────────────────
+def _fetch_wikipedia_tables(url: str, label: str) -> list[pd.DataFrame]:
+    log(f"Fetching Wikipedia {label}: {url}")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": WIKI_UA})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            page_html = resp.read().decode("utf-8", errors="replace")
+        return pd.read_html(StringIO(page_html))
+    except Exception as e:
+        die(f"Failed to fetch Wikipedia {label}: {e}")
+
+
 def fetch_wikipedia() -> tuple[set[str], pd.DataFrame]:
     """Returns (current_constituents:set[str], changes_df normalized)."""
-    log(f"Fetching Wikipedia: {WIKI_URL}")
-    try:
-        req = urllib.request.Request(WIKI_URL, headers={"User-Agent": WIKI_UA})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
-        tables = pd.read_html(StringIO(html))
-    except Exception as e:
-        die(f"Failed to fetch Wikipedia: {e}")
-
-    if len(tables) < 2:
-        die(f"G6: expected at least 2 tables on Wikipedia page, got {len(tables)}")
-
-    current = _parse_current_table(tables[0])
+    current_tables = _fetch_wikipedia_tables(WIKI_CURRENT_URL, "current constituents")
+    if not current_tables:
+        die("G6: current constituents page contained no tables")
+    current = _parse_current_table(current_tables[0])
     log(f"  Current constituents: {len(current)}")
 
-    changes = _parse_changes_table(tables[1])
+    history_tables = _fetch_wikipedia_tables(WIKI_HISTORY_URL, "component history")
+    if not history_tables:
+        die("G6: component history page contained no tables")
+    changes = _parse_changes_table(history_tables[0])
     if changes.empty:
         die("G6: Wikipedia changes table parsed to empty -- likely schema change")
     log(f"  Recent change events: {len(changes)}  "

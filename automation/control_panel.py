@@ -63,8 +63,9 @@ TASK_UPDATE      = "QuantCore_DataUpdate_Daily"
 TASK_REBAL_SR    = "QuantCore_SR_Rebalance_Tue"
 TASK_REBAL_SP    = "QuantCore_SP500_Rebalance_Wed"
 TASK_REPORT      = "QuantCore_DailyReport"
-TASK_MOO_TUE     = "QuantCore_MOO_Fill_Tue"
-TASK_MOO_WED     = "QuantCore_MOO_Fill_Wed"
+# 2026-07-20：MOO Fill 由 Tue/Wed 合併為 Mon-Fri 單一任務
+# （SkewLS 於 Mon/Thu/Fri 門檻觸發送單時也需成交回報，7/10、7/16、7/20 三度漏報）
+TASK_MOO_DAILY   = "QuantCore_MOO_Fill_Daily"
 TASK_SP_DAILY    = "QuantCore_SP500_DailyCheck"
 # S22/S23：Skew LS threshold check（M-F 21:00 TW，多數日 no-op）
 TASK_REBAL_SKEWLS = "QuantCore_SkewLS_DailyCheck"
@@ -79,8 +80,7 @@ TASK_SCHTASK_ARGS = {
     TASK_REBAL_SR:    "/sc weekly /d TUE /st 21:00",
     TASK_REBAL_SP:    "/sc weekly /d WED /st 21:00",
     TASK_REPORT:      "/sc daily /st 04:40",
-    TASK_MOO_TUE:     "/sc weekly /d TUE /st 21:31",
-    TASK_MOO_WED:     "/sc weekly /d WED /st 21:31",
+    TASK_MOO_DAILY:   "/sc weekly /d MON,TUE,WED,THU,FRI /st 21:31",
     TASK_SP_DAILY:    "/sc weekly /d MON,TUE,WED,THU,FRI /st 16:00",
     TASK_REBAL_SKEWLS:"/sc weekly /d MON,THU,FRI /st 21:00",
     TASK_CONST_REFRESH:"/sc weekly /d WED /st 04:50",
@@ -93,8 +93,7 @@ TASK_SCRIPT_ARGS = {
     TASK_REBAL_SR:    ("rebalance_ib.py",      "--mode all --account all"),
     TASK_REBAL_SP:    ("rebalance_ib.py",      "--mode all --account all"),
     TASK_REPORT:      ("daily_report.py",      "--account all"),
-    TASK_MOO_TUE:     ("moo_fill_check.py",    "--account all"),
-    TASK_MOO_WED:     ("moo_fill_check.py",    "--account all"),
+    TASK_MOO_DAILY:   ("moo_fill_check.py",    "--account all"),
     TASK_SP_DAILY:    ("sp500_daily_check.py", "--account all"),
     TASK_REBAL_SKEWLS:("rebalance_ib.py",      "--mode skewls --account all"),
     TASK_CONST_REFRESH:("..\\data\\refresh_constituents.py", "--auto"),
@@ -106,8 +105,7 @@ TASK_LABELS = {
     TASK_REBAL_SR:    "Tue Rebalance (SR + SkewLS check)",
     TASK_REBAL_SP:    "Wed Rebalance (SP500 + SkewLS check)",
     TASK_REPORT:      "Daily Report",
-    TASK_MOO_TUE:     "MOO Fill Check (Tue)",
-    TASK_MOO_WED:     "MOO Fill Check (Wed)",
+    TASK_MOO_DAILY:   "MOO Fill Check (Mon-Fri)",
     TASK_SP_DAILY:    "SP500 Daily Check (Stop/Gap/Dip)",
     TASK_REBAL_SKEWLS:"SkewLS Check (Mon/Thu/Fri)",
     TASK_CONST_REFRESH:"Constituents Refresh (Wed, gated)",
@@ -473,6 +471,8 @@ class ControlPanel(tk.Tk):
         self.after(2200, self._start_morning_watch)
         # System tray icon — 點 X 不殺 app，縮到 tray 繼續跑監控
         self.after(2500, self._start_tray)
+        # Watchdog: tray 消失時自動還原視窗 + 監聽重複啟動信號
+        self.after(5000, self._watchdog_tick)
         # Panel 視窗 X = withdraw（藏起來但 Tk loop 活著；真退出走 tray>離開）
         self.protocol("WM_DELETE_WINDOW", self._on_window_close)
 
@@ -568,6 +568,30 @@ class ControlPanel(tk.Tk):
         except Exception:
             pass
         self.protocol("WM_DELETE_WINDOW", self._quit_app)
+
+    _WATCHDOG_INTERVAL = 5_000
+
+    def _watchdog_tick(self):
+        """Periodic guard: (1) if another launch wrote a show-signal file,
+        consume it and restore the window; (2) if the window is hidden but
+        the tray icon thread died, restore the window automatically."""
+        try:
+            sig = _signal_file_path()
+            if sig.exists():
+                try:
+                    sig.unlink()
+                except OSError:
+                    pass
+                self._log("[>] Re-launch signal received — restoring window")
+                self._show_window()
+            elif self.state() == "withdrawn":
+                tray = getattr(self, "_tray", None)
+                if tray is None or not tray.is_alive():
+                    self._log("[!] Tray icon lost while window hidden — restoring window")
+                    self._show_window()
+        except Exception:
+            pass
+        self.after(self._WATCHDOG_INTERVAL, self._watchdog_tick)
 
     # ── 建構 UI ─────────────────────────────────────────────
 
@@ -738,8 +762,7 @@ class ControlPanel(tk.Tk):
             (TASK_REBAL_SR,     "Tue Rebalance (SR+Skew)",    "Tue 21:00 TW = 09:00 ET (--mode all)"),
             (TASK_REBAL_SP,     "Wed Rebalance (SP500+Skew)", "Wed 21:00 TW = 09:00 ET (--mode all)"),
             (TASK_REBAL_SKEWLS, "SkewLS Check (M/Th/F)",      "Mon/Thu/Fri 21:00 TW = 09:00 ET"),
-            (TASK_MOO_TUE,      "MOO Fill (Tue)",             "Tue 21:31 TW = 09:31 ET"),
-            (TASK_MOO_WED,      "MOO Fill (Wed)",             "Wed 21:31 TW = 09:31 ET"),
+            (TASK_MOO_DAILY,    "MOO Fill (Mon-Fri)",         "Mon-Fri 21:31 TW = 09:31 ET"),
             (TASK_REPORT,       "Daily Report",               "Daily 04:40 TW = 16:40 ET"),
             (TASK_CONST_REFRESH,"Constituents Refresh",       "Wed 04:50 TW (gated, ADR-0009)"),
         ]
@@ -1533,7 +1556,7 @@ class ControlPanel(tk.Tk):
     def _install_scheduler(self):
         if not messagebox.askyesno(
             "Install All Tasks",
-            "Install ALL 8 scheduled tasks?\n\n"
+            "Install ALL 7 scheduled tasks?\n\n"
             "  1. QuantCore_DataUpdate_Daily    (Daily 04:30)\n"
             "  2. QuantCore_SP500_DailyCheck    (Mon-Fri 16:00)\n"
             "  3. QuantCore_SR_Rebalance_Tue    (Tue 21:00 --mode all,\n"
@@ -1542,9 +1565,8 @@ class ControlPanel(tk.Tk):
             "     SR hold + SP500 rebal + SkewLS check)\n"
             "  5. QuantCore_SkewLS_DailyCheck   (Mon/Thu/Fri 21:00)\n"
             "     (no-op if alloc_skewls = 0)\n"
-            "  6. QuantCore_MOO_Fill_Tue        (MOO Check Tue 21:31)\n"
-            "  7. QuantCore_MOO_Fill_Wed        (MOO Check Wed 21:31)\n"
-            "  8. QuantCore_DailyReport         (Daily 04:40)\n\n"
+            "  6. QuantCore_MOO_Fill_Daily      (MOO Check Mon-Fri 21:31)\n"
+            "  7. QuantCore_DailyReport         (Daily 04:40)\n\n"
             "Tue/Wed 用 --mode all 在單一 process 內算完三策略再送 MOO，\n"
             "避免與 SkewLS daily check 同時跑時的 clientId 衝突。\n\n"
             "Continue?"
@@ -1557,7 +1579,7 @@ class ControlPanel(tk.Tk):
         def _do():
             for tn in [TASK_UPDATE, TASK_SP_DAILY,
                        TASK_REBAL_SR, TASK_REBAL_SP, TASK_REBAL_SKEWLS,
-                       TASK_MOO_TUE, TASK_MOO_WED, TASK_REPORT]:
+                       TASK_MOO_DAILY, TASK_REPORT]:
                 out = install_single_task(tn)
                 self._log(f"  {out}")
             self._log("[OK] All tasks installed. Refreshing...")
@@ -1678,6 +1700,13 @@ def _lockfile_path() -> Path:
     return Path(tempfile.gettempdir()) / "quantcore_panel.lock"
 
 
+def _signal_file_path() -> Path:
+    """Ephemeral signal file: a second launch writes this to tell the running
+    panel to restore its window."""
+    import tempfile
+    return Path(tempfile.gettempdir()) / "quantcore_panel.show"
+
+
 if __name__ == "__main__":
     from single_instance import acquire_lock
     from tkinter import messagebox as _mb
@@ -1685,14 +1714,16 @@ if __name__ == "__main__":
 
     _LOCKFILE = _lockfile_path()
     if not acquire_lock(_LOCKFILE):
-        # Another live panel is already running. Pop a tiny temp Tk just
-        # for the messagebox, then exit so we don't construct two
-        # GatewayMonitors fighting over the same client_id.
+        # Signal the running instance to restore its window.
+        try:
+            _signal_file_path().write_text("show", encoding="utf-8")
+        except OSError:
+            pass
         _tmp = _tk.Tk()
         _tmp.withdraw()
         _mb.showinfo(
             "QuantCore",
-            "QuantCore is already running.\n\nCheck your system tray.",
+            "QuantCore is already running.\n\nBringing up the existing panel.",
             parent=_tmp,
         )
         _tmp.destroy()

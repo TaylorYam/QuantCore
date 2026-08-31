@@ -99,6 +99,18 @@ class TrayController:
         except Exception as e:
             log.warning(f"TrayController.stop: {e!r}")
 
+    def is_alive(self) -> bool:
+        """Return True if the tray icon's background thread is still running."""
+        if self._icon is None:
+            return False
+        try:
+            thread = getattr(self._icon, '_detach_thread', None)
+            if thread is not None:
+                return thread.is_alive()
+            return getattr(self._icon, 'visible', False)
+        except Exception:
+            return False
+
     # ── status update ──────────────────────────────────────────────
 
     # GatewayMonitor reports four states; the tray surfaces three colours.

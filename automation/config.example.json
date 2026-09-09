@@ -7,6 +7,7 @@
   "order_type": "MOO",
   "outside_rth": false,
   "wait_fill_sec": 30,
+  "price_feed_port": 4002,
   "alloc_sr": 0.7,
   "alloc_sp500": 0.5,
   "alloc_skewls": 0.0,

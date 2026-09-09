@@ -1,5 +1,6 @@
-# QuantCore runtime dependencies
-# Pin lower bounds to tested versions; allow patch upgrades.
+# QuantCore runtime dependencies (lower-bound pins)
+# Canonical source: pyproject.toml [project.dependencies]
+# For exact reproducibility: pip install -r requirements.lock
 pandas>=2.2
 numpy>=2.0
 scipy>=1.13

@@ -3,12 +3,16 @@
     "name": "AccountA",
     "account": "UXXXXXXXX",
     "port": 4001,
-    "leverage": 1.2
+    "alloc_sr": 0.80,
+    "alloc_sp500": 0.50,
+    "alloc_skewls": 0.0
   },
   {
     "name": "AccountB",
     "account": "UYYYYYYYY",
-    "port": 7497,
-    "leverage": 1.2
+    "port": 4002,
+    "alloc_sr": 0.80,
+    "alloc_sp500": 0.50,
+    "alloc_skewls": 0.0
   }
 ]

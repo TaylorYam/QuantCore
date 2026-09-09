@@ -182,26 +182,41 @@ python -m backtest.run_all --alloc 0.8 0.5 --quantstats
 
 ```
 C:\QuantCore\
-├── data\
-│   ├── update_data.py          ← 增量更新腳本
-│   ├── stocks\                 ← 個股 CSV（gitignore）
-│   ├── etfs\                   ← ETF CSV（gitignore）
-│   └── reference\              ← 參考資料（gitignore）
 ├── strategies\
-│   └── sp500_momentum\         ← SP500 動能策略
-│       ├── config.py
-│       ├── backtester.py
-│       ├── selection.py
-│       └── run_strategy.py
+│   ├── sector_rotation\        ← SR 板塊輪動策略
+│   ├── sp500_momentum\         ← SP500 個股動量策略
+│   └── sector_skew_ls\         ← Skew LS 偏態多空策略
+├── automation\
+│   ├── tests\                  ← 305+ 離線單元測試
+│   ├── rebalance_plan.py       ← 調倉決策（純函式）
+│   ├── rebalance_ib.py         ← IB 自動調倉
+│   ├── signals.py              ← 三策略訊號整合
+│   ├── control_panel.py        ← Tkinter GUI 控制面板
+│   ├── monitor_engine.py       ← 值班引擎
+│   ├── accounts.json           ← 帳戶設定（gitignore，從 .example 複製）
+│   └── config.json             ← 連線設定（gitignore，從 .example 複製）
 ├── backtest\
 │   ├── run_all.py              ← 回測執行入口
 │   ├── combo.py                ← 組合回測邏輯
 │   ├── charts.py               ← 圖表生成
 │   ├── leverage.py             ← IB 槓桿成本計算
 │   └── metrics.py              ← 績效指標
-├── output\                     ← 回測結果（gitignore）
+├── robustness\                 ← WF / Monte Carlo / 參數敏感度研究
+├── data\
+│   ├── update_data.py          ← 增量更新腳本
+│   ├── refresh_constituents.py ← SP500 成分股自動更新
+│   ├── stocks\                 ← 個股 CSV（gitignore）
+│   ├── etfs\                   ← ETF CSV（gitignore）
+│   └── reference\              ← 成分股歷史 / 交易日曆（gitignore）
+├── shared\                     ← 分享版工具（Dashboard / 回測）
 ├── docs\
-│   └── setup_new_computer.md  ← 本文件
-├── requirements.txt
+│   ├── adr\                    ← 架構決策紀錄（ADR-0001 ~ 0011）
+│   └── setup_new_computer.md   ← 本文件
+├── output\                     ← 回測結果（gitignore）
+├── CONTEXT.md                  ← 領域語言定義
+├── AGENTS.md                   ← 協作規則
+├── requirements.txt            ← Python 依賴
+├── requirements-dev.txt        ← 開發依賴（含 pytest）
+├── .github\workflows\ci.yml   ← CI 設定
 └── .gitignore
 ```

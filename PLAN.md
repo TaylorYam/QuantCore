@@ -1,7 +1,10 @@
-# QuantCore 架構重構計畫
+# QuantCore 架構重構計畫（歷史參考）
+
+> **⚠️ 本文件為歷史紀錄。** S1–S10 已於 `e12e3e5` 完成並合入 main。
+> 剩餘工作見 PLAN_R.md。狀態標示可能與實際完成度不一致——以 git log 和程式碼現況為準。
 
 **來源**：`/improve-codebase-architecture` 稽核報告（2026-04-10）
-**狀態**：待執行
+**狀態**：S1–S10 已完成
 **目標**：消除模組全域變數 mutation、God class、複製的輔助函式，讓 codebase 可維護、thread-safe、易於推理
 
 ---

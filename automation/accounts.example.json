@@ -3,16 +3,16 @@
     "name": "AccountA",
     "account": "UXXXXXXXX",
     "port": 4001,
-    "alloc_sr": 0.80,
-    "alloc_sp500": 0.50,
-    "alloc_skewls": 0.0
+    "alloc_sr": 0.0,
+    "alloc_sp500": 0.40,
+    "alloc_skewls": 1.0
   },
   {
     "name": "AccountB",
     "account": "UYYYYYYYY",
     "port": 4002,
-    "alloc_sr": 0.80,
-    "alloc_sp500": 0.50,
-    "alloc_skewls": 0.0
+    "alloc_sr": 0.0,
+    "alloc_sp500": 0.70,
+    "alloc_skewls": 1.0
   }
 ]

@@ -1,6 +1,6 @@
 # QuantCore — Taylor
 
-三策略量化交易系統 — 結合 Sector Rotation、S&P 500 個股動量、Sector Skew Long-Short，透過 Interactive Brokers 自動化執行。
+Sector Rotation MOM + S&P 500 個股動量，透過 Interactive Brokers 自動化執行。
 
 > Built by Taylor | Automated Quant Trading on IB Gateway
 
@@ -24,7 +24,7 @@ QuantCore-master/
 │   ├── control_panel.py        #   Tkinter GUI 控制面板
 │   ├── rebalance_plan.py       #   調倉決策（純函式，不碰 IB）
 │   ├── rebalance_ib.py         #   IB Gateway 自動調倉（caller）
-│   ├── signals.py              #   三策略訊號整合
+│   ├── signals.py              #   策略訊號整合（SR / SP500 / Skew LS）
 │   ├── account_ctx.py          #   帳戶上下文 dataclass
 │   ├── monitor_engine.py       #   值班引擎（Rosa poll / TY check / Morning check）
 │   ├── tray_controller.py      #   系統匣圖示（Gateway 連線狀態）
@@ -44,7 +44,11 @@ QuantCore-master/
 
 ## 策略簡介
 
-### 1. Sector Rotation（板塊輪動）
+### 1. Sector Rotation MOM（板塊輪動動量）
+
+以 11 支 SPDR 板塊 ETF 為標的池，下分兩個子策略。目前三帳戶皆以 Skew LS 為主力（alloc_skewls = 1.00），SR 停用（alloc_sr = 0）。
+
+#### 1a. SR — Sector Rotation（板塊輪動，Long-Only）
 
 | 項目 | 設定 |
 |------|------|
@@ -53,8 +57,19 @@ QuantCore-master/
 | 進場條件 | Z-score > threshold |
 | 持倉權重 | 圓整至 5%（WEIGHT_STEP），gross ≤ 1.0（殘差留現金） |
 | 調倉頻率 | 每週二 |
+| 目前狀態 | **停用**（alloc_sr = 0；WF 驗證 SR 為拖累，見 alloc WF 研究） |
 
-### 2. S&P 500 Momentum（個股動量）
+#### 1b. Skew LS — Sector Skew Long-Short（板塊偏態多空）
+
+| 項目 | 設定 |
+|------|------|
+| 標的池 | 11 板塊 ETF（多）+ 反向 ETF / Direct Short（空） |
+| 訊號 | 偏態因子多空 |
+| 空頭實現 | Inverse Proxy（2x 反向 ETF 代理空頭，[ADR-0001](docs/adr/0001-alloc-skew-factor-exposure.md)）；XLC 走 Direct Short |
+| 換倉邏輯 | Threshold-based（state file 紀錄上次 target） |
+| 目前狀態 | **主力**（alloc_skewls = 1.00） |
+
+### 2. S&P 500 Momentum（個股動量 — Margin Stock）
 
 | 項目 | 設定 |
 |------|------|
@@ -66,24 +81,23 @@ QuantCore-master/
 | 調倉頻率 | 每週三 |
 | 熊市機制 | SPY MA200 偵測，觸發時轉入 SPY dip-buy |
 
-### 3. Sector Skew Long-Short（板塊偏態多空）
-
-| 項目 | 設定 |
-|------|------|
-| 標的池 | 11 板塊 ETF（多）+ 反向 ETF / Direct Short（空） |
-| 訊號 | 偏態因子多空 |
-| 空頭實現 | Inverse Proxy（2x 反向 ETF 代理空頭，[ADR-0001](docs/adr/0001-alloc-skew-factor-exposure.md)）；XLC 走 Direct Short |
-| 換倉邏輯 | Threshold-based（state file 紀錄上次 target） |
-
 ### 組合配置
 
-三個策略的 Allocation 獨立設定（factor-exposure 語意），不需相加為 1：
+Allocation 獨立設定（factor-exposure 語意），不需相加為 1：
 
 ```
 Leverage = alloc_sr + alloc_sp500 + alloc_skewls
 ```
 
-詳見 [CONTEXT.md](CONTEXT.md) 的 Allocation / Leverage 定義與 [ADR-0001](docs/adr/0001-alloc-skew-factor-exposure.md)。
+目前三帳戶配置（z-family，WF + Monte Carlo 驗證定案）：
+
+| 帳戶 | alloc_sr | alloc_sp500 | alloc_skewls | Leverage |
+|------|----------|-------------|--------------|----------|
+| Yvonne | 0 | 0.40 | 1.00 | 1.4x |
+| Rosa | 0 | 0.70 | 1.00 | 1.7x |
+| Taylor | 0 | 0.80 | 1.00 | 1.8x |
+
+核心特徵：100% Skew LS + SP500 個股動量作為 margin stock，SR 停用。詳見 [CONTEXT.md](CONTEXT.md) 的 Allocation / Leverage 定義與 [ADR-0001](docs/adr/0001-alloc-skew-factor-exposure.md)。
 
 ---
 

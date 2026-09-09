@@ -15,7 +15,7 @@ from pathlib import Path
 import pandas as pd
 import yfinance as yf
 
-STOCK_DIR = Path("C:/QuantCore-master/data/stocks")
+STOCK_DIR = Path(__file__).resolve().parent.parent / "data" / "stocks"
 BATCH_SIZE = 50
 
 

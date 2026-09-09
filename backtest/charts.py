@@ -12,7 +12,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
-OUTPUT_DIR = Path("C:/QuantCore-master/output")
+OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 

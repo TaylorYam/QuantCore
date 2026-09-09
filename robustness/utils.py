@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 
 # 確保能 import QuantCore 主專案
-PROJECT_ROOT = Path("C:/QuantCore-master")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 

@@ -6,9 +6,10 @@ SP500 Momentum — 參數設定
 from pathlib import Path
 
 # ── 資料路徑 ──────────────────────────────────────────────────
-STOCK_DIR = Path("C:/QuantCore-master/data/stocks")   # SP500 成分股
-ETF_DIR   = Path("C:/QuantCore-master/data/etfs")     # 基準 ETF（SPY, SSO）
-REF_DIR   = Path("C:/QuantCore-master/data/reference")
+_ROOT     = Path(__file__).resolve().parent.parent.parent
+STOCK_DIR = _ROOT / "data" / "stocks"
+ETF_DIR   = _ROOT / "data" / "etfs"
+REF_DIR   = _ROOT / "data" / "reference"
 
 # 參考檔案
 CONST_FILE     = "sp500_constituents_daily.xlsx"   # ADR-0002 refresh output (old *_2015_2026 was frozen at 2026-01-14)
@@ -82,5 +83,5 @@ BLACKLIST = [
 ]
 
 # ── 輸出設定 ──────────────────────────────────────────────────
-OUTPUT_DIR = Path("C:/QuantCore-master/output")
+OUTPUT_DIR = _ROOT / "output"
 LIVE_MODE  = True     # True = 回測結束後保留持倉（mark-to-market 計算最終權益）

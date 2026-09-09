@@ -31,7 +31,7 @@ import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, "C:/QuantCore-master")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -47,7 +47,7 @@ from robustness.takeprofit_arms import (                            # noqa: E402
 )
 from robustness.utils import OUTPUT_ROOT                            # noqa: E402
 
-OUT_DIR = Path("C:/QuantCore-master/reports/sp500_momentum")
+OUT_DIR = Path(__file__).resolve().parent.parent / "reports" / "sp500_momentum"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 SNAPSHOTS_FP = OUTPUT_ROOT / "takeprofit" / "diagnostic_snapshots.csv"
 RUN_DATE = "2026-07-11"          # 固定,避免跨日重跑改名

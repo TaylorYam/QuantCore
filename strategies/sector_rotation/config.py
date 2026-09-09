@@ -6,7 +6,8 @@ Sector Rotation MOM — 參數設定
 from pathlib import Path
 
 # ── 資料路徑 ──────────────────────────────────────────────────
-DATA_DIR = Path("C:/QuantCore-master/data/etfs")
+_ROOT    = Path(__file__).resolve().parent.parent.parent
+DATA_DIR = _ROOT / "data" / "etfs"
 
 # ── 板塊 ETF 清單 ─────────────────────────────────────────────
 SECTOR_TICKERS = [

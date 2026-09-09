@@ -16,7 +16,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path("C:/QuantCore-master")))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 import pandas as pd
@@ -202,7 +202,7 @@ def build_momentum_factor(df_index: pd.DatetimeIndex) -> pd.Series | None:
     嘗試從 data/etfs/ 構造一個 long-short sector momentum factor。
     前 3 名 60 日動量 - 後 3 名，每日報酬。
     """
-    etf_dir = Path("C:/QuantCore-master/data/etfs")
+    etf_dir = Path(__file__).resolve().parent.parent / "data" / "etfs"
     if not etf_dir.exists():
         return None
 

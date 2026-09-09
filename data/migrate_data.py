@@ -13,7 +13,7 @@ import yfinance as yf
 from pathlib import Path
 
 # ── 路徑設定 ──────────────────────────────────────────────────
-ROOT        = Path("C:/QuantCore-master/data")
+ROOT        = Path(__file__).resolve().parent.parent / "data"
 ETF_DIR     = ROOT / "etfs"
 STOCK_DIR   = ROOT / "stocks"
 REF_DIR     = ROOT / "reference"
@@ -216,5 +216,5 @@ if stock_samples:
 
 print("\n" + "=" * 60)
 print("遷移完成！")
-print(f"  資料根目錄：C:/QuantCore-master/data/")
+print(f"  資料根目錄：{ROOT}/")
 print("=" * 60)

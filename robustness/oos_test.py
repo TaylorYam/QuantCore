@@ -19,7 +19,7 @@ import sys
 import io
 from pathlib import Path
 
-sys.path.insert(0, str(Path("C:/QuantCore-master")))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # Windows cp950 console compatibility
 try:

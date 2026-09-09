@@ -18,6 +18,7 @@ env/
 data/stocks/
 data/etfs/
 data/reference/
+data/checksums.sha256
 
 # Output（回測結果本機保留，不上傳）
 output/
@@ -46,6 +47,8 @@ automation/accounts.json
 # Runtime state（每帳戶 SP500 bull counter / dip state、SkewLS state）
 automation/sp500_state_*.json
 automation/skewls_state_*.json
+!automation/sp500_state_example.json
+!automation/skewls_state_example.json
 
 # Dev / audit tests
 automation/_audit_test.py

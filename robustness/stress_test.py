@@ -24,7 +24,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path("C:/QuantCore-master")))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 import pandas as pd
@@ -44,7 +44,7 @@ from robustness.utils import (
 
 # ── 輸入輸出 ──────────────────────────────────────────────────────────────────
 BASELINE_CSV = OUTPUT_ROOT / "baseline_returns.csv"
-SPY_CSV      = Path("C:/QuantCore-master/data/etfs/SPY.csv")
+SPY_CSV      = Path(__file__).resolve().parent.parent / "data" / "etfs" / "SPY.csv"
 OUT_DIR      = OUTPUT_ROOT / "stress_test"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 

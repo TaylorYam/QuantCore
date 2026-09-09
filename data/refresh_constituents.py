@@ -38,7 +38,7 @@ except (AttributeError, OSError):
     pass
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-ROOT              = Path("C:/QuantCore-master")
+ROOT              = Path(__file__).resolve().parent.parent
 REF_DIR           = ROOT / "data" / "reference"
 STOCK_DIR         = ROOT / "data" / "stocks"
 CONST_FILE        = REF_DIR / "sp500_constituents_daily.xlsx"

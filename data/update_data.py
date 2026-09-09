@@ -15,7 +15,7 @@ import yfinance as yf
 from pathlib import Path
 from datetime import date, timedelta
 
-ROOT      = Path("C:/QuantCore-master/data")
+ROOT      = Path(__file__).resolve().parent.parent / "data"
 ETF_DIR   = ROOT / "etfs"
 STOCK_DIR = ROOT / "stocks"
 

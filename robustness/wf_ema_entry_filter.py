@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # Windows console 預設 cp950
-sys.path.insert(0, "C:/QuantCore-master")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 import pandas as pd
@@ -25,7 +25,7 @@ from strategies.sp500_momentum import config as cfg, utils
 from strategies.sp500_momentum.selection import SelectionEngine
 from strategies.sp500_momentum.backtester import SP500Backtester
 
-OUT_DIR = Path("C:/QuantCore-master/reports/sp500_momentum")
+OUT_DIR = Path(__file__).resolve().parent.parent / "reports" / "sp500_momentum"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 RUN_DATE = "2026-07-05"          # 由 caller 固定，避免跨日重跑改名
 

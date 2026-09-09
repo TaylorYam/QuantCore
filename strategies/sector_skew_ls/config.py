@@ -9,7 +9,8 @@ Sharpe ~1.3 / MDD ~-8%），只調整 DATA_DIR 指向 QCORE 的 data/etfs/。
 from pathlib import Path
 
 # ── 資料路徑（與 strategies/sector_rotation 對齊）─────────────────────────
-DATA_DIR = Path("C:/QuantCore-master/data/etfs")
+_ROOT    = Path(__file__).resolve().parent.parent.parent
+DATA_DIR = _ROOT / "data" / "etfs"
 
 # ── Universe ──────────────────────────────────────────────────────────────
 # 11 SPDR 板塊 ETF

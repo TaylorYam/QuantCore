@@ -125,6 +125,44 @@ Get-ScheduledTaskInfo -TaskName "QuantCore_WeeklyUpdate"
 
 ---
 
+## Step 5.5：驗證資料一致性（選用）
+
+若從另一台電腦同步資料，可用 checksum 工具比對：
+
+```powershell
+# 在來源電腦產生 checksum
+python data/checksum.py
+# 複製 data/checksums.sha256 到新電腦
+
+# 在新電腦驗證
+python data/checksum.py --verify
+
+# 或直接比對兩份 checksum 檔
+python data/checksum.py --compare C:\path\to\other\checksums.sha256
+```
+
+---
+
+## Step 5.6：初始化 State 檔案
+
+自動調倉需要帳戶狀態檔（不在 Git 中）。首次設置時從範本複製：
+
+```powershell
+cd C:\QuantCore\automation
+
+# SP500 Momentum state（每帳戶一份）
+copy sp500_state_example.json sp500_state_AccountA.json
+copy sp500_state_example.json sp500_state_AccountB.json
+
+# Skew LS state（每帳戶一份）
+copy skewls_state_example.json skewls_state_AccountA.json
+copy skewls_state_example.json skewls_state_AccountB.json
+```
+
+帳戶名稱需對應 `accounts.json` 中的 `name` 欄位。首次執行 rebalance 時若無 state 檔，系統會自動以預設值建立。
+
+---
+
 ## Step 6：手動更新指令速查
 
 ```powershell

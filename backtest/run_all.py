@@ -28,7 +28,7 @@ from backtest.metrics  import compute, annual_returns, print_table
 from backtest.charts   import plot_equity_curves, STYLES
 from backtest.leverage import apply_leverage, leverage_summary, ib_blended_rate
 
-OUTPUT_DIR = Path("C:/QuantCore-master/output")
+OUTPUT_DIR = Path(ROOT) / "output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_LEVERAGE      = 1.3

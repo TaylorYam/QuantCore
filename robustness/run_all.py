@@ -22,7 +22,7 @@ import base64
 from pathlib import Path
 from datetime import datetime
 
-PROJECT_ROOT = Path("C:/QuantCore-master")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import pandas as pd

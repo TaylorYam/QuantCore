@@ -1,0 +1,12 @@
+# QuantCore runtime dependencies
+# Pin lower bounds to tested versions; allow patch upgrades.
+pandas>=2.2
+numpy>=2.0
+scipy>=1.13
+matplotlib>=3.9
+yfinance>=1.0
+ib_insync>=0.9.86
+psutil>=5.9
+Pillow>=10.0
+pystray>=0.19
+openpyxl>=3.1

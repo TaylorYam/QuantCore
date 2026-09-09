@@ -16,7 +16,11 @@ QuantCore-master/
 │   └── sector_skew_ls/         #   板塊偏態多空 (Skew LS)
 ├── backtest/                   # 回測框架（組合、績效、圖表、槓桿模型）
 ├── robustness/                 # Walk-Forward / Monte Carlo / 參數敏感度研究
-├── data/                       # 市場資料（gitignored）
+├── data/                       # 市場資料（gitignored）+ 資料工具
+│   ├── update_data.py          #   增量更新腳本
+│   ├── refresh_constituents.py #   SP500 成分股自動更新（ADR-0009）
+│   ├── checksum.py             #   資料完整性校驗
+│   ├── migrate_data.py         #   可攜式資料根目錄遷移
 │   ├── etfs/                   #   板塊 ETF 日線 CSV
 │   ├── stocks/                 #   S&P 500 成分股日線 CSV（500+）
 │   └── reference/              #   成分股歷史 / 交易日曆
@@ -29,7 +33,9 @@ QuantCore-master/
 │   ├── monitor_engine.py       #   值班引擎（Rosa poll / TY check / Morning check）
 │   ├── tray_controller.py      #   系統匣圖示（Gateway 連線狀態）
 │   ├── tests/                  #   305+ 離線單元測試
-│   └── config.json             #   連線 / 配置中心（gitignored）
+│   ├── config.json             #   連線 / 配置中心（gitignored）
+│   ├── skewls_state_example.json #  SkewLS state 範本
+│   └── sp500_state_example.json  #  SP500 state 範本
 ├── shared/                     # 分享版工具（Dashboard / 回測 / 資料更新）
 ├── docs/
 │   ├── adr/                    #   架構決策紀錄（ADR-0001 ~ 0011）
@@ -104,18 +110,19 @@ Leverage = alloc_sr + alloc_sp500 + alloc_skewls
 ## 自動化流程
 
 ```
-台灣時間          動作                      說明
-──────────────────────────────────────────────────────
-04:30  每日       資料更新                   yfinance 抓取最新收盤價
-04:40  每日       持倉報告 → Telegram        NAV、損益、權益曲線圖
-04:50  週三       Constituents 自動 refresh  gated 寫入 + diff 報告（ADR-0009）
-07:00  交易日     Morning check              健檢 + constituents staleness 提醒
-20:05  週二/三    TY check                   驗證 Gateway 手動登入
-21:00  週二       SR 調倉 → IB Gateway       MOO 單（開盤前送出）
-21:00  週三       SP500 調倉 → IB Gateway    MOO 單（開盤前送出）
-21:00  觸發日     SkewLS 調倉 → IB Gateway   threshold 觸發時與 SR/SP500 同批
-21:00–05:00      Rosa poll                   Gateway 連線狀態 30 分鐘輪詢
-21:31  週一〜五   MOO 成交回報 → Telegram    開盤後 1 分鐘檢查成交
+台灣時間          動作                         說明
+──────────────────────────────────────────────────────────
+04:30  每日       資料更新                      yfinance 抓取最新收盤價
+04:40  每日       持倉報告 → Telegram           NAV、損益、權益曲線圖
+04:50  週三       Constituents 自動 refresh     gated 寫入 + diff 報告（ADR-0009）
+07:00  交易日     Morning check                 健檢 + constituents staleness 提醒
+16:00  交易日     SP500 Daily Check             熊市 dip-buy 觸發（LMT outsideRTH）
+20:05  週二/三    TY check                      驗證 Gateway 手動登入
+21:00  週二       Tue Rebalance (--mode all)     三策略合併：SR + SP500 hold + SkewLS check
+21:00  週三       Wed Rebalance (--mode all)     三策略合併：SR hold + SP500 + SkewLS check
+21:00  週一/四/五 SkewLS Check (--mode skewls)   獨立 threshold check（Tue/Wed 由上方涵蓋）
+21:00–05:00      Rosa poll                      Gateway 連線狀態 30 分鐘輪詢
+21:31  週二/三    MOO 成交回報 → Telegram        開盤後 1 分鐘檢查成交
 ```
 
 - **MOO（Market-on-Open）**：保證以開盤價成交，須在美東 09:28 前送出
@@ -130,7 +137,7 @@ Tkinter GUI 儀表板（`QuantCore_Panel.vbs` 靜默啟動）：
 - **排程管理**：安裝 / 啟用 / 停用 Windows Task Scheduler 任務
 - **Dry Run 切換**：模擬模式 ↔ 實盤模式
 - **三帳戶管理**：Taylor / Rosa / Yvonne 各帳戶獨立配置
-- **手動觸發**：SR / SP500 / Both / Report / Data / Sync Pos
+- **手動觸發**：Tue Rebalance (SR+Skew) / Wed Rebalance (SP500+Skew) / Report / Data / Sync Pos
 - **Gateway 監控**：系統匣圖示顯示連線狀態（綠/紅/灰）
 - **即時 Log**：右側面板即時串流腳本輸出
 
@@ -139,11 +146,11 @@ Tkinter GUI 儀表板（`QuantCore_Panel.vbs` 靜默啟動）：
 ## 回測
 
 ```bash
-# 基本回測（100/0、0/100、50/50）
+# 基本回測（預設配置）
 python -m backtest.run_all
 
-# 自定義配置 + QuantStats 報告
-python -m backtest.run_all --alloc 0.8 0.5 --quantstats
+# z-family 配置（SR=0, SP500=0.8, SkewLS=1.0）+ QuantStats 報告
+python -m backtest.run_all --alloc 0 0.8 1.0 --quantstats
 
 # 指定起始日
 python -m backtest.run_all --start 2019-01-01 --quantstats
@@ -184,7 +191,7 @@ pip install quantstats                # 回測 HTML 報告
 
 ### 啟動
 
-1. **回測驗證**：`python -m backtest.run_all --alloc 0.8 0.5 --quantstats`
+1. **回測驗證**：`python -m backtest.run_all --alloc 0 0.8 1.0 --quantstats`
 2. **更新資料**：`python automation/update_data.py`
 3. **Dry Run 測試**：確保 `dry_run: true`，雙擊 `QuantCore_Panel.vbs`
 4. **安裝排程**：控制面板 → Install All Tasks

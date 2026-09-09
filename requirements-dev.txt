@@ -1,3 +1,4 @@
-# Development / CI dependencies (install on top of requirements.txt)
+# Development / CI dependencies
+# Canonical source: pyproject.toml [project.optional-dependencies.dev]
 -r requirements.txt
 pytest>=8.0

@@ -1,0 +1,29 @@
+[project]
+name = "quantcore"
+version = "1.0.0"
+description = "Three-strategy automated IB trading system (SR, SP500, Skew LS)"
+requires-python = ">=3.11"
+license = {text = "Proprietary"}
+authors = [{name = "Taylor Yam"}]
+
+dependencies = [
+    "pandas>=2.2",
+    "numpy>=2.0",
+    "scipy>=1.13",
+    "matplotlib>=3.9",
+    "yfinance>=1.0",
+    "ib_insync>=0.9.86",
+    "psutil>=5.9",
+    "Pillow>=10.0",
+    "pystray>=0.19",
+    "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["automation/tests"]
+addopts = "-v --tb=short"

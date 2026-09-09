@@ -42,7 +42,9 @@ QuantCore-master/
 │   └── setup_new_computer.md   #   新電腦環境設置指南
 ├── CONTEXT.md                  # 領域語言定義（所有名詞以此為準）
 ├── AGENTS.md                   # AI / 人類協作規則
-├── requirements.txt            # Python 依賴
+├── pyproject.toml              # 專案 metadata + 依賴宣告（PEP 621）
+├── requirements.txt            # Python 依賴（lower-bound pins）
+├── requirements.lock           # 精確版本鎖（可重現環境）
 └── .github/workflows/ci.yml   # CI（PR 自動測試）
 ```
 
@@ -173,13 +175,20 @@ python -m backtest.run_all --start 2019-01-01 --quantstats
 ```bash
 git clone https://github.com/TaylorYam/QuantCore.git
 cd QuantCore
-pip install -r requirements.txt
+pip install -r requirements.txt        # lower-bound pins（允許 patch 升級）
+# 或精確重現已驗證環境：
+pip install -r requirements.lock       # 精確版本鎖
 ```
 
 可選：
 ```bash
 pip install pandas_market_calendars   # NYSE 假日精確排程
 pip install quantstats                # 回測 HTML 報告
+```
+
+更新 lock file（在已驗證環境上執行）：
+```bash
+pip freeze > requirements.lock
 ```
 
 ### 設定

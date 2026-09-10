@@ -30,6 +30,21 @@ _REQUIRED_THEME_KEYS = {
     "blue", "green", "red", "yellow", "orange",
 }
 
+_TICKER_NAMES: dict[str, str] = {
+    "XLK": "Technology",      "XLF": "Financials",
+    "XLV": "Health Care",     "XLE": "Energy",
+    "XLI": "Industrials",     "XLY": "Cons Discret",
+    "XLB": "Materials",       "XLP": "Cons Staples",
+    "XLU": "Utilities",       "XLC": "Comm Services",
+    "XLRE": "Real Estate",
+    "REW": "UltraShort Tech",     "SEF": "Short Fin",
+    "RXD": "UltraShort HC",       "ERY": "Bear Energy 3x",
+    "SIJ": "UltraShort Ind",      "SCC": "UltraShort CD",
+    "SMN": "UltraShort Mat",      "SZK": "UltraShort CS",
+    "SDP": "UltraShort Util",     "REK": "Short RE",
+    "SPY": "S&P 500 ETF",         "SSO": "Ultra S&P 500",
+}
+
 _REQUIRED_FONTS_KEYS = {"small", "mono_sm", "med_num"}
 
 
@@ -111,6 +126,9 @@ class PortfolioView:
         etf_frame.pack(fill="x", pady=(0, 3))
         tk.Label(etf_frame, text="ETF Holdings (SR)", font=f["small"],
                  bg=t["bg3"], fg=t["blue"]).pack(anchor="w")
+        self.etf_hdr = tk.Label(etf_frame, text="", font=f["mono_sm"],
+                                 bg=t["bg3"], fg=t["text_dim"], justify="left", anchor="nw")
+        self.etf_hdr.pack(anchor="w", fill="x")
         self.etf_list = tk.Label(etf_frame, text="—", font=f["mono_sm"],
                                   bg=t["bg3"], fg=t["text"], justify="left", anchor="nw")
         self.etf_list.pack(anchor="w", fill="x")
@@ -119,6 +137,9 @@ class PortfolioView:
         stock_frame.pack(fill="x", pady=(0, 3))
         tk.Label(stock_frame, text="Stock Holdings (MOM)", font=f["small"],
                  bg=t["bg3"], fg=t["green"]).pack(anchor="w")
+        self.stock_hdr = tk.Label(stock_frame, text="", font=f["mono_sm"],
+                                   bg=t["bg3"], fg=t["text_dim"], justify="left", anchor="nw")
+        self.stock_hdr.pack(anchor="w", fill="x")
         self.stock_list = tk.Label(stock_frame, text="—", font=f["mono_sm"],
                                     bg=t["bg3"], fg=t["text"], justify="left", anchor="nw")
         self.stock_list.pack(anchor="w", fill="x")
@@ -127,6 +148,9 @@ class PortfolioView:
         other_frame.pack(fill="x")
         tk.Label(other_frame, text="Other (Manual, excluded)", font=f["small"],
                  bg=t["bg3"], fg=t["text_dim"]).pack(anchor="w")
+        self.other_hdr = tk.Label(other_frame, text="", font=f["mono_sm"],
+                                   bg=t["bg3"], fg=t["text_dim"], justify="left", anchor="nw")
+        self.other_hdr.pack(anchor="w", fill="x")
         self.other_list = tk.Label(other_frame, text="—", font=f["mono_sm"],
                                     bg=t["bg3"], fg=t["text_dim"], justify="left", anchor="nw")
         self.other_list.pack(anchor="w", fill="x")
@@ -205,9 +229,12 @@ class PortfolioView:
         self.report_date_lbl.config(text=f"Report Date: {pf['date']}{src_tag}")
 
         # Holdings lists
-        self._render_holdings_list(self.etf_list, pf.get("etf_holdings", []), nav)
-        self._render_holdings_list(self.stock_list, pf.get("stock_holdings", []), nav)
-        self._render_holdings_list(self.other_list, pf.get("other_holdings", []),
+        self._render_holdings_list(self.etf_hdr, self.etf_list,
+                                    pf.get("etf_holdings", []), nav)
+        self._render_holdings_list(self.stock_hdr, self.stock_list,
+                                    pf.get("stock_holdings", []), nav)
+        self._render_holdings_list(self.other_hdr, self.other_list,
+                                    pf.get("other_holdings", []),
                                     nav, empty_text="(none)")
 
         # Pie chart — always clear old canvas first, so switching to an account
@@ -223,20 +250,62 @@ class PortfolioView:
         if (all_holdings or other_mktval > 0) and nav > 0:
             self._render_pie_chart(all_holdings, nav, exposure, other_val=other_mktval)
 
-    def _render_holdings_list(self, widget: tk.Label, holdings: list,
-                               nav: float, empty_text: str = "(empty)") -> None:
+    @staticmethod
+    def _fmt_dollar(val: float) -> str:
+        """Format with sign: +$1,234 / -$567 / $0"""
+        if val > 0:
+            return f"+${val:,.0f}"
+        elif val < 0:
+            return f"-${abs(val):,.0f}"
+        return "$0"
+
+    def _render_holdings_list(self, hdr_widget: tk.Label, widget: tk.Label,
+                               holdings: list, nav: float,
+                               empty_text: str = "(empty)") -> None:
         if not holdings:
+            hdr_widget.config(text="")
             widget.config(text=empty_text)
             return
-        lines = []
-        for h in sorted(holdings, key=lambda x: -abs(x["mkt_val"])):
-            sign = "+" if h["upnl"] >= 0 else ""
+
+        sorted_h = sorted(holdings, key=lambda x: -abs(x["mkt_val"]))
+
+        # Compute dynamic column widths from data
+        rows = []
+        for h in sorted_h:
             w = h["mkt_val"] / nav * 100 if nav > 0 else 0
-            lines.append(
-                f"{h['symbol']:5s} {h['shares']:4d}sh  "
-                f"${h['mkt_px']:.2f}  {w:4.0f}%  "
-                f"{sign}{h['upnl_pct']:.1f}%"
-            )
+            avg = h.get("avg_cost", 0)
+            upnl_val = h.get("upnl", 0)
+            pct = h.get("upnl_pct", 0)
+            sign = "+" if pct >= 0 else ""
+            name = h.get("name") or _TICKER_NAMES.get(h["symbol"], "")
+            rows.append((
+                h["symbol"],
+                f"{h['shares']}",
+                f"{w:.0f}%",
+                f"${avg:,.2f}",
+                f"${h['mkt_px']:,.2f}",
+                self._fmt_dollar(upnl_val),
+                f"{sign}{pct:.1f}%",
+                name,
+            ))
+
+        headers = ("UL", "SH", "Wt%", "Cost", "Price", "P&L", "P&L%", "Name")
+        widths = [len(h) for h in headers]
+        for r in rows:
+            for i, cell in enumerate(r):
+                widths[i] = max(widths[i], len(cell))
+
+        def _fmt_row(cells):
+            # Symbol left-aligned, numerics right-aligned, spacer before Name, Name left-aligned
+            parts = [f"{cells[0]:<{widths[0]}}"]
+            for i in range(1, 7):
+                parts.append(f"{cells[i]:>{widths[i]}}")
+            parts.append("")  # spacer column
+            parts.append(f"{cells[7]:<{widths[7]}}")
+            return "  ".join(parts)
+
+        hdr_widget.config(text=_fmt_row(headers))
+        lines = [_fmt_row(r) for r in rows]
         widget.config(text="\n".join(lines))
 
     # ── Donut chart ───────────────────────────────────────────

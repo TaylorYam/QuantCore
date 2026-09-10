@@ -265,6 +265,7 @@ def fetch_portfolio(ctx: AccountCtx) -> dict:
                     "symbol": sym, "shares": shares,
                     "avg_cost": avg_cost, "mkt_px": px,
                     "mkt_val": mkt_val, "upnl": upnl, "upnl_pct": upnl_pct,
+                    "name": getattr(p.contract, "longName", "") or "",
                 }
 
                 # ETF bucket 涵蓋 SR sector + SkewLS inverse (Issue 2 Option 2)

@@ -1,29 +1,24 @@
 """
-StrategyParamsView — middle-column Trading Settings + Strategy Parameters
-(R3.4 extracted from control_panel.py).
+StrategyParamsView — Strategy Parameters panel
+(R3.4 extracted from control_panel.py, Trading Settings removed in Issue #13).
 
-Builds two stacked frames:
-  1. Trading Settings: Dry Run toggle button + Data date label
-  2. Strategy Parameters: ETF slider, Stocks slider, Exposure summary, Save button
+Builds one frame:
+  Strategy Parameters: ETF slider, Stocks slider, SkewLS slider, Exposure summary, Save button
 
 Design:
   - Pure UI class — no config.json reads, no account_utils writes.
   - Panel owns all I/O; view just renders + emits callbacks.
-  - on_toggle_dry_run and on_save are called with no arguments. Panel reads
+  - on_save is called with no arguments. Panel reads
     current slider values via `get_alloc()` when it needs them.
 
 Public API:
     view = StrategyParamsView(
-        parent_settings, parent_params,
+        parent_params,
         theme, fonts, btn_factory,
-        on_toggle_dry_run=..., on_save=...,
+        on_save=...,
     )
-    view.update_cfg(cfg_dict)   # refresh from cfg (dry_run, alloc_sr, alloc_sp500, alloc_skewls)
-    view.update_data_date(str)  # set "Last: YYYY-MM-DD"
+    view.update_cfg(cfg_dict)   # refresh from cfg (alloc_sr, alloc_sp500, alloc_skewls)
     sr, sp, sk = view.get_alloc()   # read slider values (3-tuple)
-
-Note: Settings + Params live in different grid cells in Panel, so the view
-takes two parents. Everything else is bundled inside one class for cohesion.
 """
 
 from __future__ import annotations
@@ -34,22 +29,20 @@ from typing import Callable, Tuple
 
 _REQUIRED_THEME_KEYS = {
     "bg2", "bg3", "text", "text_dim",
-    "blue", "green", "red", "yellow", "orange", "cyan", "accent_hl",
+    "blue", "green", "red", "orange", "accent_hl",
 }
-_REQUIRED_FONTS_KEYS = {"small", "label", "section", "mono", "badge"}
+_REQUIRED_FONTS_KEYS = {"small", "label", "section", "badge"}
 
 
 class StrategyParamsView:
-    """Trading Settings + Strategy Parameters middle-column widgets."""
+    """Strategy Parameters widgets."""
 
     def __init__(
         self,
-        parent_settings: tk.Misc,
         parent_params: tk.Misc,
         theme: dict,
         fonts: dict,
         btn_factory: Callable,
-        on_toggle_dry_run: Callable[[], None],
         on_save: Callable[[], None],
     ):
         missing_t = _REQUIRED_THEME_KEYS - set(theme)
@@ -62,56 +55,9 @@ class StrategyParamsView:
         self.t = theme
         self.f = fonts
         self._btn = btn_factory
-        self._on_toggle_dry_run = on_toggle_dry_run
         self._on_save = on_save
 
-        self._build_trading_settings(parent_settings)
         self._build_strategy_params(parent_params)
-
-    # ── Build: Trading Settings ──────────────────────────────
-
-    def _build_trading_settings(self, parent: tk.Misc) -> None:
-        t, f = self.t, self.f
-        frame = tk.Frame(parent, bg=t["bg2"], padx=10, pady=6)
-        frame.pack(fill="x")  # parent manages placement, we just fill
-        self.settings_frame = frame
-
-        tk.Label(
-            frame, text="Trading Settings", font=f["section"],
-            bg=t["bg2"], fg=t["accent_hl"],
-        ).pack(anchor="w")
-
-        # Dry Run row
-        row_dry = tk.Frame(frame, bg=t["bg2"])
-        row_dry.pack(fill="x", pady=2)
-        tk.Label(
-            row_dry, text="Mode", font=f["label"],
-            bg=t["bg2"], fg=t["text"], width=10, anchor="w",
-        ).pack(side="left")
-        self.dry_btn = tk.Button(
-            row_dry, text="--", font=f["badge"],
-            width=12, relief="flat", cursor="hand2",
-            command=self._on_toggle_dry_run,
-        )
-        self.dry_btn.pack(side="left", padx=4)
-        self.dry_lbl = tk.Label(
-            row_dry, text="", font=f["small"],
-            bg=t["bg2"], fg=t["text_dim"],
-        )
-        self.dry_lbl.pack(side="left")
-
-        # Data Status row
-        row_data = tk.Frame(frame, bg=t["bg2"])
-        row_data.pack(fill="x", pady=2)
-        tk.Label(
-            row_data, text="Data", font=f["label"],
-            bg=t["bg2"], fg=t["text"], width=10, anchor="w",
-        ).pack(side="left")
-        self.data_date_lbl = tk.Label(
-            row_data, text="...", font=f["mono"],
-            bg=t["bg2"], fg=t["cyan"],
-        )
-        self.data_date_lbl.pack(side="left")
 
     # ── Build: Strategy Parameters ───────────────────────────
 
@@ -214,19 +160,7 @@ class StrategyParamsView:
     # ── Update from config ───────────────────────────────────
 
     def update_cfg(self, cfg: dict) -> None:
-        """Refresh dry_run button + allocation sliders from a cfg dict."""
-        t = self.t
-
-        # Dry Run
-        dry = cfg.get("dry_run", True)
-        self.dry_btn.config(
-            text="SIMULATED" if dry else "LIVE",
-            bg=t["yellow"] if dry else t["red"],
-            fg="black" if dry else "white",
-        )
-        self.dry_lbl.config(text="(no real orders)" if dry else "!! LIVE !!")
-
-        # Allocations
+        """Refresh allocation sliders from a cfg dict."""
         alloc_sr = cfg.get("alloc_sr", 0.80)
         alloc_sp = cfg.get("alloc_sp500", 0.50)
         alloc_sk = cfg.get("alloc_skewls", 0.0)
@@ -234,9 +168,6 @@ class StrategyParamsView:
         self.sp_scale.set(alloc_sp)
         self.sk_scale.set(alloc_sk)
         self._update_alloc_display(alloc_sr, alloc_sp, alloc_sk)
-
-    def update_data_date(self, date_str: str) -> None:
-        self.data_date_lbl.config(text=f"Last: {date_str}")
 
     def get_alloc(self) -> Tuple[float, float, float]:
         """Return (sr, sp, skewls) slider values rounded to 2 decimals."""

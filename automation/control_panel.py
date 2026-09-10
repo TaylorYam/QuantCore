@@ -9,7 +9,6 @@ import json
 import subprocess
 import sys
 import threading
-import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import font as tkfont
@@ -45,71 +44,18 @@ if not _is_admin():
 
 # ── 路徑設定 ────────────────────────────────────────────────
 BASE_DIR    = Path(__file__).parent
-CONFIG_PATH = BASE_DIR / "config.json"
 PORTFOLIO_FILE = BASE_DIR / "portfolio_tracker.xlsx"
 TRADE_FILE     = BASE_DIR / "trade_log.xlsx"
 LOG_DIR        = BASE_DIR / "logs"
-PYTHON      = sys.executable
 
 from account_utils import (
     load_accounts, get_account_config, update_account_config,
 )
 
 from portfolio_view import PortfolioView
-from panel_task_cards import TaskCard, TradesView
+from panel_task_cards import TradesView
 from strategy_params_view import StrategyParamsView
 
-TASK_UPDATE      = "QuantCore_DataUpdate_Daily"
-TASK_REBAL_SR    = "QuantCore_SR_Rebalance_Tue"
-TASK_REBAL_SP    = "QuantCore_SP500_Rebalance_Wed"
-TASK_REPORT      = "QuantCore_DailyReport"
-# 2026-07-20：MOO Fill 由 Tue/Wed 合併為 Mon-Fri 單一任務
-# （SkewLS 於 Mon/Thu/Fri 門檻觸發送單時也需成交回報，7/10、7/16、7/20 三度漏報）
-TASK_MOO_DAILY   = "QuantCore_MOO_Fill_Daily"
-TASK_SP_DAILY    = "QuantCore_SP500_DailyCheck"
-# S22/S23：Skew LS threshold check（M-F 21:00 TW，多數日 no-op）
-TASK_REBAL_SKEWLS = "QuantCore_SkewLS_DailyCheck"
-# ADR-0009：constituents gated 自動 refresh（週三 04:50，全綠才寫入）
-TASK_CONST_REFRESH = "QuantCore_ConstituentsRefresh_Wed"
-
-# 每個任務的 schtasks 安裝參數 (name -> schedule_args)
-# Tue/Wed 由 SR/SP500 task 用 --mode all 涵蓋（含 SkewLS check），避免 clientId 衝突
-# SkewLS 獨立 task 只在 Mon/Thu/Fri 跑
-TASK_SCHTASK_ARGS = {
-    TASK_UPDATE:      "/sc daily /st 04:30",
-    TASK_REBAL_SR:    "/sc weekly /d TUE /st 21:00",
-    TASK_REBAL_SP:    "/sc weekly /d WED /st 21:00",
-    TASK_REPORT:      "/sc daily /st 04:40",
-    TASK_MOO_DAILY:   "/sc weekly /d MON,TUE,WED,THU,FRI /st 21:31",
-    TASK_SP_DAILY:    "/sc weekly /d MON,TUE,WED,THU,FRI /st 16:00",
-    TASK_REBAL_SKEWLS:"/sc weekly /d MON,THU,FRI /st 21:00",
-    TASK_CONST_REFRESH:"/sc weekly /d WED /st 04:50",
-}
-
-# 每個任務對應的腳本與參數
-# Tue/Wed 用 --mode all 把三策略在單一 process 內算完再合併送 MOO，避免 race condition
-TASK_SCRIPT_ARGS = {
-    TASK_UPDATE:      ("update_data.py",       ""),
-    TASK_REBAL_SR:    ("rebalance_ib.py",      "--mode all --account all"),
-    TASK_REBAL_SP:    ("rebalance_ib.py",      "--mode all --account all"),
-    TASK_REPORT:      ("daily_report.py",      "--account all"),
-    TASK_MOO_DAILY:   ("moo_fill_check.py",    "--account all"),
-    TASK_SP_DAILY:    ("sp500_daily_check.py", "--account all"),
-    TASK_REBAL_SKEWLS:("rebalance_ib.py",      "--mode skewls --account all"),
-    TASK_CONST_REFRESH:("..\\data\\refresh_constituents.py", "--auto"),
-}
-
-# 友善顯示名稱
-TASK_LABELS = {
-    TASK_UPDATE:      "Data Update",
-    TASK_REBAL_SR:    "Tue Rebalance (SR + SkewLS check)",
-    TASK_REBAL_SP:    "Wed Rebalance (SP500 + SkewLS check)",
-    TASK_REPORT:      "Daily Report",
-    TASK_MOO_DAILY:   "MOO Fill Check (Mon-Fri)",
-    TASK_SP_DAILY:    "SP500 Daily Check (Stop/Gap/Dip)",
-    TASK_REBAL_SKEWLS:"SkewLS Check (Mon/Thu/Fri)",
-    TASK_CONST_REFRESH:"Constituents Refresh (Wed, gated)",
-}
 
 # SR ETFs (for classifying holdings) — R1.3：單一來源在 ib_fetcher
 from ib_fetcher import SR_ETFS
@@ -236,7 +182,7 @@ def fetch_ib_portfolio(account_name: str = "") -> dict:
 
 
 def read_latest_trades(account_name: str = "") -> list:
-    """讀取 trade_log.xlsx 最近的交易記錄，可按帳戶篩選"""
+    """讀取 trade_log.xlsx 最近 7 天的交易記錄，可按帳戶篩選"""
     try:
         import pandas as pd
         if not TRADE_FILE.exists():
@@ -249,25 +195,31 @@ def read_latest_trades(account_name: str = "") -> list:
             df = df[df["Account"] == account_name]
             if df.empty:
                 return []
-        # 取最近一天的交易（新的排最上面）
-        latest_date = df["Date"].max()
-        latest = df[df["Date"] == latest_date].iloc[::-1]
+        # 滾動 7 天（不限筆數）
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=7)
+        recent = df[df["Date"] >= cutoff].iloc[::-1]
         trades = []
-        for _, row in latest.iterrows():
+        for _, row in recent.iterrows():
             sym = str(row["Symbol"])
             raw_strat = str(row.get("Strategy", ""))
-            # 用 symbol 判斷實際策略（修正舊資料的 QuantCore Combo 問題）
             if sym in SR_ETFS:
                 strat = "SR"
             elif "SR" in raw_strat and "SP500" not in raw_strat and "Combo" not in raw_strat:
                 strat = "SR"
             else:
                 strat = "Stocks"
+            fill_px = row.get("FillPrice", 0)
+            try:
+                fill_px = float(fill_px)
+            except (ValueError, TypeError):
+                fill_px = 0.0
             trades.append({
                 "datetime": str(row.get("DateTime", "")),
                 "symbol": sym,
                 "action": str(row["Action"]),
                 "qty": int(row["Qty"]),
+                "fill_price": fill_px,
                 "strategy": strat,
                 "status": str(row.get("FillStatus", "")),
                 "dry_run": bool(row.get("DryRun", True)),
@@ -322,102 +274,12 @@ def _ps(cmd: str) -> str:
     return (result.stdout + result.stderr).strip()
 
 
-def get_task_state(task_name: str) -> dict:
-    out = _ps(
-        f"$t = Get-ScheduledTask -TaskName '{task_name}' -ErrorAction SilentlyContinue; "
-        f"if ($t) {{ "
-        f"  $info = Get-ScheduledTaskInfo -TaskName '{task_name}'; "
-        f"  '{task_name}|' + $t.State + '|' + $info.LastRunTime + '|' + $info.NextRunTime "
-        f"}} else {{ 'NOT_FOUND' }}"
-    )
-    if out == "NOT_FOUND" or not out:
-        return {"found": False, "enabled": False, "last_run": "—", "next_run": "—"}
-    parts = out.split("|")
-    state = parts[1].strip() if len(parts) > 1 else "Unknown"
-    last_run = _fmt_time(parts[2].strip()) if len(parts) > 2 else "—"
-    next_run = _fmt_time(parts[3].strip()) if len(parts) > 3 else "—"
-    return {
-        "found":   True,
-        "enabled": state == "Ready",
-        "state":   state,
-        "last_run": last_run,
-        "next_run": next_run,
-    }
-
-
-def _fmt_time(s: str) -> str:
-    _never = ("", "12/31/1899 12:00:00 AM", "1/1/0001 12:00:00 AM",
-              "11/30/1999 12:00:00 AM", "11/30/1999 00:00:00")
-    if not s or s.strip() in _never:
-        return "—"
-    try:
-        parts = s.split(" ")
-        return f"{parts[0]} {parts[1]}"
-    except Exception:
-        return s[:20]
-
-
-def enable_task(task_name: str) -> str:
-    return _ps(f"Enable-ScheduledTask -TaskName '{task_name}'")
-
-
-def disable_task(task_name: str) -> str:
-    return _ps(f"Disable-ScheduledTask -TaskName '{task_name}'")
-
-
-def run_task_now(task_name: str) -> str:
-    return _ps(f"Start-ScheduledTask -TaskName '{task_name}'")
-
-
-def install_single_task(task_name: str, python_exe: str = None) -> str:
-    """用 schtasks 安裝單一排程任務"""
-    if python_exe is None:
-        python_exe = sys.executable
-    script_dir = str(BASE_DIR)
-    sched_args = TASK_SCHTASK_ARGS.get(task_name)
-    script_info = TASK_SCRIPT_ARGS.get(task_name)
-    if not sched_args or not script_info:
-        return f"[X] Unknown task: {task_name}"
-
-    script_file, extra_args = script_info
-    script_path = f"{script_dir}\\{script_file}"
-    tr_cmd = f'"{python_exe}" "{script_path}"'
-    if extra_args:
-        tr_cmd += f" {extra_args}"
-
-    si = subprocess.STARTUPINFO()
-    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    si.wShowWindow = 0
-    subprocess.run(
-        ["schtasks", "/delete", "/tn", task_name, "/f"],
-        capture_output=True, startupinfo=si
-    )
-    result = subprocess.run(
-        ["schtasks", "/create", "/tn", task_name,
-         "/tr", tr_cmd,
-         *sched_args.split(),
-         "/rl", "HIGHEST", "/ru", "SYSTEM", "/f"],
-        capture_output=True, text=True, startupinfo=si
-    )
-    out = (result.stdout + result.stderr).strip()
-    if result.returncode == 0:
-        return f"[OK] Installed: {task_name}"
-    else:
-        return f"[X] Failed ({result.returncode}): {out}"
 
 
 # ════════════════════════════════════════════════════════════
 # Config 工具
 # ════════════════════════════════════════════════════════════
 
-def load_config() -> dict:
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def save_config(cfg: dict):
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
 
 
 # ════════════════════════════════════════════════════════════
@@ -634,38 +496,21 @@ class ControlPanel(tk.Tk):
         self.lbl_time.pack(side="right")
         self._tick()
 
-        # ── 手動執行列（標題下方）─────────────────────────
+        # ── 操作列（標題下方）──────────────────────────────
         btn_bar = tk.Frame(self, bg=BG3, pady=4, padx=10)
         btn_bar.pack(fill="x")
-
-        tk.Label(btn_bar, text="Execute:", font=self.font_small,
-                 bg=BG3, fg=ACCENT_HL).pack(side="left", padx=(0, 6))
 
         self._btn(btn_bar, "Sync Pos",
                   self._sync_position,
                   MAGENTA, padx=6, pady=3, font=self.font_small).pack(side="left", padx=(0, 2))
-        self._btn(btn_bar, "Drift Check",
-                  self._drift_check,
-                  BTN_BG, padx=6, pady=3, font=self.font_small).pack(side="left", padx=(0, 2))
-        self._btn(btn_bar, "Report",
-                  lambda: self._run_script_args("daily_report.py", self._get_account_arg(), "Daily Report"),
-                  BTN_BG, padx=6, pady=3, font=self.font_small).pack(side="left", padx=(0, 2))
-        self._btn(btn_bar, "Data",
-                  lambda: self._run_script("update_data.py", "Data Update"),
-                  BTN_BG, padx=6, pady=3, font=self.font_small).pack(side="left", padx=(0, 2))
-        self._btn(btn_bar, "Install All",
-                  self._install_scheduler,
-                  BTN_BG, padx=6, pady=3, font=self.font_small).pack(side="left", padx=(0, 2))
 
-        self._btn(btn_bar, "Start Gateway",
-                  self._start_gateway,
-                  RED, padx=6, pady=3, font=self.font_small).pack(side="right", padx=(0, 2))
         self._btn(btn_bar, "Refresh IB",
                   self._refresh_ib_live,
-                  ORANGE, padx=6, pady=3, font=self.font_small).pack(side="right")
-        self._btn(btn_bar, "Refresh",
-                  self.refresh_all,
-                  BTN_BG, padx=6, pady=3, font=self.font_small).pack(side="right", padx=(0, 2))
+                  ORANGE, padx=6, pady=3, font=self.font_small).pack(side="left", padx=(0, 2))
+
+        self.data_date_lbl = tk.Label(btn_bar, text="Data: ...",
+                                       font=self.font_mono_sm, bg=BG3, fg=CYAN)
+        self.data_date_lbl.pack(side="right")
 
         # ── Gateway Status 監控列 ─────────────────────────
         gw_bar = tk.Frame(self, bg=BG2, pady=4, padx=10)
@@ -705,17 +550,16 @@ class ControlPanel(tk.Tk):
         self.gw_last_lbl.pack(side="right", padx=8)
 
         # ══════════════════════════════════════════════════
-        # 主體：三欄式 grid 佈局（填滿全螢幕）
+        # 主體：兩欄式 grid 佈局（填滿全螢幕）
         # ══════════════════════════════════════════════════
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=6, pady=(4, 6))
-        body.columnconfigure(0, weight=3)   # 左欄：Portfolio
-        body.columnconfigure(1, weight=2)   # 中欄：Tasks + Settings
-        body.columnconfigure(2, weight=3)   # 右欄：Log
+        body.columnconfigure(0, weight=3)   # 左欄：Portfolio + Trades
+        body.columnconfigure(1, weight=2)   # 右欄：Strategy Params + Log
         body.rowconfigure(0, weight=1)
 
         # ════════════════════════════════════════
-        # 左欄：Portfolio Overview + Recent Trades
+        # 左欄：Portfolio → Trades
         # ════════════════════════════════════════
         col_left = tk.Frame(body, bg=BG)
         col_left.grid(row=0, column=0, sticky="nsew", padx=(0, 3))
@@ -723,7 +567,7 @@ class ControlPanel(tk.Tk):
         col_left.rowconfigure(1, weight=2)  # Trades
         col_left.columnconfigure(0, weight=1)
 
-        # Portfolio Overview (R3.2: extracted to portfolio_view.PortfolioView)
+        # Portfolio Overview
         pf_wrapper = tk.Frame(col_left, bg=BG2)
         pf_wrapper.grid(row=0, column=0, sticky="nsew", pady=(0, 3))
         self._section_label_inline(pf_wrapper, "Portfolio Overview")
@@ -731,7 +575,7 @@ class ControlPanel(tk.Tk):
             parent=pf_wrapper, theme=self._theme, fonts=self._fonts,
         )
 
-        # Recent Trades (R3.3: extracted to panel_task_cards.TradesView)
+        # Recent Trades
         trades_wrapper = tk.Frame(col_left, bg=BG2)
         trades_wrapper.grid(row=1, column=0, sticky="nsew")
         self._section_label_inline(trades_wrapper, "Recent Trades")
@@ -741,65 +585,22 @@ class ControlPanel(tk.Tk):
         self.trades_view.pack(fill="both", expand=True)
 
         # ════════════════════════════════════════
-        # 中欄：Scheduled Tasks + Trading Settings + Strategy Params
+        # 右欄：Strategy Parameters → Output Log
         # ════════════════════════════════════════
-        col_mid = tk.Frame(body, bg=BG)
-        col_mid.grid(row=0, column=1, sticky="nsew", padx=3)
-        col_mid.rowconfigure(0, weight=0)  # Tasks
-        col_mid.rowconfigure(1, weight=0)  # Trading Settings
-        col_mid.rowconfigure(2, weight=0)  # Strategy Params
-        col_mid.rowconfigure(3, weight=1)  # 彈性填充
-        col_mid.columnconfigure(0, weight=1)
+        col_right = tk.Frame(body, bg=BG)
+        col_right.grid(row=0, column=1, sticky="nsew", padx=(3, 0))
 
-        # Scheduled Tasks (R3.3: extracted to panel_task_cards.TaskCard)
-        tasks_wrapper = tk.Frame(col_mid, bg=BG2)
-        tasks_wrapper.grid(row=0, column=0, sticky="new", pady=(0, 3))
-        self._section_label_inline(tasks_wrapper, "Scheduled Tasks")
-        self.task_cards: dict[str, TaskCard] = {}
-        task_defs = [
-            (TASK_UPDATE,       "Data Update",                "Daily 04:30 TW = 16:30 ET"),
-            (TASK_SP_DAILY,     "SP500 Daily Check",          "Mon-Fri 16:00 TW = 04:00 ET"),
-            (TASK_REBAL_SR,     "Tue Rebalance (SR+Skew)",    "Tue 21:00 TW = 09:00 ET (--mode all)"),
-            (TASK_REBAL_SP,     "Wed Rebalance (SP500+Skew)", "Wed 21:00 TW = 09:00 ET (--mode all)"),
-            (TASK_REBAL_SKEWLS, "SkewLS Check (M/Th/F)",      "Mon/Thu/Fri 21:00 TW = 09:00 ET"),
-            (TASK_MOO_DAILY,    "MOO Fill (Mon-Fri)",         "Mon-Fri 21:31 TW = 09:31 ET"),
-            (TASK_REPORT,       "Daily Report",               "Daily 04:40 TW = 16:40 ET"),
-            (TASK_CONST_REFRESH,"Constituents Refresh",       "Wed 04:50 TW (gated, ADR-0009)"),
-        ]
-        for tn, lbl, timing in task_defs:
-            card = TaskCard(
-                parent=tasks_wrapper,
-                task_name=tn, label=lbl, timing=timing,
-                theme=self._theme, fonts=self._fonts,
-                btn_factory=self._btn,
-                on_toggle=self._toggle_task,
-                on_trigger=self._trigger_task,
-                on_install=self._install_single,
-            )
-            card.pack(fill="x", padx=4, pady=1)
-            self.task_cards[tn] = card
-
-        # Trading Settings + Strategy Parameters
-        # (R3.4: extracted to strategy_params_view.StrategyParamsView)
-        settings_wrapper = tk.Frame(col_mid, bg=BG2)
-        settings_wrapper.grid(row=1, column=0, sticky="new", pady=(0, 3))
-        params_wrapper = tk.Frame(col_mid, bg=BG2)
-        params_wrapper.grid(row=2, column=0, sticky="new")
+        # Strategy Parameters（頂部，不拉伸）
+        params_wrapper = tk.Frame(col_right, bg=BG2)
+        params_wrapper.pack(fill="x", pady=(0, 3))
         self.strategy_view = StrategyParamsView(
-            parent_settings=settings_wrapper,
             parent_params=params_wrapper,
             theme=self._theme, fonts=self._fonts,
             btn_factory=self._btn,
-            on_toggle_dry_run=self._toggle_dry_run,
             on_save=self._save_params,
         )
 
-        # ════════════════════════════════════════
-        # 右欄：Output Log
-        # ════════════════════════════════════════
-        col_right = tk.Frame(body, bg=BG)
-        col_right.grid(row=0, column=2, sticky="nsew", padx=(3, 0))
-
+        # Output Log
         log_hdr = tk.Frame(col_right, bg=ACCENT, padx=10, pady=4)
         log_hdr.pack(fill="x")
         tk.Label(log_hdr, text="Output Log", font=self.font_section,
@@ -902,22 +703,6 @@ class ControlPanel(tk.Tk):
 
     # ── 資料刷新 ──────────────────────────────────────────
 
-    def _start_gateway(self):
-        """啟動選中帳戶的 IB Gateway"""
-        acct = self.selected_account.get()
-
-        def _do():
-            from gateway_launcher import start_gateway
-            self._log(f"[>] Starting Gateway [{acct}]...")
-            proc = start_gateway(acct)
-            if proc:
-                self._log(f"[OK] Gateway [{acct}] launched (PID={proc.pid})")
-                self._log(f"     Check phone for 2FA if required")
-            else:
-                self._log(f"[X] Failed to start Gateway [{acct}]")
-
-        threading.Thread(target=_do, daemon=True).start()
-
     def _set_active_account(self, name: str):
         """切換到指定帳戶（按鈕點擊入口）"""
         self.selected_account.set(name)
@@ -937,7 +722,7 @@ class ControlPanel(tk.Tk):
                          relief="flat")
 
     def _on_account_change(self, _=None):
-        """帳戶切換時刷新策略參數 + IB 持倉"""
+        """帳戶切換時刷新策略參數 + IB 持倉 + Recent Trades"""
         acct = self.selected_account.get()
         self._log(f"[>] Switched to account: {acct}")
         # 高亮對應按鈕
@@ -956,6 +741,14 @@ class ControlPanel(tk.Tk):
             self.title(f"QuantCore — {acct}")
         except Exception:
             pass
+        # 刷新 Recent Trades（背景讀 Excel，避免阻塞 UI）
+        def _refresh_trades():
+            try:
+                trades = read_latest_trades(acct)
+                self.after(0, lambda t=trades: self.trades_view.update(t))
+            except Exception:
+                pass
+        threading.Thread(target=_refresh_trades, daemon=True).start()
         self._refresh_ib_live()
 
     # ── Gateway 連線監控 ──────────────────────────────────
@@ -1176,41 +969,6 @@ class ControlPanel(tk.Tk):
             self._log(f"[>] Re-probing {respawned} Gateway(s)... "
                       f"(state callback will update colour shortly)")
 
-    def _get_account_arg(self) -> str:
-        """取得當前選中帳戶的 --account 參數"""
-        return f"--account {self.selected_account.get()}"
-
-    # ── Drift Check（理論 vs 實際對帳，唯讀）───────────────
-
-    def _drift_check(self):
-        """對帳：與 scheduled rebalance 的 standing 理論目標比（SkewLS 用
-        state last_target、SP500 hold 現倉），逐檔分類偏離原因輸出到
-        Output Log。唯讀 — 不下單、不寫 state。"""
-        acct = self.selected_account.get()
-        self._log(f"[>] Drift Check — 理論 vs 實際對帳 [{acct}]...")
-        threading.Thread(target=self._drift_check_thread, args=(acct,),
-                         daemon=True).start()
-
-    def _drift_check_thread(self, account_name: str):
-        try:
-            from account_utils import ROLE_REBALANCE
-            from account_ctx import AccountCtx
-            import rebalance_plan as rp
-            import sync_position as sp
-
-            def progress(msg: str):
-                self.after(0, lambda m=msg: self._log(m))
-
-            ctx = AccountCtx.from_name(account_name, ROLE_REBALANCE)
-            rows, nav = sp.compute_drift_rows(ctx, log_fn=progress)
-            report = ([f"[Drift Check] [{account_name}] NAV=${nav:,.0f}"]
-                      + [ln for ln in rp.drift_report_lines(rows) if ln])
-            self.after(0, lambda r=report: [self._log(ln) for ln in r])
-        except Exception as e:
-            err_msg = str(e)
-            self.after(0, lambda m=err_msg:
-                       self._log(f"[X] Drift Check failed: {m}"))
-
     # ── Sync Position ─────────────────────────────────────
 
     def _sync_position(self):
@@ -1241,10 +999,7 @@ class ControlPanel(tk.Tk):
             self.after(0, lambda m=err_msg: self._log(f"[X] Sync compute failed: {m}"))
             self.after(0, lambda m=err_msg: messagebox.showerror("Sync Error", m))
 
-    # R3.1/R3.2-3.4: Panel theme colours bundled for view injection.
-    # Extra keys (yellow/orange/cyan) added for PortfolioView / TaskCard /
-    # StrategyParamsView. SyncPreviewWindow validates with a subset check,
-    # so having extras is harmless.
+    # Panel theme colours bundled for view injection.
     @property
     def _theme(self) -> dict:
         return {
@@ -1371,12 +1126,7 @@ class ControlPanel(tk.Tk):
         self.after(50, self._refresh_gateway_status)
 
     def _refresh_thread(self):
-        # 1. Task states
-        for task_name, card in self.task_cards.items():
-            info = get_task_state(task_name)
-            self.after(0, lambda c=card, i=info: c.update(i))
-
-        # 2. Config（讀取目前選中帳戶的 per-account 設定）
+        # 1. Config（讀取目前選中帳戶的 per-account 設定）
         try:
             acct = self.selected_account.get()
             cfg = get_account_config(acct)
@@ -1384,14 +1134,14 @@ class ControlPanel(tk.Tk):
         except Exception as e:
             self.after(0, lambda: self._log(f"[X] Config read failed: {e}"))
 
-        # 3. Portfolio overview
+        # 2. Portfolio overview
         try:
             pf = read_latest_portfolio()
             self.after(0, lambda p=pf: self.portfolio_view.update(p))
         except Exception as e:
             self.after(0, lambda: self._log(f"[X] Portfolio read failed: {e}"))
 
-        # 4. Recent trades
+        # 3. Recent trades
         try:
             acct = self.selected_account.get()
             trades = read_latest_trades(acct)
@@ -1399,221 +1149,16 @@ class ControlPanel(tk.Tk):
         except Exception as e:
             self.after(0, lambda: self._log(f"[X] Trades read failed: {e}"))
 
-        # 5. Data date
+        # 4. Data date
         try:
             dd = get_last_data_update()
-            self.after(0, lambda d=dd: self.strategy_view.update_data_date(d))
+            self.after(0, lambda d=dd: self.data_date_lbl.config(text=f"Data: {d}"))
         except Exception:
             pass
 
         self.after(0, lambda: self._log("[OK] Refresh done"))
 
     # ── 操作 ──────────────────────────────────────────────
-
-    def _toggle_task(self, task_name: str, enabled: bool):
-        """Enable/Disable a scheduled task. Called by TaskCard on_toggle."""
-        action = "Disable" if enabled else "Enable"
-
-        if not messagebox.askyesno("Confirm", f"{action} '{task_name}'?"):
-            return
-
-        card = self.task_cards.get(task_name)
-
-        def _do():
-            if enabled:
-                disable_task(task_name)
-                self._log(f"[X] Disabled {task_name}")
-            else:
-                enable_task(task_name)
-                self._log(f"[OK] Enabled {task_name}")
-            info = get_task_state(task_name)
-            if card is not None:
-                self.after(0, lambda: card.update(info))
-
-        threading.Thread(target=_do, daemon=True).start()
-
-    def _trigger_task(self, task_name: str):
-        """直接執行任務對應的腳本（不依賴 Windows Task Scheduler）"""
-        script_info = TASK_SCRIPT_ARGS.get(task_name)
-        if not script_info:
-            self._log(f"[X] Unknown task: {task_name}")
-            return
-
-        script_file, args = script_info
-        label = TASK_LABELS.get(task_name, task_name)
-
-        # 讀當前選中帳戶的 dry_run（per-account via get_account_config）
-        try:
-            acct = self.selected_account.get()
-            cfg = get_account_config(acct)
-            dry_run = cfg.get("dry_run", True)
-        except Exception:
-            dry_run = True
-
-        mode_text = "SIMULATED (Dry Run)" if dry_run else "!! LIVE TRADING !!"
-        cmd_display = f"{script_file} {args}".strip()
-
-        confirm_msg = (
-            f"Run {label}?\n\n"
-            f"  Command:  {cmd_display}\n"
-            f"  Mode:     {mode_text}\n"
-        )
-
-        if not dry_run:
-            confirm_msg += "\n  WARNING: Real orders will be submitted!"
-
-        if not messagebox.askyesno("Trigger Now", confirm_msg,
-                                    icon="warning" if not dry_run else "question"):
-            return
-
-        self._run_script_args(script_file, args, label, _skip_confirm=True)
-
-    def _run_script(self, script: str, label: str):
-        self._run_script_args(script, "", label)
-
-    def _run_script_args(self, script: str, args: str, label: str,
-                         _skip_confirm: bool = False):
-        """執行腳本，即時顯示 stdout 到 Log 區域"""
-        script_path = BASE_DIR / script
-        if not script_path.exists():
-            messagebox.showerror("Error", f"Not found: {script}")
-            return
-        display = f"{script} {args}".strip()
-
-        if not _skip_confirm:
-            if not messagebox.askyesno("Confirm", f"Run {label}?\n\n{display}"):
-                return
-
-        # 讀當前選中帳戶的 dry_run
-        try:
-            acct = self.selected_account.get()
-            cfg = get_account_config(acct)
-            dry_run = cfg.get("dry_run", True)
-        except Exception:
-            dry_run = True
-
-        mode_tag = "[DRY RUN]" if dry_run else "[LIVE]"
-        now_str = datetime.now().strftime("%H:%M:%S")
-
-        self._log(f"\n{'='*50}")
-        self._log(f"{now_str}  {mode_tag}  Starting: {label}")
-        self._log(f"  cmd: {PYTHON} {display}")
-        self._log(f"{'='*50}")
-
-        def _do():
-            t0 = time.time()
-            try:
-                cmd = [PYTHON, str(script_path)] + (args.split() if args else [])
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    cwd=str(BASE_DIR)
-                )
-                for line in proc.stdout:
-                    self._log(line.rstrip())
-                proc.wait()
-                elapsed = f"{time.time() - t0:.1f}s"
-                ts = datetime.now().strftime("%H:%M:%S")
-                self._log(f"{'='*50}")
-                if proc.returncode == 0:
-                    self._log(f"{ts}  [OK] {label} completed ({elapsed})")
-                else:
-                    self._log(f"{ts}  [X] {label} failed (rc={proc.returncode}, {elapsed})")
-                self._log("")
-
-                # 執行完自動 refresh
-                self.after(1000, self.refresh_all)
-                # 若是 rebalance 且有成交，自動刷新 IB 持倉
-                if "rebalance" in script.lower() and proc.returncode == 0:
-                    self.after(3000, self._refresh_ib_live)
-
-            except Exception as e:
-                ts = datetime.now().strftime("%H:%M:%S")
-                self._log(f"{ts}  [X] {label} error: {e}")
-
-        threading.Thread(target=_do, daemon=True).start()
-
-    def _install_single(self, task_name: str):
-        """安裝單一排程任務"""
-        if not messagebox.askyesno("Install Task",
-                                    f"Install scheduled task?\n\n  {task_name}"):
-            return
-
-        self._log(f"[>] Installing {task_name}...")
-
-        def _do():
-            out = install_single_task(task_name)
-            self._log(out)
-            info = get_task_state(task_name)
-            card = self.task_cards.get(task_name)
-            if card:
-                self.after(0, lambda: card.update(info))
-
-        threading.Thread(target=_do, daemon=True).start()
-
-    def _install_scheduler(self):
-        if not messagebox.askyesno(
-            "Install All Tasks",
-            "Install ALL 7 scheduled tasks?\n\n"
-            "  1. QuantCore_DataUpdate_Daily    (Daily 04:30)\n"
-            "  2. QuantCore_SP500_DailyCheck    (Mon-Fri 16:00)\n"
-            "  3. QuantCore_SR_Rebalance_Tue    (Tue 21:00 --mode all,\n"
-            "     SR rebal + SP500 hold + SkewLS check)\n"
-            "  4. QuantCore_SP500_Rebalance_Wed (Wed 21:00 --mode all,\n"
-            "     SR hold + SP500 rebal + SkewLS check)\n"
-            "  5. QuantCore_SkewLS_DailyCheck   (Mon/Thu/Fri 21:00)\n"
-            "     (no-op if alloc_skewls = 0)\n"
-            "  6. QuantCore_MOO_Fill_Daily      (MOO Check Mon-Fri 21:31)\n"
-            "  7. QuantCore_DailyReport         (Daily 04:40)\n\n"
-            "Tue/Wed 用 --mode all 在單一 process 內算完三策略再送 MOO，\n"
-            "避免與 SkewLS daily check 同時跑時的 clientId 衝突。\n\n"
-            "Continue?"
-        ):
-            return
-
-        self._log(f"\n{'='*50}")
-        self._log("[>] Installing all tasks...")
-
-        def _do():
-            for tn in [TASK_UPDATE, TASK_SP_DAILY,
-                       TASK_REBAL_SR, TASK_REBAL_SP, TASK_REBAL_SKEWLS,
-                       TASK_MOO_DAILY, TASK_REPORT]:
-                out = install_single_task(tn)
-                self._log(f"  {out}")
-            self._log("[OK] All tasks installed. Refreshing...")
-            time.sleep(1)
-            self.after(0, self.refresh_all)
-
-        threading.Thread(target=_do, daemon=True).start()
-
-    def _toggle_dry_run(self):
-        # R1.4: 刻意保留 load_config/save_config — dry_run 仍是全域設定（寫入 config.json）。
-        #       要改成 per-account 需先在 accounts.json 支援 dry_run 覆蓋並調整 update_account_config。
-        try:
-            cfg = load_config()
-            current = cfg.get("dry_run", True)
-            new_val = not current
-
-            if not new_val:
-                if not messagebox.askyesno(
-                    "!! WARNING",
-                    "Switch to LIVE trading mode!\n"
-                    "Real orders will be submitted to IB.\n\n"
-                    "Are you sure?",
-                    icon="warning"
-                ):
-                    return
-
-            cfg["dry_run"] = new_val
-            save_config(cfg)
-            self.strategy_view.update_cfg(cfg)
-            mode = "SIMULATED" if new_val else "LIVE !!"
-            self._log(f"{'[SIM]' if new_val else '[LIVE]'} Dry Run -> {mode}")
-
-        except Exception as e:
-            messagebox.showerror("Error", f"Config update failed:\n{e}")
 
     def _save_params(self):
         try:

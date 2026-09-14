@@ -8,8 +8,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime, timezone
-import math
+from datetime import datetime, timedelta, timezone
 import threading
 import time
 
@@ -104,42 +103,66 @@ class PortfolioQueries:
 
 
 class PortfolioRefreshLoop:
-    """Main-thread adapter: startup + hourly refresh, independent manual refresh.
+    """Main-thread adapter: startup + market-hours scheduled refresh.
+
+    Refresh fires at fixed NYSE trading-hour slots (09:30, 10:00, …, 16:00 ET)
+    instead of a monotonic hourly interval.  Startup still does one immediate
+    refresh.  Manual refresh is independent of the schedule.
 
     schedule(ms, callback) and cancel(handle) can be Tk after/after_cancel or a
-    fake scheduler. Polling publishes each finished Account without a batch barrier.
+    fake scheduler.  Polling publishes each finished Account without a batch
+    barrier.
     """
-    def __init__(self, queries, schedule, cancel, on_change, *, clock=time.monotonic):
+    _LATE_THRESHOLD_SEC = 300
+
+    def __init__(self, queries, schedule, cancel, on_change, *,
+                 next_refresh_time=None, now=None):
         self.queries = queries
         self._schedule, self._cancel = schedule, cancel
-        self._on_change, self._clock = on_change, clock
+        self._on_change = on_change
+        self._next_refresh_time = next_refresh_time
+        self._now = now
         self._active = False
-        self._hour_timer = self._poll_timer = None
+        self._sched_timer = self._poll_timer = None
+        self._armed_for: datetime | None = None
+
+    def _ensure_defaults(self):
+        if self._next_refresh_time is None:
+            from refresh_schedule import next_refresh_time
+            self._next_refresh_time = next_refresh_time
+        if self._now is None:
+            from zoneinfo import ZoneInfo
+            _ET = ZoneInfo("America/New_York")
+            self._now = lambda: datetime.now(_ET)
 
     def start(self):
         if self._active:
             return
+        self._ensure_defaults()
         self._active = True
-        self._next_hour = self._clock() + 3600
-        self._arm_hour()
+        self._arm_next()
         self.refresh()
         self._poll()
 
     def refresh(self):
         return self.queries.refresh() if self._active else ()
 
-    def _arm_hour(self):
-        delay = max(1, math.ceil((self._next_hour - self._clock()) * 1000))
-        self._hour_timer = self._schedule(delay, self._hourly)
+    def _arm_next(self):
+        now = self._now()
+        nxt = self._next_refresh_time(now)
+        self._armed_for = nxt
+        delay_ms = max(1, int((nxt - now).total_seconds() * 1000))
+        self._sched_timer = self._schedule(delay_ms, self._scheduled_tick)
 
-    def _hourly(self):
+    def _scheduled_tick(self):
         if not self._active:
             return
-        now = self._clock()
-        if now >= self._next_hour:
-            self._next_hour += (math.floor((now - self._next_hour) / 3600) + 1) * 3600
-            self.refresh()
-        self._arm_hour()
+        now = self._now()
+        if self._armed_for is not None:
+            late_sec = (now - self._armed_for).total_seconds()
+            if late_sec <= self._LATE_THRESHOLD_SEC:
+                self.refresh()
+        self._arm_next()
 
     def _poll(self):
         if not self._active:
@@ -155,8 +178,8 @@ class PortfolioRefreshLoop:
 
     def stop(self):
         self._active = False
-        for timer in (self._hour_timer, self._poll_timer):
+        for timer in (self._sched_timer, self._poll_timer):
             if timer is not None:
                 self._cancel(timer)
-        self._hour_timer = self._poll_timer = None
+        self._sched_timer = self._poll_timer = None
         self.queries.close()

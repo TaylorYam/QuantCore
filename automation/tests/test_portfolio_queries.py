@@ -87,73 +87,163 @@ def test_failure_retains_success_timestamp_and_detached_data():
         queries.close()
 
 
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+ET = ZoneInfo("America/New_York")
+
+
+def _et(y, m, d, h, mi=0, s=0):
+    return datetime(y, m, d, h, mi, s, tzinfo=ET)
+
+
 class Scheduler:
-    def __init__(self):
-        self.now = 0
-        self.jobs = {}
+    """Fake scheduler that works with wall-clock ET datetimes."""
+    def __init__(self, start: datetime):
+        self.now_dt = start
+        self.jobs: dict[int, tuple[datetime, object]] = {}
         self.sequence = 0
+
+    def now(self) -> datetime:
+        return self.now_dt
 
     def schedule(self, ms, fn):
         self.sequence += 1
-        self.jobs[self.sequence] = (self.now + ms / 1000, fn)
+        fire_at = self.now_dt + timedelta(milliseconds=ms)
+        self.jobs[self.sequence] = (fire_at, fn)
         return self.sequence
 
     def cancel(self, handle):
         self.jobs.pop(handle, None)
 
-    def advance(self, seconds):
-        target = self.now + seconds
+    def advance_to(self, target: datetime):
         while self.jobs:
             key = min(self.jobs, key=lambda k: self.jobs[k][0])
             when, fn = self.jobs[key]
             if when > target:
                 break
-            self.now = when
+            self.now_dt = when
             del self.jobs[key]
             fn()
-        self.now = target
+        self.now_dt = target
+
+    def advance(self, seconds: float):
+        self.advance_to(self.now_dt + timedelta(seconds=seconds))
 
 
-def test_hourly_manual_and_shutdown_without_wall_clock_wait():
+def _fixed_schedule(*slots):
+    """Return a next_refresh_time function that cycles through fixed ET times."""
+    it = iter(slots)
+    def nrt(now_et):
+        for s in it:
+            if s > now_et:
+                return s
+        raise RuntimeError("no more slots")
+    return nrt
+
+
+def test_scheduled_refresh_fires_at_market_slots():
     from types import SimpleNamespace
-    scheduler = Scheduler()
+    # Mon 2026-09-14 trading day: slots at 09:30, 10:00, 11:00
+    t0 = _et(2026, 9, 14, 9, 0)
+    slots = [_et(2026, 9, 14, 9, 30),
+             _et(2026, 9, 14, 10, 0),
+             _et(2026, 9, 14, 11, 0),
+             _et(2026, 9, 14, 12, 0)]
+    scheduler = Scheduler(t0)
     calls, published = [], []
     changes = {"Taylor": "ready"}
     queries = SimpleNamespace(
-        refresh=lambda: calls.append(scheduler.now),
+        refresh=lambda: calls.append(scheduler.now()),
         drain_changes=lambda: dict(changes), close=lambda: changes.clear())
-    loop = PortfolioRefreshLoop(queries, scheduler.schedule, scheduler.cancel,
-                                lambda *args: published.append(args),
-                                clock=lambda: scheduler.now)
+    loop = PortfolioRefreshLoop(
+        queries, scheduler.schedule, scheduler.cancel,
+        lambda *args: published.append(args),
+        next_refresh_time=_fixed_schedule(*slots),
+        now=scheduler.now)
     loop.start()
-    loop.start()
-    assert calls == [0] and published == [("Taylor", "ready")]
+    loop.start()  # idempotent
+    # Startup immediate refresh
+    assert len(calls) == 1 and calls[0] == t0
+    assert published == [("Taylor", "ready")]
     changes.clear()
-    scheduler.advance(1200)
+    # Advance to 09:30 → scheduled tick fires
+    scheduler.advance_to(_et(2026, 9, 14, 9, 30))
+    assert len(calls) == 2 and calls[1] == slots[0]
+    # Manual refresh at 09:45 — independent of schedule
+    scheduler.advance_to(_et(2026, 9, 14, 9, 45))
     loop.refresh()
-    scheduler.advance(2400)
-    assert calls == [0, 1200, 3600]
-    scheduler.advance(3600)
-    assert calls == [0, 1200, 3600, 7200]
+    assert len(calls) == 3 and calls[2] == _et(2026, 9, 14, 9, 45)
+    # 10:00 fires
+    scheduler.advance_to(_et(2026, 9, 14, 10, 0))
+    assert len(calls) == 4 and calls[3] == slots[1]
     loop.stop()
     assert not scheduler.jobs
-    loop._hourly()  # even a late timer is inert
+    loop._scheduled_tick()  # inert after stop
     loop._poll()
     loop.refresh()
-    assert calls == [0, 1200, 3600, 7200]
+    assert len(calls) == 4
 
 
-def test_resume_after_sleep_skips_missed_hours():
+def test_late_timer_skips_refresh():
+    """Timer fires >5 min late (system slept) → skip refresh, just re-arm."""
     from types import SimpleNamespace
-    scheduler = Scheduler()
+    t0 = _et(2026, 9, 14, 9, 0)
+    # Schedule 09:30, then 14:00 (we'll simulate sleep skipping several slots)
+    slots = [_et(2026, 9, 14, 9, 30),
+             _et(2026, 9, 14, 14, 0),
+             _et(2026, 9, 14, 15, 0)]
+    scheduler = Scheduler(t0)
     calls = []
-    queries = SimpleNamespace(refresh=lambda: calls.append(scheduler.now),
-                              drain_changes=lambda: {}, close=lambda: None)
-    loop = PortfolioRefreshLoop(queries, scheduler.schedule, scheduler.cancel,
-                                lambda *_: None, clock=lambda: scheduler.now)
+    queries = SimpleNamespace(
+        refresh=lambda: calls.append(scheduler.now()),
+        drain_changes=lambda: {}, close=lambda: None)
+    loop = PortfolioRefreshLoop(
+        queries, scheduler.schedule, scheduler.cancel,
+        lambda *_: None,
+        next_refresh_time=_fixed_schedule(*slots),
+        now=scheduler.now)
     loop.start()
-    scheduler.now = 3 * 3600 + 100
-    loop._hourly()
-    assert calls == [0, 10900]
-    assert scheduler.jobs[loop._hour_timer][0] == 14400
+    assert len(calls) == 1  # startup
+    # Simulate system sleep: jump from 09:00 straight to 13:50
+    # The 09:30 timer fires at 13:50 — 4h20m late → skip refresh
+    scheduler.now_dt = _et(2026, 9, 14, 13, 50)
+    # Manually fire the pending 09:30 timer
+    pending = list(scheduler.jobs.items())
+    for key, (when, fn) in pending:
+        if when <= _et(2026, 9, 14, 9, 31):  # the 09:30 timer
+            del scheduler.jobs[key]
+            fn()
+    assert len(calls) == 1  # no catch-up refresh
+    # Now armed for 14:00; advance normally
+    scheduler.advance_to(_et(2026, 9, 14, 14, 0))
+    assert len(calls) == 2  # fires on time
+    loop.stop()
+
+
+def test_late_timer_within_threshold_still_fires():
+    """Timer fires 2 min late → within threshold → refresh happens."""
+    from types import SimpleNamespace
+    t0 = _et(2026, 9, 14, 9, 0)
+    slots = [_et(2026, 9, 14, 9, 30), _et(2026, 9, 14, 10, 0)]
+    scheduler = Scheduler(t0)
+    calls = []
+    queries = SimpleNamespace(
+        refresh=lambda: calls.append(scheduler.now()),
+        drain_changes=lambda: {}, close=lambda: None)
+    loop = PortfolioRefreshLoop(
+        queries, scheduler.schedule, scheduler.cancel,
+        lambda *_: None,
+        next_refresh_time=_fixed_schedule(*slots),
+        now=scheduler.now)
+    loop.start()
+    assert len(calls) == 1
+    # Timer fires 2 min late
+    scheduler.now_dt = _et(2026, 9, 14, 9, 32)
+    pending = list(scheduler.jobs.items())
+    for key, (when, fn) in pending:
+        if when <= _et(2026, 9, 14, 9, 31):
+            del scheduler.jobs[key]
+            fn()
+    assert len(calls) == 2  # refresh happened (within 5-min threshold)
     loop.stop()

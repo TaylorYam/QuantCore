@@ -577,8 +577,27 @@ class ControlPanel(tk.Tk):
 
         # ── Scrollable interior ──
         canvas = tk.Canvas(col, bg=BG2, highlightthickness=0)
-        scrollbar = tk.Scrollbar(col, orient="vertical", command=canvas.yview,
-                                 width=8, borderwidth=0, highlightthickness=0)
+        # Use theme-independent elements so Windows does not clip native arrows
+        # when the scrollbar is narrower than the system scrollbar width.
+        style = ttk.Style(self)
+        if "Panel.Vertical.Scrollbar.thumb" not in style.element_names():
+            style.element_create("Panel.Vertical.Scrollbar.trough", "from", "clam",
+                                 "Vertical.Scrollbar.trough")
+            style.element_create("Panel.Vertical.Scrollbar.thumb", "from", "clam",
+                                 "Vertical.Scrollbar.thumb")
+            style.layout("Panel.Vertical.TScrollbar", [
+                ("Panel.Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
+                    ("Panel.Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"}),
+                ]}),
+            ])
+            style.configure("Panel.Vertical.TScrollbar", width=8, arrowsize=8,
+                            troughcolor=BG2, background=BG3, bordercolor=BG2,
+                            lightcolor=BG3, darkcolor=BG3, borderwidth=0,
+                            gripcount=0)
+            style.map("Panel.Vertical.TScrollbar",
+                      background=[("pressed", ACCENT), ("active", ACCENT)])
+        scrollbar = ttk.Scrollbar(col, orient="vertical", command=canvas.yview,
+                                  style="Panel.Vertical.TScrollbar")
         inner = tk.Frame(canvas, bg=BG2, padx=6, pady=4)
         inner.bind("<Configure>",
                    lambda e: canvas.configure(scrollregion=canvas.bbox("all")))

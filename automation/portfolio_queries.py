@@ -116,10 +116,11 @@ class PortfolioRefreshLoop:
     _LATE_THRESHOLD_SEC = 300
 
     def __init__(self, queries, schedule, cancel, on_change, *,
-                 next_refresh_time=None, now=None):
+                 next_refresh_time=None, now=None, log=None):
         self.queries = queries
         self._schedule, self._cancel = schedule, cancel
         self._on_change = on_change
+        self._log = log
         self._next_refresh_time = next_refresh_time
         self._now = now
         self._active = False
@@ -153,6 +154,9 @@ class PortfolioRefreshLoop:
         self._armed_for = nxt
         delay_ms = max(1, int((nxt - now).total_seconds() * 1000))
         self._sched_timer = self._schedule(delay_ms, self._scheduled_tick)
+        if self._log is not None:
+            self._log(f"[GW] Portfolio refresh: next at "
+                      f"{nxt.strftime('%Y-%m-%d %H:%M %Z')}")
 
     def _scheduled_tick(self):
         if not self._active:

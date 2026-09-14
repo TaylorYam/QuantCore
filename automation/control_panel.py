@@ -324,7 +324,7 @@ class ControlPanel(tk.Tk):
             [a["name"] for a in self._accounts_meta], fetch_ib_portfolio)
         self._portfolio_loop = PortfolioRefreshLoop(
             self.portfolio_queries, self.after, self.after_cancel,
-            self._on_portfolio_change)
+            self._on_portfolio_change, log=self._log)
         self._portfolio_loop.start()
         self.refresh_all()
         # 啟動 Gateway 持久監測連線（每帳戶一條，斷線自動重連 + Telegram 通知）

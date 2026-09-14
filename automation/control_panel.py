@@ -617,7 +617,9 @@ class ControlPanel(tk.Tk):
         canvas_win = canvas.create_window((0, 0), window=inner, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
+        xscroll = ttk.Scrollbar(col, orient="horizontal", command=canvas.xview)
+        canvas.configure(xscrollcommand=xscroll.set)
+        canvas.pack(side="top", fill="both", expand=True)
         canvas.bind("<Configure>",
                     lambda e, cw=canvas_win: canvas.itemconfig(cw, width=e.width))
 
@@ -677,6 +679,23 @@ class ControlPanel(tk.Tk):
         holdings_frame = tk.Frame(inner, bg=BG2)
         holdings_frame.pack(fill="x", pady=(0, 3))
         pv.build_holdings(holdings_frame)
+
+        def resize_content(event=None):
+            # Preserve readable single-row metrics and complete holdings columns.
+            # Narrow windows can pan each account without truncating any data.
+            content_width = max(600, holdings_frame.winfo_reqwidth() + 12)
+            width = max(canvas.winfo_width(), content_width)
+            canvas.itemconfigure(canvas_win, width=width)
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            if canvas.winfo_width() < content_width:
+                if not xscroll.winfo_manager():
+                    xscroll.pack(side="bottom", fill="x", before=canvas)
+            else:
+                xscroll.pack_forget()
+                canvas.xview_moveto(0)
+
+        canvas.bind("<Configure>", resize_content)
+        inner.bind("<Configure>", resize_content)
 
         # ── Recent Trades button ──
         popup = TradesPopup(self, name, self._theme, self._fonts, read_latest_trades)

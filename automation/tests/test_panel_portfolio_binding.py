@@ -105,3 +105,22 @@ def test_refresh_summary_tracks_success_source_and_retains_time_on_failure():
         assert second.astimezone().strftime("%Y-%m-%d %H:%M:%S") in rendered["text"]
     view.update_state("Rosa", QueryState())
     assert rendered["text"] == "Rosa | No data yet\n—"
+
+
+def test_chart_percentages_include_cash_in_denominator(monkeypatch):
+    from portfolio_view import PortfolioView
+    from matplotlib.backends import backend_tkagg
+
+    figures = []
+    def canvas(figure, master):
+        figures.append(figure)
+        return NS(draw=lambda: None, get_tk_widget=lambda: NS(pack=lambda **kw: None))
+    monkeypatch.setattr(backend_tkagg, "FigureCanvasTkAgg", canvas)
+    view = PortfolioView.__new__(PortfolioView)
+    view.t = {"bg2": "#141e34", "orange": "orange", "green": "green"}
+    view.chart_canvas = None
+    view.chart_frame = None
+    view._render_pie_chart([{"symbol": "XLK", "mkt_val": 100}], 400, 25)
+    labels = [text.get_text() for text in figures[0].axes[0].texts]
+    assert "XLK 25%" in labels
+    assert "Cash 75%" in labels

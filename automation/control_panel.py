@@ -298,9 +298,9 @@ class ControlPanel(tk.Tk):
         self.minsize(1100, 750)
 
         # 設定視窗圖標
-        ico_path = BASE_DIR / "quantcore.ico"
-        if ico_path.exists():
-            self.iconbitmap(str(ico_path))
+        self._ico_path = BASE_DIR / "quantcore.ico"
+        if self._ico_path.exists():
+            self.iconbitmap(str(self._ico_path))
 
         self.font_title   = tkfont.Font(family="Segoe UI", size=14, weight="bold")
         self.font_section = tkfont.Font(family="Segoe UI", size=10, weight="bold")

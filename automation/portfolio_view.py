@@ -65,26 +65,21 @@ class PortfolioView:
     def build_metrics(self, parent: tk.Misc) -> None:
         t, f = self.t, self.f
 
-        row1 = tk.Frame(parent, bg=t["bg2"])
-        row1.pack(fill="x")
-        self.nav_card = self._metric_card(row1, "Net Asset Value", "$—", t["text"])
-        row1.columnconfigure(0, weight=1, uniform="metrics")
-        self.nav_card.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=(0, 4))
-        self.pnl_card = self._metric_card(row1, "Unrealized P&L", "$—", t["text"])
-        row1.columnconfigure(1, weight=1, uniform="metrics")
-        self.pnl_card.grid(row=0, column=1, sticky="nsew", padx=(0, 0), pady=(0, 4))
-
-        row2 = tk.Frame(parent, bg=t["bg2"])
-        row2.pack(fill="x")
-        self.margin_card = self._metric_card(row2, "Margin Cushion", "—%", t["text"])
-        row2.columnconfigure(0, weight=1, uniform="metrics")
-        self.margin_card.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=(0, 4))
-        self.strat_exp_card = self._metric_card(row2, "Strategy Exposure", "—%", t["text"])
-        row2.columnconfigure(1, weight=1, uniform="metrics")
-        self.strat_exp_card.grid(row=0, column=1, sticky="nsew", padx=(0, 4), pady=(0, 4))
-        self.total_exp_card = self._metric_card(row2, "Account Exposure", "—%", t["text"])
-        row2.columnconfigure(2, weight=1, uniform="metrics")
-        self.total_exp_card.grid(row=0, column=2, sticky="nsew", padx=(0, 0), pady=(0, 4))
+        row = tk.Frame(parent, bg=t["bg2"])
+        row.pack(fill="x")
+        cards = (
+            ("nav_card", "Net Asset Value", "$—"),
+            ("pnl_card", "Unrealized P&L", "$—"),
+            ("margin_card", "Margin Cushion", "—%"),
+            ("strat_exp_card", "Strategy Exposure", "—%"),
+            ("total_exp_card", "Account Exposure", "—%"),
+        )
+        for index, (attribute, title, value) in enumerate(cards):
+            row.columnconfigure(index, weight=1, uniform="metrics")
+            card = self._metric_card(row, title, value, t["text"])
+            card.grid(row=0, column=index, sticky="nsew",
+                      padx=(0, 4 if index < len(cards) - 1 else 0), pady=(0, 4))
+            setattr(self, attribute, card)
 
         self.report_date_lbl = tk.Label(
             parent, text="Report: —",
@@ -341,7 +336,7 @@ class PortfolioView:
             values.append(cash)
             colors.append("#4b5563")
 
-        fig, ax = plt.subplots(figsize=(3.2, 2.0), dpi=100)
+        fig, ax = plt.subplots(figsize=(2.8, 2.0), dpi=100)
         fig.patch.set_facecolor(t["bg2"])
         ax.set_facecolor(t["bg2"])
         ax.axis("off")
@@ -406,6 +401,6 @@ class PortfolioView:
 
         canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
         canvas.draw()
-        canvas.get_tk_widget().pack()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
         self.chart_canvas = canvas
         plt.close(fig)

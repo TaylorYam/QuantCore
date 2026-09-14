@@ -606,8 +606,11 @@ class ControlPanel(tk.Tk):
         metrics_frame = tk.Frame(top, bg=BG2)
         metrics_frame.pack(fill="x", pady=(4, 8))
 
-        params_frame = tk.Frame(top, bg=BG2)
-        params_frame.pack(fill="x", pady=(0, 8))
+        allocation_row = tk.Frame(top, bg=BG2)
+        allocation_row.pack(fill="x", pady=(0, 8))
+        allocation_row.columnconfigure(0, weight=1)
+        allocation_row.columnconfigure(1, weight=1)
+        params_frame = tk.Frame(allocation_row, bg=BG2)
 
         pv = PortfolioView(theme=self._theme, fonts=self._fonts)
         pv.build_metrics(metrics_frame)
@@ -620,9 +623,21 @@ class ControlPanel(tk.Tk):
         )
 
         # ── Chart ──
-        chart_frame = tk.Frame(inner, bg=BG2)
-        chart_frame.pack(fill="x", pady=(0, 3))
+        chart_frame = tk.Frame(allocation_row, bg=BG2)
         pv.build_chart(chart_frame)
+
+        def arrange_allocation(event):
+            if event.width >= 560:
+                params_frame.grid(row=0, column=0, sticky="new", padx=(0, 4))
+                chart_frame.grid(row=0, column=1, sticky="nsew")
+            else:
+                params_frame.grid(row=0, column=0, columnspan=2, sticky="ew")
+                chart_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
+            if event.width >= 560:
+                params_frame.grid_configure(columnspan=1)
+                chart_frame.grid_configure(columnspan=1)
+
+        allocation_row.bind("<Configure>", arrange_allocation)
 
         # ── Holdings ──
         holdings_frame = tk.Frame(inner, bg=BG2)

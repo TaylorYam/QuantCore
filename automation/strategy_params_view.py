@@ -81,7 +81,7 @@ class StrategyParamsView:
         ).pack(side="left")
         self.sr_scale = tk.Scale(
             row_sr, from_=0.0, to=1.0, resolution=0.05,
-            orient="horizontal", length=140, showvalue=False,
+            orient="horizontal", length=100, showvalue=False,
             width=8, sliderlength=16, borderwidth=1, highlightthickness=0,
             bg=t["bg2"], fg=t["text"], troughcolor=t["bg3"],
             highlightbackground=t["bg2"], font=f["small"],
@@ -103,7 +103,7 @@ class StrategyParamsView:
         ).pack(side="left")
         self.sp_scale = tk.Scale(
             row_sp, from_=0.0, to=1.0, resolution=0.05,
-            orient="horizontal", length=140, showvalue=False,
+            orient="horizontal", length=100, showvalue=False,
             width=8, sliderlength=16, borderwidth=1, highlightthickness=0,
             bg=t["bg2"], fg=t["text"], troughcolor=t["bg3"],
             highlightbackground=t["bg2"], font=f["small"],
@@ -125,7 +125,7 @@ class StrategyParamsView:
         ).pack(side="left")
         self.sk_scale = tk.Scale(
             row_sk, from_=0.0, to=1.0, resolution=0.05,
-            orient="horizontal", length=140, showvalue=False,
+            orient="horizontal", length=100, showvalue=False,
             width=8, sliderlength=16, borderwidth=1, highlightthickness=0,
             bg=t["bg2"], fg=t["text"], troughcolor=t["bg3"],
             highlightbackground=t["bg2"], font=f["small"],
@@ -151,10 +151,10 @@ class StrategyParamsView:
         )
         self.lev_lbl.pack(side="left", padx=4)
         self.lev_detail = tk.Label(
-            row_lev, text="", font=f["small"],
+            frame, text="", font=f["small"],
             bg=t["bg2"], fg=t["text_dim"],
         )
-        self.lev_detail.pack(side="left")
+        self.lev_detail.pack(anchor="w", pady=(2, 0))
         self._btn(
             row_lev, "Save", self._on_save, t["accent_hl"],
             padx=6, pady=2, font=f["small"],

@@ -124,3 +124,28 @@ def test_chart_percentages_include_cash_in_denominator(monkeypatch):
     labels = [text.get_text() for text in figures[0].axes[0].texts]
     assert "XLK 25%" in labels
     assert "Cash 75%" in labels
+
+
+def test_chart_groups_small_positions_into_others(monkeypatch):
+    from portfolio_view import PortfolioView
+    from matplotlib.backends import backend_tkagg
+
+    figures = []
+    def canvas(figure, master):
+        figures.append(figure)
+        return NS(draw=lambda: None, get_tk_widget=lambda: NS(pack=lambda **kw: None))
+    monkeypatch.setattr(backend_tkagg, "FigureCanvasTkAgg", canvas)
+    view = PortfolioView.__new__(PortfolioView)
+    view.t = {"bg2": "#141e34", "orange": "orange", "green": "green"}
+    view.chart_canvas = None
+    view.chart_frame = None
+
+    holdings = [{"symbol": f"S{i:02d}", "mkt_val": 100 - i} for i in range(20)]
+    view._render_pie_chart(holdings, 3000, 66)
+    labels = [t.get_text() for t in figures[0].axes[0].texts if t.get_text()]
+    others = [l for l in labels if l.startswith("Others")]
+    assert len(others) == 1
+    assert "(8)" in others[0]
+    individual = [l for l in labels
+                  if not l.startswith(("Others", "Cash")) and "\n" not in l]
+    assert len(individual) == view._MAX_PIE_LABELS

@@ -157,6 +157,10 @@ class SyncPreviewWindow:
         win.transient(self.parent)
         win.grab_set()
 
+        ico_path = getattr(self.parent, "_ico_path", None)
+        if ico_path and ico_path.exists():
+            win.iconbitmap(str(ico_path))
+
         # Title header
         hdr = tk.Frame(win, bg=t["accent"], padx=12, pady=8)
         hdr.pack(fill="x")

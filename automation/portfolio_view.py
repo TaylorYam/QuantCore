@@ -302,6 +302,8 @@ class PortfolioView:
 
     # ── Donut chart ───────────────────────────────────────────
 
+    _MAX_PIE_LABELS = 12
+
     def _render_pie_chart(self, holdings: list, nav: float, exposure: float,
                            other_val: float = 0) -> None:
         t = self.t
@@ -316,9 +318,20 @@ class PortfolioView:
             self.chart_canvas = None
 
         sorted_h = sorted(holdings, key=lambda x: -abs(x["mkt_val"]))
-        labels = [h["symbol"] for h in sorted_h]
-        values = [abs(h["mkt_val"]) for h in sorted_h]
-        total_mktval = sum(values)
+        total_mktval = sum(abs(h["mkt_val"]) for h in sorted_h)
+
+        if len(sorted_h) > self._MAX_PIE_LABELS:
+            top_h = sorted_h[:self._MAX_PIE_LABELS]
+            rest_h = sorted_h[self._MAX_PIE_LABELS:]
+            rest_val = sum(abs(h["mkt_val"]) for h in rest_h)
+            rest_count = len(rest_h)
+        else:
+            top_h = sorted_h
+            rest_val = 0
+            rest_count = 0
+
+        labels = [h["symbol"] for h in top_h]
+        values = [abs(h["mkt_val"]) for h in top_h]
 
         etf_blues = ["#3b82f6", "#60a5fa", "#93c5fd", "#bfdbfe",
                       "#2563eb", "#1d4ed8", "#1e40af", "#1e3a8a",
@@ -327,13 +340,18 @@ class PortfolioView:
                          "#16a34a", "#15803d", "#166534", "#14532d"]
         colors = []
         ei, si = 0, 0
-        for h in sorted_h:
+        for h in top_h:
             if h["symbol"] in ETF_TICKERS:
                 colors.append(etf_blues[ei % len(etf_blues)])
                 ei += 1
             else:
                 colors.append(stock_greens[si % len(stock_greens)])
                 si += 1
+
+        if rest_count > 0:
+            labels.append(f"Others ({rest_count})")
+            values.append(rest_val)
+            colors.append("#9ca3af")
 
         if other_val > 0:
             labels.append("Other")
@@ -370,16 +388,24 @@ class PortfolioView:
             annotations.append((ang, pct, label, side, y_pos))
 
         min_gap = 0.28
+        y_bound = 1.15
         for side_val in [1, -1]:
             side_annots = [(i, a) for i, a in enumerate(annotations) if a[3] == side_val]
+            if len(side_annots) < 2:
+                continue
             side_annots.sort(key=lambda x: x[1][4])
-            for k in range(1, len(side_annots)):
-                prev_idx, prev = side_annots[k - 1]
-                curr_idx, curr = side_annots[k]
-                if curr[4] - prev[4] < min_gap:
-                    new_y = prev[4] + min_gap
-                    old = annotations[curr_idx]
-                    annotations[curr_idx] = (old[0], old[1], old[2], old[3], new_y)
+            ys = [a[4] for _, a in side_annots]
+            for k in range(1, len(ys)):
+                if ys[k] - ys[k - 1] < min_gap:
+                    ys[k] = ys[k - 1] + min_gap
+            if ys[-1] > y_bound:
+                ys[-1] = y_bound
+                for k in range(len(ys) - 2, -1, -1):
+                    if ys[k + 1] - ys[k] < min_gap:
+                        ys[k] = ys[k + 1] - min_gap
+            for k, (idx, _) in enumerate(side_annots):
+                old = annotations[idx]
+                annotations[idx] = (old[0], old[1], old[2], old[3], ys[k])
 
         for ang, pct, label, side, y_final in annotations:
             x_edge = center_x + 0.70 * math.cos(math.radians(ang))

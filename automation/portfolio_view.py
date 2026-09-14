@@ -172,6 +172,16 @@ class PortfolioView:
 
     # ── Update ────────────────────────────────────────────────
 
+    def update_state(self, name, state) -> None:
+        """Render an Account's cached data with freshness and failure status."""
+        self.update(state.portfolio or {"available": False, "error": "No data yet"})
+        last = (state.updated_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+                if state.updated_at else "No data yet")
+        status = "Updating" if state.running else "Update failed" if state.error else "Updated"
+        self.report_date_lbl.config(
+            text=f"{name} | {status} | Last success: {last}",
+            fg=self.t["yellow"] if state.error else self.t["text_dim"])
+
     def update(self, pf: dict) -> None:
         """Refresh all widgets from a portfolio snapshot dict."""
         t = self.t
@@ -186,6 +196,12 @@ class PortfolioView:
             self.report_date_lbl.config(text=f"Report: {err}")
             self.etf_list.config(text="(no data)")
             self.stock_list.config(text="(no data)")
+            self.other_list.config(text="(no data)")
+            for header in (self.etf_hdr, self.stock_hdr, self.other_hdr):
+                header.config(text="")
+            if self.chart_canvas:
+                self.chart_canvas.get_tk_widget().destroy()
+                self.chart_canvas = None
             return
 
         nav = pf["nav"]

@@ -62,10 +62,19 @@ ETF_TICKERS: set[str] = SR_ETFS | SKEWLS_INVERSE_TICKERS
 
 # ── 低階：IB 連線 + 單項查詢 ────────────────────────────────────────────
 
-def connect(ctx: AccountCtx, timeout: float = 20.0) -> IB:
+def connect(ctx: AccountCtx, timeout: float = 20.0, *, readonly: bool = False) -> IB:
     """連線指定帳戶的 IB Gateway。"""
     ib = IB()
-    ib.connect(ctx.host, ctx.port, clientId=ctx.client_id, timeout=timeout)
+    try:
+        if readonly:
+            ib.RequestTimeout = 20
+            ib.connect(ctx.host, ctx.port, clientId=ctx.client_id, timeout=timeout,
+                       readonly=True, account=ctx.account)
+        else:
+            ib.connect(ctx.host, ctx.port, clientId=ctx.client_id, timeout=timeout)
+    except BaseException:
+        ib.disconnect()
+        raise
     log.info(f"Connected  host={ctx.host} port={ctx.port} "
              f"clientId={ctx.client_id} account={ctx.account}")
     return ib
@@ -121,23 +130,26 @@ def get_positions_detail(ib: IB, ctx: AccountCtx) -> list:
     ]
 
 
-def get_prices(ib: IB, symbols: list, ctx: AccountCtx) -> dict[str, float]:
+def get_prices(ib: IB, symbols: list, ctx: AccountCtx, *, readonly: bool = False) -> dict[str, float]:
     """
     取得 symbols 的報價（透過 price_utils.robust_get_prices 的多層 fallback）。
     優先順序：本連線即時 → ctx.price_feed_port 備援 → delayed → 本地 CSV。
     """
     from price_utils import robust_get_prices
+    options = ({"feed_client_id": 1000 + ctx.client_id, "readonly": True}
+               if readonly else {})
     return robust_get_prices(
         ib, symbols,
         host=ctx.host,
         price_feed_port=ctx.price_feed_port,
         verbose_log=lambda m: log.info(m),
+        **options,
     )
 
 
 # ── 高階：完整 Portfolio snapshot（自己管連線）─────────────────────────
 
-def fetch_portfolio(ctx: AccountCtx) -> dict:
+def fetch_portfolio(ctx: AccountCtx, *, readonly: bool = False) -> dict:
     """
     打開新連線、抓取完整 portfolio snapshot，自己 disconnect。
 
@@ -162,11 +174,14 @@ def fetch_portfolio(ctx: AccountCtx) -> dict:
 
     ib = None
     try:
-        ib = connect(ctx, timeout=15)
+        ib = (connect(ctx, timeout=15, readonly=True) if readonly
+              else connect(ctx, timeout=15))
 
         # 1. 信任 Gateway 真正登入的帳號（accounts.json 的 U-號可能過期）
         managed = list(ib.managedAccounts() or [])
         configured = ctx.account
+        if readonly and (not configured or configured not in managed):
+            raise RuntimeError("Configured Account is not available on this Gateway")
         if managed and configured and configured in managed:
             account = configured
         elif managed:
@@ -214,6 +229,8 @@ def fetch_portfolio(ctx: AccountCtx) -> dict:
                         return float(v.value)
                     except Exception:
                         pass
+            if readonly:
+                raise RuntimeError(f"Missing {tag} for configured Account")
             # 放棄 account 過濾
             for pref in ('USD', 'BASE', ''):
                 for v in vals:
@@ -241,14 +258,15 @@ def fetch_portfolio(ctx: AccountCtx) -> dict:
                      and p.position != 0
                      and (not account or p.account == account)]
         # 若嚴格 account 過濾後空，fallback 不過濾
-        if not positions and all_pos:
+        if not readonly and not positions and all_pos:
             positions = [p for p in all_pos
                          if p.contract.secType == 'STK' and p.position != 0]
 
         if positions:
             sp500_universe = get_sp500_universe()
             symbols = [p.contract.symbol for p in positions]
-            prices = get_prices(ib, symbols, ctx)
+            prices = (get_prices(ib, symbols, ctx, readonly=True) if readonly
+                      else get_prices(ib, symbols, ctx))
             # 清理：0 不當作有效報價，讓 downstream .get(sym, avg_cost) fallback
             prices = {s: p for s, p in prices.items() if p > 0}
 

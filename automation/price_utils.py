@@ -53,7 +53,8 @@ def load_csv_close(symbol: str) -> float:
 def robust_get_prices(ib, symbols: list,
                       host: str = '127.0.0.1',
                       price_feed_port: int | None = 4002,
-                      verbose_log=None) -> dict:
+                      verbose_log=None, *, feed_client_id: int = 99,
+                      readonly: bool = False) -> dict:
     """
     多層 fallback 取得 symbols 的報價，回傳 {sym: price} 或 0（全部失敗時）。
 
@@ -104,7 +105,12 @@ def robust_get_prices(ib, symbols: list,
         _log(f"  {len(need_feed)} symbols no live price, trying price feed port {price_feed_port}...")
         feed_ib = IB()
         try:
-            feed_ib.connect(host, price_feed_port, clientId=99, timeout=10)
+            if readonly:
+                feed_ib.RequestTimeout = 20
+                feed_ib.connect(host, price_feed_port, clientId=feed_client_id,
+                                timeout=10, readonly=True)
+            else:
+                feed_ib.connect(host, price_feed_port, clientId=feed_client_id, timeout=10)
             feed_contracts = [IBStock(s, 'SMART', 'USD') for s in need_feed]
             feed_ib.qualifyContracts(*feed_contracts)
             feed_tickers = feed_ib.reqTickers(*feed_contracts)

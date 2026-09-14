@@ -12,7 +12,7 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import font as tkfont
-from tkinter import messagebox, scrolledtext, ttk
+from tkinter import messagebox, ttk
 from datetime import datetime, date
 
 # ── 工作列圖標（設定 AppUserModelID，讓 Windows 顯示自訂 ico）──
@@ -55,6 +55,8 @@ from account_utils import (
 from portfolio_view import PortfolioView
 from panel_task_cards import TradesView
 from strategy_params_view import StrategyParamsView
+from log_window import LogWindow
+from trades_popup import TradesPopup
 
 
 # SR ETFs (for classifying holdings) — R1.3：單一來源在 ib_fetcher
@@ -311,14 +313,7 @@ class ControlPanel(tk.Tk):
         self.font_med_num = tkfont.Font(family="Segoe UI", size=11, weight="bold")
 
         self._build_ui()
-        # 初始高亮第一個帳戶 + 標題
-        try:
-            init_acct = self.selected_account.get()
-            if init_acct:
-                self._highlight_active_account_btn(init_acct)
-                self.title(f"QuantCore — {init_acct}")
-        except Exception:
-            pass
+        self.title("QuantCore")
         from portfolio_queries import PortfolioQueries, PortfolioRefreshLoop
         self.portfolio_queries = PortfolioQueries(
             [a["name"] for a in self._accounts_meta], fetch_ib_portfolio)
@@ -473,9 +468,6 @@ class ControlPanel(tk.Tk):
         hdr.pack(fill="x")
         tk.Label(hdr, text="QuantCore",
                  font=self.font_title, bg=ACCENT, fg="white").pack(side="left")
-        tk.Label(hdr, text="  Taylor",
-                 font=tkfont.Font(family="Segoe UI", size=11, slant="italic"),
-                 bg=ACCENT, fg=ACCENT_HL).pack(side="left")
 
         admin_ok = _is_admin()
         tk.Label(hdr,
@@ -484,22 +476,10 @@ class ControlPanel(tk.Tk):
                  fg="#86efac" if admin_ok else "#fca5a5"
         ).pack(side="right", padx=(0, 12))
 
-        # ── 帳戶切換按鈕（取代下拉選單）──────────────────
         accounts = load_accounts()
         self._accounts_meta = accounts
         acct_names = [a["name"] for a in accounts]
         self.selected_account = tk.StringVar(value=acct_names[0] if acct_names else "")
-
-        tk.Label(hdr, text="Account:", font=self.font_small,
-                 bg=ACCENT, fg="white").pack(side="left", padx=(20, 4))
-        self.acct_btns = {}
-        for name in acct_names:
-            b = tk.Button(hdr, text=name, font=self.font_small,
-                          relief="flat", cursor="hand2",
-                          padx=10, pady=2, bd=0,
-                          command=lambda n=name: self._set_active_account(n))
-            b.pack(side="left", padx=2)
-            self.acct_btns[name] = b
 
         self.lbl_time = tk.Label(hdr, text="", font=self.font_small,
                                   bg=ACCENT, fg="#ccfbf1")
@@ -517,6 +497,12 @@ class ControlPanel(tk.Tk):
         self._btn(btn_bar, "Refresh IB",
                   self._refresh_ib_live,
                   ORANGE, padx=6, pady=3, font=self.font_small).pack(side="left", padx=(0, 2))
+
+        # Log popup
+        self.log_window = LogWindow(self, self._theme, self._fonts)
+        self._btn(btn_bar, "Log",
+                  self.log_window.toggle,
+                  BTN_BG, padx=6, pady=3, font=self.font_small).pack(side="left", padx=(0, 2))
 
         self.data_date_lbl = tk.Label(btn_bar, text="Data: ...",
                                        font=self.font_mono_sm, bg=BG3, fg=CYAN)
@@ -560,71 +546,99 @@ class ControlPanel(tk.Tk):
         self.gw_last_lbl.pack(side="right", padx=8)
 
         # ══════════════════════════════════════════════════
-        # 主體：兩欄式 grid 佈局（填滿全螢幕）
+        # 主體：三帳戶並列
         # ══════════════════════════════════════════════════
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=6, pady=(4, 6))
-        body.columnconfigure(0, weight=3)   # 左欄：Portfolio + Trades
-        body.columnconfigure(1, weight=2)   # 右欄：Strategy Params + Log
+        for i in range(len(acct_names)):
+            body.columnconfigure(i, weight=1)
         body.rowconfigure(0, weight=1)
 
-        # ════════════════════════════════════════
-        # 左欄：Portfolio → Trades
-        # ════════════════════════════════════════
-        col_left = tk.Frame(body, bg=BG)
-        col_left.grid(row=0, column=0, sticky="nsew", padx=(0, 3))
-        col_left.rowconfigure(0, weight=3)  # Portfolio 佔多數
-        col_left.rowconfigure(1, weight=2)  # Trades
-        col_left.columnconfigure(0, weight=1)
+        self.portfolio_views: dict[str, PortfolioView] = {}
+        self.strategy_views: dict[str, StrategyParamsView] = {}
+        self.trades_popups: dict[str, TradesPopup] = {}
 
-        # Portfolio Overview
-        pf_wrapper = tk.Frame(col_left, bg=BG2)
-        pf_wrapper.grid(row=0, column=0, sticky="nsew", pady=(0, 3))
-        self._section_label_inline(pf_wrapper, "Portfolio Overview")
-        self.portfolio_view = PortfolioView(
-            parent=pf_wrapper, theme=self._theme, fonts=self._fonts,
-        )
+        for idx, name in enumerate(acct_names):
+            col = self._build_account_column(body, name)
+            col.grid(row=0, column=idx, sticky="nsew",
+                     padx=(0 if idx == 0 else 3, 0 if idx == len(acct_names) - 1 else 3))
 
-        # Recent Trades
-        trades_wrapper = tk.Frame(col_left, bg=BG2)
-        trades_wrapper.grid(row=1, column=0, sticky="nsew")
-        self._section_label_inline(trades_wrapper, "Recent Trades")
-        self.trades_view = TradesView(
-            parent=trades_wrapper, theme=self._theme, fonts=self._fonts,
-        )
-        self.trades_view.pack(fill="both", expand=True)
+    def _build_account_column(self, parent, name: str) -> tk.Frame:
+        """Build one account card (scrollable column)."""
+        col = tk.Frame(parent, bg=BG2)
 
-        # ════════════════════════════════════════
-        # 右欄：Strategy Parameters → Output Log
-        # ════════════════════════════════════════
-        col_right = tk.Frame(body, bg=BG)
-        col_right.grid(row=0, column=1, sticky="nsew", padx=(3, 0))
+        # ── Account header ──
+        col_hdr = tk.Frame(col, bg=ACCENT, padx=8, pady=4)
+        col_hdr.pack(fill="x")
+        tk.Label(col_hdr, text="Portfolio Overview",
+                 font=self.font_section, bg=ACCENT, fg=ACCENT_HL).pack(side="left")
+        tk.Label(col_hdr, text=name,
+                 font=self.font_badge, bg=ACCENT, fg="white").pack(side="right")
 
-        # Strategy Parameters（頂部，不拉伸）
-        params_wrapper = tk.Frame(col_right, bg=BG2)
-        params_wrapper.pack(fill="x", pady=(0, 3))
-        self.strategy_view = StrategyParamsView(
-            parent_params=params_wrapper,
+        # ── Scrollable interior ──
+        canvas = tk.Canvas(col, bg=BG2, highlightthickness=0)
+        scrollbar = tk.Scrollbar(col, orient="vertical", command=canvas.yview)
+        inner = tk.Frame(canvas, bg=BG2, padx=6, pady=4)
+        inner.bind("<Configure>",
+                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas_win = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        canvas.bind("<Configure>",
+                    lambda e, cw=canvas_win: canvas.itemconfig(cw, width=e.width))
+
+        def _bind_wheel(e):
+            canvas.bind_all("<MouseWheel>",
+                            lambda ev: canvas.yview_scroll(-1 * (ev.delta // 120), "units"))
+
+        def _unbind_wheel(e):
+            canvas.unbind_all("<MouseWheel>")
+
+        inner.bind("<Enter>", _bind_wheel)
+        inner.bind("<Leave>", _unbind_wheel)
+
+        # ── Top section: metrics (left) + strategy params (right) ──
+        top = tk.Frame(inner, bg=BG2)
+        top.pack(fill="x", pady=(0, 3))
+
+        metrics_frame = tk.Frame(top, bg=BG2)
+        metrics_frame.pack(side="left", fill="both", expand=True)
+
+        params_frame = tk.Frame(top, bg=BG2)
+        params_frame.pack(side="right", fill="y")
+
+        pv = PortfolioView(theme=self._theme, fonts=self._fonts)
+        pv.build_metrics(metrics_frame)
+
+        sv = StrategyParamsView(
+            parent_params=params_frame,
             theme=self._theme, fonts=self._fonts,
             btn_factory=self._btn,
-            on_save=self._save_params,
+            on_save=lambda n=name: self._save_params(n),
         )
 
-        # Output Log
-        log_hdr = tk.Frame(col_right, bg=ACCENT, padx=10, pady=4)
-        log_hdr.pack(fill="x")
-        tk.Label(log_hdr, text="Output Log", font=self.font_section,
-                 bg=ACCENT, fg=ACCENT_HL).pack(side="left")
-        self._btn(log_hdr, "Clear", self._clear_log, BG3,
-                  font=self.font_small, padx=6, pady=2).pack(side="right")
+        # ── Chart ──
+        chart_frame = tk.Frame(inner, bg=BG2)
+        chart_frame.pack(fill="x", pady=(0, 3))
+        pv.build_chart(chart_frame)
 
-        self.log_box = scrolledtext.ScrolledText(
-            col_right, font=self.font_mono,
-            bg="#0a0f1a", fg="#d1d5db", insertbackground=TEXT,
-            relief="flat", padx=8, pady=6, wrap="word"
-        )
-        self.log_box.pack(fill="both", expand=True)
-        self.log_box.config(state="disabled")
+        # ── Holdings ──
+        holdings_frame = tk.Frame(inner, bg=BG2)
+        holdings_frame.pack(fill="x", pady=(0, 3))
+        pv.build_holdings(holdings_frame)
+
+        # ── Recent Trades button ──
+        popup = TradesPopup(self, name, self._theme, self._fonts, read_latest_trades)
+        self._btn(inner, f"Recent Trades",
+                  popup.toggle,
+                  BTN_BG, padx=6, pady=4, font=self.font_small).pack(fill="x", pady=(0, 2))
+
+        self.portfolio_views[name] = pv
+        self.strategy_views[name] = sv
+        self.trades_popups[name] = popup
+
+        return col
 
     # ── UI 元件工具 ───────────────────────────────────────
 
@@ -663,9 +677,9 @@ class ControlPanel(tk.Tk):
             self._log("[>] Account queries already running")
 
     def _on_portfolio_change(self, name, state):
-        # Called by the main-thread poller; a late result only redraws its Account.
-        if name == self.selected_account.get():
-            self.portfolio_view.update_state(name, state)
+        pv = self.portfolio_views.get(name)
+        if pv:
+            pv.update_state(name, state)
         if not state.running:
             if state.error:
                 self._log(f"[X] [{name}] Portfolio update failed: {state.error}")
@@ -673,58 +687,12 @@ class ControlPanel(tk.Tk):
                 self._log(f"[OK] [{name}] Portfolio updated")
 
     def _show_cached_portfolio(self):
-        name = self.selected_account.get()
-        self.portfolio_view.update_state(name, self.portfolio_queries.snapshot(name))
+        for name, pv in self.portfolio_views.items():
+            pv.update_state(name, self.portfolio_queries.snapshot(name))
 
     # ── 資料刷新 ──────────────────────────────────────────
 
-    def _set_active_account(self, name: str):
-        """切換到指定帳戶（按鈕點擊入口）"""
-        self.selected_account.set(name)
-        self._highlight_active_account_btn(name)
-        self._on_account_change()
-
-    def _highlight_active_account_btn(self, active: str):
-        """更新帳戶按鈕的顏色（active = 高亮，其他 = 暗色）"""
-        for n, b in self.acct_btns.items():
-            if n == active:
-                b.config(bg=ACCENT_HL, fg="black",
-                         activebackground=ACCENT_HL,
-                         relief="raised")
-            else:
-                b.config(bg=BG3, fg=TEXT,
-                         activebackground=ACCENT,
-                         relief="flat")
-
-    def _on_account_change(self, _=None):
-        """帳戶切換時刷新策略參數 + IB 持倉 + Recent Trades"""
-        acct = self.selected_account.get()
-        self._log(f"[>] Switched to account: {acct}")
-        # 高亮對應按鈕
-        try:
-            self._highlight_active_account_btn(acct)
-        except Exception:
-            pass
-        # 重新載入該帳戶的策略參數到 UI
-        try:
-            cfg = get_account_config(acct)
-            self.strategy_view.update_cfg(cfg)
-        except Exception as e:
-            self._log(f"[X] Load [{acct}] config failed: {e}")
-        # 視窗標題顯示當前帳戶
-        try:
-            self.title(f"QuantCore — {acct}")
-        except Exception:
-            pass
-        # 刷新 Recent Trades（背景讀 Excel，避免阻塞 UI）
-        def _refresh_trades():
-            try:
-                trades = read_latest_trades(acct)
-                self.after(0, lambda t=trades: self.trades_view.update(t))
-            except Exception:
-                pass
-        threading.Thread(target=_refresh_trades, daemon=True).start()
-        self._show_cached_portfolio()
+    # Account switching removed in Issue #20 — all accounts are visible.
 
     # ── Gateway 連線監控 ──────────────────────────────────
 
@@ -1101,25 +1069,16 @@ class ControlPanel(tk.Tk):
         self.after(50, self._refresh_gateway_status)
 
     def _refresh_thread(self):
-        # 1. Config（讀取目前選中帳戶的 per-account 設定）
-        try:
-            acct = self.selected_account.get()
-            cfg = get_account_config(acct)
-            self.after(0, lambda c=cfg: self.strategy_view.update_cfg(c))
-        except Exception as e:
-            self.after(0, lambda: self._log(f"[X] Config read failed: {e}"))
+        # 1. Config（讀取所有帳戶的 per-account 設定）
+        for name, sv in self.strategy_views.items():
+            try:
+                cfg = get_account_config(name)
+                self.after(0, lambda c=cfg, s=sv: s.update_cfg(c))
+            except Exception as e:
+                self.after(0, lambda n=name, err=e: self._log(
+                    f"[X] [{n}] Config read failed: {err}"))
 
-        # Portfolio data belongs to portfolio_queries, never the shared Excel report.
-
-        # 3. Recent trades
-        try:
-            acct = self.selected_account.get()
-            trades = read_latest_trades(acct)
-            self.after(0, lambda t=trades: self.trades_view.update(t))
-        except Exception as e:
-            self.after(0, lambda: self._log(f"[X] Trades read failed: {e}"))
-
-        # 4. Data date
+        # 2. Data date
         try:
             dd = get_last_data_update()
             self.after(0, lambda d=dd: self.data_date_lbl.config(text=f"Data: {d}"))
@@ -1130,10 +1089,13 @@ class ControlPanel(tk.Tk):
 
     # ── 操作 ──────────────────────────────────────────────
 
-    def _save_params(self):
+    def _save_params(self, account_name=None):
         try:
-            acct = self.selected_account.get()
-            new_sr, new_sp, new_sk = self.strategy_view.get_alloc()
+            acct = account_name or self.selected_account.get()
+            sv = self.strategy_views.get(acct)
+            if sv is None:
+                return
+            new_sr, new_sp, new_sk = sv.get_alloc()
             total  = new_sr + new_sp + new_sk
 
             if total > 2.5:
@@ -1174,7 +1136,7 @@ class ControlPanel(tk.Tk):
 
             # 重新讀回該帳戶的合併 config 來刷新 UI
             cfg = get_account_config(acct)
-            self.strategy_view.update_cfg(cfg)
+            sv.update_cfg(cfg)
             self._log(
                 f"[OK] [{acct}] Params saved: "
                 f"ETF={new_sr:.0%}  Stocks={new_sp:.0%}  SkewLS={new_sk:.0%}"
@@ -1188,16 +1150,11 @@ class ControlPanel(tk.Tk):
 
     def _log(self, msg: str):
         def _do():
-            self.log_box.config(state="normal")
-            self.log_box.insert("end", msg + "\n")
-            self.log_box.see("end")
-            self.log_box.config(state="disabled")
+            self.log_window.log(msg)
         self.after(0, _do)
 
     def _clear_log(self):
-        self.log_box.config(state="normal")
-        self.log_box.delete("1.0", "end")
-        self.log_box.config(state="disabled")
+        self.log_window.clear()
 
     # ── 時鐘 ─────────────────────────────────────────────
 

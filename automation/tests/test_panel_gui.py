@@ -18,7 +18,7 @@ import pytest
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows Panel GUI")
 
 
-def test_panel_gui_account_switch_refresh_failure_and_exit(fake_config, monkeypatch):
+def test_panel_gui_three_column_refresh_failure_and_exit(fake_config, monkeypatch):
     import tkinter as tk
     import ib_fetcher
     import signals
@@ -29,8 +29,6 @@ def test_panel_gui_account_switch_refresh_failure_and_exit(fake_config, monkeypa
     original_connect = socket.socket.connect
 
     def local_event_loop_only(sock, address):
-        # Windows asyncio builds its self-pipe using an ephemeral loopback pair.
-        # Permit that plumbing; Gateway ports and external hosts remain blocked.
         if (isinstance(address, tuple) and address[0] in ("127.0.0.1", "::1")
                 and address[1] >= 49152):
             return original_connect(sock, address)
@@ -58,8 +56,9 @@ def test_panel_gui_account_switch_refresh_failure_and_exit(fake_config, monkeypa
                  "_start_rosa_watch", "_start_ty_watch", "_start_morning_watch", "_start_tray",
                  "_watchdog_tick"):
         monkeypatch.setattr(panel_type, name, lambda self: None)
-    for name in ("_sync_position", "_save_params", "_tg_notify", "_cold_connect"):
+    for name in ("_sync_position", "_tg_notify", "_cold_connect"):
         monkeypatch.setattr(panel_type, name, forbidden)
+    monkeypatch.setattr(panel_type, "_save_params", lambda self, n=None: None)
     monkeypatch.setattr(panel_type, "_build_monitor_engine", lambda self: SimpleNamespace(stop_all=lambda: None))
 
     original_init = tk.Tk.__init__
@@ -69,7 +68,6 @@ def test_panel_gui_account_switch_refresh_failure_and_exit(fake_config, monkeypa
         self.withdraw()
 
     monkeypatch.setattr(tk.Tk, "__init__", hidden_init)
-    # Production maximizes the window; this test keeps it off the user's desktop.
     monkeypatch.setattr(panel_type, "state", lambda self, *args: "withdrawn")
     names = ("Taylor", "Rosa", "Yvonne")
     calls = {name: 0 for name in names}
@@ -107,54 +105,64 @@ def test_panel_gui_account_switch_refresh_failure_and_exit(fake_config, monkeypa
     refresh = next(w for w in descendants(panel)
                    if isinstance(w, tk.Button) and w.cget("text") == "Refresh IB")
 
+    def pv(name):
+        return panel.portfolio_views[name]
+
+    def nav_text(name):
+        return pv(name).nav_card._val_lbl.cget("text")
+
+    def status_text(name):
+        return pv(name).report_date_lbl.cget("text")
+
     def check():
         try:
             assert not exceptions, exceptions
             assert time.monotonic() < deadline, f"GUI stalled at stage {stage[0]}"
             state = lambda name: panel.portfolio_queries.snapshot(name)
-            status = lambda: panel.portfolio_view.report_date_lbl.cget("text")
-            nav = lambda: panel.portfolio_view.nav_card._val_lbl.cget("text")
             if stage[0] == 0 and all(calls[n] == 1 for n in names):
-                panel.acct_btns["Yvonne"].invoke()
-                assert "Updating" in status() and "No data yet" in status()
+                # All 3 columns exist and show "Updating"
+                assert "Updating" in status_text("Yvonne")
                 refresh.invoke()
                 assert all(calls[n] == 1 for n in names)
                 releases["Taylor", 1].set()
                 stage[0] = 1
-            elif stage[0] == 1 and state("Taylor").portfolio:
-                assert nav() == "$—"  # late Taylor result cannot appear on Yvonne
+            elif stage[0] == 1 and nav_text("Taylor") == "$10,000":
+                # Taylor's column shows its own data (UI updated)
+                # Yvonne still waiting
+                assert nav_text("Yvonne") == "$—"
                 releases["Yvonne", 1].set()
                 stage[0] = 2
-            elif stage[0] == 2 and nav() == "$30,000":
-                assert panel.portfolio_view.chart_canvas is not None
-                panel.acct_btns["Taylor"].invoke()
-                assert nav() == "$10,000" and all(calls[n] == 1 for n in names)
+            elif stage[0] == 2 and nav_text("Yvonne") == "$30,000":
+                # Yvonne UI updated
+                assert pv("Yvonne").chart_canvas is not None
+                # Taylor still shows its data independently
+                assert nav_text("Taylor") == "$10,000"
                 last_success.append(state("Taylor").updated_at)
                 releases["Rosa", 1].set()
                 stage[0] = 3
-            elif stage[0] == 3 and state("Rosa").error:
-                panel.acct_btns["Rosa"].invoke()
-                assert "Update failed" in status() and "No data yet" in status()
-                assert nav() == "$—" and panel.portfolio_view.chart_canvas is None
-                panel.acct_btns["Taylor"].invoke()
+            elif stage[0] == 3 and "Failed" in status_text("Rosa"):
+                assert nav_text("Rosa") == "$—"
+                assert pv("Rosa").chart_canvas is None
+                # Taylor still fine
+                assert nav_text("Taylor") == "$10,000"
                 refresh.invoke()
                 stage[0] = 4
             elif stage[0] == 4 and all(calls[n] == 2 for n in names):
-                assert nav() == "$10,000"
                 for name in names:
                     releases[name, 2].set()
                 stage[0] = 5
-            elif stage[0] == 5 and "Update failed" in status() and not any(state(n).running for n in names):
-                assert nav() == "$10,000"  # failed refresh keeps last successful data
+            elif stage[0] == 5 and nav_text("Rosa") == "$20,000":
+                # Rosa round 2 succeeded (UI updated = poll drained)
+                # Taylor round 2 failed
+                assert "Failed" in status_text("Taylor")
+                assert nav_text("Taylor") == "$10,000"  # keeps last success data
                 assert state("Taylor").updated_at == last_success[0]
-                panel.acct_btns["Rosa"].invoke()
-                assert nav() == "$20,000" and "Updated" in status()
-                panel._on_window_close()  # hiding to tray must keep the loop active
+                panel._on_window_close()
                 assert panel._portfolio_loop._active
                 refresh.invoke()
                 stage[0] = 6
             elif stage[0] == 6 and all(calls[n] == 3 for n in names):
-                panel._quit_app()  # exit while workers are still blocked
+                panel._quit_app()
                 stage[0] = 7
                 return
             panel.after(20, check)

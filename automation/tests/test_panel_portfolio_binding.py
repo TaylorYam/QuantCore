@@ -17,21 +17,32 @@ def panel_methods():
     return namespace
 
 
-def test_late_result_cannot_overwrite_selected_account_and_switch_is_cache_only():
+def test_each_account_view_updated_independently():
     methods = panel_methods()
-    displayed, logs = [], []
-    selected = ["Yvonne"]
-    yvonne = QueryState(portfolio={"available": True, "nav": 123})
-    panel = NS(selected_account=NS(get=lambda: selected[0]),
-               portfolio_view=NS(update_state=lambda *args: displayed.append(args)),
-               portfolio_queries=NS(snapshot=lambda name: yvonne), _log=logs.append)
-    methods["_on_portfolio_change"](panel, "Taylor", QueryState(error="timeout"))
-    assert not displayed
-    methods["_on_portfolio_change"](panel, "Yvonne", yvonne)
-    assert displayed == [("Yvonne", yvonne)]
+    taylor_displayed, yvonne_displayed, logs = [], [], []
+    yvonne_state = QueryState(portfolio={"available": True, "nav": 123})
+    taylor_state = QueryState(error="timeout")
+    panel = NS(
+        portfolio_views={
+            "Taylor": NS(update_state=lambda *args: taylor_displayed.append(args)),
+            "Yvonne": NS(update_state=lambda *args: yvonne_displayed.append(args)),
+        },
+        portfolio_queries=NS(snapshot=lambda name: {
+            "Taylor": taylor_state, "Yvonne": yvonne_state}[name]),
+        _log=logs.append,
+    )
+    methods["_on_portfolio_change"](panel, "Taylor", taylor_state)
+    assert taylor_displayed == [("Taylor", taylor_state)]
+    assert not yvonne_displayed
+
+    methods["_on_portfolio_change"](panel, "Yvonne", yvonne_state)
+    assert yvonne_displayed == [("Yvonne", yvonne_state)]
+
+    taylor_displayed.clear()
+    yvonne_displayed.clear()
     methods["_show_cached_portfolio"](panel)
-    assert displayed[-1] == ("Yvonne", yvonne)
-    # No refresh API exists on the fake: selecting cached data cannot query IB.
+    assert taylor_displayed == [("Taylor", taylor_state)]
+    assert yvonne_displayed == [("Yvonne", yvonne_state)]
 
 
 def test_switching_to_no_data_clears_other_holdings_and_chart():
@@ -53,8 +64,7 @@ def test_switching_to_no_data_clears_other_holdings_and_chart():
     assert destroyed == [True] and view.chart_canvas is None
     assert rendered["other_list"]["text"] == "(no data)"
     assert all(rendered[key]["text"] == "" for key in ("etf_hdr", "stock_hdr", "other_hdr"))
-    assert "Rosa | Update failed" in rendered["report_date_lbl"]["text"]
-    assert "No data yet" in rendered["report_date_lbl"]["text"]
+    assert "Failed" in rendered["report_date_lbl"]["text"]
 
 
 def test_readonly_harness_uses_test_identity_without_credentials(tmp_path):

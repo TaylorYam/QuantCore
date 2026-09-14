@@ -551,7 +551,7 @@ class ControlPanel(tk.Tk):
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=6, pady=(4, 6))
         for i in range(len(acct_names)):
-            body.columnconfigure(i, weight=1)
+            body.columnconfigure(i, weight=1, uniform="accounts")
         body.rowconfigure(0, weight=1)
 
         self.portfolio_views: dict[str, PortfolioView] = {}
@@ -577,7 +577,8 @@ class ControlPanel(tk.Tk):
 
         # ── Scrollable interior ──
         canvas = tk.Canvas(col, bg=BG2, highlightthickness=0)
-        scrollbar = tk.Scrollbar(col, orient="vertical", command=canvas.yview)
+        scrollbar = tk.Scrollbar(col, orient="vertical", command=canvas.yview,
+                                 width=8, borderwidth=0, highlightthickness=0)
         inner = tk.Frame(canvas, bg=BG2, padx=6, pady=4)
         inner.bind("<Configure>",
                    lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -598,15 +599,15 @@ class ControlPanel(tk.Tk):
         inner.bind("<Enter>", _bind_wheel)
         inner.bind("<Leave>", _unbind_wheel)
 
-        # ── Top section: metrics (left) + strategy params (right) ──
+        # ── Full-width metrics, followed by allocation controls ──
         top = tk.Frame(inner, bg=BG2)
         top.pack(fill="x", pady=(0, 3))
 
         metrics_frame = tk.Frame(top, bg=BG2)
-        metrics_frame.pack(side="left", fill="both", expand=True)
+        metrics_frame.pack(fill="x", pady=(4, 8))
 
         params_frame = tk.Frame(top, bg=BG2)
-        params_frame.pack(side="right", fill="y")
+        params_frame.pack(fill="x", pady=(0, 8))
 
         pv = PortfolioView(theme=self._theme, fonts=self._fonts)
         pv.build_metrics(metrics_frame)

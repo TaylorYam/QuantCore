@@ -3,11 +3,11 @@ PortfolioView — per-account Portfolio Overview (Issue #20 rewrite)
 
 Split-build API for the 3-column layout: metrics, chart, and holdings
 can be placed into separate parent frames so Strategy Params can sit
-beside the metrics.
+below the metrics.
 
 Public API:
     pv = PortfolioView(theme, fonts)
-    pv.build_metrics(parent)    # NAV/PNL + MC/S EXP/A EXP
+    pv.build_metrics(parent)    # net asset value, P&L, margin cushion, exposures
     pv.build_chart(parent)      # donut chart
     pv.build_holdings(parent)   # ETF / Stock / Other lists
     pv.update_state(name, state)
@@ -67,19 +67,24 @@ class PortfolioView:
 
         row1 = tk.Frame(parent, bg=t["bg2"])
         row1.pack(fill="x")
-        self.nav_card = self._metric_card(row1, "NAV", "$—", t["text"])
-        self.nav_card.pack(side="left", fill="x", expand=True, padx=(0, 3), pady=(0, 3))
+        self.nav_card = self._metric_card(row1, "Net Asset Value", "$—", t["text"])
+        row1.columnconfigure(0, weight=1, uniform="metrics")
+        self.nav_card.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=(0, 4))
         self.pnl_card = self._metric_card(row1, "Unrealized P&L", "$—", t["text"])
-        self.pnl_card.pack(side="left", fill="x", expand=True, pady=(0, 3))
+        row1.columnconfigure(1, weight=1, uniform="metrics")
+        self.pnl_card.grid(row=0, column=1, sticky="nsew", padx=(0, 0), pady=(0, 4))
 
         row2 = tk.Frame(parent, bg=t["bg2"])
         row2.pack(fill="x")
-        self.margin_card = self._metric_card(row2, "MC", "—%", t["text"])
-        self.margin_card.pack(side="left", fill="x", expand=True, padx=(0, 3), pady=(0, 3))
-        self.strat_exp_card = self._metric_card(row2, "S Exp", "—%", t["text"])
-        self.strat_exp_card.pack(side="left", fill="x", expand=True, padx=(0, 3), pady=(0, 3))
-        self.total_exp_card = self._metric_card(row2, "A Exp", "—%", t["text"])
-        self.total_exp_card.pack(side="left", fill="x", expand=True, pady=(0, 3))
+        self.margin_card = self._metric_card(row2, "Margin Cushion", "—%", t["text"])
+        row2.columnconfigure(0, weight=1, uniform="metrics")
+        self.margin_card.grid(row=0, column=0, sticky="nsew", padx=(0, 4), pady=(0, 4))
+        self.strat_exp_card = self._metric_card(row2, "Strategy Exposure", "—%", t["text"])
+        row2.columnconfigure(1, weight=1, uniform="metrics")
+        self.strat_exp_card.grid(row=0, column=1, sticky="nsew", padx=(0, 4), pady=(0, 4))
+        self.total_exp_card = self._metric_card(row2, "Account Exposure", "—%", t["text"])
+        row2.columnconfigure(2, weight=1, uniform="metrics")
+        self.total_exp_card.grid(row=0, column=2, sticky="nsew", padx=(0, 0), pady=(0, 4))
 
         self.report_date_lbl = tk.Label(
             parent, text="Report: —",
@@ -137,7 +142,10 @@ class PortfolioView:
         t = self.t
         f = self.f
         card = tk.Frame(parent, bg=t["bg3"], padx=8, pady=6)
-        tk.Label(card, text=title, font=f["small"], bg=t["bg3"], fg=t["text_dim"]).pack(anchor="w")
+        title_lbl = tk.Label(card, text=title, font=f["small"], bg=t["bg3"],
+                             fg=t["text_dim"], anchor="w", justify="left", height=2)
+        title_lbl.pack(anchor="w", fill="x")
+        card.bind("<Configure>", lambda e: title_lbl.configure(wraplength=max(40, e.width - 20)))
         val_lbl = tk.Label(card, text=value, font=f["med_num"], bg=t["bg3"], fg=color)
         val_lbl.pack(anchor="w")
         card._val_lbl = val_lbl  # type: ignore[attr-defined]

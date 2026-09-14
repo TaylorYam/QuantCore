@@ -178,7 +178,7 @@ def fetch_ib_portfolio(account_name: str = "") -> dict:
         }
 
     ctx = AccountCtx.from_name(account_name, ROLE_PANEL)
-    return _if.fetch_portfolio(ctx)
+    return _if.fetch_portfolio(ctx, readonly=True)
 
 
 def read_latest_trades(account_name: str = "") -> list:
@@ -319,6 +319,13 @@ class ControlPanel(tk.Tk):
                 self.title(f"QuantCore — {init_acct}")
         except Exception:
             pass
+        from portfolio_queries import PortfolioQueries, PortfolioRefreshLoop
+        self.portfolio_queries = PortfolioQueries(
+            [a["name"] for a in self._accounts_meta], fetch_ib_portfolio)
+        self._portfolio_loop = PortfolioRefreshLoop(
+            self.portfolio_queries, self.after, self.after_cancel,
+            self._on_portfolio_change)
+        self._portfolio_loop.start()
         self.refresh_all()
         # 啟動 Gateway 持久監測連線（每帳戶一條，斷線自動重連 + Telegram 通知）
         self.after(500, self._start_gateway_monitors)
@@ -365,6 +372,9 @@ class ControlPanel(tk.Tk):
     def _quit_app(self):
         """Tray > 離開 / 致命錯誤時呼叫：全套清理（cancel timers → stop monitors
         → stop tray → release lockfile → destroy Tk）。"""
+        query_loop = getattr(self, "_portfolio_loop", None)
+        if query_loop is not None:
+            query_loop.stop()
         try:
             eng = getattr(self, "_mon_engine", None)
             if eng is not None:
@@ -646,60 +656,25 @@ class ControlPanel(tk.Tk):
     # ── IB 即時刷新 ────────────────────────────────────────
 
     def _refresh_ib_live(self):
-        # 防止 race：同一個 clientId 同時只能連 Gateway 一條，
-        # 多次觸發（連點按鈕、切帳戶又按 Refresh IB）會讓後到的 connect
-        # 把先到的踢掉，timeout 那筆回 NAV=0 蓋掉成功那筆的 UI。
-        if getattr(self, "_ib_refresh_running", False):
-            self._log("[!] IB refresh already running — skipped")
-            return
-        self._ib_refresh_running = True
-        self._log("Connecting to IB Gateway...")
-        threading.Thread(target=self._ib_live_thread, daemon=True).start()
+        started = self._portfolio_loop.refresh()
+        if started:
+            self._log(f"[>] Refreshing accounts: {', '.join(started)}")
+        else:
+            self._log("[>] Account queries already running")
 
-    def _ib_live_thread(self):
-        try:
-            import asyncio
-            asyncio.set_event_loop(asyncio.new_event_loop())
-            acct = self.selected_account.get()
-            self.after(0, lambda: self._log(f"  Fetching account [{acct}] ..."))
-            pf = fetch_ib_portfolio(acct)
-            # 用 available 判斷成功與否：asyncio.TimeoutError 的 str(e) 是 ""，
-            # 只看 error 欄位會被空字串繞過，導致 NAV=0 蓋掉 UI。
-            if not pf.get("available"):
-                err = pf.get("error") or "connection failed (no message)"
-                self.after(0, lambda e=err: self._log(f"[X] IB error: {e}"))
-                return
-            self.after(0, lambda p=pf: self.portfolio_view.update(p))
-            src = pf.get("source", "")
-            n_etf = len(pf.get("etf_holdings", []))
-            n_stk = len(pf.get("stock_holdings", []))
-            n_oth = len(pf.get("other_holdings", []))
-            nav = pf.get("nav", 0)
-            dbg = pf.get("debug", {}) or {}
-            self.after(0, lambda: self._log(
-                f"[OK] IB Live — NAV ${nav:,.0f} | "
-                f"ETF: {n_etf}  Stocks: {n_stk}  Other: {n_oth}"
-            ))
-            # 診斷一行：用了哪個帳號 + 抓到幾筆原始 raw data
-            if dbg:
-                managed = dbg.get("managed_accounts") or []
-                used = dbg.get("used_account") or "?"
-                cfg_a = dbg.get("configured_account") or "?"
-                n_vals = dbg.get("n_account_values", 0)
-                n_pos_raw = dbg.get("n_positions_raw", 0)
-                src = dbg.get("vals_source", "?")
-                port = dbg.get("port", "?")
-                cid = dbg.get("client_id", "?")
-                self.after(0, lambda: self._log(
-                    f"     gw :{port} cid={cid}  managed={managed}  cfg={cfg_a}  used={used}"
-                ))
-                self.after(0, lambda: self._log(
-                    f"     via {src}  vals={n_vals}  pos_raw={n_pos_raw}"
-                ))
-        except Exception as e:
-            self.after(0, lambda: self._log(f"[X] IB refresh failed: {e}"))
-        finally:
-            self._ib_refresh_running = False
+    def _on_portfolio_change(self, name, state):
+        # Called by the main-thread poller; a late result only redraws its Account.
+        if name == self.selected_account.get():
+            self.portfolio_view.update_state(name, state)
+        if not state.running:
+            if state.error:
+                self._log(f"[X] [{name}] Portfolio update failed: {state.error}")
+            else:
+                self._log(f"[OK] [{name}] Portfolio updated")
+
+    def _show_cached_portfolio(self):
+        name = self.selected_account.get()
+        self.portfolio_view.update_state(name, self.portfolio_queries.snapshot(name))
 
     # ── 資料刷新 ──────────────────────────────────────────
 
@@ -749,7 +724,7 @@ class ControlPanel(tk.Tk):
             except Exception:
                 pass
         threading.Thread(target=_refresh_trades, daemon=True).start()
-        self._refresh_ib_live()
+        self._show_cached_portfolio()
 
     # ── Gateway 連線監控 ──────────────────────────────────
 
@@ -1134,12 +1109,7 @@ class ControlPanel(tk.Tk):
         except Exception as e:
             self.after(0, lambda: self._log(f"[X] Config read failed: {e}"))
 
-        # 2. Portfolio overview
-        try:
-            pf = read_latest_portfolio()
-            self.after(0, lambda p=pf: self.portfolio_view.update(p))
-        except Exception as e:
-            self.after(0, lambda: self._log(f"[X] Portfolio read failed: {e}"))
+        # Portfolio data belongs to portfolio_queries, never the shared Excel report.
 
         # 3. Recent trades
         try:

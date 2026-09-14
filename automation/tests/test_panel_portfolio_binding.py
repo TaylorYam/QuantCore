@@ -143,9 +143,9 @@ def test_chart_groups_small_positions_into_others(monkeypatch):
     holdings = [{"symbol": f"S{i:02d}", "mkt_val": 100 - i} for i in range(20)]
     view._render_pie_chart(holdings, 3000, 66)
     labels = [t.get_text() for t in figures[0].axes[0].texts if t.get_text()]
-    others = [l for l in labels if l.startswith("Others")]
-    assert len(others) == 1
-    assert "(8)" in others[0]
+    grouped = [l for l in labels if l.startswith("+") and "more" in l]
+    assert len(grouped) == 1
+    assert "+8 more" in grouped[0]
     individual = [l for l in labels
-                  if not l.startswith(("Others", "Cash")) and "\n" not in l]
+                  if not l.startswith("+") and "Cash" not in l and "\n" not in l]
     assert len(individual) == view._MAX_PIE_LABELS

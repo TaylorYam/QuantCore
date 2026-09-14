@@ -349,7 +349,7 @@ class PortfolioView:
                 si += 1
 
         if rest_count > 0:
-            labels.append(f"Others ({rest_count})")
+            labels.append(f"+{rest_count} more")
             values.append(rest_val)
             colors.append("#9ca3af")
 

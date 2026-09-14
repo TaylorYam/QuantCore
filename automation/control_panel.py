@@ -628,14 +628,15 @@ class ControlPanel(tk.Tk):
 
         def arrange_allocation(event):
             if event.width >= 560:
-                params_frame.grid(row=0, column=0, sticky="new", padx=(0, 4))
-                chart_frame.grid(row=0, column=1, sticky="nsew")
+                chart_frame.grid(row=0, column=0, columnspan=1,
+                                 sticky="nsew", padx=(0, 4))
+                params_frame.grid(row=0, column=1, columnspan=1,
+                                  sticky="new", padx=0)
             else:
-                params_frame.grid(row=0, column=0, columnspan=2, sticky="ew")
-                chart_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
-            if event.width >= 560:
-                params_frame.grid_configure(columnspan=1)
-                chart_frame.grid_configure(columnspan=1)
+                chart_frame.grid(row=0, column=0, columnspan=2,
+                                 sticky="ew", padx=0)
+                params_frame.grid(row=1, column=0, columnspan=2,
+                                  sticky="ew", padx=0)
 
         allocation_row.bind("<Configure>", arrange_allocation)
 

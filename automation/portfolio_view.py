@@ -142,7 +142,7 @@ class PortfolioView:
         title_lbl.pack(anchor="w", fill="x")
         card.bind("<Configure>", lambda e: title_lbl.configure(wraplength=max(40, e.width - 20)))
         val_lbl = tk.Label(card, text=value, font=f["med_num"], bg=t["bg3"], fg=color)
-        val_lbl.pack(anchor="w")
+        val_lbl.pack(anchor="e")
         card._val_lbl = val_lbl  # type: ignore[attr-defined]
         return card
 

@@ -297,10 +297,11 @@ class ControlPanel(tk.Tk):
         self.state("zoomed")
         self.minsize(1100, 750)
 
-        # 設定視窗圖標
+        # 設定視窗圖標（default= 讓所有 Toplevel 自動繼承品牌 ico）
         self._ico_path = BASE_DIR / "quantcore.ico"
         if self._ico_path.exists():
             self.iconbitmap(str(self._ico_path))
+            self.iconbitmap(default=str(self._ico_path))
 
         self.font_title   = tkfont.Font(family="Segoe UI", size=14, weight="bold")
         self.font_section = tkfont.Font(family="Segoe UI", size=10, weight="bold")

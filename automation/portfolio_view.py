@@ -302,6 +302,8 @@ class PortfolioView:
 
     # ── Donut chart ───────────────────────────────────────────
 
+    _MAX_PIE_LABELS = 12
+
     def _render_pie_chart(self, holdings: list, nav: float, exposure: float,
                            other_val: float = 0) -> None:
         t = self.t
@@ -316,9 +318,20 @@ class PortfolioView:
             self.chart_canvas = None
 
         sorted_h = sorted(holdings, key=lambda x: -abs(x["mkt_val"]))
-        labels = [h["symbol"] for h in sorted_h]
-        values = [abs(h["mkt_val"]) for h in sorted_h]
-        total_mktval = sum(values)
+        total_mktval = sum(abs(h["mkt_val"]) for h in sorted_h)
+
+        if len(sorted_h) > self._MAX_PIE_LABELS:
+            top_h = sorted_h[:self._MAX_PIE_LABELS]
+            rest_h = sorted_h[self._MAX_PIE_LABELS:]
+            rest_val = sum(abs(h["mkt_val"]) for h in rest_h)
+            rest_count = len(rest_h)
+        else:
+            top_h = sorted_h
+            rest_val = 0
+            rest_count = 0
+
+        labels = [h["symbol"] for h in top_h]
+        values = [abs(h["mkt_val"]) for h in top_h]
 
         etf_blues = ["#3b82f6", "#60a5fa", "#93c5fd", "#bfdbfe",
                       "#2563eb", "#1d4ed8", "#1e40af", "#1e3a8a",
@@ -327,13 +340,18 @@ class PortfolioView:
                          "#16a34a", "#15803d", "#166534", "#14532d"]
         colors = []
         ei, si = 0, 0
-        for h in sorted_h:
+        for h in top_h:
             if h["symbol"] in ETF_TICKERS:
                 colors.append(etf_blues[ei % len(etf_blues)])
                 ei += 1
             else:
                 colors.append(stock_greens[si % len(stock_greens)])
                 si += 1
+
+        if rest_count > 0:
+            labels.append(f"Others ({rest_count})")
+            values.append(rest_val)
+            colors.append("#9ca3af")
 
         if other_val > 0:
             labels.append("Other")

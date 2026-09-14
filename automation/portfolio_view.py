@@ -388,16 +388,24 @@ class PortfolioView:
             annotations.append((ang, pct, label, side, y_pos))
 
         min_gap = 0.28
+        y_bound = 1.15
         for side_val in [1, -1]:
             side_annots = [(i, a) for i, a in enumerate(annotations) if a[3] == side_val]
+            if len(side_annots) < 2:
+                continue
             side_annots.sort(key=lambda x: x[1][4])
-            for k in range(1, len(side_annots)):
-                prev_idx, prev = side_annots[k - 1]
-                curr_idx, curr = side_annots[k]
-                if curr[4] - prev[4] < min_gap:
-                    new_y = prev[4] + min_gap
-                    old = annotations[curr_idx]
-                    annotations[curr_idx] = (old[0], old[1], old[2], old[3], new_y)
+            ys = [a[4] for _, a in side_annots]
+            for k in range(1, len(ys)):
+                if ys[k] - ys[k - 1] < min_gap:
+                    ys[k] = ys[k - 1] + min_gap
+            if ys[-1] > y_bound:
+                ys[-1] = y_bound
+                for k in range(len(ys) - 2, -1, -1):
+                    if ys[k + 1] - ys[k] < min_gap:
+                        ys[k] = ys[k + 1] - min_gap
+            for k, (idx, _) in enumerate(side_annots):
+                old = annotations[idx]
+                annotations[idx] = (old[0], old[1], old[2], old[3], ys[k])
 
         for ang, pct, label, side, y_final in annotations:
             x_edge = center_x + 0.70 * math.cos(math.radians(ang))

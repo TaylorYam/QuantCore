@@ -59,6 +59,7 @@ class PortfolioView:
         self.t = theme
         self.f = fonts
         self.chart_canvas: Optional[object] = None
+        self.refresh_summary_lbl = None
 
     # ── Build: Metrics ───────────────────────────────────────────
 
@@ -152,6 +153,16 @@ class PortfolioView:
         self.update(state.portfolio or {"available": False, "error": "No data yet"})
         last = (state.updated_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
                 if state.updated_at else "—")
+        summary = getattr(self, "refresh_summary_lbl", None)
+        if summary is not None:
+            source = {"manual": "Manual", "auto": "Auto"}.get(state.refresh_source, "Unknown source")
+            detail = source if state.updated_at else "No data yet"
+            if state.running:
+                detail += " · Updating"
+            elif state.error:
+                detail += " · Failed"
+            summary.config(text=f"{name} | {detail}\n{last}",
+                           fg=self.t["yellow"] if state.error else self.t["text"])
         status = "Updating" if state.running else "Failed" if state.error else "OK"
         source_tag = ""
         if state.refresh_source:

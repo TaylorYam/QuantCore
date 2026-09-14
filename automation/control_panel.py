@@ -486,6 +486,19 @@ class ControlPanel(tk.Tk):
         self.lbl_time.pack(side="right")
         self._tick()
 
+        refresh_bar = tk.Frame(hdr, bg=ACCENT)
+        refresh_bar.pack(side="left", fill="x", expand=True, padx=20)
+        tk.Label(refresh_bar, text="Last refresh\n(local time)",
+                 font=self.font_small, bg=ACCENT, fg=TEXT_DIM,
+                 justify="left").pack(side="left", padx=(0, 12))
+        self.refresh_summary_labels = {}
+        for name in acct_names:
+            label = tk.Label(refresh_bar, text=f"{name} | No data yet\n—",
+                             font=self.font_small, bg=ACCENT, fg=TEXT,
+                             justify="left", anchor="w")
+            label.pack(side="left", fill="x", expand=True, padx=8)
+            self.refresh_summary_labels[name] = label
+
         # ── 操作列（標題下方）──────────────────────────────
         btn_bar = tk.Frame(self, bg=BG3, pady=4, padx=10)
         btn_bar.pack(fill="x")
@@ -632,6 +645,7 @@ class ControlPanel(tk.Tk):
         params_frame = tk.Frame(allocation_row, bg=BG2)
 
         pv = PortfolioView(theme=self._theme, fonts=self._fonts)
+        pv.refresh_summary_lbl = self.refresh_summary_labels[name]
         pv.build_metrics(metrics_frame)
 
         sv = StrategyParamsView(

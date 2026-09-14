@@ -80,3 +80,28 @@ def test_readonly_harness_uses_test_identity_without_credentials(tmp_path):
     assert len({ctx.client_id for ctx in contexts.values()}) == 3
     assert all(ctx.client_id > 16000 and ctx.dry_run and not ctx.tg_token
                for ctx in contexts.values())
+
+
+def test_refresh_summary_tracks_success_source_and_retains_time_on_failure():
+    from datetime import datetime, timezone
+    from portfolio_view import PortfolioView
+
+    rendered = {}
+    view = PortfolioView.__new__(PortfolioView)
+    view.t = {"text": "text", "text_dim": "dim", "yellow": "yellow"}
+    view.update = lambda pf: None
+    view.report_date_lbl = NS(config=lambda **kw: None)
+    view.refresh_summary_lbl = NS(config=lambda **kw: rendered.update(kw))
+    first = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
+    second = datetime(2026, 9, 14, 12, 30, tzinfo=timezone.utc)
+    for timestamp, source, expected in [(first, "manual", "Manual"), (second, "auto", "Auto")]:
+        view.update_state("Taylor", QueryState(updated_at=timestamp, refresh_source=source))
+        assert f"Taylor | {expected}" in rendered["text"]
+        assert timestamp.astimezone().strftime("%Y-%m-%d %H:%M:%S") in rendered["text"]
+    for running, error, expected in [(True, None, "Updating"), (False, "timeout", "Failed")]:
+        view.update_state("Taylor", QueryState(updated_at=second, refresh_source="auto",
+                                              running=running, error=error))
+        assert "Auto" in rendered["text"] and expected in rendered["text"]
+        assert second.astimezone().strftime("%Y-%m-%d %H:%M:%S") in rendered["text"]
+    view.update_state("Rosa", QueryState())
+    assert rendered["text"] == "Rosa | No data yet\n—"

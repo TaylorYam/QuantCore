@@ -154,7 +154,7 @@ def test_scheduled_refresh_fires_at_market_slots():
     calls, published = [], []
     changes = {"Taylor": "ready"}
     queries = SimpleNamespace(
-        refresh=lambda: calls.append(scheduler.now()),
+        refresh=lambda **kw: calls.append(scheduler.now()),
         drain_changes=lambda: dict(changes), close=lambda: changes.clear())
     loop = PortfolioRefreshLoop(
         queries, scheduler.schedule, scheduler.cancel,
@@ -196,7 +196,7 @@ def test_late_timer_skips_refresh():
     scheduler = Scheduler(t0)
     calls = []
     queries = SimpleNamespace(
-        refresh=lambda: calls.append(scheduler.now()),
+        refresh=lambda **kw: calls.append(scheduler.now()),
         drain_changes=lambda: {}, close=lambda: None)
     loop = PortfolioRefreshLoop(
         queries, scheduler.schedule, scheduler.cancel,
@@ -229,7 +229,7 @@ def test_late_timer_within_threshold_still_fires():
     scheduler = Scheduler(t0)
     calls = []
     queries = SimpleNamespace(
-        refresh=lambda: calls.append(scheduler.now()),
+        refresh=lambda **kw: calls.append(scheduler.now()),
         drain_changes=lambda: {}, close=lambda: None)
     loop = PortfolioRefreshLoop(
         queries, scheduler.schedule, scheduler.cancel,

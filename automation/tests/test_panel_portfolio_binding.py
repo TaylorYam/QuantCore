@@ -17,21 +17,32 @@ def panel_methods():
     return namespace
 
 
-def test_late_result_cannot_overwrite_selected_account_and_switch_is_cache_only():
+def test_each_account_view_updated_independently():
     methods = panel_methods()
-    displayed, logs = [], []
-    selected = ["Yvonne"]
-    yvonne = QueryState(portfolio={"available": True, "nav": 123})
-    panel = NS(selected_account=NS(get=lambda: selected[0]),
-               portfolio_view=NS(update_state=lambda *args: displayed.append(args)),
-               portfolio_queries=NS(snapshot=lambda name: yvonne), _log=logs.append)
-    methods["_on_portfolio_change"](panel, "Taylor", QueryState(error="timeout"))
-    assert not displayed
-    methods["_on_portfolio_change"](panel, "Yvonne", yvonne)
-    assert displayed == [("Yvonne", yvonne)]
+    taylor_displayed, yvonne_displayed, logs = [], [], []
+    yvonne_state = QueryState(portfolio={"available": True, "nav": 123})
+    taylor_state = QueryState(error="timeout")
+    panel = NS(
+        portfolio_views={
+            "Taylor": NS(update_state=lambda *args: taylor_displayed.append(args)),
+            "Yvonne": NS(update_state=lambda *args: yvonne_displayed.append(args)),
+        },
+        portfolio_queries=NS(snapshot=lambda name: {
+            "Taylor": taylor_state, "Yvonne": yvonne_state}[name]),
+        _log=logs.append,
+    )
+    methods["_on_portfolio_change"](panel, "Taylor", taylor_state)
+    assert taylor_displayed == [("Taylor", taylor_state)]
+    assert not yvonne_displayed
+
+    methods["_on_portfolio_change"](panel, "Yvonne", yvonne_state)
+    assert yvonne_displayed == [("Yvonne", yvonne_state)]
+
+    taylor_displayed.clear()
+    yvonne_displayed.clear()
     methods["_show_cached_portfolio"](panel)
-    assert displayed[-1] == ("Yvonne", yvonne)
-    # No refresh API exists on the fake: selecting cached data cannot query IB.
+    assert taylor_displayed == [("Taylor", taylor_state)]
+    assert yvonne_displayed == [("Yvonne", yvonne_state)]
 
 
 def test_switching_to_no_data_clears_other_holdings_and_chart():
@@ -53,8 +64,7 @@ def test_switching_to_no_data_clears_other_holdings_and_chart():
     assert destroyed == [True] and view.chart_canvas is None
     assert rendered["other_list"]["text"] == "(no data)"
     assert all(rendered[key]["text"] == "" for key in ("etf_hdr", "stock_hdr", "other_hdr"))
-    assert "Rosa | Update failed" in rendered["report_date_lbl"]["text"]
-    assert "No data yet" in rendered["report_date_lbl"]["text"]
+    assert "Failed" in rendered["report_date_lbl"]["text"]
 
 
 def test_readonly_harness_uses_test_identity_without_credentials(tmp_path):
@@ -70,3 +80,47 @@ def test_readonly_harness_uses_test_identity_without_credentials(tmp_path):
     assert len({ctx.client_id for ctx in contexts.values()}) == 3
     assert all(ctx.client_id > 16000 and ctx.dry_run and not ctx.tg_token
                for ctx in contexts.values())
+
+
+def test_refresh_summary_tracks_success_source_and_retains_time_on_failure():
+    from datetime import datetime, timezone
+    from portfolio_view import PortfolioView
+
+    rendered = {}
+    view = PortfolioView.__new__(PortfolioView)
+    view.t = {"text": "text", "text_dim": "dim", "yellow": "yellow"}
+    view.update = lambda pf: None
+    view.report_date_lbl = NS(config=lambda **kw: None)
+    view.refresh_summary_lbl = NS(config=lambda **kw: rendered.update(kw))
+    first = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
+    second = datetime(2026, 9, 14, 12, 30, tzinfo=timezone.utc)
+    for timestamp, source, expected in [(first, "manual", "Manual"), (second, "auto", "Auto")]:
+        view.update_state("Taylor", QueryState(updated_at=timestamp, refresh_source=source))
+        assert f"Taylor | {expected}" in rendered["text"]
+        assert timestamp.astimezone().strftime("%Y-%m-%d %H:%M:%S") in rendered["text"]
+    for running, error, expected in [(True, None, "Updating"), (False, "timeout", "Failed")]:
+        view.update_state("Taylor", QueryState(updated_at=second, refresh_source="auto",
+                                              running=running, error=error))
+        assert "Auto" in rendered["text"] and expected in rendered["text"]
+        assert second.astimezone().strftime("%Y-%m-%d %H:%M:%S") in rendered["text"]
+    view.update_state("Rosa", QueryState())
+    assert rendered["text"] == "Rosa | No data yet\n—"
+
+
+def test_chart_percentages_include_cash_in_denominator(monkeypatch):
+    from portfolio_view import PortfolioView
+    from matplotlib.backends import backend_tkagg
+
+    figures = []
+    def canvas(figure, master):
+        figures.append(figure)
+        return NS(draw=lambda: None, get_tk_widget=lambda: NS(pack=lambda **kw: None))
+    monkeypatch.setattr(backend_tkagg, "FigureCanvasTkAgg", canvas)
+    view = PortfolioView.__new__(PortfolioView)
+    view.t = {"bg2": "#141e34", "orange": "orange", "green": "green"}
+    view.chart_canvas = None
+    view.chart_frame = None
+    view._render_pie_chart([{"symbol": "XLK", "mkt_val": 100}], 400, 25)
+    labels = [text.get_text() for text in figures[0].axes[0].texts]
+    assert "XLK 25%" in labels
+    assert "Cash 75%" in labels

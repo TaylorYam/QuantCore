@@ -1,19 +1,17 @@
 """
-PortfolioView — Panel 左欄的 Portfolio Overview（R3.2 從 control_panel 抽出）
+PortfolioView — per-account Portfolio Overview (Issue #20 rewrite)
 
-職責：
-  - 4 個指標卡（NAV / uPnL / Margin / Strategy+Account Exposure）
-  - 3 個持倉列表（ETF / Stock / Other）
-  - 右側 matplotlib donut chart
+Split-build API for the 3-column layout: metrics, chart, and holdings
+can be placed into separate parent frames so Strategy Params can sit
+below the metrics.
 
-對外 API：
-  pv = PortfolioView(parent=frame, theme=theme, fonts=fonts)
-  pv.update(pf_dict)   # 每次 refresh_thread 取得新資料後呼叫
-
-設計：
-  - 純 UI、read-only（不觸發任何 callback）
-  - 依賴透過 constructor 注入（theme dict、fonts dict）
-  - 所有 widget references 存在 self.X（不汙染 Panel 的 namespace）
+Public API:
+    pv = PortfolioView(theme, fonts)
+    pv.build_metrics(parent)    # net asset value, P&L, margin cushion, exposures
+    pv.build_chart(parent)      # donut chart
+    pv.build_holdings(parent)   # ETF / Stock / Other lists
+    pv.update_state(name, state)
+    pv.update(pf_dict)
 """
 
 from __future__ import annotations
@@ -49,9 +47,9 @@ _REQUIRED_FONTS_KEYS = {"small", "mono_sm", "med_num"}
 
 
 class PortfolioView:
-    """Left-column Portfolio Overview widgets + update logic."""
+    """Per-account Portfolio Overview widgets + update logic."""
 
-    def __init__(self, parent: tk.Misc, theme: dict, fonts: dict):
+    def __init__(self, theme: dict, fonts: dict):
         missing_t = _REQUIRED_THEME_KEYS - set(theme)
         missing_f = _REQUIRED_FONTS_KEYS - set(fonts)
         if missing_t:
@@ -60,69 +58,47 @@ class PortfolioView:
             raise ValueError(f"fonts missing keys: {sorted(missing_f)}")
         self.t = theme
         self.f = fonts
-
-        # Widgets (built in _build)
-        self.overview_frame: tk.Frame
-        self.nav_card: tk.Frame
-        self.pnl_card: tk.Frame
-        self.margin_card: tk.Frame
-        self.strat_exp_card: tk.Frame
-        self.total_exp_card: tk.Frame
-        self.report_date_lbl: tk.Label
-        self.etf_list: tk.Label
-        self.stock_list: tk.Label
-        self.other_list: tk.Label
-        self.other_frame: tk.Frame
-        self.chart_frame: tk.Frame
         self.chart_canvas: Optional[object] = None
+        self.refresh_summary_lbl = None
 
-        self._build(parent)
+    # ── Build: Metrics ───────────────────────────────────────────
 
-    # ── Build ─────────────────────────────────────────────────
+    def build_metrics(self, parent: tk.Misc) -> None:
+        t, f = self.t, self.f
 
-    def _build(self, parent: tk.Misc) -> None:
-        t = self.t
-        f = self.f
+        row = tk.Frame(parent, bg=t["bg2"])
+        row.pack(fill="x")
+        cards = (
+            ("nav_card", "Net Asset Value", "$—"),
+            ("pnl_card", "Unrealized P&L", "$—"),
+            ("margin_card", "Margin Cushion", "—%"),
+            ("strat_exp_card", "Strategy Exposure", "—%"),
+            ("total_exp_card", "Account Exposure", "—%"),
+        )
+        for index, (attribute, title, value) in enumerate(cards):
+            row.columnconfigure(index, weight=1, uniform="metrics")
+            card = self._metric_card(row, title, value, t["text"])
+            card.grid(row=0, column=index, sticky="nsew",
+                      padx=(0, 4 if index < len(cards) - 1 else 0), pady=(0, 4))
+            setattr(self, attribute, card)
 
-        self.overview_frame = tk.Frame(parent, bg=t["bg2"], padx=8, pady=4)
-        self.overview_frame.pack(fill="both", expand=True)
-
-        # 左右分欄：左=數字+列表 右=圓餅圖
-        left_pf = tk.Frame(self.overview_frame, bg=t["bg2"])
-        left_pf.pack(side="left", fill="both", expand=True)
-
-        right_pf = tk.Frame(self.overview_frame, bg=t["bg2"])
-        right_pf.pack(side="right", fill="y")
-
-        # ── 左上：指標卡（2x2 grid）
-        cards_frame = tk.Frame(left_pf, bg=t["bg2"])
-        cards_frame.pack(fill="x")
-
-        row1 = tk.Frame(cards_frame, bg=t["bg2"])
-        row1.pack(fill="x")
-        self.nav_card = self._metric_card(row1, "NAV", "$—", t["text"])
-        self.nav_card.pack(side="left", fill="x", expand=True, padx=(0, 3), pady=(0, 3))
-        self.pnl_card = self._metric_card(row1, "Unrealized P&L", "$—", t["text"])
-        self.pnl_card.pack(side="left", fill="x", expand=True, pady=(0, 3))
-
-        row2 = tk.Frame(cards_frame, bg=t["bg2"])
-        row2.pack(fill="x")
-        self.margin_card = self._metric_card(row2, "Margin Cushion", "—%", t["text"])
-        self.margin_card.pack(side="left", fill="x", expand=True, padx=(0, 3), pady=(0, 3))
-        self.strat_exp_card = self._metric_card(row2, "Strategy Exp.", "—%", t["text"])
-        self.strat_exp_card.pack(side="left", fill="x", expand=True, padx=(0, 3), pady=(0, 3))
-        self.total_exp_card = self._metric_card(row2, "Account Exp.", "—%", t["text"])
-        self.total_exp_card.pack(side="left", fill="x", expand=True, pady=(0, 3))
-
-        # 報告日期
         self.report_date_lbl = tk.Label(
-            left_pf, text="Report: —",
+            parent, text="Report: —",
             font=f["small"], bg=t["bg2"], fg=t["text_dim"],
         )
         self.report_date_lbl.pack(anchor="w", pady=(2, 3))
 
-        # ── 左下：持倉文字列表
-        etf_frame = tk.Frame(left_pf, bg=t["bg3"], padx=6, pady=4)
+    # ── Build: Chart ─────────────────────────────────────────────
+
+    def build_chart(self, parent: tk.Misc) -> None:
+        self.chart_frame = parent
+
+    # ── Build: Holdings ──────────────────────────────────────────
+
+    def build_holdings(self, parent: tk.Misc) -> None:
+        t, f = self.t, self.f
+
+        etf_frame = tk.Frame(parent, bg=t["bg3"], padx=6, pady=4)
         etf_frame.pack(fill="x", pady=(0, 3))
         tk.Label(etf_frame, text="ETF Holdings (SR)", font=f["small"],
                  bg=t["bg3"], fg=t["blue"]).pack(anchor="w")
@@ -133,7 +109,7 @@ class PortfolioView:
                                   bg=t["bg3"], fg=t["text"], justify="left", anchor="nw")
         self.etf_list.pack(anchor="w", fill="x")
 
-        stock_frame = tk.Frame(left_pf, bg=t["bg3"], padx=6, pady=4)
+        stock_frame = tk.Frame(parent, bg=t["bg3"], padx=6, pady=4)
         stock_frame.pack(fill="x", pady=(0, 3))
         tk.Label(stock_frame, text="Stock Holdings (MOM)", font=f["small"],
                  bg=t["bg3"], fg=t["green"]).pack(anchor="w")
@@ -144,9 +120,9 @@ class PortfolioView:
                                     bg=t["bg3"], fg=t["text"], justify="left", anchor="nw")
         self.stock_list.pack(anchor="w", fill="x")
 
-        other_frame = tk.Frame(left_pf, bg=t["bg3"], padx=6, pady=4)
+        other_frame = tk.Frame(parent, bg=t["bg3"], padx=6, pady=4)
         other_frame.pack(fill="x")
-        tk.Label(other_frame, text="Other (Manual, excluded)", font=f["small"],
+        tk.Label(other_frame, text="Other (Manual)", font=f["small"],
                  bg=t["bg3"], fg=t["text_dim"]).pack(anchor="w")
         self.other_hdr = tk.Label(other_frame, text="", font=f["mono_sm"],
                                    bg=t["bg3"], fg=t["text_dim"], justify="left", anchor="nw")
@@ -156,34 +132,46 @@ class PortfolioView:
         self.other_list.pack(anchor="w", fill="x")
         self.other_frame = other_frame
 
-        # ── 右：圓餅圖
-        self.chart_frame = right_pf
-        self.chart_canvas = None
+    # ── Metric card helper ───────────────────────────────────────
 
     def _metric_card(self, parent: tk.Misc, title: str, value: str, color: str) -> tk.Frame:
         t = self.t
         f = self.f
         card = tk.Frame(parent, bg=t["bg3"], padx=8, pady=6)
-        tk.Label(card, text=title, font=f["small"], bg=t["bg3"], fg=t["text_dim"]).pack(anchor="w")
+        title_lbl = tk.Label(card, text=title, font=f["small"], bg=t["bg3"],
+                             fg=t["text_dim"], anchor="w", justify="left", height=2)
+        title_lbl.pack(anchor="w", fill="x")
+        card.bind("<Configure>", lambda e: title_lbl.configure(wraplength=max(40, e.width - 20)))
         val_lbl = tk.Label(card, text=value, font=f["med_num"], bg=t["bg3"], fg=color)
-        val_lbl.pack(anchor="w")
+        val_lbl.pack(anchor="e")
         card._val_lbl = val_lbl  # type: ignore[attr-defined]
         return card
 
     # ── Update ────────────────────────────────────────────────
 
     def update_state(self, name, state) -> None:
-        """Render an Account's cached data with freshness and failure status."""
         self.update(state.portfolio or {"available": False, "error": "No data yet"})
         last = (state.updated_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
-                if state.updated_at else "No data yet")
-        status = "Updating" if state.running else "Update failed" if state.error else "Updated"
+                if state.updated_at else "—")
+        summary = getattr(self, "refresh_summary_lbl", None)
+        if summary is not None:
+            source = {"manual": "Manual", "auto": "Auto"}.get(state.refresh_source, "Unknown source")
+            detail = source if state.updated_at else "No data yet"
+            if state.running:
+                detail += " · Updating"
+            elif state.error:
+                detail += " · Failed"
+            summary.config(text=f"{name} | {detail}\n{last}",
+                           fg=self.t["yellow"] if state.error else self.t["text"])
+        status = "Updating" if state.running else "Failed" if state.error else "OK"
+        source_tag = ""
+        if state.refresh_source:
+            source_tag = f" ({state.refresh_source})"
         self.report_date_lbl.config(
-            text=f"{name} | {status} | Last success: {last}",
+            text=f"{status} | {last}{source_tag}",
             fg=self.t["yellow"] if state.error else self.t["text_dim"])
 
     def update(self, pf: dict) -> None:
-        """Refresh all widgets from a portfolio snapshot dict."""
         t = self.t
 
         if not pf.get("available"):
@@ -212,17 +200,14 @@ class PortfolioView:
         other_mktval = pf.get("other_mktval", 0)
         strat_exposure = (strategy_mktval / nav * 100) if nav > 0 else 0
         total_exposure = (mktval / nav * 100) if nav > 0 else 0
-        exposure = strat_exposure  # center text uses strategy exposure
+        exposure = strat_exposure
 
-        # NAV
         self.nav_card._val_lbl.config(text=f"${nav:,.0f}", fg=t["text"])
 
-        # P&L
         sign = "+" if upnl >= 0 else ""
         pnl_color = t["green"] if upnl >= 0 else t["red"]
         self.pnl_card._val_lbl.config(text=f"{sign}${upnl:,.2f}", fg=pnl_color)
 
-        # Margin
         if cushion < 10:
             m_color = t["red"]
         elif cushion < 25:
@@ -231,20 +216,16 @@ class PortfolioView:
             m_color = t["green"]
         self.margin_card._val_lbl.config(text=f"{cushion:.1f}%", fg=m_color)
 
-        # Strategy Exposure
         s_color = t["orange"] if strat_exposure > 100 else t["green"]
         self.strat_exp_card._val_lbl.config(text=f"{strat_exposure:.0f}%", fg=s_color)
 
-        # Account Exposure
         a_color = t["orange"] if total_exposure > 100 else t["green"]
         self.total_exp_card._val_lbl.config(text=f"{total_exposure:.0f}%", fg=a_color)
 
-        # Date + source
         source = pf.get("source", "Excel")
         src_tag = f"  [{source}]" if source != "Excel" else ""
         self.report_date_lbl.config(text=f"Report Date: {pf['date']}{src_tag}")
 
-        # Holdings lists
         self._render_holdings_list(self.etf_hdr, self.etf_list,
                                     pf.get("etf_holdings", []), nav)
         self._render_holdings_list(self.stock_hdr, self.stock_list,
@@ -253,8 +234,6 @@ class PortfolioView:
                                     pf.get("other_holdings", []),
                                     nav, empty_text="(none)")
 
-        # Pie chart — always clear old canvas first, so switching to an account
-        # with no holdings drops the previous account's chart (S10 post-fix bug)
         if self.chart_canvas:
             try:
                 self.chart_canvas.get_tk_widget().destroy()
@@ -268,7 +247,6 @@ class PortfolioView:
 
     @staticmethod
     def _fmt_dollar(val: float) -> str:
-        """Format with sign: +$1,234 / -$567 / $0"""
         if val > 0:
             return f"+${val:,.0f}"
         elif val < 0:
@@ -285,7 +263,6 @@ class PortfolioView:
 
         sorted_h = sorted(holdings, key=lambda x: -abs(x["mkt_val"]))
 
-        # Compute dynamic column widths from data
         rows = []
         for h in sorted_h:
             w = h["mkt_val"] / nav * 100 if nav > 0 else 0
@@ -312,11 +289,10 @@ class PortfolioView:
                 widths[i] = max(widths[i], len(cell))
 
         def _fmt_row(cells):
-            # Symbol left-aligned, numerics right-aligned, spacer before Name, Name left-aligned
             parts = [f"{cells[0]:<{widths[0]}}"]
             for i in range(1, 7):
                 parts.append(f"{cells[i]:>{widths[i]}}")
-            parts.append("")  # spacer column
+            parts.append("")
             parts.append(f"{cells[7]:<{widths[7]}}")
             return "  ".join(parts)
 
@@ -328,7 +304,6 @@ class PortfolioView:
 
     def _render_pie_chart(self, holdings: list, nav: float, exposure: float,
                            other_val: float = 0) -> None:
-        """Render matplotlib donut chart into self.chart_frame."""
         t = self.t
 
         import matplotlib
@@ -336,8 +311,6 @@ class PortfolioView:
         import matplotlib.pyplot as plt
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-        # Clear old canvas (defensive — update() already cleared, but keep
-        # this for callers who invoke _render_pie_chart directly)
         if self.chart_canvas:
             self.chart_canvas.get_tk_widget().destroy()
             self.chart_canvas = None
@@ -347,7 +320,6 @@ class PortfolioView:
         values = [abs(h["mkt_val"]) for h in sorted_h]
         total_mktval = sum(values)
 
-        # Colors: ETF blues, Stock greens
         etf_blues = ["#3b82f6", "#60a5fa", "#93c5fd", "#bfdbfe",
                       "#2563eb", "#1d4ed8", "#1e40af", "#1e3a8a",
                       "#6366f1", "#818cf8", "#a5b4fc"]
@@ -356,7 +328,6 @@ class PortfolioView:
         colors = []
         ei, si = 0, 0
         for h in sorted_h:
-            # ETF bucket 涵蓋 SR sector + SkewLS inverse (Issue 2 Option 2)
             if h["symbol"] in ETF_TICKERS:
                 colors.append(etf_blues[ei % len(etf_blues)])
                 ei += 1
@@ -364,21 +335,19 @@ class PortfolioView:
                 colors.append(stock_greens[si % len(stock_greens)])
                 si += 1
 
-        # Other manual holdings (grey)
         if other_val > 0:
             labels.append("Other")
             values.append(abs(other_val))
             total_mktval += abs(other_val)
             colors.append("#6b7280")
 
-        # Cash (if exposure < 100%)
         if exposure < 100 and nav > total_mktval:
             cash = nav - total_mktval
             labels.append("Cash")
             values.append(cash)
             colors.append("#4b5563")
 
-        fig, ax = plt.subplots(figsize=(3.6, 2.4), dpi=100)
+        fig, ax = plt.subplots(figsize=(2.8, 2.0), dpi=100)
         fig.patch.set_facecolor(t["bg2"])
         ax.set_facecolor(t["bg2"])
         ax.axis("off")
@@ -391,11 +360,11 @@ class PortfolioView:
             radius=0.85, center=(center_x, 0),
         )
 
-        # Collect annotation info with y-overlap avoidance
+        chart_total = sum(values)  # Includes cash, exactly like the wedge geometry.
         annotations = []
         for i, (wedge, label) in enumerate(zip(wedges, labels)):
             ang = (wedge.theta2 + wedge.theta1) / 2
-            pct = values[i] / total_mktval * 100 if total_mktval > 0 else 0
+            pct = values[i] / chart_total * 100 if chart_total > 0 else 0
             side = 1 if math.cos(math.radians(ang)) >= 0 else -1
             y_pos = 0.95 * math.sin(math.radians(ang))
             annotations.append((ang, pct, label, side, y_pos))
@@ -422,7 +391,7 @@ class PortfolioView:
                 xy=(x_edge, y_edge),
                 xytext=(x_text + 0.05 * side, y_final),
                 ha=ha, va="center",
-                fontsize=7.5, fontweight="bold", color="white",
+                fontsize=7, fontweight="bold", color="white",
                 arrowprops=dict(
                     arrowstyle="-",
                     color="#6b7d99",
@@ -431,7 +400,6 @@ class PortfolioView:
                 ),
             )
 
-        # Center text
         if exposure > 100:
             center_text = f"{exposure:.0f}%\nof NAV"
             center_color = t["orange"]
@@ -439,12 +407,12 @@ class PortfolioView:
             center_text = f"{exposure:.0f}%\nExposure"
             center_color = t["green"]
         ax.text(center_x, 0, center_text, ha="center", va="center",
-                fontsize=9, fontweight="bold", color=center_color)
+                fontsize=8, fontweight="bold", color=center_color)
 
         fig.tight_layout(pad=0.3)
 
         canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
         canvas.draw()
-        canvas.get_tk_widget().pack()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
         self.chart_canvas = canvas
         plt.close(fig)

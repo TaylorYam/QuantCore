@@ -19,6 +19,7 @@ class QueryState:
     updated_at: datetime | None = None
     running: bool = False
     error: str | None = None
+    refresh_source: str | None = None
 
 
 class PortfolioQueries:
@@ -42,7 +43,7 @@ class PortfolioQueries:
             self._changed.clear()
             return changes
 
-    def refresh(self):
+    def refresh(self, *, source="manual"):
         started = []
         for name in self.accounts:
             with self._lock:
@@ -50,17 +51,19 @@ class PortfolioQueries:
                 if self._closed or previous.running:
                     continue
                 self._states[name] = QueryState(
-                    previous.portfolio, previous.updated_at, True, previous.error)
+                    previous.portfolio, previous.updated_at, True, previous.error,
+                    previous.refresh_source)
                 self._changed.add(name)
             try:
-                threading.Thread(target=self._run, args=(name,), daemon=True,
+                threading.Thread(target=self._run, args=(name, source),
+                                 daemon=True,
                                  name=f"portfolio-{name}").start()
                 started.append(name)
             except Exception as exc:
-                self._finish(name, None, str(exc) or type(exc).__name__)
+                self._finish(name, None, str(exc) or type(exc).__name__, source)
         return tuple(started)
 
-    def _run(self, name):
+    def _run(self, name, source="manual"):
         loop = None
         try:
             loop = asyncio.new_event_loop()
@@ -68,9 +71,9 @@ class PortfolioQueries:
             result = self._fetch(name)
             if not result.get("available"):
                 raise RuntimeError(result.get("error") or "Query failed (no message)")
-            self._finish(name, result, None)
+            self._finish(name, result, None, source)
         except Exception as exc:
-            self._finish(name, None, str(exc) or type(exc).__name__)
+            self._finish(name, None, str(exc) or type(exc).__name__, source)
         finally:
             if loop is not None:
                 try:
@@ -84,7 +87,7 @@ class PortfolioQueries:
                     loop.close()
                     asyncio.set_event_loop(None)
 
-    def _finish(self, name, result, error):
+    def _finish(self, name, result, error, source=None):
         with self._lock:
             if self._closed:
                 return
@@ -92,7 +95,8 @@ class PortfolioQueries:
             self._states[name] = QueryState(
                 deepcopy(result) if result is not None else previous.portfolio,
                 self._now() if result is not None else previous.updated_at,
-                False, error)
+                False, error,
+                source if result is not None else previous.refresh_source)
             self._changed.add(name)
 
     def close(self):
@@ -142,11 +146,11 @@ class PortfolioRefreshLoop:
         self._ensure_defaults()
         self._active = True
         self._arm_next()
-        self.refresh()
+        self.refresh(source="auto")
         self._poll()
 
-    def refresh(self):
-        return self.queries.refresh() if self._active else ()
+    def refresh(self, *, source="manual"):
+        return self.queries.refresh(source=source) if self._active else ()
 
     def _arm_next(self):
         now = self._now()
@@ -165,7 +169,7 @@ class PortfolioRefreshLoop:
         if self._armed_for is not None:
             late_sec = (now - self._armed_for).total_seconds()
             if late_sec <= self._LATE_THRESHOLD_SEC:
-                self.refresh()
+                self.refresh(source="auto")
         self._arm_next()
 
     def _poll(self):

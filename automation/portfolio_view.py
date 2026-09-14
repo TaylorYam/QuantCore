@@ -378,11 +378,10 @@ class PortfolioView:
             radius=0.85, center=(center_x, 0),
         )
 
-        chart_total = sum(values)  # Includes cash, exactly like the wedge geometry.
         annotations = []
         for i, (wedge, label) in enumerate(zip(wedges, labels)):
             ang = (wedge.theta2 + wedge.theta1) / 2
-            pct = values[i] / chart_total * 100 if chart_total > 0 else 0
+            pct = values[i] / nav * 100 if nav > 0 else 0
             side = 1 if math.cos(math.radians(ang)) >= 0 else -1
             y_pos = 0.95 * math.sin(math.radians(ang))
             annotations.append((ang, pct, label, side, y_pos))

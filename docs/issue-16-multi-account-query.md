@@ -55,10 +55,12 @@ Issue: https://github.com/TaylorYam/QuantCore/issues/16
 ## 目前驗證
 
 - 初始離線基準：285 passed、20 skipped（缺少市場資料）。
-- 實作後離線測試：312 passed、20 skipped；新增 27 項包含並行、重複刷新、失敗保留資料、排程、畫面歸屬及唯讀連線隔離。
+- 實作後離線測試：313 passed、20 skipped；新增 28 項包含並行、重複刷新、失敗保留資料、排程、畫面歸屬、唯讀連線隔離及真實 Tk 整合驗收。
 - 2026-09-14 真實唯讀驗收：三帳戶全部成功；開始時間約為啟動後 0.0013–0.0014 秒，Taylor 65.98 秒、Rosa 62.03 秒、Yvonne 65.61 秒完成，三查詢期間重疊。這是一輪並行驗收，沒有執行串行 A/B，因此不宣稱特定加速倍數。
 - 測試前後 52 個實盤程式／配置／state／報表檔案 SHA-256 一致；原有 6 條 Gateway TCP 連線全部保留，結束後仍為 6 條，測試連線已退出。實盤 Git working tree 保持乾淨。
-- 沒有啟動開發版完整 Panel 或更換實盤程式；Tk 接線用隔離方法測試，尚未做完整 GUI 人工驗收。
+- 完整 Panel 建構子、Tk mainloop 與實際按鈕已使用 fake 查詢做自動化整合驗收：三帳戶並行、切換即讀快取、晚到結果隔離、連按刷新去重、首次失敗清空舊畫面、後續失敗保留快取、恢復成功、縮到 tray 繼續更新、退出時忽略晚到結果與 worker 清理皆通過。
+- GUI 驗收視窗保持隱藏；API、交易、配置寫入、subprocess 入口均封鎖，Gateway／值班／tray 外部服務以 fake 取代。Windows asyncio 所需的本機 ephemeral socket pair 保留，不連 Gateway。
+- 未更換實盤程式、未重啟目前 Panel。隱藏視窗整合測試不等同人工視覺驗收或實盤部署驗收。
 
 ## 重現方式
 

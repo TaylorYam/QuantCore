@@ -90,6 +90,14 @@ def test_panel_gui_three_column_refresh_failure_and_exit(fake_config, monkeypatc
                 "stock_holdings": [], "other_holdings": []}
 
     monkeypatch.setattr(module, "fetch_ib_portfolio", fetch)
+    assigned_icons = {}
+    original_iconbitmap = tk.Wm.iconbitmap
+    def track_iconbitmap(widget, bitmap=None, default=None):
+        result = original_iconbitmap(widget, bitmap, default)
+        if bitmap:
+            assigned_icons[widget] = bitmap
+        return result
+    monkeypatch.setattr(tk.Wm, "iconbitmap", track_iconbitmap)
     panel = panel_type()
     exceptions = []
     panel.report_callback_exception = lambda *args: exceptions.append(args[1])
@@ -120,6 +128,16 @@ def test_panel_gui_three_column_refresh_failure_and_exit(fake_config, monkeypatc
             assert time.monotonic() < deadline, f"GUI stalled at stage {stage[0]}"
             state = lambda name: panel.portfolio_queries.snapshot(name)
             if stage[0] == 0 and all(calls[n] == 1 for n in names):
+                # Child windows must receive the same branded icon as the root.
+                expected_icon = str(module.BASE_DIR / "quantcore.ico")
+                assert assigned_icons[panel] == expected_icon
+                panel.log_window._create()
+                assert assigned_icons[panel.log_window._win] == expected_icon
+                panel.log_window._win.withdraw()
+                for popup in panel.trades_popups.values():
+                    popup._create()
+                    assert assigned_icons[popup._win] == expected_icon
+                    popup._win.withdraw()
                 # All 3 columns exist and show "Updating"
                 assert "Updating" in status_text("Yvonne")
                 refresh.invoke()

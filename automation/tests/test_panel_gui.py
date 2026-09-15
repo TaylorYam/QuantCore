@@ -4,6 +4,7 @@ The window stays withdrawn. Network, subprocess, writes and trading entrances
 are blocked, while the real Panel constructor, buttons and refresh loop run.
 """
 import ctypes
+import gc
 import importlib.util
 from pathlib import Path
 import socket
@@ -66,6 +67,10 @@ def offline_panel_type(monkeypatch, module):
     """ControlPanel with monitors, tray and Telegram off; the window stays withdrawn."""
     import tkinter as tk
 
+    # Collect Tk roots left by earlier tests here, on the main thread. If a
+    # worker thread (e.g. Sync Pos compute) triggers that collection instead,
+    # each Tk Variable/Image __del__ waits ~1 s for their stopped mainloop.
+    gc.collect()
     panel_type = module.ControlPanel
     for name in ("_start_gateway_monitors", "_stop_gateway_monitors", "_refresh_gateway_status",
                  "_start_rosa_watch", "_start_ty_watch", "_start_morning_watch", "_start_tray",
@@ -228,11 +233,23 @@ def test_panel_gui_three_column_refresh_failure_and_exit(fake_config, monkeypatc
 
 
 def test_sync_pos_asks_for_account_and_previews_that_account(fake_config, monkeypatch):
-    """#35: the action-bar Sync Pos asks which account first. Each account's
-    plan is computed from its own ctx and previewed under its own name;
-    Cancel computes nothing. compute_sync_plan is faked — no IB, no orders."""
+    """#35: the action-bar Sync Pos asks which account first. The real
+    compute_sync_plan then sizes targets from that account's NAV and
+    allocations, and the preview shows them; Cancel computes nothing.
+    IB and signals are faked — no connection, no orders."""
     import tkinter as tk
+    import account_utils
+    import ib_fetcher
+    import signals
     import sync_position
+
+    # Distinct allocations (SR, SP500, SkewLS) and NAV per account, so a
+    # mix-up cannot hide — the shared fake config gives Taylor and Rosa the same.
+    allocs = {"Taylor": (0.0, 0.9, 1.0), "Rosa": (0.3, 0.7, 0.0), "Yvonne": (0.2, 0.6, 0.5)}
+    accounts = [dict(a, alloc_sr=allocs[a["name"]][0], alloc_sp500=allocs[a["name"]][1],
+                     alloc_skewls=allocs[a["name"]][2]) for a in fake_config[1]]
+    navs = {a["account"]: nav for a, nav in zip(accounts, (100_000, 200_000, 400_000))}
+    monkeypatch.setattr(account_utils, "load_accounts", lambda: [dict(a) for a in accounts])
 
     module = load_panel_module(monkeypatch)
     panel_type = offline_panel_type(monkeypatch, module)
@@ -244,16 +261,33 @@ def test_sync_pos_asks_for_account_and_previews_that_account(fake_config, monkey
     # A compute error would open a blocking messagebox — record it instead.
     monkeypatch.setattr(module.messagebox, "showerror",
                         lambda *args, **kwargs: exceptions.append(args))
-    computed = []
+    connected, sp500_accounts, plans = [], [], []
 
-    def compute(ctx, log_fn=None):
-        computed.append((ctx.name, ctx.account, ctx.port))
-        return sync_position.SyncPlan(
-            ctx=ctx, orders=[], nav=10000.0, sr_wgt={}, sp500_wgt={},
-            sr_date="FAKE", sp500_date="FAKE", prices={}, targets={},
-            current_pos={}, current_other_holdings=[])
+    def connect(ctx, *args, **kwargs):
+        connected.append((ctx.name, ctx.account, ctx.port))
+        return SimpleNamespace(isConnected=lambda: False, disconnect=lambda: None)
 
-    monkeypatch.setattr(sync_position, "compute_sync_plan", compute)
+    def sp500_weights(holdings, account_name):
+        sp500_accounts.append(account_name)
+        return {"AAPL": 1.0}, "FAKE"
+
+    monkeypatch.setattr(ib_fetcher, "connect", connect)
+    monkeypatch.setattr(ib_fetcher, "get_nav", lambda ib, ctx: navs[ctx.account])
+    monkeypatch.setattr(ib_fetcher, "get_positions", lambda ib, ctx: {})
+    monkeypatch.setattr(ib_fetcher, "get_prices", lambda ib, syms, ctx: {s: 100.0 for s in syms})
+    monkeypatch.setattr(signals, "get_sr_weights", lambda: ({"XLK": 1.0}, "FAKE"))
+    monkeypatch.setattr(signals, "get_skewls_weights", lambda: ({"SEF": 1.0}, "FAKE"))
+    monkeypatch.setattr(signals, "get_sp500_weights", sp500_weights)
+    show_preview = panel_type._show_sync_preview
+    monkeypatch.setattr(panel_type, "_show_sync_preview",
+                        lambda self, plan: (plans.append(plan), show_preview(self, plan)))
+    # Target shares = NAV × allocation × weight / $100 (XLK = SR, AAPL = SP500, SEF = SkewLS).
+    # Rosa has SkewLS off, so no SEF target at all.
+    expected_shares = {
+        "Taylor": {"XLK": 0, "AAPL": 900, "SEF": 1000},
+        "Rosa": {"XLK": 600, "AAPL": 1400},
+        "Yvonne": {"XLK": 800, "AAPL": 2400, "SEF": 2000},
+    }
     panel = panel_type()
     panel.report_callback_exception = lambda *args: exceptions.append(args[1])
     names = ("Taylor", "Rosa", "Yvonne")
@@ -292,11 +326,18 @@ def test_sync_pos_asks_for_account_and_previews_that_account(fake_config, monkey
                 name = names[stage[0] - 1]
                 preview = dialog(f"Sync Position — {name}")
                 if preview is not None:
-                    assert computed[-1][0] == name
-                    assert any(isinstance(w, tk.Label)
-                               and w.cget("text") == f"Sync Position — {name}"
-                               for w in descendants(preview))
-                    buttons(preview)["OK"].invoke()
+                    plan = plans[-1]
+                    sr, sp500, skewls = allocs[name]
+                    assert plan.ctx.name == name
+                    assert (plan.ctx.alloc_sr, plan.ctx.alloc_sp500, plan.ctx.alloc_skewls) == allocs[name]
+                    assert plan.ctx.leverage == round(sr + sp500 + skewls, 4)
+                    assert {s: t["shares"] for s, t in plan.targets.items()} == expected_shares[name]
+                    labels = [w.cget("text") for w in descendants(preview) if isinstance(w, tk.Label)]
+                    assert f"Sync Position — {name}" in labels
+                    assert f"SR ({sr:.0%} of NAV)" in labels
+                    assert f"SP500 Momentum ({sp500:.0%} of NAV)" in labels
+                    assert (f"Skew LS ({skewls:.0%} of NAV)" in labels) == (skewls > 0)
+                    buttons(preview)["Cancel"].invoke()
                     if stage[0] == len(names):
                         panel._quit_app()
                         stage[0] += 1
@@ -319,8 +360,10 @@ def test_sync_pos_asks_for_account_and_previews_that_account(fake_config, monkey
                 pass
     assert not exceptions, exceptions
     assert stage[0] == len(names) + 1
-    # One compute per pick, in order, each with that account's IB account and Gateway port.
-    assert computed == [(a["name"], a["account"], a["port"]) for a in fake_config[1]]
+    # One IB connection per pick, in order, to that account's IB account and Gateway port;
+    # the SP500 signal is asked for that account's own state.
+    assert connected == [(a["name"], a["account"], a["port"]) for a in accounts]
+    assert sp500_accounts == list(names)
 
 
 def test_monitor_alert_uses_shared_telegram_settings(fake_config, monkeypatch):

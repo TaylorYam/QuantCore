@@ -137,7 +137,6 @@ Leverage = alloc_sr + alloc_sp500 + alloc_skewls
 
 Tkinter GUI 儀表板（`QuantCore_Panel.vbs` 靜默啟動）：
 
-- **排程管理**：安裝 / 啟用 / 停用 Windows Task Scheduler 任務
 - **Dry Run 切換**：模擬模式 ↔ 實盤模式
 - **三帳戶管理**：Taylor / Rosa / Yvonne 各帳戶獨立配置
 - **手動觸發**：Tue Rebalance (SR+Skew) / Wed Rebalance (SP500+Skew) / Report / Data / Sync Pos
@@ -204,7 +203,7 @@ pip freeze > requirements.lock
 1. **回測驗證**：`python -m backtest.run_all --alloc 0 0.8 1.0 --quantstats`
 2. **更新資料**：`python automation/update_data.py`
 3. **Dry Run 測試**：確保 `dry_run: true`，雙擊 `QuantCore_Panel.vbs`
-4. **安裝排程**：控制面板 → Install All Tasks
+4. **安裝排程**：執行 `python automation/install_all_tasks.py` 並核准 UAC 視窗（8 個排程，定義在腳本開頭；會移除已退役的舊任務）
 5. **切換實盤**：確認無誤後切換為 LIVE
 
 ---

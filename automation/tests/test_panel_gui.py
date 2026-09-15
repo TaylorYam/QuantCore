@@ -19,6 +19,21 @@ import pytest
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows Panel GUI")
 
 
+@pytest.fixture(autouse=True, scope="module")
+def collect_tk_roots_after_file():
+    """Keep automatic GC off while this file's Tk roots come and go; collect
+    once at the end, on the main thread. Otherwise a finished test's root can
+    be collected inside a worker thread — each Tk Variable/Image __del__ then
+    waits ~1 s for the stopped mainloop — or right before the next root is
+    created, which broke Tk init on the Python 3.11/3.12 CI runners."""
+    gc.disable()
+    try:
+        yield
+    finally:
+        gc.enable()
+        gc.collect()
+
+
 def forbidden(*args, **kwargs):
     raise AssertionError("External operation attempted by offline GUI test")
 
@@ -67,10 +82,6 @@ def offline_panel_type(monkeypatch, module):
     """ControlPanel with monitors, tray and Telegram off; the window stays withdrawn."""
     import tkinter as tk
 
-    # Collect Tk roots left by earlier tests here, on the main thread. If a
-    # worker thread (e.g. Sync Pos compute) triggers that collection instead,
-    # each Tk Variable/Image __del__ waits ~1 s for their stopped mainloop.
-    gc.collect()
     panel_type = module.ControlPanel
     for name in ("_start_gateway_monitors", "_stop_gateway_monitors", "_refresh_gateway_status",
                  "_start_rosa_watch", "_start_ty_watch", "_start_morning_watch", "_start_tray",

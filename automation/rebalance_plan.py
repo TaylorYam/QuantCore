@@ -469,8 +469,53 @@ def strategy_drift_totals(rows: list[DeltaRow]) -> dict[str, float]:
     return totals
 
 
+def _red_lines(red: list[DeltaRow]) -> list[str]:
+    """🔴 區塊：該動卻沒送（足）單 / 手動分類衝突，逐檔列原因。"""
+    lines = [f"🔴 需要注意 {len(red)} 檔:"]
+    for r in red:
+        tgt = "—" if r.target is None else str(r.target)
+        lines.append(f"  {r.symbol} [{r.strategy}]: 應 {tgt} 實 {r.current}"
+                     f"（差 {r.delta:+d} 股, {r.drift_pct*100:.1f}% NAV）"
+                     f"— {r.reason}")
+    return lines
+
+
+def _aggregate_warn_lines(rows: list[DeltaRow],
+                          totals: dict[str, float]) -> list[str]:
+    """🟠 同策略累積偏離升級（單檔皆綠也要現形）。"""
+    agg_warn = {s: t for s, t in totals.items() if t >= DRIFT_AGG_WARN}
+    lines = []
+    for strat, tot in sorted(agg_warn.items(), key=lambda x: -x[1]):
+        grp = [r for r in rows
+               if r.strategy == strat
+               and r.category in ("within_threshold", "actionable",
+                                  "excluded_conflict")]
+        note = ("、單檔皆低於門檻 — 排程不會自動修，請 Sync Pos 或等 TRIGGER"
+                if all(r.category == "within_threshold" for r in grp) else "")
+        lines.append(f"🟠 {strat} 合計偏離 {tot*100:.1f}% NAV"
+                     f"（{len(grp)} 檔累積{note}）")
+    return lines
+
+
+def drift_alert_lines(rows: list[DeltaRow]) -> tuple[list[str], list[str]]:
+    """Telegram 調倉通知用的對帳摘要（#26）→ (alarms, advisories)。
+
+    alarms     — 🔴 需要注意、⚠️ 無報價跳過：沒送單也要發（凍結類 bug 的警鈴）
+    advisories — 🟠 同策略合計偏離：standing 狀態，只附在已經要發的訊息，
+                 不單獨觸發（2026-07-14 起 45 次排程有 15 天出現，會天天洗版）
+    🕐 已送單、🟡 門檻內、Σ、⚪ 手動、✅ 對齊 只留在 log（drift_report_lines）。
+    """
+    red = [r for r in rows if r.category in ("actionable", "excluded_conflict")]
+    no_price = [r for r in rows if r.category == "no_price"]
+    alarms = _red_lines(red) if red else []
+    if no_price:
+        alarms.append("⚠️ 無報價跳過: " + ", ".join(r.symbol for r in no_price))
+    advisories = _aggregate_warn_lines(rows, strategy_drift_totals(rows))
+    return alarms, advisories
+
+
 def drift_report_lines(rows: list[DeltaRow]) -> list[str]:
-    """對帳報表渲染（TG / panel log 共用；純文字，一行一項）。"""
+    """對帳報表渲染（rebalance log / preview 共用；純文字，一行一項）。"""
     red       = [r for r in rows if r.category in ("actionable",
                                                    "excluded_conflict")]
     submitted = [r for r in rows if r.category == "submitted"]
@@ -481,25 +526,12 @@ def drift_report_lines(rows: list[DeltaRow]) -> list[str]:
 
     lines = ["", "—— 理論 vs 實際 對帳 ——"]
     if red:
-        lines.append(f"🔴 需要注意 {len(red)} 檔:")
-        for r in red:
-            tgt = "—" if r.target is None else str(r.target)
-            lines.append(f"  {r.symbol} [{r.strategy}]: 應 {tgt} 實 {r.current}"
-                         f"（差 {r.delta:+d} 股, {r.drift_pct*100:.1f}% NAV）"
-                         f"— {r.reason}")
+        lines.extend(_red_lines(red))
 
-    # 同策略累積偏離升級（單檔皆綠也要現形）
     totals = strategy_drift_totals(rows)
-    agg_warn = {s: t for s, t in totals.items() if t >= DRIFT_AGG_WARN}
-    for strat, tot in sorted(agg_warn.items(), key=lambda x: -x[1]):
-        grp = [r for r in rows
-               if r.strategy == strat
-               and r.category in ("within_threshold", "actionable",
-                                  "excluded_conflict")]
-        note = ("、單檔皆低於門檻 — 排程不會自動修，請 Sync Pos 或等 TRIGGER"
-                if all(r.category == "within_threshold" for r in grp) else "")
-        lines.append(f"🟠 {strat} 合計偏離 {tot*100:.1f}% NAV"
-                     f"（{len(grp)} 檔累積{note}）")
+    agg_lines = _aggregate_warn_lines(rows, totals)
+    agg_warn = bool(agg_lines)
+    lines.extend(agg_lines)
 
     if submitted:
         lines.append(f"🕐 已送單待成交 {len(submitted)} 檔: "

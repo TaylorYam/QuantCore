@@ -244,8 +244,9 @@ def test_ty_heartbeat_online_skips_cold_connect():
     for w in ty_check_spec(env).workers():
         w()
     assert rec["cold"] == [], "心跳 ONLINE = 活體證明，不得冷連線（clientId 撞號）"
-    assert len(rec["notes"]) == 2, "成敗都要回報，每帳戶一封"
-    assert all("✅" in m for m in rec["notes"])
+    assert rec["notes"] == [], "成功不發 TG（#26），只寫 Output Log"
+    assert any("TY check Taylor → ok" in l for l in rec["logs"])
+    assert any("TY check Yvonne → ok" in l for l in rec["logs"])
 
 
 def test_ty_cold_connect_failure_sends_alert():
@@ -255,9 +256,18 @@ def test_ty_cold_connect_failure_sends_alert():
     for w in ty_check_spec(env).workers():
         w()
     assert rec["cold"] == ["Taylor"], "只有離線帳戶走冷連線"
-    alerts = [m for m in rec["notes"] if "✅" not in m]
-    assert len(alerts) == 1 and "Taylor" in alerts[0]
+    assert len(rec["notes"]) == 1 and "Taylor" in rec["notes"][0]
+    assert "✅" not in rec["notes"][0]
     assert any("TY check Taylor → ALERT" in l for l in rec["logs"])
+
+
+def test_ty_cold_connect_success_is_silent():
+    from monitor_engine import ty_check_spec
+    env, rec, _ = make_env(online={"Taylor": False})
+    for w in ty_check_spec(env, accounts=("Taylor",)).workers():
+        w()
+    assert rec["cold"] == ["Taylor"]
+    assert rec["notes"] == []
 
 
 def test_ty_monitor_not_ready_falls_back_to_cold_connect():

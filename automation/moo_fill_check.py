@@ -4,19 +4,24 @@ QuantCore — MOO 開盤成交回報
 開盤後 1 分鐘（09:31 ET = 21:31 TW）自動連線 IB 檢查 MOO 委託成交狀況，
 並透過 Telegram 發送回報。
 
+訊息（#26）：
+  - 每筆一行，含成交股數與成交價；三帳戶合成一則（notify.Digest）
+  - 當天沒有 MOO 單 → 不發
+  - IB 連線失敗 / 例外 → ❌ 照發
+
 排程：
-  週二 21:31 → python moo_fill_check.py   (SR 調倉回報)
-  週三 21:31 → python moo_fill_check.py   (SP500 調倉回報)
+  平日 21:31 → python moo_fill_check.py --account all
 
 也可手動執行：
-  python moo_fill_check.py
+  python moo_fill_check.py --account Taylor
 """
 
-import json, logging, sys, urllib.request, urllib.parse
+import html
+import logging
+import sys
+from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
-from datetime import date, datetime
-
-import numpy as np
 
 # ── 路徑設定 ──────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
@@ -27,11 +32,8 @@ LOG_DIR.mkdir(exist_ok=True)
 from log_setup import setup_logging, quiet_ib_console
 log = logging.getLogger(__name__)
 
-from ib_insync import util
-
-
 # ── Telegram 通知（統一由 notify.py 提供）──────────────────────────────────
-from notify import tg_send as _tg
+from notify import Digest
 
 # ── AccountCtx（S6：ctx 為必要參數）────────────────────────────────────
 from account_ctx import AccountCtx
@@ -68,14 +70,160 @@ def _classify_direction(action: str, post_position: float,
     return "🟢", "BUY  "
 
 
-def main(ctx: AccountCtx):
-    """MOO 成交回報。所有設定從 ctx 取得。"""
-    account    = ctx.account
-    acct_name  = ctx.name
-    tg_token   = ctx.tg_token
-    tg_chat_id = ctx.tg_chat_id
+# ── 成交摘要（純函式，可離線測試）─────────────────────────────────────────
 
-    start_ts = datetime.now()
+@dataclass(frozen=True)
+class MooFill:
+    """一筆 MOO 委託的成交摘要。"""
+    symbol: str
+    action: str             # 'BUY' / 'SELL'
+    qty: int                # 委託股數；0 = 未知（completed order 不帶數量）
+    filled: int
+    avg_price: float        # 0 = 沒有成交價
+    status: str
+    post_position: float | None = None     # None = 部位查詢失敗，不判斷 SHORT/COVER
+
+    @property
+    def complete(self) -> bool:
+        return self.status == 'Filled' or (self.qty > 0 and self.filled >= self.qty)
+
+
+_PENDING_STATUSES = {'ApiPending', 'PendingSubmit', 'PreSubmitted',
+                     'Submitted', 'PendingCancel'}
+
+
+def _as_int(value) -> int:
+    """IB 數量欄位 → int；NaN / UNSET_DOUBLE（≈1.8e308）視為 0（未知）。"""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if v != v or abs(v) > 1e300:
+        return 0
+    return int(round(v))
+
+
+def _aggregate(fills) -> tuple[int, float]:
+    """多筆成交 → (總股數, 加權平均價)。"""
+    shares = sum(float(f.execution.shares) for f in fills)
+    notional = sum(float(f.execution.shares) * float(f.execution.price) for f in fills)
+    return int(round(shares)), (notional / shares if shares else 0.0)
+
+
+def _post(positions_after: dict | None, sym: str) -> float | None:
+    return None if positions_after is None else positions_after.get(sym, 0.0)
+
+
+def summarize_moo_trades(trades, fills, positions_after: dict | None) -> list[MooFill]:
+    """MOO trades 對上成交紀錄 → 每筆委託一列。
+
+    MOO 單是 21:00 由 rebalance 的 client 送出、開盤成交；21:31 這支 client
+    看到的是 completed order — ib_insync 0.9.86 `wrapper.completedOrder` 只帶
+    status，orderStatus.filled / avgFillPrice / order.totalQuantity 都是 0
+    （#26 之前的回報一律 0/0sh）。股數與成交價改從 ib.fills()（executions）
+    依 permId 對應；permId 缺失時才退而用同 symbol + 同方向、尚未認領的成交。
+
+    positions_after=None 表示部位查詢失敗（不判斷 SHORT/COVER）。
+    """
+    claimed: set[str] = set()
+    rows: list[MooFill] = []
+    for t in trades:
+        order, status = t.order, t.orderStatus
+        sym = t.contract.symbol
+        side = 'BOT' if order.action == 'BUY' else 'SLD'
+        perm = getattr(order, 'permId', 0) or 0
+
+        if perm:
+            execs = [f for f in fills
+                     if f.execution.permId == perm and f.execution.execId not in claimed]
+        else:
+            execs = [f for f in fills
+                     if f.contract.symbol == sym and f.execution.side == side
+                     and f.execution.execId not in claimed]
+
+        if execs:
+            claimed.update(f.execution.execId for f in execs)
+            filled, avg = _aggregate(execs)
+        elif getattr(t, 'fills', None):
+            filled, avg = _aggregate(t.fills)      # 同一 client 送的單
+        else:
+            filled = _as_int(status.filled)
+            avg = float(status.avgFillPrice or 0.0)
+
+        rows.append(MooFill(
+            symbol=sym,
+            action=order.action,
+            qty=_as_int(order.totalQuantity),
+            filled=filled,
+            avg_price=avg,
+            status=status.status,
+            post_position=_post(positions_after, sym),
+        ))
+    return rows
+
+
+def summarize_fills(fills, positions_after: dict | None) -> list[MooFill]:
+    """trades 已清空時的備援：直接用成交紀錄，同 symbol + 同方向合併一列。"""
+    groups: dict[tuple[str, str], list] = {}
+    for f in fills:
+        groups.setdefault((f.contract.symbol, f.execution.side), []).append(f)
+    rows = []
+    for (sym, side), execs in groups.items():
+        filled, avg = _aggregate(execs)
+        rows.append(MooFill(
+            symbol=sym,
+            action='BUY' if side == 'BOT' else 'SELL',
+            qty=filled,
+            filled=filled,
+            avg_price=avg,
+            status='Filled',
+            post_position=_post(positions_after, sym),
+        ))
+    return rows
+
+
+def format_fill_line(row: MooFill) -> str:
+    """一筆委託一行，例：`🟢 BUY 55 ERY @ 12.41`。"""
+    if row.post_position is None:
+        icon, tag = ("🟢", "BUY") if row.action == 'BUY' else ("🔴", "SELL")
+    else:
+        icon, tag = _classify_direction(row.action, row.post_position, row.filled)
+    head = f"{icon} {tag.strip()}"
+    price = f" @ {row.avg_price:.2f}" if row.avg_price > 0 else ""
+    if row.complete:
+        shares = row.filled or row.qty
+        qty = f" {shares}" if shares else ""
+        return f"{head}{qty} {row.symbol}{price}"
+    of = f"/{row.qty}" if row.qty else ""
+    if row.filled > 0:
+        return f"{head} {row.filled}{of} {row.symbol}{price} ⚠️ 部分成交 [{row.status}]"
+    mark = "⏳ 未成交" if row.status in _PENDING_STATUSES else "⚠️ 未成交"
+    qty = f" 0{of}" if row.qty else ""
+    return f"{head}{qty} {row.symbol} {mark} [{row.status}]"
+
+
+def moo_section(rows: list[MooFill], *,
+                from_executions: bool = False) -> tuple[str, list[str], str] | None:
+    """單一帳戶的 Digest 段落 → (headline, body, level)；沒有委託回 None。"""
+    if not rows:
+        return None
+    body = [format_fill_line(r) for r in rows]
+    if from_executions:
+        return f"{len(rows)} 筆（從成交紀錄回溯）", body, "ok"
+    done = sum(1 for r in rows if r.complete)
+    return f"{done}/{len(rows)}", body, ("ok" if done == len(rows) else "warn")
+
+
+# ── 主流程 ────────────────────────────────────────────────────────────────────
+
+def main(ctx: AccountCtx, digest: Digest | None = None):
+    """MOO 成交回報。結果加進 digest（由 caller 合併發送）；
+    沒給 digest 時自己建一則並在結束時發送。"""
+    own_digest = digest is None
+    if own_digest:
+        digest = Digest(f"MOO 成交 {date.today()}", icon="✅")
+    dest = {"token": ctx.tg_token, "chat_id": ctx.tg_chat_id}
+
     log.info(f"{'='*60}")
     log.info(f"  MOO Fill Check  {date.today()}")
     log.info(f"{'='*60}")
@@ -84,202 +232,57 @@ def main(ctx: AccountCtx):
         ib = ib_fetcher.connect(ctx)
     except Exception as e:
         log.error(f"IB connect failed: {e}")
-        _tg(f"<b>MOO Fill Check ❌</b>\n{date.today()}\nIB 連線失敗: {e}",
-            token=tg_token, chat_id=tg_chat_id)
+        digest.add(ctx.name, "❌ IB 連線失敗", [html.escape(str(e)[:300])],
+                   "error", **dest)
+        if own_digest:
+            digest.send()
         return
 
     try:
-        # 取得今日所有已完成和進行中的委託
-        trades = ib.trades()
-        today_str = date.today().strftime('%Y%m%d')
+        # 今日 MOO 委託（MKT + OPG）；completed order 也在 ib.trades() 裡
+        moo_trades = [t for t in ib.trades()
+                      if t.order.orderType == 'MKT' and t.order.tif == 'OPG']
+        fills = ib.fills()
 
-        # 篩選今日 MOO 委託 (orderType=MKT + tif=OPG)
-        moo_trades = []
-        for t in trades:
-            o = t.order
-            # MOO = MKT + OPG
-            if o.orderType == 'MKT' and o.tif == 'OPG':
-                moo_trades.append(t)
-
-        if not moo_trades:
-            # 也檢查 executions 以防 trades 已清
-            log.info("No active MOO trades found, checking executions...")
-            fills = ib.fills()
-            moo_fills = [f for f in fills if f.execution.orderId > 0]
-            # 用 executions 組報告
-            if moo_fills:
-                _report_from_fills(moo_fills, tg_token=tg_token, tg_chat_id=tg_chat_id)
-            else:
-                msg = (f"<b>MOO Fill Check</b>\n"
-                       f"{date.today()}\n\n"
-                       f"今日無 MOO 委託紀錄")
-                log.info("No MOO orders found today")
-                _tg(msg, token=tg_token, chat_id=tg_chat_id)
-            return
-
-        # 抓 post-fill 部位（用於判斷 SHORT / COVER 方向）
+        # post-fill 部位（判斷 SHORT / COVER 方向）
         try:
             positions_after = {p.contract.symbol: float(p.position)
-                                for p in ib.positions(account)
-                                if p.contract.secType == 'STK'}
+                               for p in ib.positions(ctx.account)
+                               if p.contract.secType == 'STK'}
         except Exception as e:
             log.warning(f"Failed to fetch post-fill positions: {e}")
-            positions_after = {}
+            positions_after = None
 
-        # 組裝報告
-        acct_tag = f"[{acct_name}] " if acct_name else ""
-        lines = [
-            f"<b>{acct_tag}MOO 開盤成交回報</b>",
-            f"Date: {date.today()}",
-            f"Check Time: {datetime.now().strftime('%H:%M:%S')} (TW)",
-            f"委託數: {len(moo_trades)} 筆",
-            "",
-        ]
+        if moo_trades:
+            rows = summarize_moo_trades(moo_trades, fills, positions_after)
+            section = moo_section(rows)
+        else:
+            # trades 已清時用 executions 回溯
+            log.info("No active MOO trades found, checking executions...")
+            rows = summarize_fills([f for f in fills if f.execution.orderId > 0],
+                                   positions_after)
+            section = moo_section(rows, from_executions=True)
+            if not rows:
+                log.info("No MOO orders found today")
 
-        all_filled = True
-        total_buy_val   = 0.0   # 含 BUY + COVER (現金流出)
-        total_sell_val  = 0.0   # 含 SELL + SHORT (現金流入)
-        total_short_val = 0.0   # 純 SHORT 開倉（單獨統計，方便看 short notional）
-        total_cover_val = 0.0   # 純 COVER 平倉
-
-        for t in moo_trades:
-            sym    = t.contract.symbol
-            action = t.order.action
-            qty    = int(t.order.totalQuantity)
-            status = t.orderStatus.status
-            filled = int(t.orderStatus.filled)
-            avg_px = t.orderStatus.avgFillPrice
-            post_pos = positions_after.get(sym, 0.0)
-
-            if filled < qty:
-                all_filled = False
-
-            fill_val = filled * avg_px if avg_px else 0
-
-            # 狀態 icon（成交完成度）
-            if status == 'Filled':
-                stat_icon = "✅"
-            elif status == 'Cancelled':
-                stat_icon = "🚫"
-            elif filled > 0:
-                stat_icon = "⚠️"
-            else:
-                stat_icon = "⏳"
-
-            # 方向 icon + tag（含 SHORT / COVER 辨識）
-            dir_icon, action_tag = _classify_direction(action, post_pos, filled)
-
-            # 累計現金流
-            if action == 'BUY':
-                total_buy_val += fill_val
-                if action_tag.strip() == 'COVER':
-                    total_cover_val += fill_val
-            else:  # SELL
-                total_sell_val += fill_val
-                if action_tag.strip() == 'SHORT':
-                    total_short_val += fill_val
-
-            px_str = f"@ ${avg_px:.2f}" if avg_px and avg_px > 0 else ""
-            val_str = f"  ~${fill_val:,.0f}" if fill_val > 0 else ""
-            # post-fill position 後綴 (短倉用負號顯示)
-            if abs(post_pos) > 0.5:
-                pos_suffix = f"  → {int(post_pos):+d}sh"
-            else:
-                pos_suffix = "  → flat"
-
-            lines.append(
-                f"  {stat_icon} {dir_icon} {action_tag} {filled}/{qty}sh"
-                f"  {sym}  {px_str}{val_str}{pos_suffix}"
-                f"  [{status}]"
-            )
-            log.info(f"  {action_tag.strip()} {sym}: {filled}/{qty}sh "
-                     f"@ ${avg_px:.2f}  post={post_pos:+.0f}  [{status}]")
-
-        # 彙總
-        lines.append("")
-        overall = "✅ 全部成交" if all_filled else "⚠️ 有未完成委託"
-        lines.append(f"<b>{overall}</b>")
-        if total_sell_val > 0:
-            sell_label = "賣出金額"
-            if total_short_val > 0:
-                sell_label += f"（含開空 ${total_short_val:,.0f}）"
-            lines.append(f"  {sell_label}: ${total_sell_val:,.0f}")
-        if total_buy_val > 0:
-            buy_label = "買入金額"
-            if total_cover_val > 0:
-                buy_label += f"（含回補 ${total_cover_val:,.0f}）"
-            lines.append(f"  {buy_label}: ${total_buy_val:,.0f}")
-        net = total_sell_val - total_buy_val
-        if total_sell_val > 0 or total_buy_val > 0:
-            sign = "+" if net >= 0 else ""
-            lines.append(f"  淨現金流: {sign}${net:,.0f}")
-
-        # 帳戶 NAV（S8：走 ib_fetcher）
-        try:
-            nav = ib_fetcher.get_nav(ib, ctx)
-            lines.append(f"\n  NAV: <b>${nav:,.2f}</b>")
-        except Exception:
-            pass
-
-        elapsed = (datetime.now() - start_ts).seconds
-        lines.append(f"\nElapsed: {elapsed}s")
-
-        report = "\n".join(lines)
-        log.info(f"\n{report}")
-        _tg(report, token=tg_token, chat_id=tg_chat_id)
+        for r in rows:
+            post = "?" if r.post_position is None else f"{r.post_position:+.0f}"
+            log.info(f"  {r.action} {r.symbol}: {r.filled}/{r.qty}sh "
+                     f"@ ${r.avg_price:.2f}  post={post}  [{r.status}]")
+        if section is not None:
+            digest.add(ctx.name, *section, **dest)
+            log.info(f"  {ctx.name}: {section[0]}")
 
     except Exception as e:
         log.error(f"ERROR: {e}", exc_info=True)
-        _tg(f"<b>MOO Fill Check ❌</b>\n{date.today()}\nError: {str(e)[:300]}",
-            token=tg_token, chat_id=tg_chat_id)
+        digest.add(ctx.name, "❌ 成交回報失敗", [html.escape(str(e)[:300])],
+                   "error", **dest)
 
     finally:
         ib.disconnect()
         log.info("Disconnected from IB Gateway.")
-
-
-def _report_from_fills(fills, tg_token: str, tg_chat_id: str):
-    """從 ib.fills() 組裝回報（當 trades 已清空時的備援）"""
-    lines = [
-        f"<b>MOO 開盤成交回報</b>",
-        f"Date: {date.today()}",
-        f"Check Time: {datetime.now().strftime('%H:%M:%S')} (TW)",
-        f"（從成交紀錄回溯）",
-        "",
-    ]
-    total_buy_val = 0.0
-    total_sell_val = 0.0
-
-    for f in fills:
-        ex = f.execution
-        sym    = f.contract.symbol
-        action = ex.side
-        shares = int(ex.shares)
-        avg_px = ex.avgPrice
-        fill_val = shares * avg_px
-
-        if action == 'BOT':
-            action_tag = "🟢 BUY "
-            total_buy_val += fill_val
-        else:
-            action_tag = "🔴 SELL"
-            total_sell_val += fill_val
-
-        lines.append(
-            f"  ✅ {action_tag} {shares}sh  {sym}"
-            f"  @ ${avg_px:.2f}  ~${fill_val:,.0f}"
-        )
-        log.info(f"  {action} {sym}: {shares}sh @ ${avg_px:.2f}")
-
-    lines.append("")
-    if total_sell_val > 0:
-        lines.append(f"  賣出金額: ${total_sell_val:,.0f}")
-    if total_buy_val > 0:
-        lines.append(f"  買入金額: ${total_buy_val:,.0f}")
-
-    report = "\n".join(lines)
-    log.info(f"\n{report}")
-    _tg(report, token=tg_token, chat_id=tg_chat_id)
+        if own_digest:
+            digest.send()
 
 
 if __name__ == '__main__':
@@ -299,15 +302,19 @@ if __name__ == '__main__':
     else:
         names = [args.account]
 
+    digest = Digest(f"MOO 成交 {date.today()}", icon="✅")
     failures = []
-    for name in names:
-        try:
-            ctx = AccountCtx.from_name(name, ROLE_MOO_CHECK)
-            log.info(f">>> Account: {ctx.name} ({ctx.account}) port={ctx.port} <<<")
-            main(ctx=ctx)
-        except Exception as e:
-            failures.append((name, str(e)))
-            log.error(f"Account {name} failed (continuing to next): {e}")
+    try:
+        for name in names:
+            try:
+                ctx = AccountCtx.from_name(name, ROLE_MOO_CHECK)
+                log.info(f">>> Account: {ctx.name} ({ctx.account}) port={ctx.port} <<<")
+                main(ctx=ctx, digest=digest)
+            except Exception as e:
+                failures.append((name, str(e)))
+                log.error(f"Account {name} failed (continuing to next): {e}")
+    finally:
+        digest.send()
 
     if failures:
         log.error(f"MOO fill check finished with {len(failures)} failure(s): "

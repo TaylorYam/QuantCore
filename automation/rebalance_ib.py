@@ -55,8 +55,8 @@ log = logging.getLogger(__name__)
 from ib_insync import IB, Stock, MarketOrder, LimitOrder, Order, util
 
 
-# ── Telegram 通知（統一由 notify.py 提供）──────────────────────────────────
-from notify import tg_send as _tg
+# ── Telegram 通知（統一由 notify.py 提供；三帳戶合併一則，#26）──────────
+from notify import Digest, order_group_lines
 
 # ── AccountCtx（S6：ctx 為所有函式的必要參數，模組不再有 mutable globals）
 from account_ctx import AccountCtx
@@ -200,139 +200,115 @@ def compute_skewls_weights(ctx: AccountCtx) -> tuple[dict, str]:
 #    ADR-0008 內部不變），上方 import 已 re-export。
 
 
-# ── Telegram 報告組合 ─────────────────────────────────────────────────────────
+# ── Telegram 調倉通知（#26）──────────────────────────────────────────────────
 
-def _send_tg_report(nav, order_list, placed, trades, fill_results,
-                    pos_detail, prices, sr_wgt, sp500_wgt,
-                    sr_signal_date, sp500_signal_date, elapsed, error_msg,
-                    ctx: AccountCtx,
-                    skewls_wgt: dict | None = None,
-                    skewls_signal_date: str = "N/A",
-                    skewls_triggered: bool | None = None,
-                    skewls_delta: float | None = None,
-                    drift_lines: list[str] | None = None):
-    dry_run     = ctx.dry_run
-    acct_name   = ctx.name
-    alloc_sr    = ctx.alloc_sr
-    alloc_sp500 = ctx.alloc_sp500
-    alloc_skewls = ctx.alloc_skewls
-    order_type  = ctx.order_type
-    leverage    = ctx.leverage
-    tg_token    = ctx.tg_token
-    tg_chat_id  = ctx.tg_chat_id
+def rebalance_tg_section(placed: list[dict], fill_results: list[dict], *,
+                         order_type: str, dry_run: bool,
+                         drift_alarms: list[str] = (),
+                         drift_advisories: list[str] = (),
+                         error_msg: str | None = None
+                         ) -> tuple[str, list[str], str] | None:
+    """單一帳戶的 21:00 調倉段落 → (headline, body, level)；不需要發回 None。
 
-    dry_tag = "[DRY RUN] " if dry_run else ""
-    acct_tag = f"[{acct_name}] " if acct_name else ""
-    status  = "❌ ERROR" if error_msg else "✅ Done"
-    lines   = [
-        f"<b>{acct_tag}{dry_tag}QuantCore Combo — {status}</b>",
-        f"Date: {date.today()}",
-        f"SR Signal: {sr_signal_date}  |  SP500 Signal: {sp500_signal_date}",
-    ]
-    if alloc_skewls > 0:
-        lines.append(f"SkewLS Signal: {skewls_signal_date}")
+    只列送出的單（BUY / SELL 各一行）。發送條件：有送單、對帳警報（🔴 該動
+    卻沒送單 / ⚠️ 無報價 / 對帳段失敗）、或錯誤。🟠 合計偏離只附在已經要發
+    的段落。MOO 送出時還沒成交，成交由 21:31 moo_fill_check 回報；非 MOO
+    （手動 --order-type MKT/LMT）則把沒成交完的單列出來。
+    """
+    unfilled = ([f for f in fill_results if f.get('status') != 'Filled']
+                if order_type != 'MOO' else [])
+    if not placed and not drift_alarms and not error_msg:
+        return None
 
-    alloc_line = (f"Alloc: SR {alloc_sr:.0%} + SP500 {alloc_sp500:.0%}"
-                  + (f" + SkewLS {alloc_skewls:.0%}" if alloc_skewls > 0 else "")
-                  + f" = {leverage:.0%}")
-    lines.append(alloc_line)
-    lines.append(f"Order: {order_type}  |  Leverage: {leverage}x")
-
-    # NAV + 槓桿部位規模
-    if nav is not None:
-        pos_size = nav * leverage
-        lines.append(f"NAV: <b>${nav:,.2f}</b>  →  部位 <b>${pos_size:,.0f}</b> ({leverage}x)")
-
-    # SR 目標
-    if sr_wgt:
-        lines.append(f"\n<b>SR 目標 ({alloc_sr:.0%}):</b>")
-        for sym, w in sorted(sr_wgt.items(), key=lambda x: -x[1]):
-            lines.append(f"  {sym}: {w*100:.0f}%  (→ {alloc_sr*w*100:.0f}% of NAV)")
-
-    # SP500 目標
-    if sp500_wgt:
-        lines.append(f"\n<b>SP500 目標 ({alloc_sp500:.0%}):</b>")
-        for sym, w in sorted(sp500_wgt.items(), key=lambda x: -x[1]):
-            lines.append(f"  {sym}: {w*100:.1f}%  (→ {alloc_sp500*w*100:.1f}% of NAV)")
-
-    # Skew LS 目標
-    if skewls_wgt and alloc_skewls > 0:
-        gate_tag = ""
-        if skewls_triggered is not None:
-            mark = "✅ 觸發" if skewls_triggered else "⏸ 維持"
-            gate_tag = f"  [threshold {mark}"
-            if skewls_delta is not None:
-                gate_tag += f", Δ={skewls_delta:.3f}"
-            gate_tag += "]"
-        lines.append(f"\n<b>SkewLS 目標 ({alloc_skewls:.0%}){gate_tag}:</b>")
-        for sym, w in sorted(skewls_wgt.items(), key=lambda x: -abs(x[1])):
-            tag = "SHORT" if w < 0 else "LONG "
-            lines.append(f"  {tag} {sym}: {w*100:+.1f}%  "
-                         f"(→ {alloc_skewls*w*100:+.1f}% of NAV)")
-
-    # 委託結果
-    if not placed:
-        lines.append("\nNo orders (already on target)")
-    elif dry_run:
-        lines.append(f"\n<b>委託 DRY RUN ({len(placed)} 筆):</b>")
-        for o in placed:
-            est_px  = o.get('lmt_price', 0)
-            est_val = int(o['qty']) * est_px
-            action_tag = "🔴 SELL" if o['action'] == 'SELL' else "🟢 BUY "
-            strat = f"[{o.get('strategy', '')}]"
-            lines.append(
-                f"  {action_tag} {int(o['qty']):4d}sh {o['symbol']}"
-                f"  ~${est_px:.2f}/sh  ~${est_val:,.0f}  {strat}"
-            )
+    dry = " [DRY RUN]" if dry_run else ""
+    if placed:
+        headline = f"送出 {len(placed)} 筆 {order_type}{dry}"
+        if error_msg:
+            headline += "，❌ 之後失敗"
     else:
-        lines.append(f"\n<b>委託結果 ({len(fill_results)} 筆):</b>")
-        for f in fill_results:
-            icon    = "✅" if f['status'] == 'Filled' else "⚠️"
-            filled_val = f['filled'] * f['avg_price']
-            px_str  = f"@ ${f['avg_price']:.2f}  ~${filled_val:,.0f}" if f['filled'] > 0 else "未成交"
-            action_tag = "🔴 SELL" if f['action'] == 'SELL' else "🟢 BUY "
-            lines.append(
-                f"  {icon} {action_tag} {f['filled']}/{f['qty']}sh"
-                f"  {f['symbol']}  {px_str}  [{f['status']}]"
-            )
+        headline = f"❌ 失敗{dry}" if error_msg else f"沒有送單{dry}"
 
-    # 目前持倉 + 損益
-    if pos_detail and prices:
-        lines.append("\n<b>目前持倉:</b>")
-        total_upnl = 0.0
-        for p in sorted(pos_detail, key=lambda x: -abs(x.position * prices.get(x.contract.symbol, 0))):
-            sym      = p.contract.symbol
-            pos      = int(p.position)
-            avg_cost = p.avgCost
-            mkt_px   = prices.get(sym, 0)
-            upnl     = pos * mkt_px - pos * avg_cost
-            pct      = upnl / (pos * avg_cost) * 100 if avg_cost else 0
-            total_upnl += upnl
-            sign     = "+" if upnl >= 0 else ""
-            lines.append(
-                f"  {sym}: {pos}sh"
-                f"  均${avg_cost:.2f}→現${mkt_px:.2f}"
-                f"  {sign}{upnl:.2f}({sign}{pct:.1f}%)"
-            )
-        sign = "+" if total_upnl >= 0 else ""
-        lines.append(f"  <b>未實現損益: {sign}${total_upnl:,.2f}</b>")
-
-    # 理論 vs 實際對帳（Step 9b；每次都附完整分類摘要）
-    if drift_lines:
-        lines.extend(html_mod.escape(ln) for ln in drift_lines)
+    body = order_group_lines(placed)
+    body += [f"⚠️ {f['symbol']} 成交 {f['filled']}/{f['qty']} [{f['status']}]"
+             for f in unfilled]
+    body += [html_mod.escape(ln) for ln in drift_alarms]
+    body += [html_mod.escape(ln) for ln in drift_advisories]
+    if error_msg:
+        body.append(html_mod.escape(str(error_msg)[:300]))   # headline 已帶 ❌
 
     if error_msg:
-        lines.append(f"\n<b>Error:</b> {html_mod.escape(str(error_msg)[:300])}")
+        level = "error"
+    elif drift_alarms or unfilled:
+        level = "warn"
+    else:
+        level = "ok"
+    return headline, body, level
 
-    lines.append(f"\nElapsed: {elapsed}s")
-    _tg("\n".join(lines), token=tg_token, chat_id=tg_chat_id)
+
+def _add_rebalance_section(digest: Digest, ctx: AccountCtx, **kwargs) -> None:
+    """組段落加進 digest。在 finally 內呼叫 — 自身絕不拋例外，避免蓋掉原錯誤。"""
+    try:
+        section = rebalance_tg_section(order_type=ctx.order_type,
+                                       dry_run=ctx.dry_run, **kwargs)
+        if section is not None:
+            digest.add(ctx.name, *section,
+                       token=ctx.tg_token, chat_id=ctx.tg_chat_id)
+    except Exception as e:
+        log.warning(f"Telegram section build failed: {e}")
+
+
+def _tg_dest(account_name: str) -> dict:
+    """帳戶的 telegram 目的地（ctx 建不起來時用）。帳戶設定讀不到時退回
+    config.json 的設定，錯誤訊息才不會因為帳戶名打錯而發不出去。"""
+    from account_utils import get_account_config, load_base_config
+    for load in (lambda: get_account_config(account_name), load_base_config):
+        try:
+            cfg = load()
+        except Exception:
+            continue
+        return {"token": cfg.get('telegram_token', ''),
+                "chat_id": cfg.get('telegram_chat_id', '')}
+    return {"token": '', "chat_id": ''}
+
+
+def run_accounts(names: list[str], mode: str, order_type: str | None = None) -> None:
+    """依序調倉多個帳戶，Telegram 合併一則（#26）。
+
+    某帳戶失敗時沿用既有行為：例外往外拋、後面的帳戶不跑 — 但訊息要標出
+    失敗的帳戶和沒跑到的帳戶（08-24 / 08-26 / 09-07 Taylor 連線失敗時，
+    Rosa / Yvonne 靜默沒調倉）。
+    """
+    from dataclasses import replace as _replace
+    from account_utils import ROLE_REBALANCE
+
+    digest = Digest(f"調倉 {date.today()}", icon="📤")
+    started: list[str] = []
+    try:
+        for name in names:
+            started.append(name)
+            ctx = AccountCtx.from_name(name, ROLE_REBALANCE)
+            if order_type:
+                ctx = _replace(ctx, order_type=order_type)
+            log.info(f">>> Account: {ctx.name} ({ctx.account}) port={ctx.port} <<<")
+            main(mode=mode, ctx=ctx, digest=digest)
+    except BaseException as e:
+        failed = started[-1] if started else None
+        if failed and not digest.has(failed):
+            digest.add(failed, "❌ 失敗", [html_mod.escape(str(e)[:300])],
+                       "error", **_tg_dest(failed))
+        for name in names[len(started):]:
+            digest.add(name, "⚠️ 未執行", ["前一帳戶失敗，本輪中止"],
+                       "warn", **_tg_dest(name))
+        raise
+    finally:
+        digest.send()
 
 
 # ── SR ETF 清單 — R1.3：單一來源在 ib_fetcher.SR_ETFS（已 re-export）
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
-def main(mode: str, ctx: AccountCtx):
+def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
     """
     mode = "sr"     → 只調 Sector Rotation（週二）；SP500 + SkewLS 維持
     mode = "sp500"  → 只調 SP500 Momentum（週三）；SR + SkewLS 維持
@@ -347,7 +323,12 @@ def main(mode: str, ctx: AccountCtx):
     確保 SR/SP500 rebal 不會誤砍 Skew LS 倉位（pure-function combine）。
 
     ctx 為 AccountCtx，從 __main__ block 建立並傳入。
+    Telegram 段落加進 digest（__main__ 三帳戶合併一則發送）；沒給 digest
+    時自己建一則並在結束時發送。
     """
+    own_digest = digest is None
+    if own_digest:
+        digest = Digest(f"調倉 {date.today()}", icon="📤")
     dry_run     = ctx.dry_run
     order_type  = ctx.order_type
     alloc_sr    = ctx.alloc_sr
@@ -384,7 +365,8 @@ def main(mode: str, ctx: AccountCtx):
     sr_signal_date    = "N/A"
     sp500_signal_date = "N/A"
     skewls_signal_date = "N/A"
-    drift_lines  = None            # Step 9b 理論 vs 實際對帳（TG 報告附段）
+    drift_alarms: list[str] = []      # Step 9b 對帳警報（TG 必發）
+    drift_advisories: list[str] = []  # Step 9b 🟠 合計偏離（TG 附帶）
 
     log.info(f"{'='*60}")
     log.info(f"  QuantCore Rebalance  {date.today()}  [{mode_label}]")
@@ -410,11 +392,10 @@ def main(mode: str, ctx: AccountCtx):
     except Exception as e:
         error_msg = str(e)
         log.error(f"ERROR in signal / IB connect: {e}", exc_info=True)
-        elapsed = (datetime.now() - start_ts).seconds
-        _send_tg_report(nav, [], placed, trades, fill_results,
-                        pos_detail, prices, sr_wgt, sp500_wgt,
-                        sr_signal_date, sp500_signal_date, elapsed, error_msg,
-                        ctx=ctx)
+        _add_rebalance_section(digest, ctx, placed=placed,
+                               fill_results=fill_results, error_msg=error_msg)
+        if own_digest:
+            digest.send()
         raise
 
     try:
@@ -554,9 +535,10 @@ def main(mode: str, ctx: AccountCtx):
             for ln in drift_lines:
                 if ln:
                     log.info(f"  {ln}")
+            drift_alarms, drift_advisories = plan.drift_alert_lines(drift_rows)
         except Exception as e:
             log.error(f"  drift verification failed: {e}", exc_info=True)
-            drift_lines = ["", f"⚠️ 對帳段失敗: {e}"]
+            drift_alarms = [f"⚠️ 對帳段失敗: {e}"]
             # 不 raise — 對帳失敗不該阻擋交易完成回報
 
         # ── 10. Skew LS state 更新（成功觸發 + 有下單時）────────────────
@@ -603,27 +585,17 @@ def main(mode: str, ctx: AccountCtx):
             log.info("Trade log written -> trade_log.xlsx")
 
         elapsed = (datetime.now() - start_ts).seconds
-        _send_tg_report(
-            nav=nav,
-            order_list=order_list if 'order_list' in dir() else [],
+        log.info(f"Elapsed: {elapsed}s")
+        _add_rebalance_section(
+            digest, ctx,
             placed=placed,
-            trades=trades,
             fill_results=fill_results,
-            pos_detail=pos_detail,
-            prices=prices,
-            sr_wgt=sr_wgt,
-            sp500_wgt=sp500_wgt,
-            sr_signal_date=sr_signal_date,
-            sp500_signal_date=sp500_signal_date,
-            elapsed=elapsed,
+            drift_alarms=drift_alarms,
+            drift_advisories=drift_advisories,
             error_msg=error_msg,
-            ctx=ctx,
-            drift_lines=drift_lines,
-            skewls_wgt=skewls_wgt,
-            skewls_signal_date=skewls_signal_date,
-            skewls_triggered=skewls_triggered,
-            skewls_delta=skewls_delta,
         )
+        if own_digest:
+            digest.send()
 
 
 if __name__ == '__main__':
@@ -645,17 +617,11 @@ if __name__ == '__main__':
                              "or 'all' to run all accounts sequentially")
     args = parser.parse_args()
 
-    from account_utils import load_accounts, ROLE_REBALANCE
-    from dataclasses import replace as _replace
+    from account_utils import load_accounts
 
     if args.account.lower() == 'all':
         names = [a['name'] for a in load_accounts()]
     else:
         names = [args.account]
 
-    for name in names:
-        ctx = AccountCtx.from_name(name, ROLE_REBALANCE)
-        if args.order_type:
-            ctx = _replace(ctx, order_type=args.order_type)
-        log.info(f">>> Account: {ctx.name} ({ctx.account}) port={ctx.port} <<<")
-        main(mode=args.mode, ctx=ctx)
+    run_accounts(names, mode=args.mode, order_type=args.order_type)

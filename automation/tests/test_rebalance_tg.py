@@ -147,38 +147,133 @@ def test_run_accounts_quiet_day_sends_nothing(fake_config, monkeypatch):
     assert sent == []
 
 
-def test_run_accounts_failure_marks_skipped_accounts(fake_config, monkeypatch):
-    """08-26 情境：Taylor 連線失敗 → 例外照拋、Rosa / Yvonne 沒跑，訊息要標出來。"""
+def test_run_accounts_failure_continues_to_next_account(fake_config, monkeypatch):
+    """#29：Taylor 的 Gateway 掛掉，Rosa / Yvonne 照常調倉（以前整輪中止）。"""
+    import rebalance_ib
+    sent = _capture_sends(monkeypatch)
+    ran = []
+
+    def fake_main(mode, ctx, digest):
+        ran.append(ctx.name)
+        if ctx.name == "Taylor":
+            rebalance_ib._add_rebalance_section(digest, ctx, placed=[], fill_results=[],
+                                                error_msg="[WinError 1225] refused")
+            raise ConnectionRefusedError("[WinError 1225] refused")
+        rebalance_ib._add_rebalance_section(digest, ctx, placed=PLACED[:1], fill_results=[])
+
+    monkeypatch.setattr(rebalance_ib, "main", fake_main)
+    failures = rebalance_ib.run_accounts(["Taylor", "Rosa", "Yvonne"], mode="all")
+    assert ran == ["Taylor", "Rosa", "Yvonne"]
+    assert failures == [("Taylor", "[WinError 1225] refused")]
+    assert len(sent) == 1
+    msg = sent[0]
+    assert msg.startswith("<b>❌ 調倉 ")
+    # fake_config 的 dry_run=True；main 已加的段落不重複
+    assert msg.count("Taylor") == 1
+    assert "<b>Taylor</b> ❌ 失敗 [DRY RUN]\n[WinError 1225] refused" in msg
+    assert "<b>Rosa、Yvonne</b> 送出 1 筆 MOO [DRY RUN]" in msg
+    assert "未執行" not in msg
+
+
+def test_run_accounts_all_fail_returns_every_failure(fake_config, monkeypatch):
+    """08-24 / 08-26 情境：三個 Gateway 全掛 → 三帳戶都試過、都回報。"""
     import rebalance_ib
     sent = _capture_sends(monkeypatch)
 
     def fake_main(mode, ctx, digest):
-        rebalance_ib._add_rebalance_section(digest, ctx, placed=[], fill_results=[],
-                                            error_msg="[WinError 1225] refused")
-        raise ConnectionRefusedError("[WinError 1225] refused")
+        raise ConnectionRefusedError("refused")
 
     monkeypatch.setattr(rebalance_ib, "main", fake_main)
-    with pytest.raises(ConnectionRefusedError):
-        rebalance_ib.run_accounts(["Taylor", "Rosa", "Yvonne"], mode="all")
-    assert len(sent) == 1
-    msg = sent[0]
-    assert msg.startswith("<b>❌ 調倉 ")
-    # fake_config 的 dry_run=True
-    assert "<b>Taylor</b> ❌ 失敗 [DRY RUN]\n[WinError 1225] refused" in msg
-    assert "<b>Rosa、Yvonne</b> ⚠️ 未執行\n前一帳戶失敗，本輪中止" in msg
+    failures = rebalance_ib.run_accounts(["Taylor", "Rosa", "Yvonne"], mode="all")
+    assert [n for n, _ in failures] == ["Taylor", "Rosa", "Yvonne"]
+    assert "<b>Taylor、Rosa、Yvonne</b> ❌ 失敗\nrefused" in sent[0]
 
 
 def test_run_accounts_failure_before_main_adds_error(fake_config, monkeypatch):
-    """ctx 建立就失敗（main 沒機會加段落）→ 仍要有失敗段落。"""
+    """ctx 建立就失敗（main 沒機會加段落）→ 補失敗段落，後面帳戶照跑。"""
     import rebalance_ib
     sent = _capture_sends(monkeypatch)
     calls = []
     monkeypatch.setattr(rebalance_ib, "main", lambda mode, ctx, digest: calls.append(ctx.name))
-    with pytest.raises(ValueError):
-        rebalance_ib.run_accounts(["Taylor", "Nobody", "Yvonne"], mode="all")
-    assert calls == ["Taylor"]
+    failures = rebalance_ib.run_accounts(["Taylor", "Nobody", "Yvonne"], mode="all")
+    assert calls == ["Taylor", "Yvonne"]
+    assert [n for n, _ in failures] == ["Nobody"]
     assert "<b>Nobody</b> ❌ 失敗" in sent[0]
-    assert "<b>Yvonne</b> ⚠️ 未執行" in sent[0]
+
+
+def test_run_accounts_keyboard_interrupt_aborts(fake_config, monkeypatch):
+    """Ctrl+C 仍立即中止：剩下的帳戶標未執行，例外照拋。"""
+    import rebalance_ib
+    sent = _capture_sends(monkeypatch)
+    ran = []
+
+    def fake_main(mode, ctx, digest):
+        ran.append(ctx.name)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(rebalance_ib, "main", fake_main)
+    with pytest.raises(KeyboardInterrupt):
+        rebalance_ib.run_accounts(["Taylor", "Rosa", "Yvonne"], mode="all")
+    assert ran == ["Taylor"]
+    assert "<b>Rosa、Yvonne</b> ⚠️ 未執行\n手動中止，本輪未執行" in sent[0]
+
+
+# ── main() 收尾：Excel 交易紀錄 + Telegram 段落（#29）──────────────────
+
+def _ctx(name="Taylor"):
+    from types import SimpleNamespace as NS
+    return NS(name=name, order_type="MOO", dry_run=False, leverage=1.3,
+              tg_token="T", tg_chat_id="C")
+
+
+def test_log_trades_and_report_writes_each_order(monkeypatch):
+    import rebalance_ib
+    from notify import Digest
+    calls = []
+    monkeypatch.setattr(rebalance_ib, "append_trade_log",
+                        lambda placed, fills, sig, ot, lev, dry, strategy, account_name:
+                        calls.append((placed[0]["symbol"], sig, ot, lev, dry, strategy, account_name)))
+    d = Digest("調倉")
+    err = rebalance_ib._log_trades_and_report(
+        d, _ctx(), placed=PLACED, fill_results=[], signal_str="SR:N/A SP500:N/A",
+        drift_alarms=[], drift_advisories=[], error_msg=None)
+    assert err is None
+    assert calls == [(o["symbol"], "SR:N/A SP500:N/A", "MOO", 1.3, False, "SkewLS", "Taylor")
+                     for o in PLACED]
+    assert "<b>Taylor</b> 送出 3 筆 MOO" in d.render()
+
+
+def test_log_trades_and_report_excel_failure_keeps_orders_in_message(monkeypatch):
+    """trade_log.xlsx 被鎖住：單已送出，訊息仍要列出送出的單並標 ❌。"""
+    import rebalance_ib
+    from notify import Digest
+
+    def locked(*a, **k):
+        raise PermissionError("trade_log.xlsx is locked")
+
+    monkeypatch.setattr(rebalance_ib, "append_trade_log", locked)
+    d = Digest("調倉", icon="📤")
+    err = rebalance_ib._log_trades_and_report(
+        d, _ctx(), placed=PLACED, fill_results=[], signal_str="",
+        drift_alarms=[], drift_advisories=[], error_msg=None)
+    assert isinstance(err, PermissionError)
+    msg = d.render()
+    assert msg.startswith("<b>❌ 調倉</b>")
+    assert "<b>Taylor</b> 送出 3 筆 MOO，❌ 之後失敗" in msg
+    assert "🟢 BUY 55 ERY · 12 XLB" in msg
+    assert "交易紀錄寫入失敗: trade_log.xlsx is locked" in msg
+
+
+def test_log_trades_and_report_no_orders_skips_excel(monkeypatch):
+    import rebalance_ib
+    from notify import Digest
+    monkeypatch.setattr(rebalance_ib, "append_trade_log",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("不該寫 Excel")))
+    d = Digest("調倉")
+    assert rebalance_ib._log_trades_and_report(
+        d, _ctx(), placed=[], fill_results=[], signal_str="",
+        drift_alarms=[], drift_advisories=[], error_msg=None) is None
+    assert d.render() is None
 
 
 def test_digest_renders_three_accounts_in_one_message():

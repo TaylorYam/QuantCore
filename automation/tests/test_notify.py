@@ -192,6 +192,63 @@ def test_digest_rejects_unknown_level():
     import notify
     with pytest.raises(ValueError):
         notify.Digest("t").add("Taylor", "x", level="info", **DEST)
+    with pytest.raises(ValueError):
+        notify.Digest("t").footer("x", level="info", **DEST)
+
+
+# ── footer / outcomes（#38：21:31 當日排程總結）──────────────────────
+
+def test_footer_alone_is_the_whole_message(monkeypatch):
+    """沒單的日子：訊息只有總結那一行，不加標題。"""
+    import notify
+    sent = _sent(monkeypatch)
+    d = notify.Digest("MOO 成交 2026-09-15", icon="✅")
+    d.note("不該出現")
+    d.footer("✅ 9/15 排程都跑完：21:31 無 MOO 單", **DEST)
+    d.send()
+    assert sent == [("✅ 9/15 排程都跑完：21:31 無 MOO 單", "TOKEN", "CHAT")]
+
+
+def test_footer_goes_last_and_raises_title_icon():
+    import notify
+    d = notify.Digest("MOO 成交 2026-09-15", icon="✅")
+    d.add("Taylor", "1/1", ["🟢 BUY 55 ERY @ 12.41"], **DEST)
+    d.footer("✅ 9/15 排程都跑完：…", **DEST)
+    assert d.render() == ("<b>✅ MOO 成交 2026-09-15</b>\n\n<b>Taylor</b> 1/1\n"
+                          "🟢 BUY 55 ERY @ 12.41\n\n✅ 9/15 排程都跑完：…")
+    d2 = notify.Digest("MOO 成交 2026-09-15", icon="✅")
+    d2.add("Taylor", "1/1", ["🟢 BUY 55 ERY @ 12.41"], **DEST)
+    d2.footer("❌ 9/15 排程有狀況：16:00 日度風控 ❌ 沒有執行紀錄", "error", **DEST)
+    assert d2.render().startswith("<b>❌ MOO 成交 2026-09-15</b>")
+
+
+def test_footer_only_goes_to_its_destination(monkeypatch):
+    """帳戶覆寫 telegram：該帳戶的段落照送自己的 chat，總結送共用 chat。"""
+    import notify
+    sent = _sent(monkeypatch)
+    d = notify.Digest("MOO 成交", icon="✅")
+    d.add("Rosa", "1/1", ["🟢 BUY 1 XLB @ 50.00"], token="T2", chat_id="C2")
+    d.footer("✅ 總結", token="T1", chat_id="C1")
+    d.send()
+    assert sent == [
+        ("<b>✅ MOO 成交</b>\n\n<b>Rosa</b> 1/1\n🟢 BUY 1 XLB @ 50.00", "T2", "C2"),
+        ("✅ 總結", "T1", "C1"),
+    ]
+
+
+def test_outcomes_per_account():
+    import notify
+    d = notify.Digest("日度風控", icon="📤")
+    d.add("Taylor", "熊市 dip-buy 送出 1 筆 LMT", ["🟢 BUY 12 SPY @ 500.12"], **DEST)
+    d.add("Taylor", "❌ 日度風控失敗", ["boom"], level="error", **DEST)
+    d.add("Rosa", "⚠️ 日度風控中止", ["資料錯位"], level="warn", **DEST)
+    d.add("Rosa", "晚到的 ok 段落", **DEST)
+    assert d.outcomes(["Taylor", "Rosa", "Yvonne"]) == {
+        "Taylor": ("error", "❌ 日度風控失敗"),   # 取最嚴重的一段
+        "Rosa": ("warn", "⚠️ 日度風控中止"),
+        "Yvonne": ("ok", None),                  # 沒段落 = 跑完、沒事
+    }
+    assert notify.Digest("t").outcomes() == {}
 
 
 def test_digest_send_splits_long_messages(monkeypatch):

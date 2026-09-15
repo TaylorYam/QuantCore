@@ -294,34 +294,23 @@ def _log_trades_and_report(digest: Digest, ctx: AccountCtx, *,
     return excel_error
 
 
-def _tg_dest(account_name: str) -> dict:
-    """帳戶的 telegram 目的地（ctx 建不起來時用）。帳戶設定讀不到時退回
-    config.json 的設定，錯誤訊息才不會因為帳戶名打錯而發不出去。"""
-    from account_utils import get_account_config, load_base_config
-    for load in (lambda: get_account_config(account_name), load_base_config):
-        try:
-            cfg = load()
-        except Exception:
-            continue
-        return {"token": cfg.get('telegram_token', ''),
-                "chat_id": cfg.get('telegram_chat_id', '')}
-    return {"token": '', "chat_id": ''}
-
-
 def run_accounts(names: list[str], mode: str,
-                 order_type: str | None = None) -> list[tuple[str, str]]:
+                 order_type: str | None = None,
+                 digest: Digest | None = None) -> list[tuple[str, str]]:
     """依序調倉多個帳戶，Telegram 合併一則（#26）。回傳失敗清單 [(帳戶, 錯誤)]。
 
     某帳戶失敗（連不上 Gateway、送單後查成交或寫 Excel 出錯…）→ 寫 log、訊息
     標 ❌，繼續下一個帳戶（#29）：三帳戶的 Gateway port、clientId、state 檔互相
     獨立，前一個帳戶的 Gateway 掛掉不該拖累其他帳戶。exit code 由 __main__
     依回傳的失敗清單決定。Ctrl+C（KeyboardInterrupt）仍立即中止，剩下的帳戶
-    標「未執行」。
+    標「未執行」。digest 由 caller 傳入時，跑完仍由這裡發送，caller 可再讀
+    各帳戶結果（#38 執行紀錄）。
     """
     from dataclasses import replace as _replace
-    from account_utils import ROLE_REBALANCE
+    from account_utils import ROLE_REBALANCE, telegram_dest
 
-    digest = Digest(f"調倉 {date.today()}", icon="📤")
+    if digest is None:
+        digest = Digest(f"調倉 {date.today()}", icon="📤")
     failures: list[tuple[str, str]] = []
     started: list[str] = []
     try:
@@ -338,11 +327,11 @@ def run_accounts(names: list[str], mode: str,
                 log.error(f"Account {name} failed (continuing to next): {e}")
                 if not digest.has(name):
                     digest.add(name, "❌ 失敗", [html_mod.escape(str(e)[:300])],
-                               "error", **_tg_dest(name))
+                               "error", **telegram_dest(name))
     except BaseException:
         for name in names[len(started):]:
             digest.add(name, "⚠️ 未執行", ["手動中止，本輪未執行"],
-                       "warn", **_tg_dest(name))
+                       "warn", **telegram_dest(name))
         raise
     finally:
         digest.send()
@@ -659,13 +648,18 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     from account_utils import load_accounts
+    import run_status
 
-    if args.account.lower() == 'all':
-        names = [a['name'] for a in load_accounts()]
-    else:
-        names = [args.account]
-
-    failures = run_accounts(names, mode=args.mode, order_type=args.order_type)
+    all_accounts = args.account.lower() == 'all'
+    names: list[str] = []
+    digest = Digest(f"調倉 {date.today()}", icon="📤")
+    # 當日排程總結用的執行紀錄（#38）：只記排程的 --account all
+    with run_status.recording("rebalance", lambda: digest.outcomes(names),
+                              enabled=all_accounts):
+        names.extend([a['name'] for a in load_accounts()] if all_accounts
+                     else [args.account])
+        failures = run_accounts(names, mode=args.mode, order_type=args.order_type,
+                                digest=digest)
     if failures:
         log.error(f"Rebalance finished with {len(failures)} failure(s): "
                   + "; ".join(f"{n}={msg}" for n, msg in failures))

@@ -18,9 +18,13 @@ Live 模式下這個腳本每個美股交易日執行一次（建議美東 04:00
   - 此腳本現在只處理熊市 dip-buy 觸發
   - 個股出場（含原停損/跳空）與 rotation 輪動皆由 rebalance_ib.py 週三執行
   - 不使用 MOO 單（盤外用 LMT）
+
+Telegram：dip-buy 送單、資料錯位中止、失敗（讀不到資料、連不上 IB、例外）
+才發，三帳戶合成一則。失敗以前只寫 log（#38）。
 """
 
 import argparse
+import html
 import logging
 import sys
 from pathlib import Path
@@ -54,7 +58,7 @@ def _prev_trading_day(d):
 def run_daily_check(account_name: str, digest: Digest):
     """單一帳戶的每日檢查。S6：account_name 為必填，ctx 一律建立。
 
-    Telegram 內容加進 digest，由 main() 三帳戶合併發送（#26）。
+    Telegram 內容加進 digest，由 run_all() 三帳戶合併發送（#26）。
     """
     import rebalance_ib as reb     # 仍需要：place_orders, check_fills
     import ib_fetcher               # S8：IB 連線/查詢 helpers
@@ -74,11 +78,15 @@ def run_daily_check(account_name: str, digest: Digest):
     log.info(f"  {tag} SP500 Daily Check  {date.today()}")
     log.info(f"{'='*60}")
 
+    tg = {"token": ctx.tg_token, "chat_id": ctx.tg_chat_id}
+
     # ── 載入市場資料（SPY df 用於取 trading day index，非 strategy logic）
     spy_df = utils.load_benchmark(sp_cfg.ETF_DIR / "SPY.csv")
 
     if len(spy_df) < 2:
         log.error("SPY data too short")
+        digest.add(account_name, "❌ 日度風控失敗",
+                   ["SPY 資料不足，本次沒有做 dip-buy 檢查"], "error", **tg)
         return
 
     # Reference Close = most recent completed session = data index[-1] (ADR-0003).
@@ -103,12 +111,15 @@ def run_daily_check(account_name: str, digest: Digest):
         digest.add(account_name, "⚠️ 日度風控中止",
                    [f"資料錯位（SPY 最後 {ref_date.date()}，預期 {expected_ref}）。"
                     f"本次未做 dip-buy 檢查，請人工確認資料管線。"],
-                   "warn", token=ctx.tg_token, chat_id=ctx.tg_chat_id)
+                   "warn", **tg)
         return
 
     mkt = get_market_regime_state(ref_date)
     if not mkt:
         log.error("No market regime data")
+        digest.add(account_name, "❌ 日度風控失敗",
+                   ["讀不到市場狀態資料（SPY / MA200），本次沒有做 dip-buy 檢查"],
+                   "error", **tg)
         return
 
     spy_above = mkt["SPY_Close"] > mkt["SPY_MA200"]
@@ -121,6 +132,8 @@ def run_daily_check(account_name: str, digest: Digest):
         ib = ib_fetcher.connect(ctx)
     except Exception as e:
         log.error(f"IB connect failed: {e}")
+        digest.add(account_name, "❌ IB 連線失敗", [html.escape(str(e)[:300])],
+                   "error", **tg)
         return
 
     try:
@@ -283,8 +296,7 @@ def run_daily_check(account_name: str, digest: Digest):
             if placed:
                 digest.note(f"SPY {mkt['SPY_Close']:.2f} · DD {spy_dd*100:.1f}%")
                 digest.add(account_name, f"熊市 dip-buy 送出 {len(placed)} 筆 LMT",
-                           order_group_lines(placed, show_price=True),
-                           token=ctx.tg_token, chat_id=ctx.tg_chat_id)
+                           order_group_lines(placed, show_price=True), **tg)
         elif ctx.dry_run:
             log.info("  [DRY RUN] orders not sent")
 
@@ -293,19 +305,9 @@ def run_daily_check(account_name: str, digest: Digest):
         log.info("Disconnected")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="SP500 Daily Check")
-    parser.add_argument("--account", required=True,
-                        help="帳戶名稱（Taylor/Rosa/Yvonne），或 'all' = 全部帳戶")
-    args = parser.parse_args()
-
-    from account_utils import load_accounts
-    if args.account.lower() == "all":
-        names = [a["name"] for a in load_accounts()]
-    else:
-        names = [args.account]
-
-    digest = Digest(f"日度風控 {date.today()}", icon="📤")
+def run_all(names: list[str], digest: Digest) -> None:
+    """依序檢查多個帳戶，合成一則發送。某帳戶出例外 → ❌ 段落，繼續下一個。"""
+    from account_utils import telegram_dest
     try:
         for name in names:
             log.info(f"\n\n{'*'*60}\n  Account: {name}\n{'*'*60}")
@@ -313,8 +315,30 @@ def main():
                 run_daily_check(name, digest)
             except Exception as e:
                 log.error(f"  [{name}] daily check failed: {e}", exc_info=True)
+                digest.add(name, "❌ 日度風控失敗", [html.escape(str(e)[:300])],
+                           "error", **telegram_dest(name))
     finally:
         digest.send()
+
+
+def main(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser(description="SP500 Daily Check")
+    parser.add_argument("--account", required=True,
+                        help="帳戶名稱（Taylor/Rosa/Yvonne），或 'all' = 全部帳戶")
+    args = parser.parse_args(argv)
+
+    from account_utils import load_accounts
+    import run_status
+
+    all_accounts = args.account.lower() == "all"
+    names: list[str] = []
+    digest = Digest(f"日度風控 {date.today()}", icon="📤")
+    # 當日排程總結用的執行紀錄（#38）：只記排程的 --account all
+    with run_status.recording("daily_check", lambda: digest.outcomes(names),
+                              enabled=all_accounts):
+        names.extend([a["name"] for a in load_accounts()] if all_accounts
+                     else [args.account])
+        run_all(names, digest)
 
 
 if __name__ == '__main__':

@@ -8,6 +8,8 @@ QuantCore — MOO 開盤成交回報
   - 每筆一行，含成交股數與成交價；三帳戶合成一則（notify.Digest）
   - 當天沒有 MOO 單 → 不發
   - IB 連線失敗 / 例外 → ❌ 照發
+  - 平日 `--account all` 最後附一行當日排程總結（#38，run_status）：沒單的
+    日子訊息只有這一行，收不到就代表電腦、排程或 Telegram 有問題
 
 排程：
   平日 21:31 → python moo_fill_check.py --account all
@@ -20,7 +22,7 @@ import html
 import logging
 import sys
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 # ── 路徑設定 ──────────────────────────────────────────────────────────────────
@@ -40,6 +42,9 @@ from account_ctx import AccountCtx
 
 # ── IB 連線 helper（S8：統一由 ib_fetcher 提供）────────────────────────
 import ib_fetcher
+
+# ── 當日排程總結（#38）─────────────────────────────────────────────────
+import run_status
 
 
 def _classify_direction(action: str, post_position: float,
@@ -285,22 +290,14 @@ def main(ctx: AccountCtx, digest: Digest | None = None):
             digest.send()
 
 
-if __name__ == '__main__':
-    setup_logging("moo_fill")
-    quiet_ib_console()
-    import argparse
-    parser = argparse.ArgumentParser(description="QuantCore MOO Fill Check")
-    parser.add_argument("--account", required=True,
-                        help="Account name from accounts.json (e.g. Taylor/Rosa/Yvonne), "
-                             "or 'all' to run all accounts sequentially")
-    args = parser.parse_args()
+def run_all(names: list[str], *, summary: bool = False,
+            now: datetime | None = None) -> list[tuple[str, str]]:
+    """依序檢查多個帳戶，合成一則發送。回傳失敗清單 [(帳戶, 錯誤)]。
 
-    from account_utils import load_accounts, ROLE_MOO_CHECK
-
-    if args.account.lower() == 'all':
-        names = [a['name'] for a in load_accounts()]
-    else:
-        names = [args.account]
+    summary=True（排程的 `--account all`）：平日 21:00 後在訊息最後附當日排程
+    總結；沒有 MOO 單的日子訊息只有總結這一行。
+    """
+    from account_utils import ROLE_MOO_CHECK, telegram_dest
 
     digest = Digest(f"MOO 成交 {date.today()}", icon="✅")
     failures = []
@@ -313,8 +310,35 @@ if __name__ == '__main__':
             except Exception as e:
                 failures.append((name, str(e)))
                 log.error(f"Account {name} failed (continuing to next): {e}")
+                if not digest.has(name):
+                    digest.add(name, "❌ 成交回報失敗", [html.escape(str(e)[:300])],
+                               "error", **telegram_dest(name))
     finally:
+        if summary:
+            run_status.attach_daily_summary(digest, names, now=now)
         digest.send()
+    return failures
+
+
+if __name__ == '__main__':
+    setup_logging("moo_fill")
+    quiet_ib_console()
+    import argparse
+    parser = argparse.ArgumentParser(description="QuantCore MOO Fill Check")
+    parser.add_argument("--account", required=True,
+                        help="Account name from accounts.json (e.g. Taylor/Rosa/Yvonne), "
+                             "or 'all' to run all accounts sequentially")
+    args = parser.parse_args()
+
+    from account_utils import load_accounts
+
+    all_accounts = args.account.lower() == 'all'
+    if all_accounts:
+        names = [a['name'] for a in load_accounts()]
+    else:
+        names = [args.account]
+
+    failures = run_all(names, summary=all_accounts)
 
     if failures:
         log.error(f"MOO fill check finished with {len(failures)} failure(s): "

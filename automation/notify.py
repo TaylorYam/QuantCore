@@ -21,6 +21,7 @@ Usage:
     # 多帳戶合併一則
     digest = Digest("調倉 2026-09-15", icon="📤")
     digest.add("Taylor", "送出 2 筆 MOO", ["🟢 BUY 5 XLK"], token=t, chat_id=c)
+    digest.footer("✅ 9/15 排程都跑完：…", token=t, chat_id=c)   # 21:31 當日排程總結（#38）
     digest.send()
 """
 
@@ -158,8 +159,8 @@ def order_group_lines(orders: list[dict], *, show_price: bool = False) -> list[s
 
 # ── 多帳戶合併一則（#26）──────────────────────────────────────────────
 
-_LEVEL_RANK = {"ok": 0, "warn": 1, "alert": 2, "error": 3}
-_LEVEL_ICON = {"warn": "⚠️", "alert": "🔴", "error": "❌"}
+LEVEL_RANK = {"ok": 0, "warn": 1, "alert": 2, "error": 3}
+LEVEL_ICON = {"warn": "⚠️", "alert": "🔴", "error": "❌"}
 
 
 class Digest:
@@ -171,9 +172,11 @@ class Digest:
       - headline / body / level 完全相同的段落合成一段（例：三帳戶同一個
         資料錯位警示 → `Taylor、Rosa、Yvonne`）
       - `note()` 是各段共用的說明行（去重），只在有段落時才出現
+      - `footer()` 是整則最後一行（#38：21:31 當日排程總結）：有段落時附在
+        最後、等級參與標題 icon；沒有段落時訊息只有這一行
       - 依 (token, chat_id) 分組發送：帳戶若覆寫 telegram 設定也不會送錯群
 
-    body 與 headline 由 caller 負責 HTML escape（動態錯誤字串務必 escape）。
+    body、headline、footer 由 caller 負責 HTML escape（動態錯誤字串務必 escape）。
     """
 
     def __init__(self, title: str, icon: str = ""):
@@ -181,6 +184,7 @@ class Digest:
         self.icon = icon
         self._notes: list[str] = []
         self._sections: list[dict] = []
+        self._footers: list[dict] = []
 
     def note(self, line: str) -> None:
         if line not in self._notes:
@@ -188,7 +192,7 @@ class Digest:
 
     def add(self, name: str, headline: str, body=(), level: str = "ok", *,
             token: str, chat_id: str) -> None:
-        if level not in _LEVEL_RANK:
+        if level not in LEVEL_RANK:
             raise ValueError(f"unknown digest level: {level!r}")
         self._sections.append({
             "name": name,
@@ -198,22 +202,45 @@ class Digest:
             "dest": (token, chat_id),
         })
 
+    def footer(self, line: str, level: str = "ok", *,
+               token: str, chat_id: str) -> None:
+        if level not in LEVEL_RANK:
+            raise ValueError(f"unknown digest level: {level!r}")
+        self._footers.append({"line": line, "level": level,
+                              "dest": (token, chat_id)})
+
     def has(self, name: str) -> bool:
         return any(s["name"] == name for s in self._sections)
 
+    def outcomes(self, names=()) -> dict[str, tuple[str, str | None]]:
+        """各帳戶這一輪的結果 {name: (level, headline)}（#38 執行紀錄用）。
+
+        帳戶有多個段落時取最嚴重的一段；names 裡沒有段落的帳戶 = ("ok", None)，
+        代表跑完、沒有要回報的事。
+        """
+        out: dict[str, tuple[str, str | None]] = {n: ("ok", None) for n in names}
+        for s in self._sections:
+            cur = out.get(s["name"])
+            if (cur is None or cur[1] is None
+                    or LEVEL_RANK[s["level"]] > LEVEL_RANK[cur[0]]):
+                out[s["name"]] = (s["level"], s["headline"])
+        return out
+
     def destinations(self) -> list[tuple[str, str]]:
         dests: list[tuple[str, str]] = []
-        for s in self._sections:
-            if s["dest"] not in dests:
-                dests.append(s["dest"])
+        for item in (*self._sections, *self._footers):
+            if item["dest"] not in dests:
+                dests.append(item["dest"])
         return dests
 
     def render(self, dest: tuple[str, str] | None = None) -> str | None:
-        """組出訊息；dest=None 表示全部段落。沒有段落回 None。"""
+        """組出訊息；dest=None 表示全部段落。沒有段落也沒有 footer 回 None。"""
         sections = [s for s in self._sections
                     if dest is None or s["dest"] == dest]
+        footers = [f for f in self._footers
+                   if dest is None or f["dest"] == dest]
         if not sections:
-            return None
+            return "\n".join(f["line"] for f in footers) if footers else None
 
         groups: list[dict] = []
         for s in sections:
@@ -225,8 +252,9 @@ class Digest:
             else:
                 groups.append({"key": key, "names": [s["name"]]})
 
-        worst = max((s["level"] for s in sections), key=_LEVEL_RANK.__getitem__)
-        icon = _LEVEL_ICON.get(worst, self.icon)
+        worst = max((item["level"] for item in (*sections, *footers)),
+                    key=LEVEL_RANK.__getitem__)
+        icon = LEVEL_ICON.get(worst, self.icon)
         title = f"{icon} {self.title}".strip()
 
         lines = [f"<b>{html.escape(title)}</b>", *self._notes]
@@ -236,6 +264,9 @@ class Digest:
             lines.append("")
             lines.append(f"<b>{names}</b> {headline}".rstrip())
             lines.extend(body)
+        if footers:
+            lines.append("")
+            lines.extend(f["line"] for f in footers)
         return "\n".join(lines)
 
     def send(self) -> None:

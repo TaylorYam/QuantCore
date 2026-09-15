@@ -53,7 +53,7 @@ def failure_message(errors: list[str], elapsed: int, today: date) -> str | None:
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
-def main():
+def main() -> list[str]:
     start_ts = datetime.now()
     log.info(f"{'='*60}")
     log.info(f"  QuantCore Data Update  {date.today()}")
@@ -89,8 +89,19 @@ def main():
         token, chat_id = _load_tg_config()
         _tg(msg, token=token, chat_id=chat_id)
     log.info(f"Done. Elapsed: {elapsed}s  Errors: {len(errors)}")
+    return errors
+
+
+def run_outcome(errors: list[str]) -> dict:
+    """當日排程總結用的結果（#38）：資料更新不分帳戶，key 為空字串。"""
+    if errors:
+        return {"": ("warn", "⚠️ 部分失敗")}
+    return {"": ("ok", None)}
 
 
 if __name__ == '__main__':
     setup_logging("update")
-    main()
+    import run_status
+    errors: list[str] = []
+    with run_status.recording("update", lambda: run_outcome(errors)):
+        errors.extend(main())

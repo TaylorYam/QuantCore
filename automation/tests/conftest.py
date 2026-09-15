@@ -64,6 +64,28 @@ FAKE_ACCOUNTS = [
 ]
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _run_status_outside_live_logs(tmp_path_factory):
+    """排程執行紀錄（#38）整個測試階段都寫到暫存目錄。
+
+    live 工作目錄就是實盤（AGENTS.md §4）：測試若寫進 automation/logs/run_status，
+    當天 21:31 的排程總結會把假紀錄當成真的排程結果。只在階段開始設定一次 —
+    不在每個測試建目錄，避免改動 test_panel_gui 對 Tk 回收時機敏感的節奏。
+    """
+    import run_status
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(run_status, "STATUS_DIR", tmp_path_factory.mktemp("run_status"))
+        yield
+
+
+@pytest.fixture
+def run_status_dir(tmp_path, monkeypatch):
+    """需要乾淨紀錄目錄的測試用（每個測試各自一份，還沒建立）。"""
+    import run_status
+    monkeypatch.setattr(run_status, "STATUS_DIR", tmp_path / "run_status")
+    return run_status.STATUS_DIR
+
+
 @pytest.fixture
 def fake_config(monkeypatch):
     """Replace account_utils's load_base_config + load_accounts with fakes."""

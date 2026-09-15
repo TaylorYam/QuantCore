@@ -115,7 +115,7 @@ Leverage = alloc_sr + alloc_sp500 + alloc_skewls
 台灣時間          動作                         說明
 ──────────────────────────────────────────────────────────
 04:30  每日       資料更新                      yfinance 抓取最新收盤價
-04:40  每日       帳戶快照 → Excel              Margin Cushion < 25% 才發 Telegram
+04:40  每日       帳戶快照 → Excel              Margin Cushion < 25% 或失敗才發 Telegram
 04:50  週三       Constituents 自動 refresh     gated 寫入 + diff 報告（ADR-0009）
 07:00  交易日     Morning check                 健檢 + constituents staleness 提醒
 16:00  交易日     SP500 Daily Check             熊市 dip-buy 觸發（LMT outsideRTH）
@@ -124,12 +124,13 @@ Leverage = alloc_sr + alloc_sp500 + alloc_skewls
 21:00  週三       Wed Rebalance (--mode all)     三策略合併：SR hold + SP500 + SkewLS check
 21:00  週一/四/五 SkewLS Check (--mode skewls)   獨立 threshold check（Tue/Wed 由上方涵蓋）
 21:00–05:00      Rosa poll                      Gateway 連線狀態 30 分鐘輪詢
-21:31  平日       MOO 成交回報 → Telegram        開盤後 1 分鐘檢查成交（含成交價）
+21:31  平日       MOO 成交回報 → Telegram        開盤後 1 分鐘檢查成交（含成交價）＋當日排程總結
 ```
 
 - **MOO（Market-on-Open）**：保證以開盤價成交，須在美東 09:28 前送出
 - 台灣 21:00 = 美東 09:00（夏令），留有 28 分鐘緩衝
 - **Telegram**：只發與下單有關的訊息和錯誤（#26）。21:00 送單清單、21:31 成交回報、16:00 dip-buy 單；同一排程的三帳戶合成一則，沒單就不發。資料更新、TY check、constituents refresh 成功時不通知，失敗照發
+- **當日排程總結**（#38）：平日 21:31 固定一行，列 04:30 資料更新、04:40 每日報告、16:00 日度風控、21:00 調倉、21:31 成交回報有沒有跑完、有沒有出錯；沒單的日子訊息只有這一行，有單時附在成交回報最後。**平日 21:35 還沒收到，就是電腦、排程或 Telegram 出問題**。依據是各排程寫的執行紀錄 `automation/logs/run_status/`
 
 ---
 

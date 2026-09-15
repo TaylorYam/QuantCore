@@ -139,7 +139,7 @@ Tkinter GUI 儀表板（`automation/QuantCore_Panel.vbs` 靜默啟動；同時�
 
 - **三帳戶並列**：Taylor / Rosa / Yvonne 各一欄，顯示 Net Asset Value、Unrealized P&L、Margin Cushion、Strategy Exposure、Account Exposure，持倉圓餅圖（小部位合併成「+N more」），以及依 ETF / 個股 / 手動分組的持倉表（UL、SH、Wt%、Cost、Price、P&L、P&L%）
 - **Strategy Parameters**：每帳戶的 ETF / Stocks / SkewLS 配置滑桿，按 Save 確認後寫回 `accounts.json`
-- **操作列**：`Sync Pos`（預覽理論持倉與 IB 實際持倉的差額，確認後送限價單）、`Refresh IB`（手動刷新三帳戶）、`Log`（輸出紀錄彈窗）；右側顯示資料日期
+- **操作列**：`Sync Pos`（先選帳戶，再預覽該帳戶理論持倉與 IB 實際持倉的差額，確認後送限價單）、`Refresh IB`（手動刷新三帳戶）、`Log`（輸出紀錄彈窗）；右側顯示資料日期
 - **Recent Trades**：每帳戶一個按鈕，彈窗顯示近 7 天的交易與成交價
 - **自動刷新**：開啟時刷新一次，之後在美股交易時段固定時間刷新（美東 09:30、10:00–16:00 每小時；提前收盤日到 13:00）；標題列顯示各帳戶上次刷新時間
 - **Gateway 監控**：Gateway Status 列顯示三帳戶連線狀態，`Check Now` 重新探測；Rosa poll、TY check、Morning check 三個定時監控只在異常時發 Telegram

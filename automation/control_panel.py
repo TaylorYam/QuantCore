@@ -49,7 +49,7 @@ TRADE_FILE     = BASE_DIR / "trade_log.xlsx"
 LOG_DIR        = BASE_DIR / "logs"
 
 from account_utils import (
-    load_accounts, get_account_config, update_account_config,
+    load_accounts, load_base_config, get_account_config, update_account_config,
 )
 
 from portfolio_view import PortfolioView
@@ -167,8 +167,8 @@ def fetch_ib_portfolio(account_name: str = "") -> dict:
     from account_ctx import AccountCtx
     from account_utils import ROLE_PANEL
 
-    # R1.4: 移除 load_config() legacy fallback。Panel 只會用 selected_account
-    # 呼叫本函式，不會傳空字串進來。若未來 CLI 要用，請明確指定 account_name。
+    # R1.4: 移除 load_config() legacy fallback。Panel 一律帶帳戶名呼叫本函式，
+    # 不會傳空字串進來。若未來 CLI 要用，請明確指定 account_name。
     if not account_name:
         return {
             "date": str(date.today()), "nav": 0, "cushion": 0, "excess_liq": 0,
@@ -480,7 +480,6 @@ class ControlPanel(tk.Tk):
         accounts = load_accounts()
         self._accounts_meta = accounts
         acct_names = [a["name"] for a in accounts]
-        self.selected_account = tk.StringVar(value=acct_names[0] if acct_names else "")
 
         self.lbl_time = tk.Label(hdr, text="", font=self.font_small,
                                   bg=ACCENT, fg="#ccfbf1")
@@ -929,11 +928,11 @@ class ControlPanel(tk.Tk):
 
     def _tg_notify(self, msg: str):
         """背景 thread 發 Telegram 訊息（不阻塞 UI）— 統一用 notify.tg_send。
-        R1.4: 從當前選中帳戶的 ctx 讀 telegram 憑證（實際值跟 config.json 共用，
-        但統一走 get_account_config 以維持「單一讀取入口」）"""
+        監控警報（Rosa poll / TY check / Morning check）是系統層級：Morning check
+        一則列多個離線帳戶、constituents 提醒不屬於任何帳戶 — 讀 config.json 的
+        共用 telegram 設定，不看帳戶覆寫（#35）"""
         try:
-            acct = self.selected_account.get()
-            cfg = get_account_config(acct)
+            cfg = load_base_config()
             token = cfg.get("telegram_token", "")
             chat_id = cfg.get("telegram_chat_id", "")
         except Exception:
@@ -985,10 +984,22 @@ class ControlPanel(tk.Tk):
     # ── Sync Position ─────────────────────────────────────
 
     def _sync_position(self):
+        """Sync Pos 按鈕：先選帳戶（#35），選好才開始計算"""
+        from account_picker import AccountPicker
+        AccountPicker(
+            parent=self,
+            title="Sync Pos — 選擇帳戶",
+            accounts=[a["name"] for a in self._accounts_meta],
+            theme=self._theme,
+            fonts=self._fonts,
+            btn_factory=self._btn,
+            on_pick=self._sync_account,
+        ).show()
+
+    def _sync_account(self, account_name: str):
         """同步倉位：計算理論持倉 vs IB 實際持倉，預覽差額後送限價單"""
-        acct = self.selected_account.get()
-        self._log(f"[>] Sync Position — computing targets for [{acct}]...")
-        threading.Thread(target=self._sync_compute_thread, args=(acct,), daemon=True).start()
+        self._log(f"[>] Sync Position — computing targets for [{account_name}]...")
+        threading.Thread(target=self._sync_compute_thread, args=(account_name,), daemon=True).start()
 
     def _sync_compute_thread(self, account_name: str):
         """背景計算理論持倉與差額 — S10 thin wrapper，實作在 sync_position.compute_sync_plan"""
@@ -1159,9 +1170,8 @@ class ControlPanel(tk.Tk):
 
     # ── 操作 ──────────────────────────────────────────────
 
-    def _save_params(self, account_name=None):
+    def _save_params(self, acct: str):
         try:
-            acct = account_name or self.selected_account.get()
             sv = self.strategy_views.get(acct)
             if sv is None:
                 return

@@ -257,6 +257,43 @@ def _add_rebalance_section(digest: Digest, ctx: AccountCtx, **kwargs) -> None:
         log.warning(f"Telegram section build failed: {e}")
 
 
+def _log_trades_and_report(digest: Digest, ctx: AccountCtx, *,
+                           placed: list[dict], fill_results: list[dict],
+                           signal_str: str, drift_alarms: list[str],
+                           drift_advisories: list[str],
+                           error_msg: str | None) -> Exception | None:
+    """main() 收尾：寫 Excel 交易紀錄，再加 Telegram 段落。回傳 Excel 寫入例外。
+
+    Excel 寫入失敗（例如 trade_log.xlsx 被 Excel 開著鎖住）時，單已經送出了 —
+    不能讓它們從訊息裡消失：記下錯誤、段落照加並標 ❌，例外交給 caller 拋出。
+    """
+    excel_error: Exception | None = None
+    if placed:
+        try:
+            for o in placed:
+                strat = o.get('strategy', 'Unknown')
+                append_trade_log([o], fill_results, signal_str,
+                                 ctx.order_type, ctx.leverage, ctx.dry_run,
+                                 strategy=strat, account_name=ctx.name)
+            log.info("Trade log written -> trade_log.xlsx")
+        except Exception as e:
+            excel_error = e
+            log.error(f"Trade log write failed: {e}", exc_info=True)
+
+    if excel_error is not None:
+        note = f"交易紀錄寫入失敗: {excel_error}"
+        error_msg = f"{error_msg}；{note}" if error_msg else note
+    _add_rebalance_section(
+        digest, ctx,
+        placed=placed,
+        fill_results=fill_results,
+        drift_alarms=drift_alarms,
+        drift_advisories=drift_advisories,
+        error_msg=error_msg,
+    )
+    return excel_error
+
+
 def _tg_dest(account_name: str) -> dict:
     """帳戶的 telegram 目的地（ctx 建不起來時用）。帳戶設定讀不到時退回
     config.json 的設定，錯誤訊息才不會因為帳戶名打錯而發不出去。"""
@@ -271,37 +308,45 @@ def _tg_dest(account_name: str) -> dict:
     return {"token": '', "chat_id": ''}
 
 
-def run_accounts(names: list[str], mode: str, order_type: str | None = None) -> None:
-    """依序調倉多個帳戶，Telegram 合併一則（#26）。
+def run_accounts(names: list[str], mode: str,
+                 order_type: str | None = None) -> list[tuple[str, str]]:
+    """依序調倉多個帳戶，Telegram 合併一則（#26）。回傳失敗清單 [(帳戶, 錯誤)]。
 
-    某帳戶失敗時沿用既有行為：例外往外拋、後面的帳戶不跑 — 但訊息要標出
-    失敗的帳戶和沒跑到的帳戶（08-24 / 08-26 / 09-07 Taylor 連線失敗時，
-    Rosa / Yvonne 靜默沒調倉）。
+    某帳戶失敗（連不上 Gateway、送單後查成交或寫 Excel 出錯…）→ 寫 log、訊息
+    標 ❌，繼續下一個帳戶（#29）：三帳戶的 Gateway port、clientId、state 檔互相
+    獨立，前一個帳戶的 Gateway 掛掉不該拖累其他帳戶。exit code 由 __main__
+    依回傳的失敗清單決定。Ctrl+C（KeyboardInterrupt）仍立即中止，剩下的帳戶
+    標「未執行」。
     """
     from dataclasses import replace as _replace
     from account_utils import ROLE_REBALANCE
 
     digest = Digest(f"調倉 {date.today()}", icon="📤")
+    failures: list[tuple[str, str]] = []
     started: list[str] = []
     try:
         for name in names:
             started.append(name)
-            ctx = AccountCtx.from_name(name, ROLE_REBALANCE)
-            if order_type:
-                ctx = _replace(ctx, order_type=order_type)
-            log.info(f">>> Account: {ctx.name} ({ctx.account}) port={ctx.port} <<<")
-            main(mode=mode, ctx=ctx, digest=digest)
-    except BaseException as e:
-        failed = started[-1] if started else None
-        if failed and not digest.has(failed):
-            digest.add(failed, "❌ 失敗", [html_mod.escape(str(e)[:300])],
-                       "error", **_tg_dest(failed))
+            try:
+                ctx = AccountCtx.from_name(name, ROLE_REBALANCE)
+                if order_type:
+                    ctx = _replace(ctx, order_type=order_type)
+                log.info(f">>> Account: {ctx.name} ({ctx.account}) port={ctx.port} <<<")
+                main(mode=mode, ctx=ctx, digest=digest)
+            except Exception as e:
+                failures.append((name, str(e)))
+                log.error(f"Account {name} failed (continuing to next): {e}")
+                if not digest.has(name):
+                    digest.add(name, "❌ 失敗", [html_mod.escape(str(e)[:300])],
+                               "error", **_tg_dest(name))
+    except BaseException:
         for name in names[len(started):]:
-            digest.add(name, "⚠️ 未執行", ["前一帳戶失敗，本輪中止"],
+            digest.add(name, "⚠️ 未執行", ["手動中止，本輪未執行"],
                        "warn", **_tg_dest(name))
         raise
     finally:
         digest.send()
+    return failures
 
 
 # ── SR ETF 清單 — R1.3：單一來源在 ib_fetcher.SR_ETFS（已 re-export）
@@ -571,31 +616,27 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
         ib.disconnect()
         log.info("Disconnected from IB Gateway.")
 
-        # ── Excel 交易記錄 ────────────────────────────────────────────────
-        if placed:
-            signal_parts = [f"SR:{sr_signal_date}", f"SP500:{sp500_signal_date}"]
-            if alloc_skewls > 0:
-                signal_parts.append(f"SkewLS:{skewls_signal_date}")
-            signal_str = " ".join(signal_parts)
-            for o in placed:
-                strat = o.get('strategy', 'Unknown')
-                append_trade_log([o], fill_results, signal_str,
-                                 order_type, leverage, dry_run,
-                                 strategy=strat, account_name=acct_name)
-            log.info("Trade log written -> trade_log.xlsx")
-
-        elapsed = (datetime.now() - start_ts).seconds
-        log.info(f"Elapsed: {elapsed}s")
-        _add_rebalance_section(
+        # ── Excel 交易記錄 + Telegram 段落 ────────────────────────────────
+        signal_parts = [f"SR:{sr_signal_date}", f"SP500:{sp500_signal_date}"]
+        if alloc_skewls > 0:
+            signal_parts.append(f"SkewLS:{skewls_signal_date}")
+        excel_error = _log_trades_and_report(
             digest, ctx,
             placed=placed,
             fill_results=fill_results,
+            signal_str=" ".join(signal_parts),
             drift_alarms=drift_alarms,
             drift_advisories=drift_advisories,
             error_msg=error_msg,
         )
+
+        elapsed = (datetime.now() - start_ts).seconds
+        log.info(f"Elapsed: {elapsed}s")
         if own_digest:
             digest.send()
+        # 已經在往外拋的例外（含 Ctrl+C）優先；沒有時才拋 Excel 錯誤（run_accounts 記為失敗）
+        if excel_error is not None and sys.exc_info()[1] is None:
+            raise excel_error
 
 
 if __name__ == '__main__':
@@ -624,4 +665,8 @@ if __name__ == '__main__':
     else:
         names = [args.account]
 
-    run_accounts(names, mode=args.mode, order_type=args.order_type)
+    failures = run_accounts(names, mode=args.mode, order_type=args.order_type)
+    if failures:
+        log.error(f"Rebalance finished with {len(failures)} failure(s): "
+                  + "; ".join(f"{n}={msg}" for n, msg in failures))
+        sys.exit(1)

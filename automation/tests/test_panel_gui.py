@@ -18,13 +18,21 @@ import pytest
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows Panel GUI")
 
 
-def test_panel_gui_three_column_refresh_failure_and_exit(fake_config, monkeypatch):
-    import tkinter as tk
+def forbidden(*args, **kwargs):
+    raise AssertionError("External operation attempted by offline GUI test")
+
+
+def descendants(widget):
+    for child in widget.winfo_children():
+        yield child
+        yield from descendants(child)
+
+
+def load_panel_module(monkeypatch):
+    """Import control_panel offline: UAC, network, subprocess, IB orders and
+    file writes are blocked."""
     import ib_fetcher
     import signals
-
-    def forbidden(*args, **kwargs):
-        raise AssertionError("External operation attempted by offline GUI test")
 
     original_connect = socket.socket.connect
 
@@ -51,12 +59,19 @@ def test_panel_gui_three_column_refresh_failure_and_exit(fake_config, monkeypatc
         monkeypatch.setattr(module, name, forbidden)
     monkeypatch.setattr(module, "read_latest_trades", lambda *_: [])
     monkeypatch.setattr(module, "get_last_data_update", lambda: "FAKE DATA")
+    return module
+
+
+def offline_panel_type(monkeypatch, module):
+    """ControlPanel with monitors, tray and Telegram off; the window stays withdrawn."""
+    import tkinter as tk
+
     panel_type = module.ControlPanel
     for name in ("_start_gateway_monitors", "_stop_gateway_monitors", "_refresh_gateway_status",
                  "_start_rosa_watch", "_start_ty_watch", "_start_morning_watch", "_start_tray",
                  "_watchdog_tick"):
         monkeypatch.setattr(panel_type, name, lambda self: None)
-    for name in ("_sync_position", "_tg_notify", "_cold_connect"):
+    for name in ("_tg_notify", "_cold_connect"):
         monkeypatch.setattr(panel_type, name, forbidden)
     monkeypatch.setattr(panel_type, "_save_params", lambda self, n=None: None)
     monkeypatch.setattr(panel_type, "_build_monitor_engine", lambda self: SimpleNamespace(stop_all=lambda: None))
@@ -69,6 +84,15 @@ def test_panel_gui_three_column_refresh_failure_and_exit(fake_config, monkeypatc
 
     monkeypatch.setattr(tk.Tk, "__init__", hidden_init)
     monkeypatch.setattr(panel_type, "state", lambda self, *args: "withdrawn")
+    return panel_type
+
+
+def test_panel_gui_three_column_refresh_failure_and_exit(fake_config, monkeypatch):
+    import tkinter as tk
+
+    module = load_panel_module(monkeypatch)
+    panel_type = offline_panel_type(monkeypatch, module)
+    monkeypatch.setattr(panel_type, "_sync_position", forbidden)
     names = ("Taylor", "Rosa", "Yvonne")
     calls = {name: 0 for name in names}
     releases = {(name, round_): threading.Event() for name in names for round_ in (1, 2, 3)}
@@ -104,11 +128,6 @@ def test_panel_gui_three_column_refresh_failure_and_exit(fake_config, monkeypatc
     stage = [0]
     last_success = []
     deadline = time.monotonic() + 12
-
-    def descendants(widget):
-        for child in widget.winfo_children():
-            yield child
-            yield from descendants(child)
 
     refresh = next(w for w in descendants(panel)
                    if isinstance(w, tk.Button) and w.cget("text") == "Refresh IB")
@@ -206,3 +225,119 @@ def test_panel_gui_three_column_refresh_failure_and_exit(fake_config, monkeypatc
     assert not panel._portfolio_loop._active
     assert panel.portfolio_queries.drain_changes() == {}
     assert not any(worker.is_alive() for worker in workers)
+
+
+def test_sync_pos_asks_for_account_and_previews_that_account(fake_config, monkeypatch):
+    """#35: the action-bar Sync Pos asks which account first. Each account's
+    plan is computed from its own ctx and previewed under its own name;
+    Cancel computes nothing. compute_sync_plan is faked — no IB, no orders."""
+    import tkinter as tk
+    import sync_position
+
+    module = load_panel_module(monkeypatch)
+    panel_type = offline_panel_type(monkeypatch, module)
+    monkeypatch.setattr(module, "fetch_ib_portfolio",
+                        lambda name: {"available": False, "error": "offline test"})
+    monkeypatch.setattr(panel_type, "_sync_execute", forbidden)
+    monkeypatch.setattr(sync_position, "submit_sync_orders", forbidden)
+    exceptions = []
+    # A compute error would open a blocking messagebox — record it instead.
+    monkeypatch.setattr(module.messagebox, "showerror",
+                        lambda *args, **kwargs: exceptions.append(args))
+    computed = []
+
+    def compute(ctx, log_fn=None):
+        computed.append((ctx.name, ctx.account, ctx.port))
+        return sync_position.SyncPlan(
+            ctx=ctx, orders=[], nav=10000.0, sr_wgt={}, sp500_wgt={},
+            sr_date="FAKE", sp500_date="FAKE", prices={}, targets={},
+            current_pos={}, current_other_holdings=[])
+
+    monkeypatch.setattr(sync_position, "compute_sync_plan", compute)
+    panel = panel_type()
+    panel.report_callback_exception = lambda *args: exceptions.append(args[1])
+    names = ("Taylor", "Rosa", "Yvonne")
+    picker_title = "Sync Pos — 選擇帳戶"
+    sync_pos = next(w for w in descendants(panel)
+                    if isinstance(w, tk.Button) and w.cget("text") == "Sync Pos")
+
+    def dialog(title):
+        return next((w for w in panel.winfo_children()
+                     if isinstance(w, tk.Toplevel) and w.title() == title), None)
+
+    def buttons(widget):
+        return {w.cget("text"): w for w in descendants(widget) if isinstance(w, tk.Button)}
+
+    def pick(name):
+        sync_pos.invoke()
+        choices = buttons(dialog(picker_title))
+        assert list(choices) == [*names, "Cancel"]
+        choices[name].invoke()
+        assert dialog(picker_title) is None
+
+    stage = [0]
+    deadline = time.monotonic() + 12
+
+    def check():
+        try:
+            assert not exceptions, exceptions
+            assert time.monotonic() < deadline, f"GUI stalled at stage {stage[0]}"
+            if stage[0] == 0:
+                sync_pos.invoke()
+                buttons(dialog(picker_title))["Cancel"].invoke()
+                assert dialog(picker_title) is None
+                pick(names[0])
+                stage[0] = 1
+            else:
+                name = names[stage[0] - 1]
+                preview = dialog(f"Sync Position — {name}")
+                if preview is not None:
+                    assert computed[-1][0] == name
+                    assert any(isinstance(w, tk.Label)
+                               and w.cget("text") == f"Sync Position — {name}"
+                               for w in descendants(preview))
+                    buttons(preview)["OK"].invoke()
+                    if stage[0] == len(names):
+                        panel._quit_app()
+                        stage[0] += 1
+                        return
+                    pick(names[stage[0]])
+                    stage[0] += 1
+            panel.after(20, check)
+        except BaseException as exc:
+            exceptions.append(exc)
+            panel._quit_app()
+
+    try:
+        panel.after(20, check)
+        panel.mainloop()
+    finally:
+        if stage[0] != len(names) + 1:
+            try:
+                panel._quit_app()
+            except tk.TclError:
+                pass
+    assert not exceptions, exceptions
+    assert stage[0] == len(names) + 1
+    # One compute per pick, in order, each with that account's IB account and Gateway port.
+    assert computed == [(a["name"], a["account"], a["port"]) for a in fake_config[1]]
+
+
+def test_monitor_alert_uses_shared_telegram_settings(fake_config, monkeypatch):
+    """#35: the Panel has no selected account. Monitor alerts use the shared
+    config.json Telegram settings even when the first account overrides them."""
+    import queue
+    import account_utils
+    import notify
+
+    accounts = [dict(a) for a in fake_config[1]]
+    accounts[0].update(telegram_token="TAYLOR_TOKEN", telegram_chat_id="TAYLOR_CHAT")
+    monkeypatch.setattr(account_utils, "load_accounts", lambda: [dict(a) for a in accounts])
+    sent = queue.Queue()
+    monkeypatch.setattr(notify, "tg_send", lambda msg, **dest: sent.put((msg, dest)))
+
+    module = load_panel_module(monkeypatch)
+    # Bare self: sending an alert must not need any Panel state.
+    module.ControlPanel._tg_notify(SimpleNamespace(), "Rosa offline")
+
+    assert sent.get(timeout=5) == ("Rosa offline", {"token": "FAKE_TOKEN", "chat_id": "FAKE_CHAT"})

@@ -199,7 +199,7 @@ def ty_check_spec(env: MonitorEnv,
     """Taylor / Yvonne 週二・週三 20:05 開盤前驗證（每帳戶一條 worker）。
 
     Hybrid：心跳連線已 ONLINE = 活體證明，跳過冷連線（避免 clientId 撞號）；
-    否則冷連線探測（10s timeout），成敗都發 TG 回報。"""
+    否則冷連線探測（10s timeout）。成功只寫 Output Log，失敗才發 TG（#26）。"""
     from ty_check import format_ty_message, next_ty_check_time, verify_one_account
 
     def make_worker(name: str) -> Callable[[], None]:
@@ -208,9 +208,10 @@ def ty_check_spec(env: MonitorEnv,
                 msg = format_ty_message(name, success=True)
             else:
                 msg = verify_one_account(name, lambda: env.cold_connect(name))
-            env.log(f"[GW] TY check {name} → "
-                    f"{'ok' if '✅' in msg else 'ALERT'}")
-            env.notify(msg)
+            ok = '✅' in msg
+            env.log(f"[GW] TY check {name} → {'ok' if ok else 'ALERT'}")
+            if not ok:
+                env.notify(msg)
         return run
 
     return MonitorSpec(

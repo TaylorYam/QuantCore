@@ -47,13 +47,14 @@ def test_sr_etfs_constant_is_11_sector_etfs():
 
 
 def test_sr_etfs_is_single_source_across_modules():
-    """rebalance_ib and daily_report should re-export ib_fetcher.SR_ETFS."""
+    """rebalance_ib should re-export ib_fetcher.SR_ETFS.
+
+    daily_report 自 #26 起不再分類持倉（持倉報告不推播），已不引用 SR_ETFS。
+    """
     import ib_fetcher
     import rebalance_ib
-    import daily_report
 
     assert rebalance_ib.SR_ETFS is ib_fetcher.SR_ETFS
-    assert daily_report.SR_ETFS is ib_fetcher.SR_ETFS
 
 
 # ── Data-dependent tests ─────────────────────────────────────────────

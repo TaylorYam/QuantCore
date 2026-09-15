@@ -1,11 +1,13 @@
 """
-Unit tests for notify.tg_send / tg_send_photo.
+Unit tests for notify.tg_send / tg_send_photo / Digest.
 
 Coverage:
   - Empty token / chat_id → silent no-op (no network call)
   - Network failure → swallowed (only logs warning, doesn't raise)
   - Successful send → calls urlopen with correct URL + payload
   - Keyword-only arguments enforcement
+  - Digest（#26）：沒段落不發、標題取最嚴重等級、相同段落合併、依 chat 分組
+  - split_message / order_group_lines
 """
 
 from __future__ import annotations
@@ -94,3 +96,140 @@ def test_tg_send_photo_file_not_found_is_swallowed():
     # Should log warning, not raise.
     notify.tg_send_photo("/definitely/does/not/exist.png",
                          token="TOKEN", chat_id="CHAT")
+
+
+# ── Digest（#26：同一排程多帳戶合併一則）─────────────────────────────
+
+DEST = {"token": "TOKEN", "chat_id": "CHAT"}
+
+
+def _sent(monkeypatch):
+    import notify
+    sent = []
+    monkeypatch.setattr(notify, "tg_send",
+                        lambda msg, *, token, chat_id: sent.append((msg, token, chat_id)))
+    return sent
+
+
+def test_digest_without_sections_sends_nothing(monkeypatch):
+    import notify
+    sent = _sent(monkeypatch)
+    d = notify.Digest("調倉 2026-09-15", icon="📤")
+    d.note("SPY 480.12")          # note 不構成內容
+    assert d.render() is None
+    d.send()
+    assert sent == []
+
+
+def test_digest_merges_accounts_into_one_message(monkeypatch):
+    import notify
+    sent = _sent(monkeypatch)
+    d = notify.Digest("MOO 成交 2026-09-10", icon="✅")
+    d.add("Taylor", "8/8", ["🟢 BUY 55 ERY @ 12.41"], **DEST)
+    d.add("Rosa", "9/9", ["🟢 BUY 12 XLB @ 88.10"], **DEST)
+    d.send()
+    assert len(sent) == 1
+    msg = sent[0][0]
+    assert msg.splitlines()[0] == "<b>✅ MOO 成交 2026-09-10</b>"
+    assert "<b>Taylor</b> 8/8\n🟢 BUY 55 ERY @ 12.41" in msg
+    assert "<b>Rosa</b> 9/9\n🟢 BUY 12 XLB @ 88.10" in msg
+
+
+def test_digest_title_icon_takes_worst_level():
+    import notify
+    d = notify.Digest("調倉 2026-09-15", icon="📤")
+    d.add("Taylor", "送出 1 筆 MOO", ["🟢 BUY 1 XLK"], **DEST)
+    assert d.render().startswith("<b>📤 ")
+    d.add("Rosa", "沒有送單", ["🔴 需要注意 1 檔:"], level="warn", **DEST)
+    assert d.render().startswith("<b>⚠️ ")
+    d.add("Yvonne", "❌ 失敗", ["boom"], level="error", **DEST)
+    assert d.render().startswith("<b>❌ ")
+
+
+def test_digest_identical_sections_collapse_into_one():
+    import notify
+    d = notify.Digest("日度風控 2026-09-15", icon="📤")
+    for name in ("Taylor", "Rosa", "Yvonne"):
+        d.add(name, "⚠️ 日度風控中止", ["資料錯位"], level="warn", **DEST)
+    msg = d.render()
+    assert msg.count("資料錯位") == 1
+    assert "<b>Taylor、Rosa、Yvonne</b> ⚠️ 日度風控中止" in msg
+
+
+def test_digest_notes_deduped_and_rendered_under_title():
+    import notify
+    d = notify.Digest("熊市 dip-buy 2026-09-15", icon="📤")
+    d.note("SPY 480.12 · DD 15.3%")
+    d.note("SPY 480.12 · DD 15.3%")
+    d.add("Taylor", "送出 1 筆 LMT", ["🟢 BUY 12 SPY @ 500.12"], **DEST)
+    lines = d.render().splitlines()
+    assert lines[1] == "SPY 480.12 · DD 15.3%"
+    assert lines.count("SPY 480.12 · DD 15.3%") == 1
+
+
+def test_digest_escapes_account_names():
+    import notify
+    d = notify.Digest("t")
+    d.add("A<B", "x", **DEST)
+    assert "<b>A&lt;B</b> x" in d.render()
+
+
+def test_digest_groups_by_destination(monkeypatch):
+    """帳戶覆寫 telegram 設定時，各自送到自己的 chat，不會送錯群。"""
+    import notify
+    sent = _sent(monkeypatch)
+    d = notify.Digest("t", icon="📤")
+    d.add("Taylor", "a", token="T1", chat_id="C1")
+    d.add("Rosa", "b", token="T2", chat_id="C2")
+    d.add("Yvonne", "c", token="T1", chat_id="C1")
+    d.send()
+    assert [(t, c) for _, t, c in sent] == [("T1", "C1"), ("T2", "C2")]
+    assert "Taylor" in sent[0][0] and "Yvonne" in sent[0][0]
+    assert "Rosa" not in sent[0][0]
+
+
+def test_digest_rejects_unknown_level():
+    import notify
+    with pytest.raises(ValueError):
+        notify.Digest("t").add("Taylor", "x", level="info", **DEST)
+
+
+def test_digest_send_splits_long_messages(monkeypatch):
+    import notify
+    sent = _sent(monkeypatch)
+    d = notify.Digest("t")
+    d.add("Taylor", "x", [f"line {i:04d} " + "x" * 90 for i in range(100)], **DEST)
+    d.send()
+    assert len(sent) >= 2
+    assert all(len(m) <= notify.TG_MAX_CHARS for m, _, _ in sent)
+    joined = "\n".join(m for m, _, _ in sent)
+    assert "line 0000" in joined and "line 0099" in joined
+
+
+def test_split_message_keeps_short_message_whole():
+    import notify
+    assert notify.split_message("a\nb") == ["a\nb"]
+
+
+def test_split_message_breaks_on_lines_and_hard_splits_long_line():
+    import notify
+    chunks = notify.split_message("aaaa\nbbbb\n" + "c" * 12, limit=10)
+    assert chunks == ["aaaa\nbbbb", "cccccccccc", "cc"]
+    assert all(len(c) <= 10 for c in chunks)
+
+
+def test_order_group_lines_groups_buy_and_sell():
+    import notify
+    orders = [
+        {"symbol": "ERY", "action": "BUY", "qty": 55, "lmt_price": 12.3},
+        {"symbol": "SEF", "action": "SELL", "qty": 21, "lmt_price": 15.0},
+        {"symbol": "XLB", "action": "BUY", "qty": 12.0, "lmt_price": 88.1},
+    ]
+    assert notify.order_group_lines(orders) == [
+        "🟢 BUY 55 ERY · 12 XLB",
+        "🔴 SELL 21 SEF",
+    ]
+    assert notify.order_group_lines(orders[:1], show_price=True) == [
+        "🟢 BUY 55 ERY @ 12.30",
+    ]
+    assert notify.order_group_lines([]) == []

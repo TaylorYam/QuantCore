@@ -36,6 +36,7 @@ LOG_DIR.mkdir(exist_ok=True)
 
 from log_setup import setup_logging
 import market_calendar
+from notify import Digest, order_group_lines   # 三帳戶合併一則（#26）
 log = logging.getLogger(__name__)
 
 
@@ -50,8 +51,11 @@ def _prev_trading_day(d):
     return cur
 
 
-def run_daily_check(account_name: str):
-    """單一帳戶的每日檢查。S6：account_name 為必填，ctx 一律建立。"""
+def run_daily_check(account_name: str, digest: Digest):
+    """單一帳戶的每日檢查。S6：account_name 為必填，ctx 一律建立。
+
+    Telegram 內容加進 digest，由 main() 三帳戶合併發送（#26）。
+    """
     import rebalance_ib as reb     # 仍需要：place_orders, check_fills
     import ib_fetcher               # S8：IB 連線/查詢 helpers
     from account_ctx import AccountCtx
@@ -96,13 +100,10 @@ def run_daily_check(account_name: str):
     if ref_date.date() != expected_ref:
         log.error(f"  STALE DATA: SPY last bar {ref_date.date()} != expected "
                   f"Reference Close {expected_ref}; aborting daily risk check")
-        try:
-            from notify import tg_send as _tg
-            _tg(f"⚠️ {tag} 日度風控中止：資料錯位（SPY 最後 {ref_date.date()}，"
-                f"預期 {expected_ref}）。本次未檢查停損/跳空，請人工確認資料管線。",
-                token=ctx.tg_token, chat_id=ctx.tg_chat_id)
-        except Exception as e:
-            log.warning(f"  alert send failed: {e}")
+        digest.add(account_name, "⚠️ 日度風控中止",
+                   [f"資料錯位（SPY 最後 {ref_date.date()}，預期 {expected_ref}）。"
+                    f"本次未做 dip-buy 檢查，請人工確認資料管線。"],
+                   "warn", token=ctx.tg_token, chat_id=ctx.tg_chat_id)
         return
 
     mkt = get_market_regime_state(ref_date)
@@ -278,17 +279,12 @@ def run_daily_check(account_name: str):
             placed, trades = reb.place_orders(ib, ib_orders, ctx=place_ctx)
             fill_results = reb.check_fills(trades) if trades else []
 
-            # Telegram 通知
-            lines = [
-                f"<b>{tag} SP500 Daily Check</b>",
-                f"Date: {date.today()}",
-                f"SPY=${mkt['SPY_Close']:.2f}  DD={spy_dd*100:.1f}%",
-                "",
-            ]
-            for o in placed:
-                lines.append(f"  {o['action']} {o['qty']}sh {o['symbol']} @ ${o['lmt_price']:.2f}")
-            from notify import tg_send as _tg
-            _tg("\n".join(lines), token=ctx.tg_token, chat_id=ctx.tg_chat_id)
+            # Telegram 通知（main() 合併發送）
+            if placed:
+                digest.note(f"SPY {mkt['SPY_Close']:.2f} · DD {spy_dd*100:.1f}%")
+                digest.add(account_name, f"熊市 dip-buy 送出 {len(placed)} 筆 LMT",
+                           order_group_lines(placed, show_price=True),
+                           token=ctx.tg_token, chat_id=ctx.tg_chat_id)
         elif ctx.dry_run:
             log.info("  [DRY RUN] orders not sent")
 
@@ -309,12 +305,16 @@ def main():
     else:
         names = [args.account]
 
-    for name in names:
-        log.info(f"\n\n{'*'*60}\n  Account: {name}\n{'*'*60}")
-        try:
-            run_daily_check(name)
-        except Exception as e:
-            log.error(f"  [{name}] daily check failed: {e}", exc_info=True)
+    digest = Digest(f"日度風控 {date.today()}", icon="📤")
+    try:
+        for name in names:
+            log.info(f"\n\n{'*'*60}\n  Account: {name}\n{'*'*60}")
+            try:
+                run_daily_check(name, digest)
+            except Exception as e:
+                log.error(f"  [{name}] daily check failed: {e}", exc_info=True)
+    finally:
+        digest.send()
 
 
 if __name__ == '__main__':

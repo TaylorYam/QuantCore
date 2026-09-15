@@ -703,13 +703,12 @@ def main() -> None:
         tg_notify(f"<b>SP500 refresh apply failed</b>\n{html.escape(str(e))}")
         sys.exit(1)
 
+    # 成功只寫 log，不發 Telegram（#26：成功通知靜音；halt / soft warning /
+    # apply 失敗照發，名單超過 7 天沒更新時 morning check 會提醒）。
     new_csv_str = ", ".join(sorted(new_tickers)) if new_tickers else "(none)"
-    tg_notify(
-        f"<b>SP500 constituents refreshed</b>\n"
-        f"Gap: {last_date.date()} → {today.date()}  ({len(snapshots)} trading days)\n"
-        f"Events: {len(gap_events)}  (+{len(new_tickers)} −{len(removed_tickers)})\n"
-        f"New CSVs: {html.escape(new_csv_str)}"
-    )
+    log(f"Refreshed: {last_date.date()} -> {today.date()}  ({len(snapshots)} trading days)  "
+        f"events={len(gap_events)} (+{len(new_tickers)} -{len(removed_tickers)})  "
+        f"new CSVs: {new_csv_str}")
     log("Done.")
 
 

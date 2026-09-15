@@ -1,0 +1,62 @@
+"""
+資料更新通知（#26：成功不通知，只有失敗才發）. No network, no config.json.
+"""
+
+from __future__ import annotations
+
+from datetime import date
+
+
+def test_success_sends_nothing():
+    from update_data import failure_message
+    assert failure_message([], 45, date(2026, 9, 15)) is None
+
+
+def test_failure_message_lists_errors_escaped():
+    from update_data import failure_message
+    msg = failure_message(["ETF: <urlopen error timed out>"], 51, date(2026, 9, 15))
+    assert msg.startswith("<b>⚠️ QuantCore 資料更新部分失敗</b>")
+    assert "  • ETF: &lt;urlopen error timed out&gt;" in msg
+    assert "Elapsed: 51s" in msg
+
+
+def test_main_success_does_not_read_config_or_send(monkeypatch):
+    import sys
+    import types
+    import update_data
+
+    fake = types.ModuleType("data.update_data")
+    fake.update_etfs = lambda: None
+    fake.update_stocks = lambda: None
+    monkeypatch.setitem(sys.modules, "data.update_data", fake)
+    sent = []
+    monkeypatch.setattr(update_data, "_tg", lambda *a, **k: sent.append(a))
+
+    def no_config():
+        raise AssertionError("成功時不該讀 config / 發 TG")
+
+    monkeypatch.setattr(update_data, "_load_tg_config", no_config)
+    update_data.main()
+    assert sent == []
+
+
+def test_main_failure_sends(monkeypatch):
+    import sys
+    import types
+    import update_data
+
+    fake = types.ModuleType("data.update_data")
+
+    def broken():
+        raise RuntimeError("yfinance down")
+
+    fake.update_etfs = broken
+    fake.update_stocks = lambda: None
+    monkeypatch.setitem(sys.modules, "data.update_data", fake)
+    sent = []
+    monkeypatch.setattr(update_data, "_tg",
+                        lambda msg, *, token, chat_id: sent.append((msg, token, chat_id)))
+    monkeypatch.setattr(update_data, "_load_tg_config", lambda: ("T", "C"))
+    update_data.main()
+    assert len(sent) == 1 and "ETF: yfinance down" in sent[0][0]
+    assert sent[0][1:] == ("T", "C")

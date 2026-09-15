@@ -263,3 +263,44 @@ def test_freeze_incident_would_have_alarmed_same_night():
 
     assert "🔴" in text and "REW" in text and "未送出任何對應單" in text
     assert "🕐" in text and "XLF" in text
+
+
+# ── drift_alert_lines（#26：TG 只帶警報，🟠 只附帶）──────────────────
+
+def test_alert_lines_red_is_alarm():
+    from rebalance_plan import drift_alert_lines, drift_report_lines, verify_execution
+    rows = verify_execution([_actionable_row()], [])
+    alarms, advisories = drift_alert_lines(rows)
+    assert alarms[0] == "🔴 需要注意 1 檔:"
+    assert "REW [SkewLS]: 應 263 實 85（差 +178 股, 3.6% NAV）" in alarms[1]
+    assert advisories == []
+    # 與 log 報表同一套文字
+    assert all(ln in drift_report_lines(rows) for ln in alarms)
+
+
+def test_alert_lines_orange_is_advisory_only():
+    from rebalance_plan import drift_alert_lines
+    alarms, advisories = drift_alert_lines(_yvonne_residual_rows())
+    assert alarms == []
+    assert len(advisories) == 1 and advisories[0].startswith("🟠 SkewLS 合計偏離")
+
+
+def test_alert_lines_no_price_is_alarm():
+    from rebalance_plan import drift_alert_lines
+    rows = _rows(targets={"FFF": {"shares": 10, "strategy": "SkewLS"}},
+                 current={}, prices={"FFF": 0})
+    alarms, _ = drift_alert_lines(rows)
+    assert alarms == ["⚠️ 無報價跳過: FFF"]
+
+
+def test_alert_lines_quiet_when_submitted_yellow_manual_aligned():
+    from rebalance_plan import drift_alert_lines, verify_execution
+    rows = verify_execution(
+        _rows(targets={"AAA": {"shares": 50, "strategy": "SR"},
+                       "BBB": {"shares": 60, "strategy": "SR"},
+                       "CCC": {"shares": 100, "strategy": "SR"}},
+              current={"AAA": 50, "BBB": 50, "CCC": 50, "BTC": 3},
+              other=("BTC",),
+              prices={"AAA": 100.0, "BBB": 100.0, "CCC": 100.0, "BTC": 30.0}),
+        [{"symbol": "CCC", "action": "BUY", "qty": 50}])
+    assert drift_alert_lines(rows) == ([], [])

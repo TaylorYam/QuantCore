@@ -6,10 +6,12 @@ QuantCore — 每日收盤後資料更新
 流程：
   1. 更新 ETF 資料（11 板塊 + SPY/SSO/QQQ/VIX）
   2. 更新 SP500 成分股資料（~500 檔）
-  3. 發送 Telegram 通知（成功/失敗）
+  3. 有失敗才發 Telegram（#26：成功不通知；資料沒更新到時，16:00 日度風控
+     會發「資料錯位中止」）
 """
 
-import json, logging, sys, urllib.request, urllib.parse
+import html
+import json, logging, sys
 from pathlib import Path
 from datetime import date, datetime
 
@@ -26,17 +28,28 @@ if str(ROOT_DIR) not in sys.path:
 from log_setup import setup_logging
 log = logging.getLogger(__name__)
 
-# ── 設定 ──────────────────────────────────────────────────────────────────────
-cfg_path = BASE_DIR / 'config.json'
-with open(cfg_path, encoding='utf-8') as f:
-    cfg = json.load(f)
-
-TG_TOKEN   = cfg.get('telegram_token',   '')
-TG_CHAT_ID = cfg.get('telegram_chat_id', '')
-
-
 # ── Telegram（統一由 notify.py 提供）─────────────────────────────────────
 from notify import tg_send as _tg
+
+
+def _load_tg_config() -> tuple[str, str]:
+    """config.json 的 telegram token / chat_id（呼叫時才讀，模組可離線 import）。"""
+    with open(BASE_DIR / 'config.json', encoding='utf-8') as f:
+        cfg = json.load(f)
+    return cfg.get('telegram_token', ''), cfg.get('telegram_chat_id', '')
+
+
+def failure_message(errors: list[str], elapsed: int, today: date) -> str | None:
+    """資料更新失敗通知；全部成功回 None（不通知）。錯誤字串會 HTML escape
+    — 例外訊息常含 `<urlopen error ...>`，未 escape 會讓 Telegram 拒收整則。"""
+    if not errors:
+        return None
+    return (
+        f"<b>⚠️ QuantCore 資料更新部分失敗</b>\n"
+        f"Date: {today}\n"
+        f"Errors:\n" + "\n".join(f"  • {html.escape(e)}" for e in errors) +
+        f"\n\nElapsed: {elapsed}s"
+    )
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
@@ -70,23 +83,11 @@ def main():
 
     elapsed = (datetime.now() - start_ts).seconds
 
-    # ── 3. Telegram 通知 ─────────────────────────────────────────────────
-    if errors:
-        msg = (
-            f"<b>⚠️ QuantCore 資料更新部分失敗</b>\n"
-            f"Date: {date.today()}\n"
-            f"Errors:\n" + "\n".join(f"  • {e}" for e in errors) +
-            f"\n\nElapsed: {elapsed}s"
-        )
-    else:
-        msg = (
-            f"<b>✅ QuantCore 資料更新完成</b>\n"
-            f"Date: {date.today()}\n"
-            f"ETFs + Stocks 已更新至最新收盤價\n"
-            f"Elapsed: {elapsed}s"
-        )
-
-    _tg(msg, token=TG_TOKEN, chat_id=TG_CHAT_ID)
+    # ── 3. Telegram 通知（只在失敗時）──────────────────────────────────────
+    msg = failure_message(errors, elapsed, date.today())
+    if msg is not None:
+        token, chat_id = _load_tg_config()
+        _tg(msg, token=token, chat_id=chat_id)
     log.info(f"Done. Elapsed: {elapsed}s  Errors: {len(errors)}")
 
 

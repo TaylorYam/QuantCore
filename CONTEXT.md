@@ -90,6 +90,10 @@ _Avoid_: Rounding error（不帶方向性，掩蓋 floor 的系統性偏低）
 Panel 的三個定時監控統稱：Rosa poll（台北 21:00–05:00 市場窗每 30 分輪詢）、TY check（週二・三 20:05 開盤前驗證手動登入）、Morning check（NYSE 交易日 07:00 健檢 + constituents staleness 提醒）。排程＋派工唯一實作 = `automation/monitor_engine.py`（MonitorEngine + 三張 spec，ports 注入 I/O）；「該不該警報」的純決策與 `next_*_time` 排程計算在 rosa_poll / ty_check / morning_check 各自模組；`control_panel` 只是 Tk adapter（after 計時、worker 結果 marshal 回主線程、Telegram 出口）。防洪紀律：Gateway 斷線**事件不直發 TG**，Rosa 警報一律經 30 分輪詢 gate — 盤外 flapping 不洗版；事件路徑只有斷線 10 分鐘後的一次性 recovery（schedule_once）。
 _Avoid_: Monitoring（與 GatewayMonitor 心跳連線層混淆）、Alarm job
 
+**當日排程總結 (Daily Run Summary)**:
+平日 21:31 成交回報最後固定的一行：當天 04:30 資料更新、04:40 每日報告、16:00 [[日度風控 (Daily Risk Check)]]、21:00 調倉、21:31 成交回報有沒有跑完、有沒有出錯；沒單沒事的日子 Telegram 只有這一行。依據 = 各排程入口（`--account all`）寫的執行紀錄 `automation/logs/run_status/<job>_<YYYYMMDD>.json`，實作 `automation/run_status.py`：沒有紀錄 = 沒執行；有開始沒結束 = 沒跑完；開始時間早於排程 = 手動跑的，不算。平日 21:35 沒收到 = 電腦、排程或 Telegram 本身出問題（#38）。
+_Avoid_: Heartbeat（只代表程式活著，這裡還列各排程結果）、每日報告（= 04:40 帳戶快照）
+
 ## Relationships
 
 - 一個 **Account** 持有多個 **Strategy** 的部位

@@ -16,6 +16,7 @@ No IB Gateway, no network.
 from __future__ import annotations
 
 from datetime import date
+from types import SimpleNamespace as NS
 
 import pytest
 
@@ -31,6 +32,102 @@ def test_prev_trading_day_skips_weekend_and_juneteenth():
     # Mon 2026-06-22: back past Sun/Sat and Fri 6/19 (Juneteenth) → Thu 6/18
     from sp500_daily_check import _prev_trading_day
     assert _prev_trading_day(date(2026, 6, 22)) == date(2026, 6, 18)
+
+
+# ── 失敗要發 ❌（#38：以前連不上 IB、讀不到資料、例外都只寫 log）─────────
+# 06-15、08-10、08-17、08-24、08-26 16:00 三帳戶都連不上 IB，沒有任何通知。
+
+class _Tue0915(date):
+    @classmethod
+    def today(cls):
+        return date(2026, 9, 15)
+
+
+@pytest.fixture
+def daily_check_env(fake_config, monkeypatch):
+    """跑到連 IB 為止的真實流程：SPY 資料、市場狀態用假的，連 IB 一律被拒。"""
+    pytest.importorskip("ib_insync")
+    import pandas as pd
+    import ib_fetcher
+    import signals
+    import sp500_daily_check
+    from strategies.sp500_momentum import utils
+
+    env = NS(
+        spy=pd.DataFrame({"Close": [750.0, 757.3]},
+                         index=pd.to_datetime(["2026-09-11", "2026-09-14"])),
+        regime={"SPY_Close": 757.3, "SPY_MA200": 714.5, "SPY_DD": -0.022},
+    )
+    monkeypatch.setattr(sp500_daily_check, "date", _Tue0915)
+    monkeypatch.setattr(utils, "load_benchmark", lambda path: env.spy)
+    monkeypatch.setattr(signals, "get_market_regime_state", lambda ref: env.regime)
+
+    def refused(ctx):
+        raise ConnectionRefusedError("[WinError 1225] <refused>")
+
+    monkeypatch.setattr(ib_fetcher, "connect", refused)
+    return env
+
+
+def _check(name="Taylor"):
+    import sp500_daily_check
+    from notify import Digest
+    d = Digest("日度風控 2026-09-15", icon="📤")
+    sp500_daily_check.run_daily_check(name, d)
+    return d
+
+
+def test_ib_connect_failure_is_reported(daily_check_env):
+    assert _check().render() == (
+        "<b>❌ 日度風控 2026-09-15</b>\n\n"
+        "<b>Taylor</b> ❌ IB 連線失敗\n[WinError 1225] &lt;refused&gt;")
+
+
+def test_missing_spy_history_is_reported(daily_check_env):
+    daily_check_env.spy = daily_check_env.spy.iloc[-1:]
+    assert ("<b>Taylor</b> ❌ 日度風控失敗\nSPY 資料不足，本次沒有做 dip-buy 檢查"
+            in _check().render())
+
+
+def test_missing_market_regime_is_reported(daily_check_env):
+    daily_check_env.regime = {}
+    assert ("<b>Taylor</b> ❌ 日度風控失敗\n讀不到市場狀態資料（SPY / MA200），本次沒有做 dip-buy 檢查"
+            in _check().render())
+
+
+def test_nyse_holiday_stays_silent(daily_check_env, monkeypatch):
+    import sp500_daily_check
+
+    class _LaborDay(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 9, 7)
+
+    monkeypatch.setattr(sp500_daily_check, "date", _LaborDay)
+    assert _check().render() is None
+
+
+def test_run_all_exception_is_reported_and_continues(fake_config, monkeypatch):
+    import notify
+    import sp500_daily_check
+    from notify import Digest
+    sent, ran = [], []
+    monkeypatch.setattr(notify, "tg_send",
+                        lambda msg, *, token, chat_id: sent.append((msg, token, chat_id)))
+
+    def fake_check(name, digest):
+        ran.append(name)
+        if name == "Rosa":
+            raise RuntimeError("state <broken>")
+
+    monkeypatch.setattr(sp500_daily_check, "run_daily_check", fake_check)
+    d = Digest("日度風控 2026-09-15", icon="📤")
+    sp500_daily_check.run_all(["Taylor", "Rosa", "Yvonne"], d)
+    assert ran == ["Taylor", "Rosa", "Yvonne"]
+    assert sent == [("<b>❌ 日度風控 2026-09-15</b>\n\n<b>Rosa</b> ❌ 日度風控失敗\nstate &lt;broken&gt;",
+                     "FAKE_TOKEN", "FAKE_CHAT")]
+    assert d.outcomes(["Taylor", "Rosa"]) == {"Taylor": ("ok", None),
+                                               "Rosa": ("error", "❌ 日度風控失敗")}
 
 
 # ── #2: daily_report marks at Reference Close, IB only as fallback ──

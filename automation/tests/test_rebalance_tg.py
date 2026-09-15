@@ -137,6 +137,27 @@ def test_run_accounts_sends_one_message_for_all_accounts(fake_config, monkeypatc
     assert "<b>Taylor、Rosa、Yvonne</b> 送出 1 筆 MKT" in sent[0]
 
 
+def test_run_accounts_uses_callers_digest(fake_config, monkeypatch):
+    """#38：__main__ 傳入 digest，跑完照樣發送，之後讀各帳戶結果寫執行紀錄。"""
+    import rebalance_ib
+    from notify import Digest
+    sent = _capture_sends(monkeypatch)
+
+    def fake_main(mode, ctx, digest):
+        placed = PLACED[:1] if ctx.name == "Rosa" else []
+        rebalance_ib._add_rebalance_section(digest, ctx, placed=placed, fill_results=[])
+
+    monkeypatch.setattr(rebalance_ib, "main", fake_main)
+    d = Digest("調倉 2026-09-16", icon="📤")
+    assert rebalance_ib.run_accounts(["Taylor", "Rosa", "Yvonne"], mode="all", digest=d) == []
+    assert len(sent) == 1 and sent[0].startswith("<b>📤 調倉 2026-09-16</b>")
+    assert d.outcomes(["Taylor", "Rosa", "Yvonne"]) == {
+        "Taylor": ("ok", None),
+        "Rosa": ("ok", "送出 1 筆 MOO [DRY RUN]"),
+        "Yvonne": ("ok", None),
+    }
+
+
 def test_run_accounts_quiet_day_sends_nothing(fake_config, monkeypatch):
     import rebalance_ib
     sent = _capture_sends(monkeypatch)

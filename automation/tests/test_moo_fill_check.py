@@ -12,6 +12,7 @@ Fake objects mirror the ib_insync attributes the module reads. No IB, no network
 
 from __future__ import annotations
 
+from datetime import datetime
 from types import SimpleNamespace as NS
 
 import pytest
@@ -223,3 +224,68 @@ def test_main_connect_failure_adds_error_section(monkeypatch):
     assert msg.startswith("<b>❌ MOO 成交</b>")
     assert "<b>Taylor</b> ❌ IB 連線失敗" in msg
     assert "refused &lt;port&gt;" in msg
+
+
+# ── run_all()：三帳戶合一則 + 當日排程總結（#38）──────────────────────
+
+WEEKDAY_2131 = datetime(2026, 9, 15, 21, 31, 5)
+
+
+def _run_all(monkeypatch, ibs, *, summary=True, now=WEEKDAY_2131, names=("Taylor", "Rosa", "Yvonne")):
+    import moo_fill_check as m
+    import notify
+    import run_status
+    sent, seen = [], []
+    monkeypatch.setattr(notify, "tg_send",
+                        lambda msg, *, token, chat_id: sent.append((msg, token, chat_id)))
+    monkeypatch.setattr(m.ib_fetcher, "connect", lambda ctx: ibs.get(ctx.name) or FakeIB())
+
+    def fake_summary(now_, accounts, moo_outcomes):
+        seen.append((now_, list(accounts), dict(moo_outcomes)))
+        return "✅ 9/15 排程都跑完：（總結）", "ok"
+
+    monkeypatch.setattr(run_status, "daily_summary", fake_summary)
+    failures = m.run_all(list(names), summary=summary, now=now)
+    return failures, sent, seen
+
+
+def test_run_all_quiet_day_sends_only_the_summary(fake_config, monkeypatch):
+    failures, sent, seen = _run_all(monkeypatch, {})
+    assert failures == []
+    assert sent == [("✅ 9/15 排程都跑完：（總結）", "FAKE_TOKEN", "FAKE_CHAT")]
+    assert seen == [(WEEKDAY_2131, ["Taylor", "Rosa", "Yvonne"],
+                     {"Taylor": ("ok", None), "Rosa": ("ok", None), "Yvonne": ("ok", None)})]
+
+
+def test_run_all_fills_then_summary_in_one_message(fake_config, monkeypatch):
+    ib = FakeIB(trades=[trade("ERY", "BUY", perm=111)],
+                fills=[fill("ERY", "BOT", 55, 12.41, perm=111)],
+                positions=[NS(contract=NS(symbol="ERY", secType="STK"), position=55.0)])
+    _, sent, seen = _run_all(monkeypatch, {"Taylor": ib})
+    assert len(sent) == 1
+    msg = sent[0][0]
+    assert msg.startswith("<b>✅ MOO 成交 ")
+    assert "<b>Taylor</b> 1/1\n🟢 BUY 55 ERY @ 12.41" in msg
+    assert msg.endswith("\n\n✅ 9/15 排程都跑完：（總結）")
+    assert seen[0][2]["Taylor"] == ("ok", "1/1")
+
+
+def test_run_all_without_summary_stays_silent(fake_config, monkeypatch):
+    """手動跑單一帳戶（summary=False）：沒單照舊不發。"""
+    _, sent, seen = _run_all(monkeypatch, {}, summary=False, names=("Taylor",))
+    assert sent == [] and seen == []
+
+
+def test_run_all_daytime_run_has_no_summary(fake_config, monkeypatch):
+    _, sent, seen = _run_all(monkeypatch, {}, now=datetime(2026, 9, 15, 10, 0))
+    assert sent == [] and seen == []
+
+
+def test_run_all_ctx_failure_is_reported(fake_config, monkeypatch):
+    """ctx 建不起來（帳戶名打錯、accounts.json 壞掉）以前只寫 log。"""
+    failures, sent, seen = _run_all(monkeypatch, {}, names=("Taylor", "Nobody"))
+    assert [n for n, _ in failures] == ["Nobody"]
+    msg = sent[0][0]
+    assert msg.startswith("<b>❌ MOO 成交 ")
+    assert "<b>Nobody</b> ❌ 成交回報失敗" in msg
+    assert seen[0][2]["Nobody"] == ("error", "❌ 成交回報失敗")

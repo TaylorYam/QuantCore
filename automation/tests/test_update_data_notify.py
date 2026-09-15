@@ -36,8 +36,15 @@ def test_main_success_does_not_read_config_or_send(monkeypatch):
         raise AssertionError("成功時不該讀 config / 發 TG")
 
     monkeypatch.setattr(update_data, "_load_tg_config", no_config)
-    update_data.main()
+    assert update_data.main() == []
     assert sent == []
+
+
+def test_run_outcome_for_daily_summary():
+    """#38：資料更新不分帳戶；部分失敗在 21:31 總結顯示「04:30 資料更新 ⚠️ 部分失敗」。"""
+    from update_data import run_outcome
+    assert run_outcome([]) == {"": ("ok", None)}
+    assert run_outcome(["ETF: timed out"]) == {"": ("warn", "⚠️ 部分失敗")}
 
 
 def test_main_failure_sends(monkeypatch):

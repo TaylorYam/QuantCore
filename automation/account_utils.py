@@ -81,6 +81,25 @@ def get_account_config(name: str) -> dict:
     return merged
 
 
+def telegram_dest(name: str | None = None) -> dict:
+    """Telegram 目的地 {"token", "chat_id"}，可直接 `**` 給 tg_send / Digest。
+
+    name=None → config.json 共用設定（系統層級訊息，例如 21:31 當日排程總結）。
+    有 name → 該帳戶設定（含覆寫）；帳戶讀不到（名字打錯、accounts.json 壞掉）
+    時退回 config.json，錯誤訊息才不會跟著發不出去。都讀不到 → 空字串
+    （tg_send 靜默略過）。
+    """
+    loaders = ([lambda: get_account_config(name)] if name else []) + [load_base_config]
+    for load in loaders:
+        try:
+            cfg = load()
+        except Exception:
+            continue
+        return {"token": cfg.get('telegram_token', ''),
+                "chat_id": cfg.get('telegram_chat_id', '')}
+    return {"token": '', "chat_id": ''}
+
+
 def update_account_config(name: str, updates: dict) -> None:
     """
     寫入指定帳戶在 accounts.json 的覆蓋值（其他帳戶保持不變）。

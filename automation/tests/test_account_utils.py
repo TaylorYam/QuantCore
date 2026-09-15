@@ -133,3 +133,25 @@ def test_get_client_id_role_offset(fake_config):
     assert get_client_id("Taylor", ROLE_MOO_CHECK) == 22
     assert get_client_id("Taylor", ROLE_PANEL) == 25
     assert get_client_id("Taylor", ROLE_MONITOR) == 27
+
+
+def test_telegram_dest_shared_account_and_fallback(monkeypatch):
+    """帳戶覆寫優先；帳戶讀不到退回 config.json；config 也讀不到 → 空字串（不發）。"""
+    import account_utils
+    base = {"telegram_token": "T0", "telegram_chat_id": "C0"}
+    monkeypatch.setattr(account_utils, "load_base_config", lambda: dict(base))
+    monkeypatch.setattr(account_utils, "load_accounts", lambda: [
+        {"name": "Taylor", "account": "U1", "port": 4001},
+        {"name": "Rosa", "account": "U2", "port": 4002,
+         "telegram_token": "T2", "telegram_chat_id": "C2"},
+    ])
+    assert account_utils.telegram_dest() == {"token": "T0", "chat_id": "C0"}
+    assert account_utils.telegram_dest("Taylor") == {"token": "T0", "chat_id": "C0"}
+    assert account_utils.telegram_dest("Rosa") == {"token": "T2", "chat_id": "C2"}
+    assert account_utils.telegram_dest("Nobody") == {"token": "T0", "chat_id": "C0"}
+
+    def missing():
+        raise FileNotFoundError("config.json")
+
+    monkeypatch.setattr(account_utils, "load_base_config", missing)
+    assert account_utils.telegram_dest("Taylor") == {"token": "", "chat_id": ""}

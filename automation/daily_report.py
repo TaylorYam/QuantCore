@@ -7,7 +7,7 @@ QuantCore — 每日收盤後帳戶快照
   1. 從 IB Gateway 取帳戶 NAV、保證金、持倉明細
   2. 寫入 Excel 每日快照
   3. Margin Cushion 低於 25% 才發 Telegram 警示（#26：持倉報告與權益曲線
-     不再推播）；三帳戶合成一則
+     不再推播）；失敗（含連不上 IB）發 ❌（#38）；三帳戶合成一則
 """
 
 import html
@@ -143,24 +143,14 @@ def main(ctx: AccountCtx, digest: Digest | None = None):
             digest.send()
 
 
-if __name__ == '__main__':
-    setup_logging("daily")
-    quiet_ib_console()
-    import argparse
-    parser = argparse.ArgumentParser(description="QuantCore Daily Report")
-    parser.add_argument("--account", required=True,
-                        help="Account name from accounts.json (e.g. Taylor/Rosa/Yvonne), "
-                             "or 'all' to run all accounts sequentially")
-    args = parser.parse_args()
+def run_all(names: list[str], digest: Digest) -> list[tuple[str, str]]:
+    """依序跑多個帳戶，警示合成一則發送。回傳失敗清單 [(帳戶, 錯誤)]。
 
-    from account_utils import load_accounts, ROLE_REPORT
+    main() 沒來得及加段落就失敗的帳戶（連不上 IB、ctx 建不起來）補 ❌ 段落
+    — 以前只寫 log，Gateway 沒開時 04:40 失敗沒有任何通知（#38）。
+    """
+    from account_utils import ROLE_REPORT, telegram_dest
 
-    if args.account.lower() == 'all':
-        names = [a['name'] for a in load_accounts()]
-    else:
-        names = [args.account]
-
-    digest = Digest(f"每日報告 {date.today()}", icon="📊")
     failures = []
     try:
         for name in names:
@@ -171,8 +161,36 @@ if __name__ == '__main__':
             except Exception as e:
                 failures.append((name, str(e)))
                 log.error(f"Account {name} failed (continuing to next): {e}")
+                if not digest.has(name):
+                    digest.add(name, "❌ 每日報告失敗", [html.escape(str(e)[:300])],
+                               "error", **telegram_dest(name))
     finally:
         digest.send()
+    return failures
+
+
+if __name__ == '__main__':
+    setup_logging("daily")
+    quiet_ib_console()
+    import argparse
+    parser = argparse.ArgumentParser(description="QuantCore Daily Report")
+    parser.add_argument("--account", required=True,
+                        help="Account name from accounts.json (e.g. Taylor/Rosa/Yvonne), "
+                             "or 'all' to run all accounts sequentially")
+    args = parser.parse_args()
+
+    from account_utils import load_accounts
+    import run_status
+
+    all_accounts = args.account.lower() == 'all'
+    names: list[str] = []
+    digest = Digest(f"每日報告 {date.today()}", icon="📊")
+    # 當日排程總結用的執行紀錄（#38）：只記排程的 --account all
+    with run_status.recording("daily", lambda: digest.outcomes(names),
+                              enabled=all_accounts):
+        names.extend([a['name'] for a in load_accounts()] if all_accounts
+                     else [args.account])
+        failures = run_all(names, digest)
 
     if failures:
         log.error(f"Daily report finished with {len(failures)} failure(s): "

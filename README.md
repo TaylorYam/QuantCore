@@ -97,15 +97,15 @@ Allocation 獨立設定（factor-exposure 語意），不需相加為 1：
 Leverage = alloc_sr + alloc_sp500 + alloc_skewls
 ```
 
-目前三帳戶配置（z-family，WF + Monte Carlo 驗證定案）：
+目前三帳戶配置（z-family；實際值以 `automation/accounts.json` 為準，2026-09-16 核對）：
 
-| 帳戶 | alloc_sr | alloc_sp500 | alloc_skewls | Leverage |
-|------|----------|-------------|--------------|----------|
-| Yvonne | 0 | 0.40 | 1.00 | 1.4x |
-| Rosa | 0 | 0.70 | 1.00 | 1.7x |
-| Taylor | 0 | 0.80 | 1.00 | 1.8x |
+| 帳戶 | alloc_sr | alloc_sp500 | alloc_skewls | Leverage | z-ladder 檔位 |
+|------|----------|-------------|--------------|----------|---------------|
+| Yvonne | 0 | 0.40 | 1.00 | 1.4x | z14 |
+| Rosa | 0 | 0.40 | 1.00 | 1.4x | z14 |
+| Taylor | 0 | 0.60 | 1.00 | 1.6x | z16 |
 
-核心特徵：100% Skew LS + SP500 個股動量作為 margin stock，SR 停用。詳見 [CONTEXT.md](CONTEXT.md) 的 Allocation / Leverage 定義與 [ADR-0001](docs/adr/0001-alloc-skew-factor-exposure.md)。
+核心特徵：100% Skew LS + SP500 個股動量作為 margin stock，SR 停用。三帳戶都在 z-ladder 上（SkewLS 固定 1.00、SR 0，SP500 sleeve 決定槓桿檔位）；2026-07 的 WF + Monte Carlo 研究把上限檔位定在 Rosa z17、Taylor z18，實際採用較保守的檔位。詳見 [CONTEXT.md](CONTEXT.md) 的 Allocation / Leverage 定義與 [ADR-0001](docs/adr/0001-alloc-skew-factor-exposure.md)。
 
 ---
 

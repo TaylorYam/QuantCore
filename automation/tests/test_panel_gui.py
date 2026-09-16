@@ -2,10 +2,14 @@
 
 The window stays withdrawn. Network, subprocess, writes and trading entrances
 are blocked, while the real Panel constructor, buttons and refresh loop run.
+
+Each Tk test runs in its own process (`own_process`) — see that decorator for
+why. The matplotlib font cache is built before the GUI deadlines start.
 """
 import ctypes
-import gc
+import functools
 import importlib.util
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -18,20 +22,62 @@ import pytest
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows Panel GUI")
 
+# The child process runs the real test body; the parent only launches it.
+CHILD_ENV_FLAG = "QUANTCORE_GUI_TEST_CHILD"
+# A GUI stage must not take longer than this; generous enough for a slow CI
+# runner, short enough that a hung Panel fails instead of blocking the job.
+GUI_DEADLINE_SEC = 30
 
-@pytest.fixture(autouse=True, scope="module")
-def collect_tk_roots_after_file():
-    """Keep automatic GC off while this file's Tk roots come and go; collect
-    once at the end, on the main thread. Otherwise a finished test's root can
-    be collected inside a worker thread — each Tk Variable/Image __del__ then
-    waits ~1 s for the stopped mainloop — or right before the next root is
-    created, which broke Tk init on the Python 3.11/3.12 CI runners."""
-    gc.disable()
-    try:
-        yield
-    finally:
-        gc.enable()
-        gc.collect()
+
+def own_process(test):
+    """Run this Tk test in its own process.
+
+    Creating a second Tk root in one process fails intermittently inside Tcl's
+    own init scripts on Windows (`invalid command name "tcl_findLibrary"`,
+    `Can't find a usable tk.tcl`, `couldn't read file ...text.tcl`). That is
+    what turned CI red after #27, #34 and #36 — always this file, never the
+    code under test.
+
+    Measured here, 40 full-suite runs per variant (a per-test tmp_path fixture
+    kept the timing that makes it show up): leaving it alone 9 failures,
+    collecting the finished root after each test 24, keeping every root alive
+    11, holding a spare Tcl interpreter 10, holding a spare hidden Tk window 26
+    (and that one broke the first test). One root per process removes the
+    failure mode instead of tuning around it: 0 failures in 40 runs.
+    """
+    @functools.wraps(test)
+    def launch(*args, **kwargs):
+        if os.environ.get(CHILD_ENV_FLAG):
+            return test(*args, **kwargs)
+        node = f"{Path(__file__).as_posix()}::{test.__name__}"
+        try:
+            done = subprocess.run(
+                [sys.executable, "-m", "pytest", node, "-q", "-p", "no:cacheprovider"],
+                env={**os.environ, CHILD_ENV_FLAG: "1"},
+                capture_output=True, text=True, timeout=300,
+            )
+        except subprocess.TimeoutExpired:
+            pytest.fail(f"{test.__name__}: GUI test process hung (300s)", pytrace=False)
+        if done.returncode != 0:
+            pytest.fail(f"{test.__name__} failed in its own process:\n"
+                        f"{done.stdout[-5000:]}\n{done.stderr[-2000:]}", pytrace=False)
+    return launch
+
+
+def warm_matplotlib():
+    """Build the matplotlib font cache before a GUI deadline starts.
+
+    The Panel draws its pie charts with matplotlib, imported lazily on the
+    first chart. On a fresh CI runner that first import builds the font cache
+    ("Matplotlib is building the font cache; this may take a moment") inside
+    the timed refresh, which is what made the three-column test report
+    `GUI stalled at stage 1` on the 3.11 and 3.12 runners.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt          # noqa: F401  (populates the cache)
+    import matplotlib.font_manager as fm
+    fm.findfont(fm.FontProperties())
 
 
 def forbidden(*args, **kwargs):
@@ -103,9 +149,11 @@ def offline_panel_type(monkeypatch, module):
     return panel_type
 
 
+@own_process
 def test_panel_gui_three_column_refresh_failure_and_exit(fake_config, monkeypatch):
     import tkinter as tk
 
+    warm_matplotlib()
     module = load_panel_module(monkeypatch)
     panel_type = offline_panel_type(monkeypatch, module)
     monkeypatch.setattr(panel_type, "_sync_position", forbidden)
@@ -143,7 +191,7 @@ def test_panel_gui_three_column_refresh_failure_and_exit(fake_config, monkeypatc
     panel.report_callback_exception = lambda *args: exceptions.append(args[1])
     stage = [0]
     last_success = []
-    deadline = time.monotonic() + 12
+    deadline = time.monotonic() + GUI_DEADLINE_SEC
 
     refresh = next(w for w in descendants(panel)
                    if isinstance(w, tk.Button) and w.cget("text") == "Refresh IB")
@@ -243,6 +291,7 @@ def test_panel_gui_three_column_refresh_failure_and_exit(fake_config, monkeypatc
     assert not any(worker.is_alive() for worker in workers)
 
 
+@own_process
 def test_sync_pos_asks_for_account_and_previews_that_account(fake_config, monkeypatch):
     """#35: the action-bar Sync Pos asks which account first. The real
     compute_sync_plan then sizes targets from that account's NAV and
@@ -321,7 +370,7 @@ def test_sync_pos_asks_for_account_and_previews_that_account(fake_config, monkey
         assert dialog(picker_title) is None
 
     stage = [0]
-    deadline = time.monotonic() + 12
+    deadline = time.monotonic() + GUI_DEADLINE_SEC
 
     def check():
         try:

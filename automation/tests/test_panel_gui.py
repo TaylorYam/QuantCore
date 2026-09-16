@@ -293,10 +293,11 @@ def test_panel_gui_three_column_refresh_failure_and_exit(fake_config, monkeypatc
 
 @own_process
 def test_sync_pos_asks_for_account_and_previews_that_account(fake_config, monkeypatch):
-    """#35: the action-bar Sync Pos asks which account first. The real
-    compute_sync_plan then sizes targets from that account's NAV and
-    allocations, and the preview shows them; Cancel computes nothing.
-    IB and signals are faked — no connection, no orders."""
+    """#35/#37: the action-bar Sync Pos asks which account first, then opens
+    that account's window right away and streams the compute progress into it.
+    The real compute_sync_plan sizes targets from that account's NAV and
+    allocations, and the same window swaps to the preview showing them; Cancel
+    computes nothing. IB and signals are faked — no connection, no orders."""
     import tkinter as tk
     import account_utils
     import ib_fetcher
@@ -331,16 +332,29 @@ def test_sync_pos_asks_for_account_and_previews_that_account(fake_config, monkey
         sp500_accounts.append(account_name)
         return {"AAPL": 1.0}, "FAKE"
 
+    # The first compute step waits for the test, so the window has to prove
+    # itself before any plan exists.
+    sr_gate = threading.Event()
+
+    def sr_weights():
+        assert sr_gate.wait(GUI_DEADLINE_SEC), "test never released the SR weights"
+        return {"XLK": 1.0}, "FAKE"
+
+    compute_sync_plan = sync_position.compute_sync_plan
+
+    def compute(ctx, log_fn=None):
+        plan = compute_sync_plan(ctx, log_fn=log_fn)
+        plans.append(plan)
+        return plan
+
     monkeypatch.setattr(ib_fetcher, "connect", connect)
     monkeypatch.setattr(ib_fetcher, "get_nav", lambda ib, ctx: navs[ctx.account])
     monkeypatch.setattr(ib_fetcher, "get_positions", lambda ib, ctx: {})
     monkeypatch.setattr(ib_fetcher, "get_prices", lambda ib, syms, ctx: {s: 100.0 for s in syms})
-    monkeypatch.setattr(signals, "get_sr_weights", lambda: ({"XLK": 1.0}, "FAKE"))
+    monkeypatch.setattr(signals, "get_sr_weights", sr_weights)
     monkeypatch.setattr(signals, "get_skewls_weights", lambda: ({"SEF": 1.0}, "FAKE"))
     monkeypatch.setattr(signals, "get_sp500_weights", sp500_weights)
-    show_preview = panel_type._show_sync_preview
-    monkeypatch.setattr(panel_type, "_show_sync_preview",
-                        lambda self, plan: (plans.append(plan), show_preview(self, plan)))
+    monkeypatch.setattr(sync_position, "compute_sync_plan", compute)
     # Target shares = NAV × allocation × weight / $100 (XLK = SR, AAPL = SP500, SEF = SkewLS).
     # Rosa has SkewLS off, so no SEF target at all.
     expected_shares = {
@@ -362,48 +376,70 @@ def test_sync_pos_asks_for_account_and_previews_that_account(fake_config, monkey
     def buttons(widget):
         return {w.cget("text"): w for w in descendants(widget) if isinstance(w, tk.Button)}
 
+    def labels(widget):
+        return [w.cget("text") for w in descendants(widget) if isinstance(w, tk.Label)]
+
     def pick(name):
+        sr_gate.clear()
         sync_pos.invoke()
         choices = buttons(dialog(picker_title))
         assert list(choices) == [*names, "Cancel"]
         choices[name].invoke()
         assert dialog(picker_title) is None
+        # #37: the window is there as soon as the account is picked
+        window = dialog(f"Sync Position — {name}")
+        assert window is not None
+        assert labels(window)[:2] == [f"Sync Position — {name}", "計算中…"]
+        return window
 
-    stage = [0]
+    step = ["pick"]
+    index = [0]
+    window = [None]
     deadline = time.monotonic() + GUI_DEADLINE_SEC
 
     def check():
         try:
             assert not exceptions, exceptions
-            assert time.monotonic() < deadline, f"GUI stalled at stage {stage[0]}"
-            if stage[0] == 0:
+            assert time.monotonic() < deadline, f"GUI stalled at {step[0]} {index[0]}"
+            name = names[index[0]]
+            if step[0] == "pick":
                 sync_pos.invoke()
                 buttons(dialog(picker_title))["Cancel"].invoke()
                 assert dialog(picker_title) is None
-                pick(names[0])
-                stage[0] = 1
-            else:
-                name = names[stage[0] - 1]
-                preview = dialog(f"Sync Position — {name}")
-                if preview is not None:
-                    plan = plans[-1]
-                    sr, sp500, skewls = allocs[name]
-                    assert plan.ctx.name == name
-                    assert (plan.ctx.alloc_sr, plan.ctx.alloc_sp500, plan.ctx.alloc_skewls) == allocs[name]
-                    assert plan.ctx.leverage == round(sr + sp500 + skewls, 4)
-                    assert {s: t["shares"] for s, t in plan.targets.items()} == expected_shares[name]
-                    labels = [w.cget("text") for w in descendants(preview) if isinstance(w, tk.Label)]
-                    assert f"Sync Position — {name}" in labels
-                    assert f"SR ({sr:.0%} of NAV)" in labels
-                    assert f"SP500 Momentum ({sp500:.0%} of NAV)" in labels
-                    assert (f"Skew LS ({skewls:.0%} of NAV)" in labels) == (skewls > 0)
-                    buttons(preview)["Cancel"].invoke()
-                    if stage[0] == len(names):
-                        panel._quit_app()
-                        stage[0] += 1
-                        return
-                    pick(names[stage[0]])
-                    stage[0] += 1
+                assert dialog(f"Sync Position — {name}") is None   # Cancel computes nothing
+                window[0] = pick(name)
+                step[0] = "computing"
+            elif step[0] == "computing":
+                # Progress lines show up while compute_sync_plan is still running
+                if "Computing SR weights..." in labels(window[0]):
+                    assert len(plans) == index[0], "computed before showing progress"
+                    assert list(buttons(window[0])) == ["Close"]
+                    sr_gate.set()
+                    step[0] = "preview"
+            elif step[0] == "preview" and "Confirm & Send (LMT)" in buttons(window[0]):
+                preview = window[0]
+                assert dialog(f"Sync Position — {name}") is preview   # same window, swapped
+                plan = plans[-1]
+                sr, sp500, skewls = allocs[name]
+                assert plan.ctx.name == name
+                assert (plan.ctx.alloc_sr, plan.ctx.alloc_sp500, plan.ctx.alloc_skewls) == allocs[name]
+                assert plan.ctx.leverage == round(sr + sp500 + skewls, 4)
+                assert {s: t["shares"] for s, t in plan.targets.items()} == expected_shares[name]
+                shown = labels(preview)
+                assert f"Sync Position — {name}" in shown
+                assert "Computing SR weights..." not in shown       # progress replaced
+                assert f"SR ({sr:.0%} of NAV)" in shown
+                assert f"SP500 Momentum ({sp500:.0%} of NAV)" in shown
+                assert (f"Skew LS ({skewls:.0%} of NAV)" in shown) == (skewls > 0)
+                buttons(preview)["Cancel"].invoke()
+                assert dialog(f"Sync Position — {name}") is None
+                index[0] += 1
+                if index[0] == len(names):
+                    panel._quit_app()
+                    step[0] = "done"
+                    return
+                window[0] = pick(names[index[0]])
+                step[0] = "computing"
             panel.after(20, check)
         except BaseException as exc:
             exceptions.append(exc)
@@ -413,17 +449,143 @@ def test_sync_pos_asks_for_account_and_previews_that_account(fake_config, monkey
         panel.after(20, check)
         panel.mainloop()
     finally:
-        if stage[0] != len(names) + 1:
+        sr_gate.set()
+        if step[0] != "done":
             try:
                 panel._quit_app()
             except tk.TclError:
                 pass
     assert not exceptions, exceptions
-    assert stage[0] == len(names) + 1
+    assert step[0] == "done"
     # One IB connection per pick, in order, to that account's IB account and Gateway port;
     # the SP500 signal is asked for that account's own state.
     assert connected == [(a["name"], a["account"], a["port"]) for a in accounts]
     assert sp500_accounts == list(names)
+
+
+@own_process
+def test_sync_window_shows_failure_and_drops_a_plan_nobody_is_waiting_for(fake_config, monkeypatch):
+    """#37: a compute failure is reported inside the Sync Position window —
+    progress so far kept, no separate error dialog, still closable. Closing the
+    window mid-compute throws the finished plan away instead of popping a
+    preview on top of the Panel."""
+    import tkinter as tk
+    import ib_fetcher
+    import signals
+    import sync_position
+    import sync_preview_window
+
+    module = load_panel_module(monkeypatch)
+    panel_type = offline_panel_type(monkeypatch, module)
+    monkeypatch.setattr(module, "fetch_ib_portfolio",
+                        lambda name: {"available": False, "error": "offline test"})
+    monkeypatch.setattr(panel_type, "_sync_execute", forbidden)
+    monkeypatch.setattr(sync_position, "submit_sync_orders", forbidden)
+    exceptions = []
+    # #37 replaced the Sync Error messagebox — any dialog here fails the test.
+    monkeypatch.setattr(module.messagebox, "showerror",
+                        lambda *args, **kwargs: exceptions.append(args))
+
+    sr_gate = threading.Event()
+    sr_error = "SR signal file missing"
+    failing = [False]
+
+    def sr_weights():
+        assert sr_gate.wait(GUI_DEADLINE_SEC), "test never released the SR weights"
+        if failing[0]:
+            raise RuntimeError(sr_error)
+        return {"XLK": 1.0}, "FAKE"
+
+    computed = []
+    show_plan = sync_preview_window.SyncPreviewWindow.show_plan
+
+    def traced_show_plan(self, plan):
+        computed.append(plan)
+        return show_plan(self, plan)
+
+    monkeypatch.setattr(ib_fetcher, "connect", lambda ctx, *a, **kw: SimpleNamespace(
+        isConnected=lambda: False, disconnect=lambda: None))
+    monkeypatch.setattr(ib_fetcher, "get_nav", lambda ib, ctx: 100_000)
+    monkeypatch.setattr(ib_fetcher, "get_positions", lambda ib, ctx: {})
+    monkeypatch.setattr(ib_fetcher, "get_prices", lambda ib, syms, ctx: {s: 100.0 for s in syms})
+    monkeypatch.setattr(signals, "get_sr_weights", sr_weights)
+    monkeypatch.setattr(signals, "get_sp500_weights", lambda holdings, name: ({"AAPL": 1.0}, "FAKE"))
+    monkeypatch.setattr(sync_preview_window.SyncPreviewWindow, "show_plan", traced_show_plan)
+
+    panel = panel_type()
+    panel.report_callback_exception = lambda *args: exceptions.append(args[1])
+    name = "Taylor"
+    title = f"Sync Position — {name}"
+    sync_pos = next(w for w in descendants(panel)
+                    if isinstance(w, tk.Button) and w.cget("text") == "Sync Pos")
+
+    def dialog(want):
+        return next((w for w in panel.winfo_children()
+                     if isinstance(w, tk.Toplevel) and w.title() == want), None)
+
+    def buttons(widget):
+        return {w.cget("text"): w for w in descendants(widget) if isinstance(w, tk.Button)}
+
+    def labels(widget):
+        return [w.cget("text") for w in descendants(widget) if isinstance(w, tk.Label)]
+
+    def pick():
+        sr_gate.clear()
+        sync_pos.invoke()
+        buttons(dialog("Sync Pos — 選擇帳戶"))[name].invoke()
+        return dialog(title)
+
+    step = ["start"]
+    window = [None]
+    deadline = time.monotonic() + GUI_DEADLINE_SEC
+
+    def check():
+        try:
+            assert not exceptions, exceptions
+            assert time.monotonic() < deadline, f"GUI stalled at {step[0]}"
+            if step[0] == "start":
+                window[0] = pick()
+                step[0] = "close"
+            elif step[0] == "close" and "Computing SR weights..." in labels(window[0]):
+                buttons(window[0])["Close"].invoke()
+                assert dialog(title) is None
+                sr_gate.set()
+                step[0] = "dropped"
+            elif step[0] == "dropped" and computed:
+                # The compute finished after the window was gone: nothing reopens.
+                assert dialog(title) is None
+                failing[0] = True
+                window[0] = pick()
+                sr_gate.set()
+                step[0] = "failed"
+            elif step[0] == "failed" and sr_error in labels(window[0]):
+                shown = labels(window[0])
+                assert "計算失敗" in shown
+                assert "Computing SR weights..." in shown   # progress kept
+                assert list(buttons(window[0])) == ["Close"]
+                buttons(window[0])["Close"].invoke()
+                assert dialog(title) is None
+                assert len(computed) == 1                   # the failure showed no plan
+                panel._quit_app()
+                step[0] = "done"
+                return
+            panel.after(20, check)
+        except BaseException as exc:
+            exceptions.append(exc)
+            panel._quit_app()
+
+    try:
+        panel.after(20, check)
+        panel.mainloop()
+    finally:
+        sr_gate.set()
+        if step[0] != "done":
+            try:
+                panel._quit_app()
+            except tk.TclError:
+                pass
+    assert not exceptions, exceptions
+    assert step[0] == "done"
 
 
 def test_monitor_alert_uses_shared_telegram_settings(fake_config, monkeypatch):

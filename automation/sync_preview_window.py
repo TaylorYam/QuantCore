@@ -1,30 +1,33 @@
 """
-SyncPreviewWindow — Sync Position 預覽對話框（S10/R3.1 從 control_panel 抽出）
+SyncPreviewWindow — Sync Position 視窗（S10/R3.1 從 control_panel 抽出）
 
 職責：
-  1. 顯示理論持倉（Strategy Target）
-  2. 顯示實際持倉（Current Holdings）
-  3. 顯示交易清單（Required Trades）與總計
-  4. 讓使用者按 Cancel / Confirm
-  5. Confirm 後呼叫傳入的 on_confirm callback（帶 SyncPlan 當參數）
+  1. 選完帳戶就開窗，邊算邊顯示進度（#37）
+  2. 算完換成預覽：理論持倉、實際持倉、交易清單與總計
+  3. 讓使用者按 Cancel / Confirm
+  4. Confirm 後呼叫傳入的 on_confirm callback（帶 SyncPlan 當參數）
 
 Design:
   - Pure UI — 不做 IB 查詢、不管理背景 thread、不寫 Excel/Telegram
   - 所有 Panel-specific 的依賴（theme colors、log 函式、btn factory）
     以 constructor 參數明確傳入，沒有 import control_panel
-  - Modal（grab_set），會阻擋 parent 互動直到關閉
+  - 計算中不 grab，Panel 照樣能操作；換成預覽才 modal
+  - 視窗關掉之後 progress / show_plan / show_error 都不做事 —
+    背景計算停不下來，但算完的結果直接丟掉
 
 Usage:
     theme = {"bg": "#0b1120", "bg2": "#131d35", ...}
     window = SyncPreviewWindow(
         parent=self,                 # tk.Tk or Toplevel
-        plan=sync_plan,              # sync_position.SyncPlan
+        account_name="Taylor",
         theme=theme,                 # color dict
         log=self._log,               # Panel's output log callback
         btn_factory=self._btn,       # Panel's styled button factory
         on_confirm=lambda p: self._execute_sync(p),
     )
-    window.show()
+    window.show_computing()          # 立刻開窗
+    window.progress("  Connecting to IB...")   # 背景計算的每一行
+    window.show_plan(plan)           # 算完換成預覽（或 show_error(msg)）
 """
 
 from __future__ import annotations
@@ -45,12 +48,12 @@ _THEME_KEYS = {
 
 
 class SyncPreviewWindow:
-    """Modal review dialog for a Sync Position plan."""
+    """Sync Position window — progress while computing, then the plan preview."""
 
     def __init__(
         self,
         parent: tk.Misc,
-        plan: SyncPlan,
+        account_name: str,
         theme: dict,
         log: Callable[[str], None],
         btn_factory: Callable,
@@ -60,23 +63,63 @@ class SyncPreviewWindow:
         if missing:
             raise ValueError(f"theme missing keys: {sorted(missing)}")
         self.parent = parent
-        self.plan = plan
+        self.account_name = account_name
+        self.plan: SyncPlan | None = None
         self.t = theme
         self._log = log
         self._btn = btn_factory
         self.on_confirm = on_confirm
         self.win: tk.Toplevel | None = None
+        self._status: tk.Label | None = None
+        self._body: tk.Frame | None = None
+        self._progress: tk.Frame | None = None
+        self._closed = False
 
     # ── Public API ─────────────────────────────────────────────
 
-    def show(self) -> None:
-        """Build and display the modal window. Returns immediately after
-        the dialog is grabbed; dialog lifecycle is driven by button clicks."""
-        # Write log summary first (goes to parent Panel's Output Log)
-        self._log_summary()
-
-        # Build the Toplevel
+    def show_computing(self) -> None:
+        """Open the window before the plan exists, showing compute progress."""
         self._build_window()
+        self._build_computing_body()
+
+    def progress(self, msg: str) -> None:
+        """Append one compute-progress line."""
+        if not self._alive():
+            return
+        tk.Label(self._progress, text=msg.strip(), font=("Consolas", 9),
+                 bg=self.t["bg2"], fg=self.t["text"]).pack(anchor="w")
+
+    def show_plan(self, plan: SyncPlan) -> None:
+        """Swap the progress view for the plan preview, in the same window."""
+        if not self._alive():
+            return
+        self.plan = plan
+        # Log summary first (goes to parent Panel's Output Log)
+        self._log_summary()
+        self._status.config(text=self._plan_subtitle(), fg=self.t["text_dim"])
+        self._clear_body()
+        self._build_preview_body()
+        self.win.grab_set()
+
+    def show_error(self, msg: str) -> None:
+        """Keep the progress lines, show where the compute stopped."""
+        if not self._alive():
+            return
+        t = self.t
+        self._status.config(text="計算失敗", fg=t["red"])
+        tk.Label(self._progress, text=msg, font=("Consolas", 9),
+                 justify="left", wraplength=690,
+                 bg=t["bg2"], fg=t["red"]).pack(anchor="w", pady=(6, 0))
+
+    # ── Window state ───────────────────────────────────────────
+
+    def _alive(self) -> bool:
+        if self._closed or self.win is None:
+            return False
+        try:
+            return bool(self.win.winfo_exists())
+        except tk.TclError:
+            return False
 
     # ── Log summary（寫到 parent Panel 的 Output Log）────────────
 
@@ -144,37 +187,63 @@ class SyncPreviewWindow:
     # ── Window building ────────────────────────────────────────
 
     def _build_window(self) -> None:
-        plan = self.plan
-        ctx = plan.ctx
         t = self.t
+        title = f"Sync Position — {self.account_name}"
 
         win = tk.Toplevel(self.parent)
         self.win = win
-        win.title(f"Sync Position — {ctx.name}")
+        win.title(title)
         win.configure(bg=t["bg"])
         win.geometry("750x620")
         win.resizable(True, True)
         win.transient(self.parent)
-        win.grab_set()
+        win.protocol("WM_DELETE_WINDOW", self._close)
 
         ico_path = getattr(self.parent, "_ico_path", None)
         if ico_path and ico_path.exists():
             win.iconbitmap(str(ico_path))
 
-        # Title header
+        # Title header — subtitle carries the compute status, then the plan's
         hdr = tk.Frame(win, bg=t["accent"], padx=12, pady=8)
         hdr.pack(fill="x")
-        tk.Label(hdr, text=f"Sync Position — {ctx.name}",
+        tk.Label(hdr, text=title,
                  font=("Segoe UI", 13, "bold"), bg=t["accent"], fg=t["text"]).pack(anchor="w")
-        hdr_text = f"NAV: ${plan.nav:,.0f}   |   SR: {plan.sr_date}   |   SP500: {plan.sp500_date}"
-        if ctx.alloc_skewls > 0:
-            hdr_text += f"   |   SkewLS: {plan.skewls_date}"
-        tk.Label(hdr, text=hdr_text,
-                 font=("Segoe UI", 9), bg=t["accent"], fg=t["text_dim"]).pack(anchor="w")
+        self._status = tk.Label(hdr, text="計算中…",
+                                font=("Segoe UI", 9), bg=t["accent"], fg=t["text_dim"])
+        self._status.pack(anchor="w")
+
+        self._body = tk.Frame(win, bg=t["bg"])
+        self._body.pack(fill="both", expand=True)
+
+    def _plan_subtitle(self) -> str:
+        plan = self.plan
+        text = f"NAV: ${plan.nav:,.0f}   |   SR: {plan.sr_date}   |   SP500: {plan.sp500_date}"
+        if plan.ctx.alloc_skewls > 0:
+            text += f"   |   SkewLS: {plan.skewls_date}"
+        return text
+
+    def _clear_body(self) -> None:
+        for child in self._body.winfo_children():
+            child.destroy()
+        self._progress = None
+
+    def _build_computing_body(self) -> None:
+        t = self.t
+        self._progress = tk.Frame(self._body, bg=t["bg2"], padx=10, pady=8)
+        self._progress.pack(fill="x", padx=12, pady=12)
+
+        btn_frame = tk.Frame(self._body, bg=t["bg"], padx=12, pady=4)
+        btn_frame.pack(fill="x")
+        self._btn(btn_frame, "Close", self._close, t["btn_bg"], width=14).pack(side="left")
+
+    def _build_preview_body(self) -> None:
+        plan = self.plan
+        t = self.t
+        body = self._body
 
         # Scrollable main region
-        main_canvas = tk.Canvas(win, bg=t["bg"], highlightthickness=0)
-        main_sb = tk.Scrollbar(win, orient="vertical", command=main_canvas.yview)
+        main_canvas = tk.Canvas(body, bg=t["bg"], highlightthickness=0)
+        main_sb = tk.Scrollbar(body, orient="vertical", command=main_canvas.yview)
         main_frame = tk.Frame(main_canvas, bg=t["bg"])
         main_frame.bind("<Configure>",
                         lambda e: main_canvas.configure(scrollregion=main_canvas.bbox("all")))
@@ -451,6 +520,7 @@ class SyncPreviewWindow:
     # ── Button handlers ───────────────────────────────────────
 
     def _close(self) -> None:
+        self._closed = True
         if self.win is not None:
             try:
                 self.win.destroy()

@@ -997,31 +997,47 @@ class ControlPanel(tk.Tk):
         ).show()
 
     def _sync_account(self, account_name: str):
-        """同步倉位：計算理論持倉 vs IB 實際持倉，預覽差額後送限價單"""
-        self._log(f"[>] Sync Position — computing targets for [{account_name}]...")
-        threading.Thread(target=self._sync_compute_thread, args=(account_name,), daemon=True).start()
+        """同步倉位：開窗顯示計算進度（#37），算完換成預覽，Confirm 後送限價單"""
+        from sync_preview_window import SyncPreviewWindow
 
-    def _sync_compute_thread(self, account_name: str):
+        self._log(f"[>] Sync Position — computing targets for [{account_name}]...")
+
+        def on_confirm(plan):
+            threading.Thread(target=self._sync_execute, args=(plan,), daemon=True).start()
+
+        window = SyncPreviewWindow(
+            parent=self,
+            account_name=account_name,
+            theme=self._theme,
+            log=self._log,
+            btn_factory=self._btn,
+            on_confirm=on_confirm,
+        )
+        window.show_computing()
+        threading.Thread(target=self._sync_compute_thread,
+                         args=(account_name, window), daemon=True).start()
+
+    def _sync_compute_thread(self, account_name: str, window):
         """背景計算理論持倉與差額 — S10 thin wrapper，實作在 sync_position.compute_sync_plan"""
         try:
             from account_utils import ROLE_REBALANCE
             from account_ctx import AccountCtx
             import sync_position as sp
 
-            # 進度 log 回主執行緒
+            # 進度回主執行緒：Output Log + 視窗
             def progress(msg: str):
-                self.after(0, lambda m=msg: self._log(m))
+                self.after(0, lambda m=msg: (self._log(m), window.progress(m)))
 
             ctx = AccountCtx.from_name(account_name, ROLE_REBALANCE)
             plan = sp.compute_sync_plan(ctx, log_fn=progress)
 
-            # 回主執行緒顯示預覽
-            self.after(0, lambda p=plan: self._show_sync_preview(p))
+            # 回主執行緒：同一個視窗換成預覽
+            self.after(0, lambda p=plan: window.show_plan(p))
 
         except Exception as e:
             err_msg = str(e)
             self.after(0, lambda m=err_msg: self._log(f"[X] Sync compute failed: {m}"))
-            self.after(0, lambda m=err_msg: messagebox.showerror("Sync Error", m))
+            self.after(0, lambda m=err_msg: window.show_error(m))
 
     # Panel theme colours bundled for view injection.
     @property
@@ -1056,25 +1072,6 @@ class ControlPanel(tk.Tk):
             "med_num": self.font_med_num,
             "big_num": self.font_big_num,
         }
-
-    def _show_sync_preview(self, plan):
-        """R3.1 thin wrapper — 實作在 sync_preview_window.SyncPreviewWindow"""
-        from sync_preview_window import SyncPreviewWindow
-
-        def on_confirm(p):
-            threading.Thread(
-                target=self._sync_execute, args=(p,), daemon=True,
-            ).start()
-
-        window = SyncPreviewWindow(
-            parent=self,
-            plan=plan,
-            theme=self._theme,
-            log=self._log,
-            btn_factory=self._btn,
-            on_confirm=on_confirm,
-        )
-        window.show()
 
     def _sync_execute(self, plan):
         """背景執行緒：送出限價單 — S10 thin wrapper，實作在 sync_position.submit_sync_orders。

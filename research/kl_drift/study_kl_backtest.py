@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 # ── 讓 Python 能 import 原始策略模組 ─────────────────────────────────────────
-_PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+_PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 

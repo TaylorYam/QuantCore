@@ -36,9 +36,14 @@ QuantCore-master/
 │   ├── config.json             #   連線 / 配置中心（gitignored）
 │   ├── skewls_state_example.json #  SkewLS state 範本
 │   └── sp500_state_example.json  #  SP500 state 範本
+├── research/                   # 探索性研究（不在 CI 收集範圍）
+│   ├── kl_drift/               #   KL 散度因子漂移研究
+│   └── momentum_acceleration/  #   動量加速度因子研究
 ├── shared/                     # 分享版工具（Dashboard / 回測 / 資料更新）
+├── reports/                    # Walk-Forward 驗證報告（CSV）
 ├── docs/
 │   ├── adr/                    #   架構決策紀錄（ADR-0001 ~ 0011）
+│   ├── history/plans/          #   歷史開發計畫（PLAN.md / PLAN_R.md）
 │   └── setup_new_computer.md   #   新電腦環境設置指南
 ├── CONTEXT.md                  # 領域語言定義（所有名詞以此為準）
 ├── AGENTS.md                   # AI / 人類協作規則

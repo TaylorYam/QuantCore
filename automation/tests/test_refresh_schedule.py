@@ -41,11 +41,17 @@ def test_nyse_holiday_has_no_slots():
 
 
 def test_early_close_day_stops_at_13():
-    # 2026-11-27 day after Thanksgiving (hardcoded early close)
+    # 2026-11-27 day after Thanksgiving (official registry early close)
     slots = refresh_slots(date(2026, 11, 27))
     assert slots == _SLOTS_EARLY
     assert slots[-1] == time(13, 0)
     assert len(slots) == 5
+
+
+@pytest.mark.parametrize("day", [date(2027, 7, 2), date(2027, 12, 23)])
+def test_dates_before_observed_holidays_are_regular_sessions(day):
+    """Observed full-day holidays do not create a preceding half-day."""
+    assert refresh_slots(day) == _SLOTS_REGULAR
 
 
 def test_is_early_close_known_dates():

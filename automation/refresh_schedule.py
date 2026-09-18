@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
 
-from market_calendar import is_nyse_trading_day
+from market_calendar import NYSE_EARLY_CLOSES, is_nyse_trading_day
 
 _MAX_SCAN_DAYS = 14
 
@@ -39,43 +39,10 @@ _SLOTS_EARLY = tuple(s for s in _SLOTS_REGULAR if s <= _EARLY_CLOSE)
 
 # ── Early-close detection ───────────────────────────────────────────
 #
-# pandas_market_calendars gives exact close times when installed;
-# otherwise fall back to a hardcoded set (same pattern as
-# market_calendar._HOLIDAYS_FALLBACK).
-
-_EARLY_CLOSE_FALLBACK: frozenset[date] = frozenset({
-    # 2026
-    date(2026, 7, 2),     # day before Independence Day observed (Jul 3 holiday)
-    date(2026, 11, 27),   # day after Thanksgiving
-    date(2026, 12, 24),   # Christmas Eve
-    # 2027
-    date(2027, 7, 2),     # day before Independence Day observed (Jul 5 holiday)
-    date(2027, 11, 26),   # day after Thanksgiving
-    date(2027, 12, 23),   # Christmas Eve (Dec 24 observed holiday)
-})
-
-
-def _early_close_set_via_lib() -> frozenset[date] | None:
-    try:
-        import pandas_market_calendars as mcal  # type: ignore
-    except Exception:
-        return None
-    try:
-        nyse = mcal.get_calendar("NYSE")
-        sched = nyse.schedule(start_date="2026-01-01", end_date="2030-12-31")
-        out: set[date] = set()
-        for idx, row in sched.iterrows():
-            close_time = row["market_close"].time()
-            if close_time.hour < 16:
-                out.add(idx.date())
-        return frozenset(out)
-    except Exception:
-        return None
-
-
-_EARLY_CLOSE_DATES: frozenset[date] = (
-    _early_close_set_via_lib() or _EARLY_CLOSE_FALLBACK
-)
+# Keep the schedule tied to the official registry in market_calendar.  That
+# module owns the NYSE holiday and early-close dates, including its offline
+# fallback, so this caller cannot drift from the rest of the application.
+_EARLY_CLOSE_DATES: frozenset[date] = frozenset(NYSE_EARLY_CLOSES)
 
 
 def is_early_close(d: date) -> bool:

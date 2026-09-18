@@ -73,19 +73,35 @@ class SelectionEngine:
 
     PRECOMPUTED_EMA_PERIODS = [20, 30, 40, 50, 60]
 
-    def _get_ticker_data(self, ticker: str) -> pd.DataFrame | None:
-        """從 cache 或 disk 讀取股票資料，並預計算常用 EMA。"""
-        if ticker in self.data_cache:
-            return self.data_cache[ticker]
+    def _get_ticker_data(self, ticker: str, as_of=None) -> pd.DataFrame | None:
+        """從 cache 或 disk 讀取股票資料，並預計算常用 EMA。
 
-        df = utils.load_stock(utils.stock_csv_path(config.STOCK_DIR, ticker))
+        A historical alias is resolved with the signal session.  The source
+        frame is clipped to the alias window before caching, so a later
+        session cannot accidentally reuse the successor's bars outside the
+        reviewed identity interval.
+        """
+        source = utils.data_provider_symbol(ticker, as_of)
+        cache_key = ticker if source == utils.provider_symbol(ticker) else (ticker, source)
+        if ticker in self.data_cache and as_of is None:
+            return self.data_cache[ticker]
+        if cache_key in self.data_cache:
+            return self.data_cache[cache_key]
+
+        df = utils.load_stock(utils.stock_csv_path(config.STOCK_DIR, ticker, as_of))
 
         if df is not None and not df.empty:
+            alias = utils.historical_alias(ticker, as_of)
+            if alias is not None:
+                df = df[(df.index >= pd.Timestamp(alias.valid_from)) &
+                        (df.index <= pd.Timestamp(alias.valid_to))]
+                if df.empty:
+                    return None
             # 優先用 Adj Close 計算 EMA（與原始系統一致）
             price_col = "Adj Close" if "Adj Close" in df.columns else "Close"
             for period in self.PRECOMPUTED_EMA_PERIODS:
                 df[f"_EMA{period}"] = df[price_col].ewm(span=period, adjust=False).mean()
-            self.data_cache[ticker] = df
+            self.data_cache[cache_key] = df
             return df
 
         return None
@@ -129,7 +145,7 @@ class SelectionEngine:
         if cache_key in self.metrics_cache:
             return self.metrics_cache[cache_key]
 
-        df = self._get_ticker_data(ticker)
+        df = self._get_ticker_data(ticker, current_date)
         if df is None or df.empty:
             return None
 

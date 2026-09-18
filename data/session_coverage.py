@@ -1,6 +1,8 @@
 """Read-only historical coverage audit against exact daily Constituents snapshots.
 
-The supplied calendar is an input, not an independently certified exchange calendar.
+The supplied calendar is an input; it is cross-checked against SPY and the official
+NYSE registry (automation/market_calendar.py) but never rewritten here.
+Stock files are resolved with the reader's naming contract (BRK.B -> BRK-B.csv).
 No forward fill, ticker rename, listing date or delisting date is inferred.
 """
 from __future__ import annotations
@@ -16,6 +18,9 @@ from time import perf_counter
 
 import numpy as np
 import pandas as pd
+
+from data.trading_calendar import mc
+from strategies.sp500_momentum.utils import stock_csv_path
 
 
 def read_input(path: Path, sources: list[dict]) -> bytes:
@@ -159,11 +164,11 @@ def audit(root: Path, start: str, end: str) -> dict:
     coverage = []
     totals = Counter({k: 0 for k in ("required_bars", "valid_bars", "missing_bars", "invalid_bars")})
     for ticker, expected in sorted(required.items()):
-        path = root / "stocks" / f"{ticker}.csv"
+        path = stock_csv_path(root / "stocks", ticker)
         present, valid = set(), set()
         file_error = None
         try:
-            present, valid = inspect_bars(read_input(path, sources), f"stocks/{ticker}.csv", True, issues)
+            present, valid = inspect_bars(read_input(path, sources), f"stocks/{path.name}", True, issues)
         except (OSError, ValueError, TypeError) as exc:
             file_error = str(exc)
         absent = expected - present
@@ -176,13 +181,10 @@ def audit(root: Path, start: str, end: str) -> dict:
         counts = {"required_bars": len(expected), "valid_bars": len(expected & valid),
                   "missing_bars": len(absent), "invalid_bars": len(invalid)}
         totals.update(counts)
-        row = {"ticker": ticker, **counts, "missing_sessions": day_strings(absent),
+        row = {"ticker": ticker, "file": path.name, **counts, "missing_sessions": day_strings(absent),
                "invalid_sessions": day_strings(invalid),
                "before_first_observed": day_strings(before), "after_last_observed": day_strings(after),
                "internal_missing": day_strings(internal), "file_error": file_error}
-        alternative = root / "stocks" / f"{ticker.replace('.', '-')}.csv"
-        if file_error and alternative != path and alternative.is_file():
-            row["possible_symbol_format_file"] = alternative.name
         coverage.append(row)
     # SPY is an independent local cross-check, not a replacement calendar.
     spy_present, spy_valid = inspect_bars(read_input(root / "etfs" / "SPY.csv", sources), "etfs/SPY.csv", False, issues)
@@ -190,6 +192,14 @@ def audit(root: Path, start: str, end: str) -> dict:
     calendar_check = {"calendar_sessions_without_spy": day_strings(sessions - spy_present),
                       "spy_sessions_outside_calendar": day_strings(spy_requested - sessions),
                       "calendar_sessions_with_invalid_spy": day_strings((sessions & spy_present) - spy_valid)}
+    # Official NYSE registry: independent of both the local calendar and SPY.
+    lo = max(begin.date(), mc.REGISTRY_FIRST)
+    hi = min(finish.date(), mc.REGISTRY_LAST)
+    official = {pd.Timestamp(d) for d in mc.official_sessions(lo, hi)} if lo <= hi else set()
+    in_registry = {d for d in sessions if lo <= d.date() <= hi}
+    calendar_check["official_registry_range"] = [str(lo), str(hi)] if lo <= hi else []
+    calendar_check["calendar_sessions_officially_closed"] = day_strings(in_registry - official)
+    calendar_check["official_sessions_missing_from_calendar"] = day_strings(official - in_registry)
     disputed = sessions - spy_present
     for row in coverage:
         missing = set(pd.to_datetime(row["missing_sessions"]))
@@ -201,8 +211,9 @@ def audit(root: Path, start: str, end: str) -> dict:
     latest = max(sessions & set(snapshots)) if sessions & set(snapshots) else None
     latest_string = str(latest.date()) if latest is not None else None
     has_findings = bool(issues or unknown or off_calendar or totals["missing_bars"] or
-                        totals["invalid_bars"] or any(calendar_check.values()))
-    return {"schema_version": 1, "start": str(begin.date()), "end": str(finish.date()),
+                        totals["invalid_bars"] or
+                        any(v for k, v in calendar_check.items() if k != "official_registry_range"))
+    return {"schema_version": 2, "start": str(begin.date()), "end": str(finish.date()),
             "has_findings": has_findings, "calendar_sessions": len(sessions),
             "known_constituent_sessions": len(sessions) - len(unknown),
             "unknown_constituent_sessions": day_strings(unknown),
@@ -234,7 +245,7 @@ def main() -> int:
     try:
         report = audit(args.data_root, args.start, args.end)
     except (OSError, ValueError, TypeError) as exc:
-        print(json.dumps({"schema_version": 1, "error": str(exc)}, ensure_ascii=False))
+        print(json.dumps({"schema_version": 2, "error": str(exc)}, ensure_ascii=False))
         return 2
     print(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False))
     return int(report["has_findings"])

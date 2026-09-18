@@ -82,6 +82,12 @@ BLACKLIST = [
     ("2025-12-31", "WBD"),    # 2025/12/31 後不持有 WBD
 ]
 
+# ── 類股（Constituents 寫法含 "."，例 BRK.B / BF.B）───────────────
+# 行情已可由 reader 讀到（#50 命名契約：BRK.B → BRK-B.csv），但下單端尚無
+# IB 類股代碼對應（IB 寫法為 "BRK B"），選中會無法下單。開放前一律不進選股，
+# 行為等同 #50 之前（當時因讀不到檔而被排除）。開放見 #52。
+CLASS_SHARES_TRADABLE = False
+
 # ── 輸出設定 ──────────────────────────────────────────────────
 OUTPUT_DIR = _ROOT / "output"
 LIVE_MODE  = True     # True = 回測結束後保留持倉（mark-to-market 計算最終權益）

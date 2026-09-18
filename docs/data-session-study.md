@@ -112,6 +112,8 @@ Run 中指標計算內含時間中位數為 13.659 秒。
 3. 優先量測 Constituents Excel 的快取／衍生格式方案，再評估行情 CSV 搬遷。
 4. 若修改 reader、策略輸入或價格歷史，依專案規則另做 OLD/NEW signal-state characterization 與必要回測。
 
+第 1、2、4 項已由 #50 處理，結果與部署步驟見 [data-coverage-repair.md](data-coverage-repair.md)。
+
 本 PR 只新增離線檢查與量測工具，沒有變更 Strategy 實作，未部署 live。
 本機完整測試：484 passed、20 skipped；20 項為 clean worktree 未帶入策略預設路徑歷史資料的測試。
 新測試以 synthetic Excel／CSV 驗證 membership、unknown snapshot、日曆差異、無效 bar、輸入不被改寫、

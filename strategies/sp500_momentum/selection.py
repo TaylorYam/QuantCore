@@ -44,7 +44,7 @@ class SelectionEngine:
             return pd.DataFrame()
 
     def get_constituents(self, date: pd.Timestamp) -> list[str]:
-        """回傳指定日期的成分股清單（已套用黑名單）。"""
+        """回傳指定日期的成分股清單（已套用黑名單與類股排除）。"""
         if self.constituents_df.empty:
             return []
 
@@ -66,6 +66,10 @@ class SelectionEngine:
             if date > bl_date and bl_ticker.upper() in tickers:
                 tickers.remove(bl_ticker.upper())
 
+        # 類股尚無下單代碼對應（config.CLASS_SHARES_TRADABLE，#52）
+        if not getattr(config, "CLASS_SHARES_TRADABLE", True):
+            tickers = [t for t in tickers if "." not in t]
+
         return tickers
 
     # ── 資料載入 ──────────────────────────────────────────────────────────────
@@ -77,8 +81,7 @@ class SelectionEngine:
         if ticker in self.data_cache:
             return self.data_cache[ticker]
 
-        path = config.STOCK_DIR / f"{ticker}.csv"
-        df = utils.load_stock(path)
+        df = utils.load_stock(utils.stock_csv_path(config.STOCK_DIR, ticker))
 
         if df is not None and not df.empty:
             # 優先用 Adj Close 計算 EMA（與原始系統一致）

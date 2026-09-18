@@ -1,0 +1,613 @@
+{
+ "schema_version": 1,
+ "reviewed": "2026-09-18",
+ "note": "Reviewed dispositions for #50. Keys: SYMBOL (all gap groups of that symbol) or SYMBOL/kind. Unlisted groups get the conservative defaults in data/coverage_evidence.py. 'repaired' needs a repair that the staging run applies; nothing here rewrites live data.",
+ "sources": {
+  "wiki-current": "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+  "wiki-history": "https://en.wikipedia.org/wiki/Historical_components_of_the_S%26P_500",
+  "marsh-ticker": "https://www.corporate.marsh.com/news-events/2025/december/marsh-mclennan-to-change-nyse-symbol-to-mrsh.html",
+  "veralto-trading": "https://investors.veralto.com/2023-10-02-Veralto-Begins-Trading-as-Public-Company",
+  "dayforce-close": "https://www.dayforce.com/who-we-are/newsroom/thoma-bravo-completes-acquisition-of-dayforce",
+  "hologic-close": "https://www.hologic.com/about/press-release/blackstone-and-tpg-complete-acquisition-hologic",
+  "att-twx-close": "https://investors.att.com/stockholder-services/cost-basis-guide/worksheet/time-warner",
+  "cvs-aet-close": "https://investors.cvshealth.com/news/news-details/2018/CVS-Health-Completes-Acquisition-of-Aetna-Marking-the-Start-of-Transforming-the-Consumer-Health-Experience/default.aspx"
+ },
+ "symbols": {
+  "BRK.B": {
+   "category": "format_difference",
+   "status": "repaired",
+   "repair": {
+    "kind": "naming_contract",
+    "file": "BRK-B.csv"
+   },
+   "reason": "Constituents write the class B share as BRK.B; the provider and the local file use BRK-B.",
+   "evidence": [
+    "Provider BRK-B: Berkshire Hathaway Inc., NYSE; local BRK-B.csv closes equal the provider series on all 3,196 sessions 2014-01-02..2026-09-17.",
+    "wiki-current lists BRK.B Berkshire Hathaway."
+   ],
+   "follow_up": "Orders need the broker's own symbol for class shares; the naming contract covers data files only."
+  },
+  "BF.B": {
+   "category": "format_difference",
+   "status": "repaired",
+   "repair": {
+    "kind": "naming_contract",
+    "file": "BF-B.csv"
+   },
+   "reason": "Constituents write the class B share as BF.B; the provider and the local file use BF-B.",
+   "evidence": [
+    "Provider BF-B: Brown-Forman Corporation, NYSE; local BF-B.csv closes match the provider within 1.4e-4 relative on all 3,196 sessions.",
+    "wiki-current lists BF.B Brown-Forman."
+   ],
+   "follow_up": "Orders need the broker's own symbol for class shares; the naming contract covers data files only."
+  },
+  "A": {
+   "category": "missing_data",
+   "status": "repaired",
+   "repair": {
+    "kind": "provider_backfill",
+    "provider_symbol": "A"
+   },
+   "reason": "Agilent has been a member throughout; the migrated dataset never had A.csv.",
+   "evidence": [
+    "Provider A: Agilent Technologies, Inc., NYSE, first trade 1999-11-18, bars 2014-01-02..2026-09-17.",
+    "wiki-current lists A Agilent Technologies (added 2000-06-05)."
+   ]
+  },
+  "MRSH": {
+   "category": "rename_or_corporate_event",
+   "status": "repaired",
+   "repair": {
+    "kind": "provider_backfill",
+    "provider_symbol": "MRSH"
+   },
+   "reason": "Marsh & McLennan changed its NYSE symbol MMC -> MRSH on 2026-01-14 (legal name and CUSIP unchanged). The Constituents use MRSH for the whole history; the local data sat in MMC.csv, which stopped updating after 2026-03-13.",
+   "evidence": [
+    "marsh-ticker: symbol change effective 2026-01-14, CUSIP unchanged.",
+    "Provider MRSH closes equal local MMC.csv on all 3,067 overlapping sessions 2014-01-02..2026-03-13 (max relative difference 6e-8).",
+    "wiki-current lists MRSH Marsh McLennan, CIK 62709."
+   ],
+   "follow_up": "MMC.csv is no longer referenced by any Constituents row; keep it as history, do not merge files.",
+   "probe": [
+    "MMC"
+   ]
+  },
+  "AAP": {
+   "category": "missing_data",
+   "status": "repaired",
+   "repair": {
+    "kind": "provider_backfill",
+    "provider_symbol": "AAP"
+   },
+   "reason": "Still listed under the same symbol and name; the migrated dataset lacked the file.",
+   "evidence": [
+    "Provider AAP: Advance Auto Parts, Inc., first trade 2001-11-29.",
+    "wiki-history: added 2015-07-08, removed 2023-08-25, security Advance Auto Parts."
+   ]
+  },
+  "BBWI": {
+   "category": "missing_data",
+   "status": "repaired",
+   "repair": {
+    "kind": "provider_backfill",
+    "provider_symbol": "BBWI"
+   },
+   "reason": "Same legal entity throughout (traded as L Brands, LB, until 2021-08); provider serves the full series under BBWI.",
+   "evidence": [
+    "Provider BBWI: Bath & Body Works, Inc., first trade 1982-04-01.",
+    "wiki-history: removed 2024-10-01, security Bath & Body Works, Inc."
+   ],
+   "follow_up": "The 2021-08 Victoria's Secret spin-off is inside the window; the provider Close is not spin-adjusted, as for every existing parent-company file."
+  },
+  "EMN": {
+   "category": "missing_data",
+   "status": "repaired",
+   "repair": {
+    "kind": "provider_backfill",
+    "provider_symbol": "EMN"
+   },
+   "reason": "Still listed under the same symbol and name; the migrated dataset lacked the file.",
+   "evidence": [
+    "Provider EMN: Eastman Chemical Company, first trade 1993-12-14.",
+    "wiki-history: removed 2025-11-04, security Eastman Chemical Co."
+   ]
+  },
+  "KMX": {
+   "category": "missing_data",
+   "status": "repaired",
+   "repair": {
+    "kind": "provider_backfill",
+    "provider_symbol": "KMX"
+   },
+   "reason": "Still listed under the same symbol and name; the migrated dataset lacked the file.",
+   "evidence": [
+    "Provider KMX: CarMax, Inc., first trade 1997-02-04.",
+    "wiki-history: added 2010-06-28, removed 2025-10-31, security CarMax."
+   ]
+  },
+  "MBC": {
+   "category": "missing_data",
+   "status": "repaired",
+   "repair": {
+    "kind": "provider_backfill",
+    "provider_symbol": "MBC"
+   },
+   "reason": "Two-session membership after the spin-off from Fortune Brands; still listed under the same symbol.",
+   "evidence": [
+    "Provider MBC: MasterBrand, Inc., series starts 2022-12-09 (when-issued), membership sessions 2022-12-15..16 are present.",
+    "wiki-history: added 2022-12-15 (spin-off), removed 2022-12-19."
+   ]
+  },
+  "DXC": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "DXC was formed on 2017-04-03 when CSC merged with HPE Enterprise Services; the provider series under DXC starts in 2014 (first trade 1981), i.e. it carries CSC's pre-merger history.",
+   "evidence": [
+    "wiki-history: added 2017-04-04 'HPE completed the corporate spin-off of Everett, merged with CSC to form DXC Technology'."
+   ],
+   "follow_up": "Backfill only after deciding, with SEC evidence of the first DXC session, whether to drop pre-2017-04-03 bars; never splice CSC history silently."
+  },
+  "AA": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "The 2015-2016 member was Alcoa Inc. (CIK 4281, renamed Arconic, now Howmet). The provider symbol AA now identifies Alcoa Corporation (spun off 2016-11) with inherited older history.",
+   "evidence": [
+    "Provider AA: Alcoa Corporation, first trade reported 1962-01-02.",
+    "wiki-history: 2016-11-01 AA removed, ARNC added (spin-off).",
+    "wiki-current: HWM Howmet Aerospace, CIK 4281.",
+    "Provider HWM (the member's legal successor) has bars from 2016-11-01 only, so the provider attributes Alcoa Inc.'s older history to Alcoa Corporation."
+   ],
+   "follow_up": "Needs a verified Alcoa Inc. price source; the provider AA series is not attributable to the member."
+  },
+  "ARNC": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Arconic Inc. renamed Howmet Aerospace (HWM) on 2020-04-01, same legal entity (CIK 4281); local HWM.csv starts 2016-11-01 and covers the window.",
+   "evidence": [
+    "wiki-history: 2020-04-01 ARNC removed, HWM added.",
+    "wiki-current: HWM CIK 4281.",
+    "Provider HWM: Howmet Aerospace Inc., bars from 2016-11-01 only."
+   ],
+   "follow_up": "Candidate for a date-bounded cross-symbol alias (ARNC -> HWM.csv); outside the format-only naming contract, separate review.",
+   "probe": [
+    "HWM"
+   ]
+  },
+  "GPS": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "The Gap, Inc. now trades as GAP; the provider no longer serves GPS.",
+   "evidence": [
+    "Provider GPS: no data; provider GAP: The Gap, Inc. with history from 2014.",
+    "wiki-history: GPS removed 2022-02-03.",
+    "Provider GAP: The Gap, Inc., first trade 1980-03-17, bars from 2014."
+   ],
+   "follow_up": "Candidate for a date-bounded cross-symbol alias (GPS -> GAP); separate review.",
+   "probe": [
+    "GAP"
+   ]
+  },
+  "FBHS": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Fortune Brands Home & Security renamed Fortune Brands Innovations (FBIN) after the 2022-12 MasterBrand spin-off.",
+   "evidence": [
+    "wiki-history: FBHS removed 2022-12-19; MBC added 2022-12-15 as its spin-off.",
+    "Provider FBIN: Fortune Brands Innovations, Inc., first trade 2011-09-16 (the FBHS listing date)."
+   ],
+   "follow_up": "Candidate for a cross-symbol alias (FBHS -> FBIN); separate review.",
+   "probe": [
+    "FBIN"
+   ]
+  },
+  "ADS": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Alliance Data Systems renamed Bread Financial (BFH); the provider no longer serves ADS.",
+   "evidence": [
+    "wiki-history: ADS removed 2020-06-22.",
+    "Provider BFH: Bread Financial Holdings, Inc., first trade 2001-06-15 (the ADS listing date)."
+   ],
+   "follow_up": "Candidate for a cross-symbol alias (ADS -> BFH) after identity verification; separate review.",
+   "probe": [
+    "BFH"
+   ]
+  },
+  "DPS": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Dr Pepper Snapple (legal acquirer) became Keurig Dr Pepper (KDP, CIK 1418135) in 2018 with a special dividend; the provider no longer serves DPS.",
+   "evidence": [
+    "wiki-history: DPS removed 2018-07-02; KDP re-added 2022-06-21.",
+    "wiki-current: KDP CIK 1418135.",
+    "Provider KDP: Keurig Dr Pepper Inc., first trade 2008-05-07 (the DPS listing date)."
+   ],
+   "follow_up": "Candidate for a cross-symbol alias (DPS -> KDP); the 2018 special dividend must be reviewed first.",
+   "probe": [
+    "KDP"
+   ]
+  },
+  "WYN": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Wyndham Worldwide spun off Wyndham Hotels and continued as Wyndham Destinations, later Travel + Leisure.",
+   "evidence": [
+    "wiki-history: WYN removed 2018-05-31 after the spin-off of Wyndham Hotels & Resorts.",
+    "Provider TNL: Travel + Leisure Co., first trade 2006-07-19 (the Wyndham Worldwide listing date)."
+   ],
+   "follow_up": "Candidate for a cross-symbol alias after identity verification; separate review.",
+   "probe": [
+    "TNL"
+   ]
+  },
+  "DISCA": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Discovery, Inc. (CIK 1437107) became Warner Bros. Discovery (WBD) on 2022-04-11; local WBD.csv covers the window.",
+   "evidence": [
+    "wiki-history: DISCA removed / WBD added 2022-04-11.",
+    "wiki-current: WBD CIK 1437107.",
+    "Provider WBD: Warner Bros. Discovery, Inc., first trade 2005-07-08."
+   ],
+   "follow_up": "Candidate for a cross-symbol alias (DISCA -> WBD.csv, Series A only); separate review.",
+   "probe": [
+    "WBD"
+   ]
+  },
+  "DISCK": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Series C shares were exchanged into WBD in 2022; a different share class from the WBD series.",
+   "evidence": [
+    "wiki-history: DISCK removed 2022-04-11."
+   ],
+   "follow_up": "Needs a DISCK price source; never map to WBD (cross-class)."
+  },
+  "DWDP": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "DowDuPont (CIK 1666700) renamed DuPont de Nemours (DD) on 2019-06-03; the provider DD series before 2017-09 belongs to the old E. I. du Pont.",
+   "evidence": [
+    "wiki-history: DWDP added 2017-09-01, removed 2019-06-03 (DD added).",
+    "wiki-current: DD CIK 1666700.",
+    "Provider DD: DuPont de Nemours, Inc., first trade reported 1972-06-01 (inherited E. I. du Pont history)."
+   ],
+   "follow_up": "Alias only after checking which company the provider DD bars represent inside the window.",
+   "probe": [
+    "DD"
+   ]
+  },
+  "HFC": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "HollyFrontier became a subsidiary of the new HF Sinclair holding company (DINO) in 2022; the provider DINO series carries the older HollyFrontier history.",
+   "evidence": [
+    "wiki-history: HFC added 2018-06-18, removed 2021-06-04.",
+    "Provider DINO: HF Sinclair Corporation, first trade reported 1980-03-17 (inherited history)."
+   ],
+   "follow_up": "Needs identity verification of the provider DINO history before any alias.",
+   "probe": [
+    "DINO"
+   ]
+  },
+  "ACE": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "ACE Ltd acquired Chubb Corp and took the Chubb name and CB ticker (CIK 896159); the provider CB series appears to be ACE Ltd's (first trade 1993-03-25).",
+   "evidence": [
+    "wiki-history: ACE removed 2016-01-19 'ACE Ltd acquired Chubb and retained the CB ticker'.",
+    "wiki-current: CB Chubb Limited CIK 896159.",
+    "Provider CB: Chubb Limited, first trade 1993-03-25 (the ACE Ltd listing date)."
+   ],
+   "follow_up": "Needs identity verification before any alias.",
+   "probe": [
+    "CB"
+   ]
+  },
+  "TYC": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Tyco International (legal acquirer, CIK 833444) merged with Johnson Controls and took the JCI name and ticker in 2016.",
+   "evidence": [
+    "wiki-history: TYC removed 2016-09-06 'TYC acquired JCI and retained JCI ticker'.",
+    "wiki-current: JCI CIK 833444.",
+    "Provider JCI: Johnson Controls International plc, first trade reported 1987-09-28."
+   ],
+   "follow_up": "Needs identity verification of the provider JCI history before any alias.",
+   "probe": [
+    "JCI"
+   ]
+  },
+  "BMS": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Bemis merged into Amcor plc (a different registrant, CIK 1748790) after a two-session membership.",
+   "evidence": [
+    "wiki-history: BMS added 2019-06-07, replaced by AMCR 2019-06-11."
+   ],
+   "follow_up": "Needs a Bemis price source; never map to AMCR."
+  },
+  "APC": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Symbol reused: the provider APC now identifies ARKO Petroleum (from 2026-02-12); Anadarko Petroleum has no provider bars.",
+   "evidence": [
+    "wiki-history: APC removed 2019-08-09, acquired by Occidental."
+   ],
+   "follow_up": "Needs a delisted-securities source; never use the reused provider series."
+  },
+  "SPLS": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Symbol reused: the provider SPLS now identifies a PIMCO ETF (from 2026-01-16); Staples has no provider bars.",
+   "evidence": [
+    "wiki-history: SPLS removed 2017-09-18, acquired by Sycamore Partners."
+   ],
+   "follow_up": "Needs a delisted-securities source; never use the reused provider series."
+  },
+  "SBNY": {
+   "category": "missing_data",
+   "status": "unresolved",
+   "reason": "Provider bars for Signature Bank start 2024-08-15, after the 2023-03 FDIC receivership; none cover the membership.",
+   "evidence": [
+    "wiki-history: SBNY removed 2023-03-15, placed into FDIC receivership."
+   ],
+   "follow_up": "Needs a delisted-securities source."
+  },
+  "DAY/before_first": {
+   "category": "outside_listing",
+   "status": "unresolved",
+   "reason": "Constituents list DAY from 2015-01-02, but Ceridian first traded 2018-04-26 and joined the index as CDAY on 2021-09-20 (ticker DAY from 2024-02-01). The early membership is a backward-reconstruction artefact of the historical file.",
+   "evidence": [
+    "Local DAY.csv starts 2018-04-26.",
+    "wiki-history: CDAY added 2021-09-20; CDAY -> DAY ticker change 2024-02-01."
+   ],
+   "follow_up": "Constituents history correction (DAY before 2021-09-20 and similar renamed later joiners) is a separate issue: it changes the backtest universe."
+  },
+  "DAY/after_last": {
+   "category": "outside_listing",
+   "status": "explained",
+   "reason": "Thoma Bravo completed the acquisition on 2026-02-04 and trading ceased; the index removal was effective 2026-02-09, so no bar can exist for 2026-02-04..06.",
+   "evidence": [
+    "dayforce-close.",
+    "wiki-history: DAY removed 2026-02-09.",
+    "Local DAY.csv last bar 2026-02-03."
+   ]
+  },
+  "TWX/after_last": {
+   "category": "outside_listing",
+   "status": "explained",
+   "reason": "AT&T completed the Time Warner acquisition on 2018-06-14; the index removal was effective 2018-06-20.",
+   "evidence": [
+    "att-twx-close.",
+    "wiki-history: TWX removed 2018-06-20.",
+    "Local TWX.csv ends with a flat zero-volume bar on 2018-06-15."
+   ]
+  },
+  "AET/after_last": {
+   "category": "outside_listing",
+   "status": "explained",
+   "reason": "CVS Health completed the Aetna acquisition on 2018-11-28; the index removal was effective 2018-12-03.",
+   "evidence": [
+    "cvs-aet-close.",
+    "wiki-history: AET removed 2018-12-03.",
+    "Local AET.csv ends with a flat zero-volume bar on 2018-11-29."
+   ]
+  },
+  "HOLX/after_last": {
+   "category": "outside_listing",
+   "status": "explained",
+   "reason": "Blackstone and TPG completed the Hologic acquisition on 2026-04-07 and trading ceased; the index removal was effective 2026-04-09.",
+   "evidence": [
+    "hologic-close.",
+    "wiki-history: HOLX removed 2026-04-09."
+   ]
+  },
+  "VLTO/before_first": {
+   "category": "missing_data",
+   "status": "unresolved",
+   "reason": "Veralto began regular-way NYSE trading on 2023-10-02; the provider series (and the local file) start 2023-10-04.",
+   "evidence": [
+    "veralto-trading.",
+    "wiki-history: VLTO added 2023-10-02."
+   ],
+   "follow_up": "Two bars need another source; the provider cannot supply them."
+  },
+  "FISV/internal": {
+   "category": "missing_data",
+   "status": "unresolved",
+   "reason": "2025-11-12 is absent from both the local file and the provider series.",
+   "evidence": [
+    "Provider FISV: 3,195 bars, 2025-11-11 then 2025-11-13."
+   ],
+   "follow_up": "Needs another source for one session."
+  },
+  "SCG/before_first": {
+   "category": "missing_data",
+   "status": "unresolved",
+   "reason": "SCANA traded before 2015-07-16, but the local file and the provider metadata both start there.",
+   "evidence": [
+    "Local SCG.csv starts 2015-07-16; provider reports first trade 2015-07-16 and no current bars.",
+    "wiki-history: SCG removed 2019-01-02."
+   ],
+   "follow_up": "Needs a delisted-securities source."
+  },
+  "STI/before_first": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Symbol reused: local STI.csv and the provider STI are Solidion Technology (from 2022-05-02); SunTrust merged into Truist in 2019.",
+   "evidence": [
+    "wiki-history: STI removed 2019-12-09."
+   ],
+   "follow_up": "Needs a delisted-securities source for SunTrust."
+  },
+  "INFO/before_first": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Symbol reused: the provider INFO is a Harbor ETF (from 2024-10-10); IHS Markit merged into S&P Global in 2022.",
+   "evidence": [
+    "wiki-history: INFO removed 2022-03-02."
+   ],
+   "follow_up": "Needs a delisted-securities source for IHS Markit."
+  },
+  "CA/before_first": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Symbol reused: local CA.csv starts 2023-12-15, years after CA Technologies was acquired by Broadcom (2018).",
+   "evidence": [
+    "wiki-history: CA removed 2018-11-06."
+   ],
+   "follow_up": "Needs a delisted-securities source."
+  },
+  "DOW/before_first": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Symbol reused by the 2019 spin-off Dow Inc.; the 2015-2017 member was The Dow Chemical Company.",
+   "evidence": [
+    "Provider DOW: Dow Inc., first trade 2019-03-20.",
+    "wiki-history: DOW removed 2017-09-01, re-added 2019-04-02 (spin-off)."
+   ],
+   "follow_up": "Needs a Dow Chemical price source."
+  },
+  "SE/before_first": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Symbol reused: provider SE is Sea Limited (from 2017-10-20); Spectra Energy was acquired by Enbridge in 2017.",
+   "evidence": [
+    "wiki-history: SE removed 2017-02-28."
+   ],
+   "follow_up": "Needs a delisted-securities source."
+  },
+  "EMC/before_first": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Symbol reused: provider EMC is a Global X ETF (from 2023-05-15); EMC Corporation was acquired by Dell in 2016.",
+   "evidence": [
+    "wiki-history: EMC removed 2016-09-08."
+   ],
+   "follow_up": "Needs a delisted-securities source."
+  },
+  "TE/before_first": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Symbol reused: provider TE is T1 Energy (from 2020-01-10); TECO Energy was acquired by Emera in 2016.",
+   "evidence": [
+    "wiki-history: TE removed 2016-07-01."
+   ],
+   "follow_up": "Needs a delisted-securities source."
+  },
+  "CCE/before_first": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Coca-Cola Enterprises merged into Coca-Cola European Partners in 2016; local CCE.csv (2019-2020, prices near 800) is a different security.",
+   "evidence": [
+    "wiki-history: CCE removed 2016-05-31."
+   ],
+   "follow_up": "Needs a delisted-securities source."
+  },
+  "SNDK/before_first": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Symbol reused by the 2025 Sandisk spin-off from Western Digital; the 2015-2016 member was SanDisk, acquired by Western Digital in 2016.",
+   "evidence": [
+    "Provider SNDK: Sandisk Corporation, first trade 2025-02-13.",
+    "wiki-history: SNDK removed 2016-05-13, re-added 2025-11-28."
+   ],
+   "follow_up": "Needs a delisted-securities source for the 2015-2016 SanDisk."
+  },
+  "ADT/before_first": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Symbol reused by ADT Inc. (IPO 2018-01-19); the 2015-2016 member ADT Corp. was taken private by Apollo in 2016.",
+   "evidence": [
+    "Provider ADT: ADT Inc., first trade 2018-01-19.",
+    "wiki-history: ADT removed 2016-05-03."
+   ],
+   "follow_up": "Needs a delisted-securities source."
+  },
+  "CAM/before_first": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Symbol reused: provider CAM is an AB municipal ETF (from 2025-10-06); Cameron International was acquired by Schlumberger in 2016.",
+   "evidence": [
+    "wiki-history: CAM removed 2016-04-04."
+   ],
+   "follow_up": "Needs a delisted-securities source."
+  },
+  "POM/before_first": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Symbol reused: provider POM is Pomdoctor (from 2025-10-08); Pepco Holdings was acquired by Exelon in 2016.",
+   "evidence": [
+    "wiki-history: POM removed 2016-03-30."
+   ],
+   "follow_up": "Needs a delisted-securities source."
+  },
+  "PCL/before_first": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Symbol reused: provider PCL is a PGIM bond ETF (from 2025-08-05); Plum Creek merged into Weyerhaeuser in 2016.",
+   "evidence": [
+    "wiki-history: PCL removed 2016-02-22."
+   ],
+   "follow_up": "Needs a delisted-securities source."
+  },
+  "NE/before_first": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Provider NE is Noble Corporation plc from 2021-06-09 (post-restructuring registrant); no bars for the 2015 member.",
+   "evidence": [
+    "wiki-history: NE removed 2015-07-20."
+   ],
+   "follow_up": "Needs a delisted-securities source."
+  },
+  "TEG/before_first": {
+   "category": "rename_or_corporate_event",
+   "status": "unresolved",
+   "reason": "Local TEG.csv (2015-12 to 2022, prices near 15,000) is a different security; Integrys was acquired in 2015.",
+   "evidence": [
+    "wiki-history: TEG removed 2015-07-01."
+   ],
+   "follow_up": "Needs a delisted-securities source."
+  },
+  "NFX/internal": {
+   "category": "missing_data",
+   "status": "unresolved",
+   "reason": "Two sessions missing from the local Newfield file; the provider symbol now identifies an unrelated ETF.",
+   "evidence": [
+    "wiki-history: NFX removed 2019-02-15, acquired by Encana."
+   ],
+   "follow_up": "Needs a delisted-securities source."
+  }
+ },
+ "findings": [
+  {
+   "id": "constituents-rename-artefacts",
+   "affects": "backtests (not the live snapshot)",
+   "summary": "The historical Constituents file (built on the 2026-01 ticker list) keeps later joiners that changed ticker after joining in every snapshot back to 2015-01-02: DAY (joined as CDAY 2021-09-20), CPAY (FLT 2018-06-20), EG (RE 2017-06-19), WTW (WLTW 2016-01-05), IQV (Q 2017-08-29), SW (2024-07-08). 5,661 pre-join member-sessions have price bars, so these names were eligible in backtests before they were members.",
+   "evidence": [
+    "wiki-history rows: +FLT 2018-06-20 / FLT->CPAY 2024-03-25; +RE 2017-06-19; +WLTW 2016-01-05 / WLTW->WTW 2022-01-10; +Q 2017-08-29 / Q->IQV 2017-11-15; +CDAY 2021-09-20 / CDAY->DAY 2024-02-01.",
+    "Removals followed by re-adds (EQT, PCG, FSLR) are represented correctly: 0 member sessions inside their gaps."
+   ],
+   "follow_up": "Separate issue: correct the historical Constituents rows with S&P-sourced effective dates, then backtest A/B (changes the research universe)."
+  },
+  {
+   "id": "wrong-identity-files",
+   "affects": "backtests",
+   "summary": "COL.csv is not Rockwell Collins: closes 0.01-0.85 with volumes of a few hundred shares, while COL was a member 2015-01-02..2018-11-30. NFX.csv (Newfield, member until 2019) and AVB.csv (member until 2026-08-17) continue with bars of the securities that reused or absorbed the symbol, appended by the daily update.",
+   "follow_up": "Quarantine or truncate in a separate data correction; the daily update should refuse to append when the provider identity changes."
+  },
+  {
+   "id": "post-delisting-flat-bars",
+   "affects": "coverage counts",
+   "summary": "Some migrated files end with flat zero-volume bars after trading stopped (TWX 2018-06-15, AET 2018-11-29); the audit counts them as valid bars.",
+   "follow_up": "Treat zero-volume flat bars after a documented close of trading as absent in a later audit revision."
+  },
+  {
+   "id": "splits-not-readjusted",
+   "affects": "live signals and backtests",
+   "summary": "The daily update only appends rows, so splits after the first download leave artificial jumps (APH 2026-09-03, KLAC 2026-06-12, CRWD 2026-07-02, CVNA 2026-05-08, MNST 2026-08-11, BKNG 2026-04-06, DD reverse 2026-06-24). The gap filter then excludes these names for about 90 sessions.",
+   "follow_up": "Separate issue (outside #50): re-download full history on provider corporate actions; repair the affected files through staging."
+  }
+ ]
+}

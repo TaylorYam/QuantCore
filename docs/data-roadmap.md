@@ -42,6 +42,11 @@ the OLD/NEW signal/state characterization required for a future migration.
 
 ## Subsequent tasks, each with its own Issue / branch / PR
 
+Issue #48 adds an exact-snapshot coverage audit and SP500 stage timing tools;
+see [the session coverage study](data-session-study.md) for commands, measured
+findings, calendar evidence and limitations. Calendar repairs and automatic
+per-ticker update outcomes remain separate work.
+
 1. Build a verified session/Constituents coverage audit and separate timings for
    loading, indicators and backtests. Add structured per-ticker outcomes including
    unknown/no-data, rather than treating all missing responses as failures.

@@ -112,7 +112,8 @@ def main(ctx: AccountCtx, digest: Digest | None = None):
         cushion    = acct['cushion_pct']
         excess_liq = acct['excess_liq']
         pos_detail = get_positions_detail(ib, ctx=ctx)
-        symbols    = [p.contract.symbol for p in pos_detail]
+        from symbol_contract import canonical_symbol
+        symbols    = [canonical_symbol(p.contract.symbol) for p in pos_detail]
         # 標價用 Reference Close（最近官方收盤，CSV index[-1]）；IB 僅在 CSV 缺檔
         # 時 fallback——避免週末/盤前 IB 回傳陳舊 tick 蓋過正確收盤（ADR-0003）。
         prices     = mark_at_reference_close(ib, symbols, ctx) if symbols else {}

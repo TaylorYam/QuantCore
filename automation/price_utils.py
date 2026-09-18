@@ -38,8 +38,16 @@ def load_csv_close(symbol: str) -> float:
     try:
         import pandas as pd
         from strategies.sp500_momentum import config as sp_cfg
-        for dir_ in (sp_cfg.ETF_DIR, sp_cfg.STOCK_DIR):
-            f = dir_ / f"{symbol}.csv"
+        from strategies.sp500_momentum.utils import stock_csv_path
+
+        # ETF filenames are already their canonical symbols.  Stock files use
+        # the provider naming contract (BRK.B -> BRK-B), including the class
+        # shares opened by issue #52.
+        paths = (
+            sp_cfg.ETF_DIR / f"{symbol}.csv",
+            stock_csv_path(sp_cfg.STOCK_DIR, symbol),
+        )
+        for f in paths:
             if f.exists():
                 df = pd.read_csv(f, index_col=0, parse_dates=True)
                 c = float(df['Close'].dropna().iloc[-1])
@@ -74,7 +82,8 @@ def robust_get_prices(ib, symbols: list,
     -------
     dict: {sym: price (float > 0)} 或 {sym: 0} 如果全部 fallback 都失敗
     """
-    from ib_insync import IB, Stock as IBStock
+    from ib_insync import IB
+    from symbol_contract import canonical_symbol, ib_stock
 
     def _log(msg):
         if verbose_log:
@@ -84,14 +93,15 @@ def robust_get_prices(ib, symbols: list,
         return {}
 
     # Step 1: 本連線即時
-    contracts = [IBStock(s, 'SMART', 'USD') for s in symbols]
+    canonical_symbols = [canonical_symbol(s) for s in symbols]
+    contracts = [ib_stock(s) for s in canonical_symbols]
     ib.qualifyContracts(*contracts)
     tickers = ib.reqTickers(*contracts)
 
     prices = {}
     need_feed = []
     for t in tickers:
-        sym = t.contract.symbol
+        sym = canonical_symbol(t.contract.symbol)
         p = _safe_price(t)
         if p > 0:
             prices[sym] = p
@@ -111,12 +121,12 @@ def robust_get_prices(ib, symbols: list,
                                 timeout=10, readonly=True)
             else:
                 feed_ib.connect(host, price_feed_port, clientId=feed_client_id, timeout=10)
-            feed_contracts = [IBStock(s, 'SMART', 'USD') for s in need_feed]
+            feed_contracts = [ib_stock(s) for s in need_feed]
             feed_ib.qualifyContracts(*feed_contracts)
             feed_tickers = feed_ib.reqTickers(*feed_contracts)
             recovered = []
             for t in feed_tickers:
-                sym = t.contract.symbol
+                sym = canonical_symbol(t.contract.symbol)
                 p = _safe_price(t)
                 if p > 0:
                     prices[sym] = p
@@ -134,11 +144,11 @@ def robust_get_prices(ib, symbols: list,
         _log(f"  {len(need_feed)} still missing, trying delayed on own port...")
         try:
             ib.reqMarketDataType(3)  # 3 = delayed
-            delayed_contracts = [IBStock(s, 'SMART', 'USD') for s in need_feed]
+            delayed_contracts = [ib_stock(s) for s in need_feed]
             ib.qualifyContracts(*delayed_contracts)
             delayed_tickers = ib.reqTickers(*delayed_contracts)
             for t in delayed_tickers:
-                sym = t.contract.symbol
+                sym = canonical_symbol(t.contract.symbol)
                 p = _safe_price(t)
                 if p > 0:
                     prices[sym] = p
@@ -152,7 +162,7 @@ def robust_get_prices(ib, symbols: list,
                 pass
 
     # Step 4: 本地 CSV 最後收盤
-    for sym in symbols:
+    for sym in canonical_symbols:
         if prices.get(sym, 0) <= 0:
             c = load_csv_close(sym)
             if c > 0:

@@ -46,6 +46,10 @@ _price_cache: dict[str, float] = {}
 
 def get_price(symbol: str) -> float:
     """從本地 CSV 取最新收盤價，查不到回傳 0"""
+    from strategies.sp500_momentum.utils import stock_csv_path
+    from symbol_contract import canonical_symbol
+
+    symbol = canonical_symbol(symbol)
     if symbol in _price_cache:
         return _price_cache[symbol]
     import pandas as pd
@@ -55,7 +59,7 @@ def get_price(symbol: str) -> float:
     # 先找 ETF 資料夾，再找 Stock 資料夾
     candidates = [
         sp_cfg.ETF_DIR   / f"{symbol}.csv",
-        sp_cfg.STOCK_DIR / f"{symbol}.csv",
+        stock_csv_path(sp_cfg.STOCK_DIR, symbol),
     ]
     for path in candidates:
         if path.exists():

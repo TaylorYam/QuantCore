@@ -49,12 +49,10 @@ def test_reader_reads_class_share_file_but_keeps_constituents_symbol(tmp_path):
         df = eng._get_ticker_data("BRK.B")
         assert df is not None and df["Close"].iloc[-1] == 500.0
         assert eng._get_ticker_data("A") is None            # still a missing file, not guessed
-        # no broker symbol mapping yet (#52): class shares stay out of selection,
-        # exactly as before the contract, when the file could not be found
-        assert config.CLASS_SHARES_TRADABLE is False
-        assert eng.get_constituents(pd.Timestamp(days[-1])) == ["A"]
-        with patch.object(config, "CLASS_SHARES_TRADABLE", True):
-            assert eng.get_constituents(pd.Timestamp(days[-1])) == ["BRK.B", "A"]
+        # #52: strategy keeps the Constituents spelling and the IB adapter
+        # handles the broker spelling later in the execution path.
+        assert config.CLASS_SHARES_TRADABLE is True
+        assert eng.get_constituents(pd.Timestamp(days[-1])) == ["BRK.B", "A"]
 
 
 def test_audit_resolves_class_share_and_flags_official_closure(tmp_path):

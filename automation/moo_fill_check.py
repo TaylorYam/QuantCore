@@ -42,6 +42,7 @@ from account_ctx import AccountCtx
 
 # ── IB 連線 helper（S8：統一由 ib_fetcher 提供）────────────────────────
 import ib_fetcher
+from symbol_contract import contract_symbol
 
 # ── 當日排程總結（#38）─────────────────────────────────────────────────
 import run_status
@@ -134,7 +135,7 @@ def summarize_moo_trades(trades, fills, positions_after: dict | None) -> list[Mo
     rows: list[MooFill] = []
     for t in trades:
         order, status = t.order, t.orderStatus
-        sym = t.contract.symbol
+        sym = contract_symbol(t.contract)
         side = 'BOT' if order.action == 'BUY' else 'SLD'
         perm = getattr(order, 'permId', 0) or 0
 
@@ -143,7 +144,8 @@ def summarize_moo_trades(trades, fills, positions_after: dict | None) -> list[Mo
                      if f.execution.permId == perm and f.execution.execId not in claimed]
         else:
             execs = [f for f in fills
-                     if f.contract.symbol == sym and f.execution.side == side
+                     if contract_symbol(f.contract) == sym
+                     and f.execution.side == side
                      and f.execution.execId not in claimed]
 
         if execs:
@@ -171,7 +173,7 @@ def summarize_fills(fills, positions_after: dict | None) -> list[MooFill]:
     """trades 已清空時的備援：直接用成交紀錄，同 symbol + 同方向合併一列。"""
     groups: dict[tuple[str, str], list] = {}
     for f in fills:
-        groups.setdefault((f.contract.symbol, f.execution.side), []).append(f)
+        groups.setdefault((contract_symbol(f.contract), f.execution.side), []).append(f)
     rows = []
     for (sym, side), execs in groups.items():
         filled, avg = _aggregate(execs)
@@ -251,9 +253,11 @@ def main(ctx: AccountCtx, digest: Digest | None = None):
 
         # post-fill 部位（判斷 SHORT / COVER 方向）
         try:
-            positions_after = {p.contract.symbol: float(p.position)
-                               for p in ib.positions(ctx.account)
-                               if p.contract.secType == 'STK'}
+            positions_after = {}
+            for p in ib.positions(ctx.account):
+                if p.contract.secType == 'STK':
+                    sym = contract_symbol(p.contract)
+                    positions_after[sym] = positions_after.get(sym, 0.0) + float(p.position)
         except Exception as e:
             log.warning(f"Failed to fetch post-fill positions: {e}")
             positions_after = None

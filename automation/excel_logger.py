@@ -28,6 +28,8 @@ try:
 except Exception:
     _SKEWLS_INVERSE_TICKERS = set()
 
+from symbol_contract import canonical_symbol
+
 
 def _classify_strategy(symbol: str, position: float) -> str:
     """
@@ -37,6 +39,7 @@ def _classify_strategy(symbol: str, position: float) -> str:
       - SR_ETF 且 position>0 → SR (可能含 SkewLS overlap, 但 SR 為主要歸屬)
       - 其他 → '' (空字串；由 caller 視情況補 'SP500' 或 'Other')
     """
+    symbol = canonical_symbol(symbol)
     if symbol in _SKEWLS_INVERSE_TICKERS:
         return "SkewLS"
     if symbol in _SR_ETFS and position < 0:
@@ -93,7 +96,7 @@ def append_daily_snapshot(nav: float, pos_detail: list, prices: dict,
     today = date.today().isoformat()
     rows = []
     for p in pos_detail:
-        sym      = p.contract.symbol
+        sym      = canonical_symbol(p.contract.symbol)
         pos      = p.position
         avg_cost = p.avgCost
         mkt_px   = prices.get(sym, 0)
@@ -126,11 +129,11 @@ def append_trade_log(placed: list, fill_results: list, signal_date,
                      strategy: str = "", account_name: str = "") -> None:
     now      = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     today    = date.today().isoformat()
-    fill_map = {f['symbol']: f for f in fill_results}
+    fill_map = {canonical_symbol(f['symbol']): f for f in fill_results}
     rows     = []
 
     for o in placed:
-        sym    = o['symbol']
+        sym    = canonical_symbol(o['symbol'])
         qty    = int(o['qty'])
         est_px = o.get('lmt_price', 0)
         fill   = fill_map.get(sym, {})

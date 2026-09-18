@@ -320,14 +320,14 @@ def submit_sync_orders(
             ib.sleep(2)
 
         # 2. 取得 bid/ask 報價以計算 LMT 價格
-        from ib_insync import Stock as IBStock
+        from symbol_contract import canonical_symbol, ib_stock
         syms = list({o.symbol for o in plan.orders})
-        contracts = [IBStock(s, 'SMART', 'USD') for s in syms]
+        contracts = [ib_stock(s) for s in syms]
         ib.qualifyContracts(*contracts)
         tickers = ib.reqTickers(*contracts)
         quotes = {}
         for t in tickers:
-            sym = t.contract.symbol
+            sym = canonical_symbol(t.contract.symbol)
             bid = t.bid if (t.bid and t.bid > 0 and np.isfinite(t.bid)) else None
             ask = t.ask if (t.ask and t.ask > 0 and np.isfinite(t.ask)) else None
             mid = t.midpoint() if (t.midpoint() and np.isfinite(t.midpoint())) else None

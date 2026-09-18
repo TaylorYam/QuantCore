@@ -123,8 +123,13 @@ def block_state_writes() -> Iterator[list[str]]:
 def local_close(symbol: str, data_dir: Path | None = None) -> Optional[float]:
     """data/etfs、data/stocks 最新收盤；兩處皆無檔 → None。"""
     base = Path(data_dir) if data_dir else DATA_DIR
+    from strategies.sp500_momentum.utils import stock_csv_path
+    from symbol_contract import canonical_symbol
+
+    symbol = canonical_symbol(symbol)
     for sub in ("etfs", "stocks"):
-        p = base / sub / f"{symbol}.csv"
+        p = (base / sub / f"{symbol}.csv" if sub == "etfs"
+             else stock_csv_path(base / sub, symbol))
         if p.exists():
             try:
                 return float(pd.read_csv(p)["Close"].iloc[-1])
@@ -376,6 +381,8 @@ def result_to_dict(res: PreviewResult) -> dict:
 
 def parse_positions(spec: str) -> dict[str, float]:
     """解析 "XLU=50, BTC=65.1783"（逗號/空白分隔）→ {symbol: qty}。"""
+    from symbol_contract import canonical_symbol
+
     pos: dict[str, float] = {}
     for tok in re.split(r"[,\s]+", spec.strip()):
         if not tok:
@@ -383,7 +390,7 @@ def parse_positions(spec: str) -> dict[str, float]:
         if "=" not in tok:
             raise ValueError(f"持倉格式應為 SYM=QTY，收到 {tok!r}")
         sym, _, qty = tok.partition("=")
-        sym = sym.strip().upper()
+        sym = canonical_symbol(sym)
         if not sym:
             raise ValueError(f"持倉格式應為 SYM=QTY，收到 {tok!r}")
         pos[sym] = float(qty)
@@ -396,10 +403,12 @@ def load_snapshot(path: str | Path) -> tuple[float, dict[str, float],
     raw = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     if "nav" not in raw or "positions" not in raw:
         raise ValueError(f"snapshot 必須含 'nav' 與 'positions' 鍵: {path}")
+    from symbol_contract import canonical_symbol
+
     nav = float(raw["nav"])
-    positions = {str(s).upper(): float(q)
+    positions = {canonical_symbol(str(s)): float(q)
                  for s, q in dict(raw["positions"]).items()}
-    prices = {str(s).upper(): float(p)
+    prices = {canonical_symbol(str(s)): float(p)
               for s, p in dict(raw.get("prices") or {}).items()}
     return nav, positions, prices
 

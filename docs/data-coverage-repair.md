@@ -96,17 +96,18 @@ Constituents 的 dense snapshot 在這六天各有一列（2026-06-19 由 2026-0
 策略內部、持倉與 Constituents 仍使用 Constituents symbol。改名、合併、代碼重用**不**在契約內，
 不會自動把某公司的歷史接到另一個代碼上。
 
-**不在契約內：下單用的 broker 代碼。** 下單程式直接以 Constituents symbol 建 IB 合約（`Stock(sym, 'SMART', 'USD')`），
-類股在 IB 的寫法是 `BRK B`，選中會無法下單。因此 `config.CLASS_SHARES_TRADABLE = False`：類股行情讀得到、
-Constituents 與 Universe 照舊包含它們，但 `get_constituents` 不把類股交給選股，行為與本 Issue 之前完全相同
-（當時是因為讀不到檔而被排除）。開放前要先做 broker 代碼對應，見 [#52](https://github.com/TaylorYam/QuantCore/issues/52)。
+**Broker 代碼對應**由 `automation/symbol_contract.py` 集中處理：`BRK.B`／`BF.B`
+在 IB 合約中分別使用 `BRK B`／`BF B`，並指定 `NYSE` primary exchange；策略、持倉、
+Universe 與報表仍使用 Constituents symbol。`config.CLASS_SHARES_TRADABLE = True`，
+因此類股可以進入選股與下單流程；詳細查證紀錄見
+[`broker-symbol-contract.md`](broker-symbol-contract.md)。
 
 ## 4. 最新四個缺檔（2026-09-16 snapshot）
 
 | 代碼 | 分類 | 處置 | 證據 |
 |---|---|---|---|
-| BRK.B | 格式差異 | 已修復：契約讀 `BRK-B.csv`（選股仍排除，#52） | provider BRK-B = Berkshire Hathaway Inc.；本地檔 3,196 個收盤與 provider 完全一致 |
-| BF.B | 格式差異 | 已修復：契約讀 `BF-B.csv`（選股仍排除，#52） | provider BF-B = Brown-Forman Corporation；收盤相對差 ≤ 1.4e-4 |
+| BRK.B | 格式差異 | 已修復：契約讀 `BRK-B.csv`，IB 對應 `BRK B`（#52） | provider BRK-B = Berkshire Hathaway Inc.；本地檔 3,196 個收盤與 provider 完全一致 |
+| BF.B | 格式差異 | 已修復：契約讀 `BF-B.csv`，IB 對應 `BF B`（#52） | provider BF-B = Brown-Forman Corporation；收盤相對差 ≤ 1.4e-4 |
 | A | 真正缺資料 | 已修復：補抓 provider `A`（2014-01-02 起） | provider A = Agilent Technologies, Inc.（1999 上市）；Wikipedia 現任成分股 |
 | MRSH | 已查證改名 | 已修復：補抓 provider `MRSH` | [Marsh McLennan 公告](https://www.corporate.marsh.com/news-events/2025/december/marsh-mclennan-to-change-nyse-symbol-to-mrsh.html)：2026-01-14 起 MMC→MRSH，法人與 CUSIP 不變；provider MRSH 與本地 `MMC.csv` 在 3,067 個重疊 session 收盤完全一致（最大相對差 6e-8） |
 
@@ -242,6 +243,6 @@ harness 與 [characterization 規範](../AGENTS.md#5-測試要求) 相同：`sig
    `NFX.csv`、`AVB.csv` 在代碼被重用／併購後，每日更新接上了別的證券的 bar。
 4. **下市後的零成交量平盤 bar**（併入 #55）：例如 TWX 2018-06-15、AET 2018-11-29，稽核目前算作有效 bar。
 5. **跨代碼別名**（第 5 節的 8 個候選）與**已下市證券資料源**：[#56](https://github.com/TaylorYam/QuantCore/issues/56)。
-6. **類股的 broker 代碼對應**（開放 BRK.B／BF.B 選股前必做）：[#52](https://github.com/TaylorYam/QuantCore/issues/52)。
+6. **類股的 broker 代碼對應**（已完成，見 [`broker-symbol-contract.md`](broker-symbol-contract.md)）：[#52](https://github.com/TaylorYam/QuantCore/issues/52)。
 7. **Panel 刷新排程的半日交易日期**：`automation/refresh_schedule.py` 列了官方沒有的 2026-07-02、2027-07-02、2027-12-23
    提早收盤，[#57](https://github.com/TaylorYam/QuantCore/issues/57)。

@@ -62,6 +62,7 @@ def run_daily_check(account_name: str, digest: Digest):
     """
     import rebalance_ib as reb     # 仍需要：place_orders, check_fills
     import ib_fetcher               # S8：IB 連線/查詢 helpers
+    from symbol_contract import canonical_symbol
     from account_ctx import AccountCtx
     from account_utils import ROLE_MOO_CHECK
     from sp500_state import (load_state, save_state, update_bull_counter,
@@ -159,7 +160,8 @@ def run_daily_check(account_name: str, digest: Digest):
 
         # 取得持倉成本
         pos_detail = ib_fetcher.get_positions_detail(ib, ctx)
-        avg_costs = {p.contract.symbol: float(p.avgCost) for p in pos_detail}
+        avg_costs = {canonical_symbol(p.contract.symbol): float(p.avgCost)
+                     for p in pos_detail}
 
         # 停損 / 跳空出場已移除（ADR-0004）：個股出場改由週三 rotation 處理。
         # 本腳本只剩下方的熊市 dip-buy 檢查。
@@ -226,18 +228,18 @@ def run_daily_check(account_name: str, digest: Digest):
         log.info(f"  Placing {len(orders)} LMT orders...")
 
         # 取得即時報價以計算 LMT 價格
-        from ib_insync import Stock as IBStock
+        from symbol_contract import ib_stock
         import numpy as np
         from price_utils import robust_get_prices
         order_syms = list({o['symbol'] for o in orders})
 
         # 先抓本連線的 bid/ask（用於 LMT 精準 buffer）
-        contracts = [IBStock(s, 'SMART', 'USD') for s in order_syms]
+        contracts = [ib_stock(s) for s in order_syms]
         ib.qualifyContracts(*contracts)
         tickers = ib.reqTickers(*contracts)
         quotes = {}
         for t in tickers:
-            sym = t.contract.symbol
+            sym = canonical_symbol(t.contract.symbol)
             bid = t.bid if (t.bid and t.bid > 0 and np.isfinite(t.bid)) else None
             ask = t.ask if (t.ask and t.ask > 0 and np.isfinite(t.ask)) else None
             if bid and ask:

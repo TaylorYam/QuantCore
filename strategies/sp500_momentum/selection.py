@@ -63,7 +63,7 @@ class SelectionEngine:
             if date > bl_date and bl_ticker.upper() in tickers:
                 tickers.remove(bl_ticker.upper())
 
-        # 類股尚無下單代碼對應（config.CLASS_SHARES_TRADABLE，#52）
+        # 類股是否進選股由 config 控制；下單代碼轉換在 IB adapter（#52）。
         if not getattr(config, "CLASS_SHARES_TRADABLE", True):
             tickers = [t for t in tickers if "." not in t]
 

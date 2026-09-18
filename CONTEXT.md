@@ -15,6 +15,7 @@ _Avoid_: Model, Signal generator, Engine
 
 **Constituents**:
 某個 [[Strategy]] 在指定日期可交易的 ticker 集合（時間函數）。[[SP500]] 的 constituents 隨 S&P index rebalance 變動；[[SR]] / [[Skew LS]] 的 constituents 固定為各自的 sector ETF 清單。Strategy 的訊號產生器只能從當日 constituents 裡選股。
+代碼寫法：constituents 用 S&P 寫法（類股 `BRK.B`），行情檔用 provider 寫法（`BRK-B.csv`）；兩者只做格式轉換（`strategies/sp500_momentum/utils.provider_symbol`），改名、合併、代碼重用一律不自動對應。下單用的 broker 代碼是另一套寫法，不在此契約內。
 _Avoid_: Tradeable list, Selection pool, Ticker pool
 
 **Universe**:

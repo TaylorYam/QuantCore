@@ -7,6 +7,21 @@ import pandas as pd
 from pathlib import Path
 
 
+# ── 代碼命名契約 ──────────────────────────────────────────────────────────────
+# Constituents symbol：S&P / Wikipedia 寫法，類股以 "." 分隔（BRK.B）。
+# Provider symbol：Yahoo 寫法，類股以 "-" 分隔（BRK-B）；update_data 以檔名當下載代碼。
+# 本地檔名：{provider symbol}.csv。
+# 只做同一證券的格式轉換；改名、合併、代碼重用一律不在這裡處理（不跨公司接歷史）。
+
+def provider_symbol(symbol: str) -> str:
+    """Constituents symbol → provider (Yahoo) symbol / 本地檔名 stem。"""
+    return symbol.strip().replace(".", "-")
+
+
+def stock_csv_path(stock_dir: str | Path, symbol: str) -> Path:
+    return Path(stock_dir) / f"{provider_symbol(symbol)}.csv"
+
+
 def load_stock(path: str | Path) -> pd.DataFrame | None:
     """
     讀取股票 CSV（標準格式：Date, Open, High, Low, Close, Volume）。

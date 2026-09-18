@@ -44,8 +44,10 @@ the OLD/NEW signal/state characterization required for a future migration.
 
 Issue #48 adds an exact-snapshot coverage audit and SP500 stage timing tools;
 see [the session coverage study](data-session-study.md) for commands, measured
-findings, calendar evidence and limitations. Calendar repairs and automatic
-per-ticker update outcomes remain separate work.
+findings, calendar evidence and limitations. Issue #50 corrects the reference
+calendar against the official NYSE registry, adds the symbol naming contract and
+classifies/reconciles every coverage gap; see [the coverage repair report](data-coverage-repair.md).
+Automatic per-ticker update outcomes remain separate work.
 
 1. Build a verified session/Constituents coverage audit and separate timings for
    loading, indicators and backtests. Add structured per-ticker outcomes including

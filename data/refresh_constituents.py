@@ -3,9 +3,11 @@
 data/refresh_constituents.py -- On-demand SP500 constituents refresh.
 
 Fetches current SP500 from Wikipedia, reconstructs daily snapshots from the
-last known date in the Excel forward, validates via 6 sanity gates, shows a
-diff, and on confirmation atomically appends to the Excel + backfills any
-new ticker's full-history OHLCV CSV via yfinance.
+last known date in the Excel forward, validates via sanity gates (G0/G7 check
+the reference calendar against the official NYSE registry), shows a diff, and
+on confirmation atomically appends to the Excel + backfills any new ticker's
+full-history OHLCV CSV via yfinance (saved under the provider symbol, BRK.B →
+BRK-B.csv, the same naming contract as the strategy reader).
 
 Usage:
     python data/refresh_constituents.py             # interactive
@@ -45,6 +47,13 @@ CONST_FILE        = REF_DIR / "sp500_constituents_daily.xlsx"
 TRADING_DAYS_FILE = REF_DIR / "us_trading_days.xlsx"
 LOG_DIR           = ROOT / "automation" / "logs"
 TELEGRAM_CFG      = ROOT / "automation" / "config.json"
+
+# 官方 NYSE registry（G0/G7）與 reader 的代碼命名契約（BRK.B → BRK-B.csv）
+for _path in (ROOT, ROOT / "automation"):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+import market_calendar as mc  # noqa: E402
+from strategies.sp500_momentum.utils import provider_symbol  # noqa: E402
 
 WIKI_CURRENT_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 WIKI_HISTORY_URL = "https://en.wikipedia.org/wiki/Historical_components_of_the_S%26P_500"
@@ -311,6 +320,44 @@ def gate_g1_cross_check(reconstructed: set[str], wiki_current: set[str]) -> list
     return msgs
 
 
+def gate_g0_calendar_coverage(trading_days: pd.DatetimeIndex, today_cal: pd.Timestamp) -> list[str]:
+    """G0：日曆涵蓋不到今天時，舊行為會把 today 定格在最後一天、之後永遠
+    「Already up to date」→ Constituents 默默停更。改成明確 halt。"""
+    if today_cal > trading_days.max():
+        return [f"G0 calendar-coverage FAIL: {TRADING_DAYS_FILE.name} ends "
+                f"{trading_days.max().date()}, today is {today_cal.date()}",
+                "  Extend it from the official NYSE calendar (python -m data.trading_calendar build)."]
+    return []
+
+
+def gate_g7_calendar(trading_days: pd.DatetimeIndex, last_date: pd.Timestamp,
+                     today: pd.Timestamp) -> list[str]:
+    """G7：重建區間 (last_date, today] 的日曆必須與官方 NYSE registry 一致，
+    否則會把休市日寫成 snapshot（2022–2026 Juneteenth、2025-01-09 即此類）。"""
+    start, end = (last_date + pd.Timedelta(days=1)).date(), today.date()
+    if start > end:
+        return []
+    try:
+        official = set(mc.official_sessions(start, end))
+    except ValueError as e:
+        return [f"G7 calendar FAIL: {e}"]
+    listed = {d.date() for d in trading_days if start <= d.date() <= end}
+    msgs = []
+    closures = sorted(listed - official)
+    missing = sorted(official - listed)
+    if closures:
+        msgs.append("G7 calendar FAIL: official NYSE closures listed as trading days: "
+                    + ", ".join(f"{d} ({mc.NYSE_FULL_DAY_CLOSURES.get(d, ('not a session', ''))[0]})"
+                                for d in closures))
+    if missing:
+        msgs.append("G7 calendar FAIL: official NYSE sessions missing from "
+                    f"{TRADING_DAYS_FILE.name}: " + ", ".join(map(str, missing)))
+    if msgs:
+        msgs.append("  Fix the reference calendar (python -m data.trading_calendar check); "
+                    "an unscheduled closure must first be added to automation/market_calendar.py.")
+    return msgs
+
+
 def gate_g2_gap_length(last_date: pd.Timestamp, today: pd.Timestamp) -> list[str]:
     days = (today - last_date).days
     if days > GAP_LIMIT_DAYS:
@@ -331,7 +378,7 @@ def gate_g4_yfinance_existence(new_tickers: set[str]) -> dict[str, str]:
     failures: dict[str, str] = {}
     for tk in sorted(new_tickers):
         try:
-            df = yf.Ticker(tk).history(period="5d", auto_adjust=False)
+            df = yf.Ticker(provider_symbol(tk)).history(period="5d", auto_adjust=False)
             if df.empty:
                 failures[tk] = "yfinance returned empty"
         except Exception as e:
@@ -457,9 +504,9 @@ def atomic_apply(
     try:
         # ─ Stage 1: fetch new ticker CSVs ────────────────────────────────────
         for tk in sorted(new_tickers):
-            log(f"  Downloading {tk} from {STOCK_HIST_START} ...")
+            log(f"  Downloading {tk} ({provider_symbol(tk)}) from {STOCK_HIST_START} ...")
             try:
-                df = yf.Ticker(tk).history(start=STOCK_HIST_START, auto_adjust=False)
+                df = yf.Ticker(provider_symbol(tk)).history(start=STOCK_HIST_START, auto_adjust=False)
             except Exception as e:
                 raise RuntimeError(f"yfinance fetch failed for {tk}: {e}")
             if df.empty:
@@ -469,7 +516,7 @@ def atomic_apply(
             cols = [c for c in ("Open", "High", "Low", "Close", "Adj Close", "Volume")
                     if c in df.columns]
             df = df[cols].dropna(subset=["Close"])
-            df.to_csv(staging / f"{tk}.csv", float_format="%.6f")
+            df.to_csv(staging / f"{provider_symbol(tk)}.csv", float_format="%.6f")
             log(f"    {tk}: {len(df)} rows ({df.index.min().date()} -> {df.index.max().date()})")
 
         # ─ Stage 2: build updated Excel ──────────────────────────────────────
@@ -546,8 +593,8 @@ def atomic_apply(
 
         # Move new ticker CSVs into stocks/
         for tk in sorted(new_tickers):
-            staged_csv = staging / f"{tk}.csv"
-            dest_csv = STOCK_DIR / f"{tk}.csv"
+            staged_csv = staging / f"{provider_symbol(tk)}.csv"
+            dest_csv = STOCK_DIR / f"{provider_symbol(tk)}.csv"
             shutil.move(str(staged_csv), str(dest_csv))
             log(f"  Wrote {dest_csv.name}")
 
@@ -597,6 +644,9 @@ def main() -> None:
     trading_days = load_trading_days()
 
     today_cal = pd.Timestamp(date.today())
+    coverage_halts = gate_g0_calendar_coverage(trading_days, today_cal)
+    if coverage_halts:
+        die("\n".join(coverage_halts))
     tdays_le_today = trading_days[trading_days <= today_cal]
     if len(tdays_le_today) == 0:
         die("No trading days <= today found in trading_days file")
@@ -624,6 +674,7 @@ def main() -> None:
     soft_warns: list[str] = []
 
     hard_halts += gate_g2_gap_length(last_date, today)
+    hard_halts += gate_g7_calendar(trading_days, last_date, today)
     if hard_halts:
         show_diff(last_date, today, pd.DataFrame(), {}, set(), set(), hard_halts, soft_warns)
         die("\n".join(hard_halts))

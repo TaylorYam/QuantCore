@@ -191,3 +191,70 @@ def test_inject_rename_default_date_is_gap_end():
     changes = inject_rename_events(_changes([]), [("SATS", "ECHO", None)],
                                    default_date=TODAY)
     assert changes.iloc[0]["Date"] == TODAY
+
+
+# ── G0 / G7: reference calendar vs the official NYSE registry (#50) ─────
+
+from datetime import date as _date
+
+import market_calendar as mc
+from data.refresh_constituents import gate_g0_calendar_coverage, gate_g7_calendar
+
+
+def _official(start, end):
+    return pd.DatetimeIndex([pd.Timestamp(d) for d in mc.official_sessions(
+        _date.fromisoformat(start), _date.fromisoformat(end))])
+
+
+def test_g0_halts_when_calendar_ends_before_today():
+    """Old behaviour snapped today to the last calendar row and then reported
+    'Already up to date' forever — Constituents silently stopped updating."""
+    cal = _official("2026-12-01", "2026-12-31")
+    assert gate_g0_calendar_coverage(cal, pd.Timestamp("2026-12-31")) == []
+    msgs = gate_g0_calendar_coverage(cal, pd.Timestamp("2027-01-06"))
+    assert msgs and "2026-12-31" in msgs[0]
+
+
+def test_g7_passes_thanksgiving_week_with_half_day():
+    cal = _official("2026-11-16", "2026-12-04")
+    assert gate_g7_calendar(cal, pd.Timestamp("2026-11-25"), pd.Timestamp("2026-12-02")) == []
+
+
+def test_g7_halts_on_closure_listed_in_the_gap():
+    """The 2026-06-24 refresh wrote a 2026-06-19 (Juneteenth) snapshot."""
+    cal = _official("2026-06-01", "2026-06-30").append(pd.DatetimeIndex([pd.Timestamp("2026-06-19")]))
+    msgs = gate_g7_calendar(cal.sort_values(), pd.Timestamp("2026-06-17"), pd.Timestamp("2026-06-24"))
+    assert msgs and "2026-06-19 (Juneteenth)" in msgs[0]
+
+
+def test_g7_halts_on_missing_session_and_ignores_history_outside_gap():
+    cal = _official("2026-06-01", "2026-06-30")
+    msgs = gate_g7_calendar(cal[cal != pd.Timestamp("2026-06-23")],
+                            pd.Timestamp("2026-06-17"), pd.Timestamp("2026-06-24"))
+    assert any("missing" in m and "2026-06-23" in m for m in msgs)
+    # a wrong row BEFORE last_date is not touched by this refresh → no halt
+    bad_history = cal.append(pd.DatetimeIndex([pd.Timestamp("2026-06-19")])).sort_values()
+    assert gate_g7_calendar(bad_history, pd.Timestamp("2026-06-22"), pd.Timestamp("2026-06-24")) == []
+
+
+def test_g7_refuses_gap_beyond_official_registry():
+    cal = pd.DatetimeIndex(pd.bdate_range("2027-12-20", "2028-01-07"))
+    msgs = gate_g7_calendar(cal, pd.Timestamp("2027-12-29"), pd.Timestamp("2028-01-05"))
+    assert msgs and "registry covers" in msgs[0]
+
+
+def test_g4_and_download_use_provider_symbol(monkeypatch):
+    import data.refresh_constituents as refresh
+    asked = []
+
+    class FakeTicker:
+        def __init__(self, sym):
+            asked.append(sym)
+
+        def history(self, **_):
+            return pd.DataFrame({"Close": [1.0]})
+
+    monkeypatch.setattr(refresh.yf, "Ticker", FakeTicker)
+    assert refresh.gate_g4_yfinance_existence({"BRK.B", "AAPL"}) == {}
+    assert sorted(asked) == ["AAPL", "BRK-B"]
+    assert refresh.provider_symbol("BF.B") == "BF-B"

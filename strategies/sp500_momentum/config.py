@@ -83,10 +83,10 @@ BLACKLIST = [
 ]
 
 # ── 類股（Constituents 寫法含 "."，例 BRK.B / BF.B）───────────────
-# 行情已可由 reader 讀到（#50 命名契約：BRK.B → BRK-B.csv），但下單端尚無
-# IB 類股代碼對應（IB 寫法為 "BRK B"），選中會無法下單。開放前一律不進選股，
-# 行為等同 #50 之前（當時因讀不到檔而被排除）。開放見 #52。
-CLASS_SHARES_TRADABLE = False
+# 行情 reader：BRK.B → BRK-B.csv（#50 命名契約）。
+# IB adapter：BRK.B → BRK B（automation/symbol_contract.py，#52）。
+# 類股已可安全進入選股與下單流程。
+CLASS_SHARES_TRADABLE = True
 
 # ── 輸出設定 ──────────────────────────────────────────────────
 OUTPUT_DIR = _ROOT / "output"

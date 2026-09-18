@@ -29,6 +29,7 @@ from datetime import date
 from ib_insync import IB
 
 from account_ctx import AccountCtx
+from symbol_contract import canonicalize_position, contract_symbol
 
 log = logging.getLogger(__name__)
 
@@ -115,17 +116,22 @@ def get_account_info(ib: IB, ctx: AccountCtx) -> dict:
 
 def get_positions(ib: IB, ctx: AccountCtx) -> dict[str, float]:
     """回傳 {symbol: position_qty} — 僅股票，無數量過濾"""
-    return {
-        p.contract.symbol: p.position
-        for p in ib.positions(ctx.account)
-        if p.contract.secType == 'STK'
-    }
+    positions: dict[str, float] = {}
+    for p in ib.positions(ctx.account):
+        if p.contract.secType != 'STK':
+            continue
+        # IB reports class shares with the broker spelling (e.g. ``BRK B``).
+        # Aggregate rather than overwrite in the unlikely event that both
+        # spellings appear in one snapshot.
+        sym = contract_symbol(p.contract)
+        positions[sym] = positions.get(sym, 0.0) + p.position
+    return positions
 
 
 def get_positions_detail(ib: IB, ctx: AccountCtx) -> list:
     """回傳非零股票持倉的完整 Position object list"""
     return [
-        p for p in ib.positions(ctx.account)
+        canonicalize_position(p) for p in ib.positions(ctx.account)
         if p.contract.secType == 'STK' and p.position != 0
     ]
 
@@ -253,7 +259,7 @@ def fetch_portfolio(ctx: AccountCtx, *, readonly: bool = False) -> dict:
 
         # 3. 持倉明細
         all_pos = list(ib.positions())
-        positions = [p for p in all_pos
+        positions = [canonicalize_position(p) for p in all_pos
                      if p.contract.secType == 'STK'
                      and p.position != 0
                      and (not account or p.account == account)]
@@ -264,7 +270,7 @@ def fetch_portfolio(ctx: AccountCtx, *, readonly: bool = False) -> dict:
 
         if positions:
             sp500_universe = get_sp500_universe()
-            symbols = [p.contract.symbol for p in positions]
+            symbols = [contract_symbol(p.contract) for p in positions]
             prices = (get_prices(ib, symbols, ctx, readonly=True) if readonly
                       else get_prices(ib, symbols, ctx))
             # 清理：0 不當作有效報價，讓 downstream .get(sym, avg_cost) fallback

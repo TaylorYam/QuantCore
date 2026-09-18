@@ -52,7 +52,8 @@ from log_setup import setup_logging, quiet_ib_console
 log = logging.getLogger(__name__)
 
 # ── IB 連線工具 ───────────────────────────────────────────────────────────────
-from ib_insync import IB, Stock, MarketOrder, LimitOrder, Order, util
+from ib_insync import IB, MarketOrder, LimitOrder, Order, util
+from symbol_contract import canonical_symbol, ib_stock
 
 
 # ── Telegram 通知（統一由 notify.py 提供；三帳戶合併一則，#26）──────────
@@ -111,7 +112,7 @@ def place_orders(ib: IB, order_list: list, ctx: AccountCtx) -> tuple:
         if qty == 0:
             continue
 
-        contract = Stock(sym, 'SMART', 'USD')
+        contract = ib_stock(sym)
         ib.qualifyContracts(contract)
         order = make_order(o['action'], qty, o.get('lmt_price', 0), ctx=ctx)
 
@@ -136,7 +137,7 @@ def place_orders(ib: IB, order_list: list, ctx: AccountCtx) -> tuple:
 def check_fills(trades: list) -> list:
     results = []
     for trade in trades:
-        sym     = trade.contract.symbol
+        sym     = canonical_symbol(trade.contract.symbol)
         action  = trade.order.action
         qty     = int(trade.order.totalQuantity)
         filled  = sum(f.execution.shares for f in trade.fills)

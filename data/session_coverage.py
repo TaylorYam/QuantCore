@@ -133,6 +133,8 @@ def inspect_bars(content: bytes, label: str, adjusted: bool, issues: list[dict])
 
 def audit(root: Path, start: str, end: str) -> dict:
     begin, finish = pd.Timestamp(start), pd.Timestamp(end)
+    if pd.isna(begin) or pd.isna(finish):
+        raise ValueError("start/end must be valid session dates")
     if begin.tz is not None or finish.tz is not None or begin != begin.normalize() or finish != finish.normalize():
         raise ValueError("start/end must be timezone-free session dates")
     if begin > finish:
@@ -155,7 +157,7 @@ def audit(root: Path, start: str, end: str) -> dict:
         for ticker in snapshots[day]:
             required[ticker].add(day)
     coverage = []
-    totals = Counter()
+    totals = Counter({k: 0 for k in ("required_bars", "valid_bars", "missing_bars", "invalid_bars")})
     for ticker, expected in sorted(required.items()):
         path = root / "stocks" / f"{ticker}.csv"
         present, valid = set(), set()

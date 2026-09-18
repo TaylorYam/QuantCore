@@ -71,6 +71,7 @@ def test_duplicate_snapshot_date_is_ambiguous_not_union(tmp_path):
     bars(tmp_path, "SPY", [day], "etfs")
     r = audit(tmp_path, day, day)
     assert r["required_tickers"] == 0
+    assert r["totals"]["required_bars"] == 0
     assert r["unknown_constituent_sessions"] == [day]
     assert any(i["kind"] == "duplicate_constituent_dates" for i in r["input_issues"])
 

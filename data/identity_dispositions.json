@@ -1,0 +1,218 @@
+{
+  "schema_version": 1,
+  "issue": "#55",
+  "source": {
+    "finding_ids": [
+      "wrong-identity-files",
+      "post-delisting-flat-bars"
+    ],
+    "coverage_dispositions": "data/coverage_dispositions.json"
+  },
+  "rules": [
+    {
+      "symbol": "COL",
+      "action": "quarantine",
+      "append": "refuse",
+      "member_period": {
+        "start": "2015-01-02",
+        "end": "2018-11-30"
+      },
+      "price_volume_sanity": {
+        "close_max": 1.0,
+        "volume_median_max": 5000,
+        "minimum_fraction": 0.9
+      },
+      "reason": "Local COL.csv is not Rockwell Collins; its 0.01-0.85 closes and thin-volume bars are a different security.",
+      "evidence": [
+        "coverage_dispositions.json: findings.wrong-identity-files",
+        "Local COL.csv closes range 0.01-0.85; COL was an S&P 500 member from 2015-01-02 through 2018-11-30."
+      ]
+    },
+    {
+      "symbol": "NFX",
+      "action": "truncate",
+      "append": "refuse",
+      "valid_through": "2019-02-13",
+      "member_period": {
+        "end": "2019-02-15"
+      },
+      "reason": "Newfield's last local trade is 2019-02-13; the provider reused NFX for an unrelated ETF beginning 2026-07-07.",
+      "evidence": [
+        "coverage_dispositions.json: NFX/internal",
+        "Local NFX.csv has 51 post-2019-02-13 rows beginning 2026-07-07.",
+        "wiki-history: NFX removed 2019-02-15 and acquired by Encana."
+      ]
+    },
+    {
+      "symbol": "AVB",
+      "action": "truncate",
+      "append": "refuse",
+      "valid_through": "2026-08-14",
+      "member_period": {
+        "end": "2026-08-17"
+      },
+      "reason": "The last traded AVB bar is 2026-08-14; later zero-volume and price-break rows are merger/reused-symbol artefacts.",
+      "evidence": [
+        "coverage_dispositions.json: findings.wrong-identity-files",
+        "Local AVB.csv has zero-volume flat rows from 2026-08-17 through 2026-08-20 and a discontinuous 2026-08-21/24 sequence."
+      ]
+    },
+    {
+      "symbol": "TWX",
+      "action": "truncate",
+      "append": "refuse",
+      "valid_through": "2018-06-14",
+      "member_period": {
+        "end": "2018-06-20"
+      },
+      "reason": "The 2018-06-15 row is a post-close flat zero-volume bar, not a trade.",
+      "evidence": [
+        "coverage_dispositions.json: TWX/after_last",
+        "AT&T completed the Time Warner acquisition on 2018-06-14; local TWX.csv ends with a flat zero-volume 2018-06-15 row."
+      ]
+    },
+    {
+      "symbol": "AET",
+      "action": "truncate",
+      "append": "refuse",
+      "valid_through": "2018-11-28",
+      "member_period": {
+        "end": "2018-12-03"
+      },
+      "reason": "The 2018-11-29 row is a post-close flat zero-volume bar, not a trade.",
+      "evidence": [
+        "coverage_dispositions.json: AET/after_last",
+        "CVS Health completed the Aetna acquisition on 2018-11-28; local AET.csv ends with a flat zero-volume 2018-11-29 row."
+      ]
+    },
+    {
+      "symbol": "STI",
+      "action": "preserve",
+      "append": "refuse",
+      "member_period": {"end": "2019-12-09"},
+      "provider_identity": {"name": "Solidion Technology", "first_trade": "2022-05-02"},
+      "reason": "The local/provider symbol is Solidion Technology; the historical member SunTrust merged into Truist.",
+      "evidence": ["coverage_dispositions.json: STI/before_first"]
+    },
+    {
+      "symbol": "INFO",
+      "action": "preserve",
+      "append": "refuse",
+      "member_period": {"end": "2022-03-02"},
+      "provider_identity": {"name": "Harbor ETF", "first_trade": "2024-10-10"},
+      "reason": "The local/provider symbol is a Harbor ETF; IHS Markit merged into S&P Global.",
+      "evidence": ["coverage_dispositions.json: INFO/before_first"]
+    },
+    {
+      "symbol": "CA",
+      "action": "preserve",
+      "append": "refuse",
+      "member_period": {"end": "2018-11-06"},
+      "reason": "CA Technologies was acquired by Broadcom in 2018; the local file starts in 2023.",
+      "evidence": ["coverage_dispositions.json: CA/before_first"]
+    },
+    {
+      "symbol": "DOW",
+      "action": "preserve",
+      "append": "refuse",
+      "member_period": {"end": "2017-09-01"},
+      "provider_identity": {"name": "Dow Inc.", "first_trade": "2019-03-20"},
+      "reason": "The provider symbol is the 2019 Dow Inc. spin-off, not the 2015-2017 Dow Chemical member.",
+      "evidence": ["coverage_dispositions.json: DOW/before_first"]
+    },
+    {
+      "symbol": "SE",
+      "action": "preserve",
+      "append": "refuse",
+      "member_period": {"end": "2017-02-28"},
+      "provider_identity": {"name": "Sea Limited", "first_trade": "2017-10-20"},
+      "reason": "The provider symbol is Sea Limited; Spectra Energy was acquired by Enbridge.",
+      "evidence": ["coverage_dispositions.json: SE/before_first"]
+    },
+    {
+      "symbol": "EMC",
+      "action": "preserve",
+      "append": "refuse",
+      "member_period": {"end": "2016-09-08"},
+      "provider_identity": {"name": "Global X ETF", "first_trade": "2023-05-15"},
+      "reason": "The provider symbol is a Global X ETF; EMC Corporation was acquired by Dell.",
+      "evidence": ["coverage_dispositions.json: EMC/before_first"]
+    },
+    {
+      "symbol": "TE",
+      "action": "preserve",
+      "append": "refuse",
+      "member_period": {"end": "2016-07-01"},
+      "provider_identity": {"name": "T1 Energy", "first_trade": "2020-01-10"},
+      "reason": "The provider symbol is T1 Energy; TECO Energy was acquired by Emera.",
+      "evidence": ["coverage_dispositions.json: TE/before_first"]
+    },
+    {
+      "symbol": "CCE",
+      "action": "preserve",
+      "append": "refuse",
+      "member_period": {"end": "2016-05-31"},
+      "reason": "Coca-Cola Enterprises merged into Coca-Cola European Partners; the local file starts in 2019.",
+      "evidence": ["coverage_dispositions.json: CCE/before_first"]
+    },
+    {
+      "symbol": "SNDK",
+      "action": "preserve",
+      "append": "refuse",
+      "member_period": {"end": "2016-05-13"},
+      "provider_identity": {"name": "Sandisk Corporation", "first_trade": "2025-02-13"},
+      "reason": "The provider symbol is the 2025 Sandisk spin-off, not the 2015-2016 SanDisk member.",
+      "evidence": ["coverage_dispositions.json: SNDK/before_first"]
+    },
+    {
+      "symbol": "ADT",
+      "action": "preserve",
+      "append": "refuse",
+      "member_period": {"end": "2016-05-03"},
+      "provider_identity": {"name": "ADT Inc.", "first_trade": "2018-01-19"},
+      "reason": "The provider symbol is ADT Inc.; the 2015-2016 ADT Corp. member was taken private.",
+      "evidence": ["coverage_dispositions.json: ADT/before_first"]
+    },
+    {
+      "symbol": "CAM",
+      "action": "preserve",
+      "append": "refuse",
+      "member_period": {"end": "2016-04-04"},
+      "reason": "The provider symbol is an AB municipal ETF; Cameron International was acquired by Schlumberger.",
+      "evidence": ["coverage_dispositions.json: CAM/before_first"]
+    },
+    {
+      "symbol": "POM",
+      "action": "preserve",
+      "append": "refuse",
+      "member_period": {"end": "2016-03-30"},
+      "reason": "The provider symbol is Pomdoctor; Pepco Holdings was acquired by Exelon.",
+      "evidence": ["coverage_dispositions.json: POM/before_first"]
+    },
+    {
+      "symbol": "PCL",
+      "action": "preserve",
+      "append": "refuse",
+      "member_period": {"end": "2016-02-22"},
+      "reason": "The provider symbol is a PGIM bond ETF; Plum Creek merged into Weyerhaeuser.",
+      "evidence": ["coverage_dispositions.json: PCL/before_first"]
+    },
+    {
+      "symbol": "NE",
+      "action": "preserve",
+      "append": "refuse",
+      "member_period": {"end": "2015-07-20"},
+      "provider_identity": {"name": "Noble Corporation plc", "first_trade": "2021-06-09"},
+      "reason": "The provider symbol is the post-restructuring Noble Corporation registrant; no bars exist for the 2015 member.",
+      "evidence": ["coverage_dispositions.json: NE/before_first"]
+    },
+    {
+      "symbol": "TEG",
+      "action": "preserve",
+      "append": "refuse",
+      "member_period": {"end": "2015-07-01"},
+      "reason": "The local file is a later reused security; Integrys was acquired in 2015.",
+      "evidence": ["coverage_dispositions.json: TEG/before_first"]
+    }
+  ]
+}

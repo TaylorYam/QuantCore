@@ -1,0 +1,203 @@
+"""Offline regression tests for price-file identity repair (#55)."""
+from __future__ import annotations
+
+import importlib.util
+import json
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+from data.identity_audit import (
+    audit_data,
+    check_provider_identity,
+    load_manifest,
+    stage_repair,
+)
+
+
+def _write_csv(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_csv(path, index=False)
+
+
+def _row(day: str, close: float, volume: float, *, open_: float | None = None,
+         high: float | None = None, low: float | None = None) -> dict:
+    open_ = close if open_ is None else open_
+    high = close if high is None else high
+    low = close if low is None else low
+    return {
+        "Date": day,
+        "Open": open_,
+        "High": high,
+        "Low": low,
+        "Close": close,
+        "Adj Close": close,
+        "Volume": volume,
+    }
+
+
+def _manifest(path: Path, rules: list[dict]) -> Path:
+    for rule in rules:
+        rule.setdefault("reason", "test fixture")
+    path.write_text(json.dumps({"schema_version": 1, "rules": rules}),
+                    encoding="utf-8")
+    return path
+
+
+def test_audit_reports_price_volume_provider_and_member_overlap(tmp_path):
+    root = tmp_path / "data"
+    _write_csv(root / "stocks" / "COL.csv", [
+        _row("2015-01-02", 0.40, 300),
+        _row("2018-11-30", 0.05, 100),
+    ])
+    manifest = _manifest(tmp_path / "manifest.json", [{
+        "symbol": "COL",
+        "action": "quarantine",
+        "append": "refuse",
+        "member_period": {"start": "2015-01-02", "end": "2018-11-30"},
+        "price_volume_sanity": {
+            "close_max": 1.0,
+            "volume_max": 1000,
+            "minimum_fraction": 1.0,
+        },
+        "provider_identity": {
+            "name": "Rockwell Collins, Inc.",
+            "first_trade": "2015-01-02",
+        },
+    }])
+
+    report = audit_data(
+        root,
+        manifest,
+        provider_identities={"COL": {
+            "name": "Unrelated Security",
+            "first_trade": "2014-01-02",
+        }},
+    )
+
+    record = report["symbols"][0]
+    assert "price_volume_identity_suspect" in record["issues"]
+    assert "provider_name_mismatch" in record["issues"]
+    assert record["member_overlap"]["overlap_rows"] == 2
+    assert report["clean"] is False
+
+
+def test_audit_detects_post_delisting_flat_zero_volume_bar(tmp_path):
+    root = tmp_path / "data"
+    _write_csv(root / "stocks" / "TWX.csv", [
+        _row("2018-06-14", 98.77, 28205816, open_=98.41, high=99.65,
+             low=98.39),
+        _row("2018-06-15", 98.77, 0),
+    ])
+    manifest = _manifest(tmp_path / "manifest.json", [{
+        "symbol": "TWX",
+        "action": "truncate",
+        "append": "refuse",
+        "valid_through": "2018-06-14",
+        "member_period": {"end": "2018-06-20"},
+    }])
+
+    record = audit_data(root, manifest)["symbols"][0]
+
+    assert record["flat_zero_volume_dates"] == ["2018-06-15"]
+    assert record["invalid_after_cutoff"] == ["2018-06-15"]
+    assert "post_cutoff_rows" in record["issues"]
+
+
+def test_provider_identity_requires_matching_name_and_first_trade():
+    rule = {
+        "provider_identity": {
+            "name": "Example Corp",
+            "first_trade": "2020-01-02",
+        }
+    }
+
+    assert check_provider_identity(rule, {
+        "name": "Example Corp",
+        "first_trade": "2020-01-02",
+    }) == []
+    assert check_provider_identity(rule, {
+        "name": "Other Corp",
+        "first_trade": "2020-01-03",
+    }) == ["provider_name_mismatch", "provider_first_trade_mismatch"]
+
+
+def test_default_manifest_reconciles_issue_50_identity_findings():
+    rules = load_manifest()["rules"]
+    assert {rule["symbol"] for rule in rules} == {
+        "COL", "NFX", "AVB", "TWX", "AET",
+        "STI", "INFO", "CA", "DOW", "SE", "EMC", "TE", "CCE",
+        "SNDK", "ADT", "CAM", "POM", "PCL", "NE", "TEG",
+    }
+    assert {rule["symbol"] for rule in rules
+            if rule["action"] == "quarantine"} == {"COL"}
+    assert {rule["symbol"] for rule in rules
+            if rule["action"] == "truncate"} == {"NFX", "AVB", "TWX", "AET"}
+    assert all(rule["append"] == "refuse" for rule in rules)
+
+
+def test_stage_repair_quarantines_and_truncates_without_mutating_source(tmp_path):
+    source = tmp_path / "source"
+    _write_csv(source / "stocks" / "COL.csv", [
+        _row("2015-01-02", 0.40, 300),
+    ])
+    _write_csv(source / "stocks" / "NFX.csv", [
+        _row("2019-02-13", 17.07, 6651548),
+        _row("2026-07-07", 24.60, 106),
+    ])
+    before = {path: path.read_bytes() for path in source.rglob("*") if path.is_file()}
+    manifest = _manifest(tmp_path / "manifest.json", [
+        {"symbol": "COL", "action": "quarantine", "append": "refuse"},
+        {"symbol": "NFX", "action": "truncate", "append": "refuse",
+         "valid_through": "2019-02-13"},
+    ])
+
+    output = tmp_path / "staging"
+    report = stage_repair(source, output, manifest)
+
+    assert {path: path.read_bytes() for path in source.rglob("*") if path.is_file()} == before
+    assert not (output / "stocks" / "COL.csv").exists()
+    assert (output / "quarantine" / "stocks" / "COL.csv").exists()
+    staged_nfx = pd.read_csv(output / "stocks" / "NFX.csv")
+    assert staged_nfx["Date"].tolist() == ["2019-02-13"]
+    assert report["after"]["clean"] is True
+    assert report["rollback"].startswith("Delete the staging directory")
+
+
+@pytest.fixture
+def updater(tmp_path, monkeypatch):
+    path = Path(__file__).resolve().parents[2] / "data" / "update_data.py"
+    spec = importlib.util.spec_from_file_location("market_data_identity_updater", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "STOCK_DIR", tmp_path / "stocks")
+    monkeypatch.setattr(module, "TODAY", "2026-09-17")
+    return module
+
+
+def test_updater_refuses_guarded_append_and_still_updates_unlisted_symbol(
+    updater, tmp_path, monkeypatch,
+):
+    _write_csv(updater.STOCK_DIR / "NFX.csv", [_row("2019-02-13", 17.07, 100)])
+    _write_csv(updater.STOCK_DIR / "A.csv", [_row("2026-09-15", 10, 100)])
+    manifest = _manifest(tmp_path / "manifest.json", [{
+        "symbol": "NFX", "action": "truncate", "append": "refuse",
+        "valid_through": "2019-02-13",
+    }])
+    monkeypatch.setattr(updater, "IDENTITY_MANIFEST_PATH", manifest)
+
+    new = pd.DataFrame({key: [11] for key in (
+        "Open", "High", "Low", "Close", "Adj Close", "Volume",
+    )}, index=pd.to_datetime(["2026-09-16"]))
+    monkeypatch.setattr(updater.yf, "download", lambda *args, **kwargs: new)
+
+    nfx_before = (updater.STOCK_DIR / "NFX.csv").read_bytes()
+    errors = updater.update_stocks(batch_size=1)
+
+    assert any("NFX: identity guard refuses provider append" in error
+               for error in errors)
+    assert (updater.STOCK_DIR / "NFX.csv").read_bytes() == nfx_before
+    assert pd.read_csv(updater.STOCK_DIR / "A.csv")["Date"].tolist() == [
+        "2026-09-15", "2026-09-16"
+    ]

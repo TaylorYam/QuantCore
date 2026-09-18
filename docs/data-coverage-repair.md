@@ -246,8 +246,8 @@ harness 與 [characterization 規範](../AGENTS.md#5-測試要求) 相同：`sig
    IQV（2017-08-29 以 Q）、SW（2024-07-08）；加入前共有 5,661 個有行情的 session 可被回測選到。
    先移除後再加入的（EQT、PCG、FSLR）處理正確。
 3. **身分錯誤的既有檔（影響回測，[#55](https://github.com/TaylorYam/QuantCore/issues/55)）**：`COL.csv` 不是 Rockwell Collins（收盤 0.01～0.85、成交量數百股），COL 於 2015–2018 是成員；
-   `NFX.csv`、`AVB.csv` 在代碼被重用／併購後，每日更新接上了別的證券的 bar。
-4. **下市後的零成交量平盤 bar**（併入 #55）：例如 TWX 2018-06-15、AET 2018-11-29，稽核目前算作有效 bar。
+   `NFX.csv`、`AVB.csv` 在代碼被重用／併購後，每日更新接上了別的證券的 bar。已建立 reviewed manifest 與 staging/rollback 工具，見 [`data-identity-repair.md`](data-identity-repair.md)。
+4. **下市後的零成交量平盤 bar**（併入 #55）：例如 TWX 2018-06-15、AET 2018-11-29；identity audit 會把 reviewed cutoff 後的 bar 標為異常。
 5. **跨代碼別名**（第 5 節的 8 個候選）與**已下市證券資料源**：[#56](https://github.com/TaylorYam/QuantCore/issues/56)。
 6. **類股的 broker 代碼對應**（已完成，見 [`broker-symbol-contract.md`](broker-symbol-contract.md)）：[#52](https://github.com/TaylorYam/QuantCore/issues/52)。
 7. **Panel 刷新排程的半日交易日期**：`automation/refresh_schedule.py` 列了官方沒有的 2026-07-02、2027-07-02、2027-12-23

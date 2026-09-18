@@ -15,9 +15,15 @@ import yfinance as yf
 from pathlib import Path
 from datetime import date, timedelta
 
+try:
+    from data.identity_audit import identity_guard_reason
+except ModuleNotFoundError:  # direct ``python data/update_data.py`` execution
+    from identity_audit import identity_guard_reason
+
 ROOT      = Path(__file__).resolve().parent.parent / "data"
 ETF_DIR   = ROOT / "etfs"
 STOCK_DIR = ROOT / "stocks"
+IDENTITY_MANIFEST_PATH = ROOT / "identity_dispositions.json"
 
 SECTOR_ETFS = ["XLK","XLF","XLV","XLE","XLI","XLY","XLB","XLP","XLU","XLC","XLRE"]
 BENCHMARKS  = ["SPY","SSO","QQQ"]
@@ -218,6 +224,11 @@ def update_stocks(batch_size: int = 50) -> list[str]:
     # 依 last_date 分組，同一天起始的批次一起下
     groups: dict[str, list] = {}
     for p in csvs:
+        guard_reason = identity_guard_reason(p.stem, IDENTITY_MANIFEST_PATH)
+        if guard_reason:
+            errors.append(f"{p.stem}: {guard_reason}")
+            print(f"    {p.stem}: {guard_reason}")
+            continue
         try:
             ld = _last_date(p)
             start = str((pd.to_datetime(ld) + timedelta(days=1)).date())

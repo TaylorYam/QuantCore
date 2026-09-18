@@ -13,10 +13,10 @@ from strategies.sp500_momentum import constituents
 def write_workbook(path: Path, rows=None, *, numeric=False):
     rows = rows or [("2025-01-02", "AAPL", "MSFT"),
                     ("2025-01-03", "NVDA", None)]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    frame = pd.DataFrame(rows, columns=["Date", "T1", "T2"])
     if numeric:
-        frame.loc[0, "T2"] = 123
+        rows = [(rows[0][0], rows[0][1], 123), *rows[1:]]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame = pd.DataFrame(rows, columns=["Date", "T1", "T2"], dtype=object)
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         pd.DataFrame({"ignored": [1]}).to_excel(writer, sheet_name="Summary", index=False)
         frame.to_excel(writer, sheet_name="2025", index=False)
@@ -40,6 +40,28 @@ def test_build_and_hit_are_exact(tmp_path, monkeypatch):
     monkeypatch.setattr(constituents, "parse_excel",
                         lambda path: (_ for _ in ()).throw(AssertionError("cache miss")))
     assert_same(constituents.load_constituents(source, cache_dir=cache_dir), expected)
+
+
+@pytest.mark.parametrize("index_unit", ["us", "ns"])
+@pytest.mark.parametrize("column_dtype", ["object", "string"])
+def test_cache_preserves_index_precision_and_column_dtype(
+        tmp_path, index_unit, column_dtype):
+    source = tmp_path / "constituents.xlsx"
+    source.write_bytes(b"source identity only")
+    index = pd.DatetimeIndex(
+        np.asarray(["2025-01-02", "2025-01-03"], dtype=f"datetime64[{index_unit}]"),
+        name="Date",
+    )
+    frame = pd.DataFrame(
+        {"T1": pd.Series(["AAPL", None], dtype=column_dtype).array},
+        index=index,
+    )
+    digest = constituents.source_digest(source)
+    arrays = constituents._cache_arrays(frame, source, digest)
+    assert arrays is not None
+    cache_path = constituents.cache_path_for(source, digest, tmp_path / "cache")
+    constituents._write_cache(cache_path, arrays)
+    assert_same(constituents._read_cache(cache_path, source, digest), frame)
 
 
 def test_source_atomic_replace_invalidates_cache(tmp_path):
@@ -124,6 +146,16 @@ def test_different_data_roots_do_not_share_cache(tmp_path):
     assert constituents.load_constituents(one, cache_dir=cache_dir).iloc[0, 0] == "AAPL"
     assert constituents.load_constituents(two, cache_dir=cache_dir).iloc[0, 0] == "META"
     assert len(list(cache_dir.glob("*.npz"))) == 2
+
+
+def test_different_parser_versions_do_not_share_cache(tmp_path, monkeypatch):
+    source = tmp_path / "constituents.xlsx"
+    source.write_bytes(b"same workbook bytes")
+    digest = constituents.source_digest(source)
+    current = constituents.cache_path_for(source, digest, tmp_path / "cache")
+    monkeypatch.setattr(constituents.pd, "__version__", "future-parser-version")
+    future = constituents.cache_path_for(source, digest, tmp_path / "cache")
+    assert current != future
 
 
 def test_missing_source_never_uses_stale_cache(tmp_path):

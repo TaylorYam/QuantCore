@@ -8,8 +8,9 @@ NPZ derivative to avoid reparsing the workbook on every process start.
 
 - The workbook is hashed before every cache lookup. A missing or unreadable
   source raises the source error; an older cache is never used as a fallback.
-- Cache filenames include the resolved source identity and SHA-256 digest, so a
-  changed workbook cannot reuse an older result.
+- Cache filenames include the resolved source identity, SHA-256 digest, format
+  version, and pandas/openpyxl parser identity. A changed workbook or parsing
+  environment cannot reuse an incompatible result.
 - A cache hit rechecks the source digest after reading. If the workbook was
   atomically replaced during the read, loading retries and publishes only data
   parsed from one source version.

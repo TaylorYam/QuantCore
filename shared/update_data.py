@@ -40,14 +40,18 @@ def main():
 
     from data.update_data import update_etfs, update_stocks
 
+    errors = []
     if do_etf:
-        update_etfs()
+        errors.extend(update_etfs())
 
     if do_stocks:
-        update_stocks()
+        errors.extend(update_stocks())
 
-    print("\nData update complete.")
+    for error in errors:
+        print(f"ERROR: {error}")
+    print(f"\nData update finished: {len(errors)} confirmed errors. Run data.health for completeness.")
+    return int(bool(errors))
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

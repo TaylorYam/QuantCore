@@ -65,7 +65,7 @@ def main() -> list[str]:
     log.info("Step 1: Updating ETFs...")
     try:
         from data.update_data import update_etfs
-        update_etfs()
+        errors.extend(update_etfs() or [])
         log.info("ETF update done.")
     except Exception as e:
         log.error(f"ETF update failed: {e}", exc_info=True)
@@ -75,7 +75,7 @@ def main() -> list[str]:
     log.info("Step 2: Updating stocks...")
     try:
         from data.update_data import update_stocks
-        update_stocks()
+        errors.extend(update_stocks() or [])
         log.info("Stock update done.")
     except Exception as e:
         log.error(f"Stock update failed: {e}", exc_info=True)

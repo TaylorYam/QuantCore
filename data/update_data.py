@@ -53,11 +53,13 @@ def _append(existing_path: Path, new_df: pd.DataFrame) -> int:
     return max(added, 0)
 
 
-def _extract_ticker(raw: pd.DataFrame, tk: str) -> pd.DataFrame | None:
+def _extract_ticker(raw: pd.DataFrame, tk: str, errors: list[str] | None = None) -> pd.DataFrame | None:
     """
     從 yf.download() 批次結果中提取單一 ticker 的 OHLCV。
     相容 yfinance < 1.0（raw["Open"][tk]）和 >= 1.0（raw[tk]["Open"] 或 MultiIndex）。
     """
+    if raw.empty:
+        return None
     try:
         cols = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
         if raw.columns.nlevels == 2:
@@ -79,12 +81,14 @@ def _extract_ticker(raw: pd.DataFrame, tk: str) -> pd.DataFrame | None:
         df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
         df = df.dropna(subset=["Close"])
         return df if not df.empty else None
-    except Exception:
+    except Exception as exc:
+        if errors is not None:
+            errors.append(f"{tk}: invalid download response: {exc}")
         return None
 
 
 def _download_ohlcv(ticker: str, start: str, end: str,
-                    auto_adjust: bool = False) -> pd.DataFrame | None:
+                    auto_adjust: bool = False, errors: list[str] | None = None) -> pd.DataFrame | None:
     """下載 OHLCV，失敗回傳 None。"""
     try:
         raw = yf.Ticker(ticker).history(
@@ -100,13 +104,17 @@ def _download_ohlcv(ticker: str, start: str, end: str,
         df = df.dropna(subset=["Close"])
         return df if not df.empty else None
     except Exception as e:
+        if errors is not None:
+            errors.append(f"{ticker}: download failed: {e}")
         print(f"    ERROR {ticker}: {e}")
         return None
 
 
 # ── ETF 更新 ──────────────────────────────────────────────────────────────────
 
-def update_etfs():
+def update_etfs() -> list[str]:
+    """Return confirmed update errors; empty responses do not prove missing sessions."""
+    errors = []
     print("=" * 55)
     print("ETF 更新")
     print("=" * 55)
@@ -115,23 +123,31 @@ def update_etfs():
     paths = {tk: ETF_DIR / f"{tk}.csv" for tk in ALL_ETFS if (ETF_DIR / f"{tk}.csv").exists()}
     if not paths:
         print("  找不到 ETF CSV，請先執行 migrate_data.py")
-        return
+        return ["ETF: no existing CSV files"]
 
     # 以最舊的 last_date 作為起始（確保全部補齊）
-    starts = {tk: _last_date(p) for tk, p in paths.items()}
+    starts = {}
+    for tk, path in paths.items():
+        try:
+            starts[tk] = _last_date(path)
+        except Exception as exc:
+            errors.append(f"{tk}: unreadable CSV: {exc}")
+    errors.extend(f"{tk}: missing CSV" for tk in ALL_ETFS if tk not in paths)
+    if not starts:
+        return errors
     earliest = min(starts.values())
     start = str((pd.to_datetime(earliest) + timedelta(days=1)).date())
 
     if start >= TODAY:
         print(f"  ETF 資料已是最新（{earliest}），無需更新。")
-        return
+        # VIX is checked independently below.
 
     print(f"  下載區間：{start} → {TODAY}")
 
     # 批次下載（yfinance >= 1.0 欄位格式：group_by="ticker" → raw[tk] 取子 DataFrame）
     tickers_str = " ".join(ALL_ETFS)
     try:
-        raw = yf.download(tickers_str, start=start, end=TODAY,
+        raw = None if start >= TODAY else yf.download(tickers_str, start=start, end=TODAY,
                           auto_adjust=False, group_by="ticker",
                           progress=False)
     except Exception as e:
@@ -140,7 +156,7 @@ def update_etfs():
 
     for tk in ALL_ETFS:
         csv_path = ETF_DIR / f"{tk}.csv"
-        if not csv_path.exists():
+        if tk not in starts:
             continue
         start_tk = str((pd.to_datetime(starts[tk]) + timedelta(days=1)).date())
         if start_tk >= TODAY:
@@ -149,9 +165,9 @@ def update_etfs():
 
         try:
             if raw is not None:
-                df = _extract_ticker(raw, tk)
+                df = _extract_ticker(raw, tk, errors)
             else:
-                df = _download_ohlcv(tk, start_tk, TODAY)
+                df = _download_ohlcv(tk, start_tk, TODAY, errors=errors)
 
             if df is None or df.empty:
                 print(f"  {tk:6s}  無新資料")
@@ -160,25 +176,34 @@ def update_etfs():
             added = _append(csv_path, df)
             print(f"  {tk:6s}  +{added} 筆  (至 {str(df.index[-1].date())})")
         except Exception as e:
+            errors.append(f"{tk}: {e}")
             print(f"  {tk:6s}  ERROR: {e}")
 
     # VIX 單獨處理
     vix_path = ETF_DIR / "VIX.csv"
-    if vix_path.exists():
-        vix_start = str((pd.to_datetime(_last_date(vix_path)) + timedelta(days=1)).date())
-        if vix_start < TODAY:
-            df = _download_ohlcv(VIX_TICKER, vix_start, TODAY)
-            if df is not None and not df.empty:
-                df["Volume"] = 0
-                added = _append(vix_path, df)
-                print(f"  {'VIX':6s}  +{added} 筆  (至 {str(df.index[-1].date())})")
+    try:
+        if vix_path.exists():
+            vix_start = str((pd.to_datetime(_last_date(vix_path)) + timedelta(days=1)).date())
+            if vix_start < TODAY:
+                df = _download_ohlcv(VIX_TICKER, vix_start, TODAY, errors=errors)
+                if df is not None and not df.empty:
+                    df["Volume"] = 0
+                    added = _append(vix_path, df)
+                    print(f"  {'VIX':6s}  +{added} 筆  (至 {str(df.index[-1].date())})")
+            else:
+                print(f"  {'VIX':6s}  已最新")
         else:
-            print(f"  {'VIX':6s}  已最新")
+            errors.append("VIX: missing CSV")
+    except Exception as exc:
+        errors.append(f"VIX: {exc}")
+    return errors
 
 
 # ── 個股更新 ──────────────────────────────────────────────────────────────────
 
-def update_stocks(batch_size: int = 50):
+def update_stocks(batch_size: int = 50) -> list[str]:
+    """Return confirmed per-ticker errors; historical inactive tickers remain valid."""
+    errors = []
     print("=" * 55)
     print("個股更新（yfinance 批次下載）")
     print("=" * 55)
@@ -186,7 +211,7 @@ def update_stocks(batch_size: int = 50):
     csvs = sorted(STOCK_DIR.glob("*.csv"))
     if not csvs:
         print("  找不到個股 CSV，請先解壓縮歷史資料。")
-        return
+        return ["Stocks: no existing CSV files"]
 
     print(f"  共 {len(csvs)} 支個股")
 
@@ -199,12 +224,13 @@ def update_stocks(batch_size: int = 50):
             if start >= TODAY:
                 continue
             groups.setdefault(start, []).append(p)
-        except Exception:
+        except Exception as exc:
+            errors.append(f"{p.stem}: unreadable CSV: {exc}")
             continue
 
     if not groups:
         print(f"  個股資料已是最新，無需更新。")
-        return
+        return errors
 
     total_added = 0
     total_updated = 0
@@ -223,14 +249,16 @@ def update_stocks(batch_size: int = 50):
                                   auto_adjust=False, group_by="ticker",
                                   progress=False)
             except Exception as e:
+                errors.extend(f"{tk}: download failed: {e}" for tk in batch)
                 print(f"    批次 {i//batch_size+1} 下載失敗：{e}")
                 continue
 
             for tk in batch:
                 csv_path = STOCK_DIR / f"{tk}.csv"
                 try:
-                    df = _extract_ticker(raw, tk)
+                    df = _extract_ticker(raw, tk, errors)
                     if df is None or df.empty:
+                        print(f"    {tk}: no data returned; freshness unverified")
                         continue
 
                     added = _append(csv_path, df)
@@ -238,9 +266,12 @@ def update_stocks(batch_size: int = 50):
                         total_added += added
                         total_updated += 1
                 except Exception as e:
+                    errors.append(f"{tk}: {e}")
                     print(f"    {tk}: {e}")
 
     print(f"\n  完成：{total_updated} 支個股更新，共 +{total_added} 筆新資料")
+
+    return errors
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -254,9 +285,12 @@ if __name__ == "__main__":
     do_etf    = args.etf    or (not args.etf and not args.stocks)
     do_stocks = args.stocks or (not args.etf and not args.stocks)
 
+    errors = []
     if do_etf:
-        update_etfs()
+        errors.extend(update_etfs())
     if do_stocks:
-        update_stocks()
-
-    print("\n資料更新完成。")
+        errors.extend(update_stocks())
+    for error in errors:
+        print(f"ERROR: {error}")
+    print(f"\n資料更新結束：{len(errors)} 個已確認錯誤；完整性請另跑 data.health。")
+    raise SystemExit(bool(errors))

@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "source": {
+    "id": "wiki-history",
+    "url": "https://en.wikipedia.org/wiki/Historical_components_of_the_S%26P_500",
+    "revision_id": 1370891103,
+    "reviewed": "2026-09-18",
+    "note": "Effective add dates are transcribed from the historical components table. The repair removes only pre-join membership; it does not infer historical membership from today's list or rename price files."
+  },
+  "rules": [
+    {
+      "symbol": "DAY",
+      "effective_date": "2021-09-20",
+      "joined_as": "CDAY",
+      "evidence": "CDAY was added on 2021-09-20 and changed to DAY on 2024-02-01."
+    },
+    {
+      "symbol": "CPAY",
+      "effective_date": "2018-06-20",
+      "joined_as": "FLT",
+      "evidence": "FLT was added on 2018-06-20 and changed to CPAY on 2024-03-25."
+    },
+    {
+      "symbol": "EG",
+      "effective_date": "2017-06-19",
+      "joined_as": "RE",
+      "evidence": "RE was added on 2017-06-19; the current EG symbol is retained only from that membership date."
+    },
+    {
+      "symbol": "WTW",
+      "effective_date": "2016-01-05",
+      "joined_as": "WLTW",
+      "evidence": "WLTW was added on 2016-01-05 and changed to WTW on 2022-01-10."
+    },
+    {
+      "symbol": "IQV",
+      "effective_date": "2017-08-29",
+      "joined_as": "Q",
+      "evidence": "Q was added on 2017-08-29 and changed to IQV on 2017-11-15."
+    },
+    {
+      "symbol": "SW",
+      "effective_date": "2024-07-08",
+      "joined_as": "SW",
+      "evidence": "SW was added to the index on 2024-07-08."
+    }
+  ]
+}

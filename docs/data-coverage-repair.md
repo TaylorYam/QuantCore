@@ -241,7 +241,7 @@ harness 與 [characterization 規範](../AGENTS.md#5-測試要求) 相同：`sig
    KLAC 2026-06-12（1 拆 10）、CRWD 2026-07-02（1 拆 4）、CVNA 2026-05-08（1 拆 5）、MNST 2026-08-11（1 拆 2）、
    BKNG 2026-04-06（1 拆 25；Adj Close 另在 03-24 斷層）、DD 2026-06-24（1:3 反分割，+195%）。
    跳空過濾（> 20%）會把這些股票排除約 90 個交易日，持有中則會被 rotation 賣出；回測用的是完整重抓的資料，看不到這個落差。
-2. **歷史成分股檔的改名假成員（影響回測，[#54](https://github.com/TaylorYam/QuantCore/issues/54)）**：「加入後才改代碼」的公司被寫成從 2015-01-02 起就是成員——
+2. **歷史成分股檔的改名假成員（已另案修正，影響回測，[#54](https://github.com/TaylorYam/QuantCore/issues/54)，見 [`constituents-history-repair.md`](constituents-history-repair.md)）**：「加入後才改代碼」的公司被寫成從 2015-01-02 起就是成員——
    DAY（2021-09-20 以 CDAY 加入）、CPAY（2018-06-20 以 FLT）、EG（2017-06-19 以 RE）、WTW（2016-01-05 以 WLTW）、
    IQV（2017-08-29 以 Q）、SW（2024-07-08）；加入前共有 5,661 個有行情的 session 可被回測選到。
    先移除後再加入的（EQT、PCG、FSLR）處理正確。

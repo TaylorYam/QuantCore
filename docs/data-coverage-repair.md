@@ -130,12 +130,14 @@ Constituents 從 2015 年起就以 `MRSH` 記錄 Marsh McLennan（原始建檔�
 | 上市前／下市後 | 已說明 | 7 | 4 | TWX、AET、HOLX、DAY：官方收購完成、停止交易後，指數生效日前的 1～3 個 session，不可能有 bar |
 | **合計** | | **137,303** | 722 | 與原始報告逐列對帳（已修復 24,743／未解決 112,553／已說明 7） |
 
-121 個缺檔：**已修復 9**（BRK.B、BF.B、A、MRSH、AAP、BBWI、EMN、KMX、MBC）、**未解決 112**，未解決的每一檔都有原因與後續處置：
+121 個缺檔：#50 基準為**已修復 9**（BRK.B、BF.B、A、MRSH、AAP、BBWI、EMN、KMX、MBC）、**未解決 112**；#56 將其中 8 組有證據的跨代碼歷史身份改為 staged `historical_alias`，其餘缺檔仍按下列處置：
 
 - **provider 沒有名單期間行情的已下市代碼（95）**：ABMD、AGN、ALTR、ALXN、ANSS、ARG、ATVI、AVP、BCR、BHI、BRCM、BXLT、CELG、CERN、CFN、CHK、CMCSK、COV、CPGX、CSC、CTLT、CTXS、CVC、CXO、DFS、DISH、DNB、DNR、DO、DRE、DTV、ENDP、ESV、ETFC、FDO、FL、FLIR、FRC、FTR、GAS、GGP、GMCR、HCBK、HES、HSP、IPG、JNPR、JOY、JWN、KRFT、KSU、LLL、LLTC、LM、LO、LVLT、MJN、MNK、MON、MRO、MXIM、NBL、NLSN、PBCT、PCP、PDCO、PETM、PLL、PXD、QEP、RAI、RHT、RTN、SBNY、SIAL、SIVB、SNI、SRCL、STJ、SWN、SWY、TIF、TSS、TWC、TWTR、VAR、VIAB、WBA、WCG、WFM、WIN、XEC、XL、XLNX、YHOO。
   需要另一個涵蓋已下市證券的資料源；在那之前回測對這些名單期間維持 unknown（存活者偏差照舊，不填補）。
-- **改名後資料在其他代碼（跨代碼別名候選）**：GPS→GAP、FBHS→FBIN、ADS→BFH、DPS→KDP、WYN→TNL、ARNC→HWM、DISCA→WBD、ACE→CB。
-  都有 provider／CIK 證據指向同一法人，但對應需要「有日期界限的跨代碼別名」，超出只做格式轉換的契約，另案設計。
+
+  資料源評估：SEC 的 [EDGAR API](https://www.sec.gov/search-filings/edgar-application-programming-interfaces) 提供 submissions／XBRL facts，不是可直接替代的 normalized daily OHLCV；[CRSP US Stock Database](https://www.crsp.org/research/) 有 daily price、delisting 與 survivor-bias-free 歷史，但屬需授權的研究資料；[Norgate Data](https://norgatedata.com/prices.php) 明列 delisted securities 與 daily history，同樣是付費授權服務。#56 不引入任何新供應商或 license，保留這 95 檔 unknown；未來若採購，最低欄位契約需能逐 security 保留 `Date/Open/High/Low/Close/Adj Close/Volume`、delisting event/return 與 identifier history，並另做 provider→local schema adapter。
+- **改名後資料在其他代碼（#56 已建立日期別名 manifest）**：GPS→GAP、FBHS→FBIN、ADS→BFH、DPS→KDP、WYN→TNL、ARNC→HWM、DISCA→WBD、ACE→CB。
+  `data/historical_aliases.json` 逐組記錄身份、證據與 inclusive member-session 界限；`strategies/sp500_momentum/utils.py` 與 `data/session_coverage.py` 共用 resolver。DPS 的 2018 special dividend／spin-off 只代表 coverage source 恢復，仍須 A/B 才能談回測影響；DISCK（不同股別）永不映射。
 - **公司事件、不可直接對應**：DXC（provider 序列 2017-04-03 前是 CSC 的歷史）、AA（provider 把 Alcoa Inc. 的舊歷史掛在分拆出來的 Alcoa Corporation 下）、
   DWDP、HFC、TYC（provider 序列含前身公司歷史）、DISCK（不同股別）、BMS（併入不同註冊人 Amcor）。
 - **代碼被重用**：APC、SPLS（provider 現在是別家公司／ETF）；既有檔的起始缺口 ADT、CA、CAM、CCE、DOW、EMC、INFO、NE、PCL、POM、SE、SNDK、STI、TE、TEG
@@ -144,7 +146,11 @@ Constituents 從 2015 年起就以 `MRSH` 記錄 Marsh McLennan（原始建檔�
 改名與下市都只採用有官方來源（公司公告、NYSE/SEC、Wikipedia 引用的 S&P 公告）或 provider 可重現證據的結論；
 沒有證據的不推論。完整證據（provider 名稱、首個交易日、本地檔範圍與 hash、Wikipedia 變動列）逐組在 `classification.json`。
 
+#56 的 8 組 alias 對 #50 基準缺列合計可覆蓋 **9,485 bars**（GPS 1,785、FBHS 1,635、ADS 1,376、DPS 880、WYN 858、ARNC 858、DISCA 1,831、ACE 262）；若 probe 的 successor CSV 通過 hash 與 session 覆蓋檢查，預期未解決由 112,553 降為 103,068，NEW 缺列為 103,075（另 7 bars 已說明）。這是 staging 計畫數字，不是未經 A/B 的策略績效結論；95 個 provider 無歷史資料的已下市代碼仍維持 unknown，沒有用存活者資料填補。
+
 ## 6. Staging 結果（OLD → NEW）
+
+上段的 9-file OLD/NEW 結果是 #50 的基準快照。#56 的 alias staging 會另外把 probe 中通過檢查的 successor 檔放入 NEW（若 NEW 已有同 hash 的檔則重用，不覆寫），coverage audit 以 member session 界限驗證；live data 仍需另行核准，不由本 PR 發布。
 
 NEW 與 OLD 只差 9 個檔（其餘 646 個 byte 相同）：
 

@@ -6,20 +6,44 @@ SP500 Momentum — 資料工具函數
 import pandas as pd
 from pathlib import Path
 
+from data.historical_aliases import HistoricalAlias, alias_for
+
 
 # ── 代碼命名契約 ──────────────────────────────────────────────────────────────
 # Constituents symbol：S&P / Wikipedia 寫法，類股以 "." 分隔（BRK.B）。
 # Provider symbol：Yahoo 寫法，類股以 "-" 分隔（BRK-B）；update_data 以檔名當下載代碼。
 # 本地檔名：{provider symbol}.csv。
-# 只做同一證券的格式轉換；改名、合併、代碼重用一律不在這裡處理（不跨公司接歷史）。
+# 一般只做同一證券的格式轉換；#56 的明確日期別名由 historical_aliases
+# 提供，改名、合併、代碼重用仍不由 provider metadata 自動推論。
 
 def provider_symbol(symbol: str) -> str:
     """Constituents symbol → provider (Yahoo) symbol / 本地檔名 stem。"""
     return symbol.strip().replace(".", "-")
 
 
-def stock_csv_path(stock_dir: str | Path, symbol: str) -> Path:
-    return Path(stock_dir) / f"{provider_symbol(symbol)}.csv"
+def historical_alias(symbol: str, as_of=None) -> HistoricalAlias | None:
+    """Return the reviewed historical identity active on a session, if any."""
+    return alias_for(symbol, as_of) if as_of is not None else None
+
+
+def data_provider_symbol(symbol: str, as_of=None) -> str:
+    """Resolve a provider stem for a dated read.
+
+    With no session this remains the format-only contract.  A session is
+    required before one of the explicit #56 historical aliases can apply.
+    """
+    alias = historical_alias(symbol, as_of)
+    return alias.provider_symbol if alias else provider_symbol(symbol)
+
+
+def stock_csv_path(stock_dir: str | Path, symbol: str, as_of=None) -> Path:
+    """Return the local price file for a Constituents symbol.
+
+    ``as_of`` is deliberately optional for compatibility with callers that
+    only need the ordinary format conversion.  Historical aliases are used
+    only when the caller supplies the session being read.
+    """
+    return Path(stock_dir) / f"{data_provider_symbol(symbol, as_of)}.csv"
 
 
 def load_stock(path: str | Path) -> pd.DataFrame | None:

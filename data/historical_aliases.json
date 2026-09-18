@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "reviewed": "2026-09-18",
+  "policy": {
+    "date_bounds": "inclusive session dates",
+    "resolution": "Only an explicit alias inside its window may change the provider file name.",
+    "outside_window": "Use the format-only provider symbol; never infer a rename, merger, or ticker reuse.",
+    "share_class": "No alias crosses a share class. DISCK is deliberately absent."
+  },
+  "aliases": [
+    {
+      "constituent_symbol": "GPS",
+      "provider_symbol": "GAP",
+      "valid_from": "2015-01-02",
+      "valid_to": "2022-02-02",
+      "identity": "The Gap, Inc.",
+      "evidence": [
+        "coverage_dispositions.json#symbols/GPS: provider GPS has no data and GAP identifies The Gap, Inc.",
+        "coverage_dispositions.json#symbols/GPS: GPS was removed from the historical Constituents on 2022-02-03.",
+        "Provider GAP history starts before the first GPS gap session and is used only for the dated GPS member window."
+      ],
+      "notes": "The end date is the last GPS Constituents session, not a claim that GAP was always the correct provider label."
+    },
+    {
+      "constituent_symbol": "FBHS",
+      "provider_symbol": "FBIN",
+      "valid_from": "2016-06-22",
+      "valid_to": "2022-12-16",
+      "identity": "Fortune Brands Home & Security / Fortune Brands Innovations",
+      "evidence": [
+        "coverage_dispositions.json#symbols/FBHS: FBHS was removed on 2022-12-19 and FBIN provider history begins on the listing date.",
+        "The 2022-12 MasterBrand spin-off is kept as a dated boundary; MBC is not an alias for FBHS."
+      ],
+      "notes": "Only the continuing Fortune Brands issuer is mapped; the spun-off MasterBrand security remains separate."
+    },
+    {
+      "constituent_symbol": "ADS",
+      "provider_symbol": "BFH",
+      "valid_from": "2015-01-02",
+      "valid_to": "2020-06-19",
+      "identity": "Alliance Data Systems / Bread Financial",
+      "evidence": [
+        "coverage_dispositions.json#symbols/ADS: provider ADS has no data and BFH history starts on the ADS listing date.",
+        "coverage_dispositions.json#symbols/ADS: ADS was removed from the historical Constituents on 2020-06-22."
+      ],
+      "notes": "The alias is limited to the historical ADS member window."
+    },
+    {
+      "constituent_symbol": "DPS",
+      "provider_symbol": "KDP",
+      "valid_from": "2015-01-02",
+      "valid_to": "2018-06-29",
+      "identity": "Dr Pepper Snapple / Keurig Dr Pepper",
+      "evidence": [
+        "coverage_dispositions.json#symbols/DPS: KDP has the same CIK and provider history reaches the DPS listing date.",
+        "coverage_dispositions.json#symbols/DPS: DPS was removed from the historical Constituents on 2018-07-02."
+      ],
+      "notes": "The 2018 special dividend and spin-off are an explicit corporate-action caveat. This mapping restores source coverage only; it does not assert return equivalence or authorize a backtest result without A/B review."
+    },
+    {
+      "constituent_symbol": "WYN",
+      "provider_symbol": "TNL",
+      "valid_from": "2015-01-02",
+      "valid_to": "2018-05-30",
+      "identity": "Wyndham Worldwide / Travel + Leisure",
+      "evidence": [
+        "coverage_dispositions.json#symbols/WYN: provider TNL history starts on the Wyndham Worldwide listing date.",
+        "coverage_dispositions.json#symbols/WYN: WYN was removed on 2018-05-31 after the Wyndham Hotels & Resorts spin-off."
+      ],
+      "notes": "The spun-off Wyndham Hotels & Resorts security is not mapped into TNL."
+    },
+    {
+      "constituent_symbol": "ARNC",
+      "provider_symbol": "HWM",
+      "valid_from": "2016-11-01",
+      "valid_to": "2020-03-31",
+      "identity": "Arconic / Howmet Aerospace",
+      "evidence": [
+        "coverage_dispositions.json#symbols/ARNC: ARNC and HWM share CIK 4281 and HWM covers the member window.",
+        "coverage_dispositions.json#symbols/ARNC: HWM replaced ARNC in the historical Constituents on 2020-04-01."
+      ],
+      "notes": "The window starts at the Alcoa separation; AA is deliberately not used for the predecessor history."
+    },
+    {
+      "constituent_symbol": "DISCA",
+      "provider_symbol": "WBD",
+      "valid_from": "2015-01-02",
+      "valid_to": "2022-04-08",
+      "identity": "Discovery, Inc. Series A / Warner Bros. Discovery",
+      "evidence": [
+        "coverage_dispositions.json#symbols/DISCA: DISCA and WBD share CIK 1437107 and WBD covers the member window.",
+        "coverage_dispositions.json#symbols/DISCA: DISCA was replaced by WBD on 2022-04-11."
+      ],
+      "notes": "Series A only. DISCK is a different share class and is never resolved through this alias."
+    },
+    {
+      "constituent_symbol": "ACE",
+      "provider_symbol": "CB",
+      "valid_from": "2015-01-02",
+      "valid_to": "2016-01-15",
+      "identity": "ACE Limited / Chubb Limited",
+      "evidence": [
+        "coverage_dispositions.json#symbols/ACE: ACE and CB share CIK 896159 and CB history reaches the ACE listing date.",
+        "coverage_dispositions.json#symbols/ACE: ACE was removed from the historical Constituents on 2016-01-19."
+      ],
+      "notes": "The alias stops before the first CB Constituents session; it is not a generic symbol rewrite."
+    }
+  ]
+}

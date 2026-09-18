@@ -405,7 +405,7 @@ class SP500Backtester:
         elif ticker == "SPY":
             df = self.spy_df
         else:
-            df = self.selector._get_ticker_data(ticker)
+            df = self.selector._get_ticker_data(ticker, date)
 
         if df is None or df.empty:
             return 0.0

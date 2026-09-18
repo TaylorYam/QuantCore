@@ -161,95 +161,137 @@
   },
   "ARNC": {
    "category": "rename_or_corporate_event",
-   "status": "unresolved",
+   "status": "repaired",
+   "repair": {
+    "kind": "historical_alias",
+    "provider_symbol": "HWM",
+    "valid_from": "2016-11-01",
+    "valid_to": "2020-03-31"
+   },
    "reason": "Arconic Inc. renamed Howmet Aerospace (HWM) on 2020-04-01, same legal entity (CIK 4281); local HWM.csv starts 2016-11-01 and covers the window.",
    "evidence": [
     "wiki-history: 2020-04-01 ARNC removed, HWM added.",
     "wiki-current: HWM CIK 4281.",
     "Provider HWM: Howmet Aerospace Inc., bars from 2016-11-01 only."
    ],
-   "follow_up": "Candidate for a date-bounded cross-symbol alias (ARNC -> HWM.csv); outside the format-only naming contract, separate review.",
+   "follow_up": "Coverage is restored through the reviewed date-bounded alias; any strategy A/B impact remains a separate research result.",
    "probe": [
     "HWM"
    ]
   },
   "GPS": {
    "category": "rename_or_corporate_event",
-   "status": "unresolved",
+   "status": "repaired",
+   "repair": {
+    "kind": "historical_alias",
+    "provider_symbol": "GAP",
+    "valid_from": "2015-01-02",
+    "valid_to": "2022-02-02"
+   },
    "reason": "The Gap, Inc. now trades as GAP; the provider no longer serves GPS.",
    "evidence": [
     "Provider GPS: no data; provider GAP: The Gap, Inc. with history from 2014.",
     "wiki-history: GPS removed 2022-02-03.",
     "Provider GAP: The Gap, Inc., first trade 1980-03-17, bars from 2014."
    ],
-   "follow_up": "Candidate for a date-bounded cross-symbol alias (GPS -> GAP); separate review.",
+   "follow_up": "Coverage is restored through the reviewed date-bounded alias; no permanent GPS -> GAP rewrite is allowed.",
    "probe": [
     "GAP"
    ]
   },
   "FBHS": {
    "category": "rename_or_corporate_event",
-   "status": "unresolved",
+   "status": "repaired",
+   "repair": {
+    "kind": "historical_alias",
+    "provider_symbol": "FBIN",
+    "valid_from": "2016-06-22",
+    "valid_to": "2022-12-16"
+   },
    "reason": "Fortune Brands Home & Security renamed Fortune Brands Innovations (FBIN) after the 2022-12 MasterBrand spin-off.",
    "evidence": [
     "wiki-history: FBHS removed 2022-12-19; MBC added 2022-12-15 as its spin-off.",
     "Provider FBIN: Fortune Brands Innovations, Inc., first trade 2011-09-16 (the FBHS listing date)."
    ],
-   "follow_up": "Candidate for a cross-symbol alias (FBHS -> FBIN); separate review.",
+   "follow_up": "Coverage is restored through the continuing Fortune Brands issuer; the MBC spin-off remains separate.",
    "probe": [
     "FBIN"
    ]
   },
   "ADS": {
    "category": "rename_or_corporate_event",
-   "status": "unresolved",
+   "status": "repaired",
+   "repair": {
+    "kind": "historical_alias",
+    "provider_symbol": "BFH",
+    "valid_from": "2015-01-02",
+    "valid_to": "2020-06-19"
+   },
    "reason": "Alliance Data Systems renamed Bread Financial (BFH); the provider no longer serves ADS.",
    "evidence": [
     "wiki-history: ADS removed 2020-06-22.",
     "Provider BFH: Bread Financial Holdings, Inc., first trade 2001-06-15 (the ADS listing date)."
    ],
-   "follow_up": "Candidate for a cross-symbol alias (ADS -> BFH) after identity verification; separate review.",
+   "follow_up": "Coverage is restored through the reviewed date-bounded alias; no ticker rewrite outside the ADS member window.",
    "probe": [
     "BFH"
    ]
   },
   "DPS": {
    "category": "rename_or_corporate_event",
-   "status": "unresolved",
+   "status": "repaired",
+   "repair": {
+    "kind": "historical_alias",
+    "provider_symbol": "KDP",
+    "valid_from": "2015-01-02",
+    "valid_to": "2018-06-29"
+   },
    "reason": "Dr Pepper Snapple (legal acquirer) became Keurig Dr Pepper (KDP, CIK 1418135) in 2018 with a special dividend; the provider no longer serves DPS.",
    "evidence": [
     "wiki-history: DPS removed 2018-07-02; KDP re-added 2022-06-21.",
     "wiki-current: KDP CIK 1418135.",
     "Provider KDP: Keurig Dr Pepper Inc., first trade 2008-05-07 (the DPS listing date)."
    ],
-   "follow_up": "Candidate for a cross-symbol alias (DPS -> KDP); the 2018 special dividend must be reviewed first.",
+   "follow_up": "Coverage is restored for the member window, but the 2018 special dividend/spin-off remains an explicit A/B caveat; this is not a performance claim.",
    "probe": [
     "KDP"
    ]
   },
   "WYN": {
    "category": "rename_or_corporate_event",
-   "status": "unresolved",
+   "status": "repaired",
+   "repair": {
+    "kind": "historical_alias",
+    "provider_symbol": "TNL",
+    "valid_from": "2015-01-02",
+    "valid_to": "2018-05-30"
+   },
    "reason": "Wyndham Worldwide spun off Wyndham Hotels and continued as Wyndham Destinations, later Travel + Leisure.",
    "evidence": [
     "wiki-history: WYN removed 2018-05-31 after the spin-off of Wyndham Hotels & Resorts.",
     "Provider TNL: Travel + Leisure Co., first trade 2006-07-19 (the Wyndham Worldwide listing date)."
    ],
-   "follow_up": "Candidate for a cross-symbol alias after identity verification; separate review.",
+   "follow_up": "Coverage is restored for Wyndham Worldwide's member window; the spun-off hotel issuer remains separate.",
    "probe": [
     "TNL"
    ]
   },
   "DISCA": {
    "category": "rename_or_corporate_event",
-   "status": "unresolved",
+   "status": "repaired",
+   "repair": {
+    "kind": "historical_alias",
+    "provider_symbol": "WBD",
+    "valid_from": "2015-01-02",
+    "valid_to": "2022-04-08"
+   },
    "reason": "Discovery, Inc. (CIK 1437107) became Warner Bros. Discovery (WBD) on 2022-04-11; local WBD.csv covers the window.",
    "evidence": [
     "wiki-history: DISCA removed / WBD added 2022-04-11.",
     "wiki-current: WBD CIK 1437107.",
     "Provider WBD: Warner Bros. Discovery, Inc., first trade 2005-07-08."
    ],
-   "follow_up": "Candidate for a cross-symbol alias (DISCA -> WBD.csv, Series A only); separate review.",
+   "follow_up": "Coverage is restored through the Series A alias only; DISCK is intentionally not mapped.",
    "probe": [
     "WBD"
    ]
@@ -292,14 +334,20 @@
   },
   "ACE": {
    "category": "rename_or_corporate_event",
-   "status": "unresolved",
+   "status": "repaired",
+   "repair": {
+    "kind": "historical_alias",
+    "provider_symbol": "CB",
+    "valid_from": "2015-01-02",
+    "valid_to": "2016-01-15"
+   },
    "reason": "ACE Ltd acquired Chubb Corp and took the Chubb name and CB ticker (CIK 896159); the provider CB series appears to be ACE Ltd's (first trade 1993-03-25).",
    "evidence": [
     "wiki-history: ACE removed 2016-01-19 'ACE Ltd acquired Chubb and retained the CB ticker'.",
     "wiki-current: CB Chubb Limited CIK 896159.",
     "Provider CB: Chubb Limited, first trade 1993-03-25 (the ACE Ltd listing date)."
    ],
-   "follow_up": "Needs identity verification before any alias.",
+   "follow_up": "Coverage is restored through the reviewed date-bounded alias; it is not a generic ACE -> CB rewrite.",
    "probe": [
     "CB"
    ]

@@ -17,7 +17,7 @@ from strategies.sp500_momentum.selection import SelectionEngine
 
 @pytest.mark.parametrize("symbol, provider", [
     ("BRK.B", "BRK-B"), ("BF.B", "BF-B"), ("A", "A"), ("MRSH", "MRSH"),
-    # renamed / reused tickers stay as written: no company-level aliasing
+    # The default path stays format-only; #56 aliases require an explicit date.
     ("FB", "FB"), ("GPS", "GPS"), ("MMC", "MMC")])
 def test_provider_symbol_is_format_only(symbol, provider):
     assert utils.provider_symbol(symbol) == provider

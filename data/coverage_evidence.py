@@ -20,9 +20,11 @@
 
 Categories follow the issue: format_difference, rename_or_corporate_event,
 outside_listing, missing_data, undetermined. A gap is `repaired` only when a
-reviewed disposition says so; everything else stays `unresolved` (or `explained`
-when no bar can exist) with its evidence. Nothing is inferred from today's list,
-and nothing is forward-filled.
+reviewed disposition says so; this includes an evidence-backed
+`historical_alias` whose session window is checked against the shared resolver.
+Everything else stays `unresolved` (or `explained` when no bar can exist) with
+its evidence. Nothing is inferred from today's list, and nothing is
+forward-filled.
 """
 from __future__ import annotations
 
@@ -40,6 +42,7 @@ from pathlib import Path
 import pandas as pd
 
 from data.trading_calendar import mc  # official NYSE registry (automation/market_calendar.py)
+from data.historical_aliases import manifest_entry
 from strategies.sp500_momentum.utils import provider_symbol
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -254,6 +257,34 @@ def _check_repair(sym: str, group: dict, repair: dict | None, probe: dict, probe
         if absent:
             return f"{sym}: provider series lacks {len(absent)} required sessions (first {absent[0]})"
         return None
+    if kind == "historical_alias":
+        alias = manifest_entry(sym)
+        if alias is None:
+            return f"{sym}: no reviewed historical alias manifest entry"
+        target = repair.get("provider_symbol")
+        if target != alias.provider_symbol:
+            return f"{sym}: alias provider mismatch ({target} vs {alias.provider_symbol})"
+        if (repair.get("valid_from") != alias.valid_from.isoformat() or
+                repair.get("valid_to") != alias.valid_to.isoformat()):
+            return f"{sym}: alias bounds do not match the reviewed manifest"
+        outside = [d for d in group["sessions"] if not alias.applies(sym, d)]
+        if outside:
+            return f"{sym}: alias does not cover {len(outside)} required sessions (first {outside[0]})"
+        prov = probe["provider"].get(target, {})
+        if prov.get("provider_symbol") != target:
+            return f"{sym}: alias provider evidence missing for {target}"
+        if not prov.get("rows") or not prov.get("csv"):
+            return f"{sym}: no saved provider series for alias {target}"
+        source = probe_dir / prov["csv"]
+        if not source.is_file():
+            return f"{sym}: saved alias series {prov['csv']} is missing"
+        if sha256(source.read_bytes()) != prov["sha256"]:
+            return f"{sym}: saved alias series does not match its recorded hash"
+        present = set(pd.read_csv(source, usecols=["Date"])["Date"].str[:10])
+        absent = [d for d in group["sessions"] if d not in present]
+        if absent:
+            return f"{sym}: alias series {target} lacks {len(absent)} required sessions (first {absent[0]})"
+        return None
     if kind == "calendar":
         return None
     return f"{sym}: unknown repair kind {kind!r}"
@@ -283,6 +314,15 @@ def classify(coverage: dict, probe: dict, probe_dir: Path, reviewed: dict,
             evidence["wikipedia_rows"] = events.get(sym.upper(), [])
             if sym in members:
                 evidence["wikipedia_current"] = members[sym]
+            if (decided.get("repair") or {}).get("kind") == "historical_alias":
+                alias = manifest_entry(sym)
+                target = decided["repair"]["provider_symbol"]
+                alias_probe = probe["provider"].get(target, {})
+                evidence["historical_alias"] = {
+                    "manifest": alias.as_dict() if alias else None,
+                    "provider": {k: alias_probe.get(k) for k in
+                                 ("provider_symbol", "rows", "first", "last", "sha256")},
+                }
         groups.append({**{k: g[k] for k in ("ticker", "kind", "bars", "first", "last")},
                        "category": decided["category"], "status": decided["status"],
                        "repair": decided.get("repair"), "reason": decided.get("reason"),
@@ -383,19 +423,33 @@ def stage(old: Path, new: Path, classification: dict, probe_dir: Path, through: 
                     "action": "removed snapshot rows dated on official closures", "dates": dropped,
                     "note": "non-year sheets (Summary, Counts) copied unchanged"})
     probe = json.loads((probe_dir / "probe.json").read_text(encoding="utf-8"))
+    staged_targets = set()
     for g in classification["groups"]:
         rep = g.get("repair") or {}
-        if g["status"] != "repaired" or rep.get("kind") != "provider_backfill":
+        if g["status"] != "repaired" or rep.get("kind") not in ("provider_backfill", "historical_alias"):
             continue
-        prov = probe["provider"][g["ticker"]]
-        target = new / "stocks" / f"{provider_symbol(g['ticker'])}.csv"
-        if target.exists():
-            raise ValueError(f"{target.name} already exists; backfill never overwrites")
+        source_symbol = (rep.get("provider_symbol") if rep.get("kind") == "historical_alias"
+                         else provider_symbol(g["ticker"]))
+        prov = probe["provider"].get(source_symbol)
+        if not prov:
+            raise ValueError(f"{g['ticker']}: provider evidence missing for {source_symbol}")
+        target = new / "stocks" / f"{source_symbol}.csv"
+        if target in staged_targets:
+            continue
         content = (probe_dir / prov["csv"]).read_bytes()
         if sha256(content) != prov["sha256"]:
             raise ValueError(f"{prov['csv']} changed since the probe")
-        target.write_bytes(content)
-        actions.append({"file": f"stocks/{target.name}", "action": "added provider history",
+        if target.exists():
+            if sha256(target.read_bytes()) != prov["sha256"]:
+                raise ValueError(f"{target.name} exists but differs from the probed provider series; "
+                                 "staging never overwrites")
+            action = "reused existing provider history"
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+            action = "added provider history"
+        staged_targets.add(target)
+        actions.append({"file": f"stocks/{target.name}", "action": action,
                         "symbol": g["ticker"], "provider": f"yfinance {probe['yfinance_version']}",
                         "provider_symbol": prov["provider_symbol"], "fetched_at_utc": prov["fetched_at_utc"],
                         "rows": prov["rows"], "range": [prov["first"], prov["last"]],

@@ -2,8 +2,9 @@
 
 The supplied calendar is an input; it is cross-checked against SPY and the official
 NYSE registry (automation/market_calendar.py) but never rewritten here.
-Stock files are resolved with the reader's naming contract (BRK.B -> BRK-B.csv).
-No forward fill, ticker rename, listing date or delisting date is inferred.
+Stock files are resolved with the reader's naming contract (BRK.B -> BRK-B.csv)
+plus the explicit, date-bounded aliases in data/historical_aliases.json.  No
+forward fill, ticker rename, listing date or delisting date is inferred.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ import numpy as np
 import pandas as pd
 
 from data.trading_calendar import mc
-from strategies.sp500_momentum.utils import stock_csv_path
+from strategies.sp500_momentum.utils import historical_alias, stock_csv_path
 
 
 def read_input(path: Path, sources: list[dict]) -> bytes:
@@ -164,13 +165,29 @@ def audit(root: Path, start: str, end: str) -> dict:
     coverage = []
     totals = Counter({k: 0 for k in ("required_bars", "valid_bars", "missing_bars", "invalid_bars")})
     for ticker, expected in sorted(required.items()):
-        path = stock_csv_path(root / "stocks", ticker)
+        # A historical alias can change the source file by session.  Resolve
+        # each expected session first, then inspect each distinct source once;
+        # this keeps the audit and strategy reader on the same resolver while
+        # retaining exact per-session membership semantics.
+        path_sessions = defaultdict(list)
+        for session in sorted(expected):
+            path_sessions[stock_csv_path(root / "stocks", ticker, session)].append(session)
         present, valid = set(), set()
-        file_error = None
-        try:
-            present, valid = inspect_bars(read_input(path, sources), f"stocks/{path.name}", True, issues)
-        except (OSError, ValueError, TypeError) as exc:
-            file_error = str(exc)
+        file_errors = []
+        source_files = []
+        for path in sorted(path_sessions, key=lambda p: p.name):
+            source_files.append(path.name)
+            try:
+                observed, good = inspect_bars(
+                    read_input(path, sources), f"stocks/{path.name}", True, issues)
+                # A source file may contain sessions outside the alias window;
+                # only sessions assigned to this path by the resolver count.
+                assigned = set(path_sessions[path])
+                present.update(observed & assigned)
+                valid.update(good & assigned)
+            except (OSError, ValueError, TypeError) as exc:
+                file_errors.append(f"{path.name}: {exc}")
+        file_error = "; ".join(file_errors) if file_errors else None
         absent = expected - present
         invalid = (expected & present) - valid
         first, last = (min(present), max(present)) if present else (None, None)
@@ -181,7 +198,17 @@ def audit(root: Path, start: str, end: str) -> dict:
         counts = {"required_bars": len(expected), "valid_bars": len(expected & valid),
                   "missing_bars": len(absent), "invalid_bars": len(invalid)}
         totals.update(counts)
-        row = {"ticker": ticker, "file": path.name, **counts, "missing_sessions": day_strings(absent),
+        resolved_sources = []
+        for path, source_sessions in sorted(path_sessions.items(), key=lambda item: item[0].name):
+            source = {"file": path.name, "sessions": day_strings(source_sessions)}
+            alias = historical_alias(ticker, source_sessions[0])
+            if alias is not None:
+                source["alias"] = alias.as_dict()
+            resolved_sources.append(source)
+        row = {"ticker": ticker,
+               "file": source_files[0] if len(source_files) == 1 else source_files,
+               "files": source_files, "resolved_sources": resolved_sources,
+               **counts, "missing_sessions": day_strings(absent),
                "invalid_sessions": day_strings(invalid),
                "before_first_observed": day_strings(before), "after_last_observed": day_strings(after),
                "internal_missing": day_strings(internal), "file_error": file_error}

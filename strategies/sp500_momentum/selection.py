@@ -10,13 +10,18 @@ import scipy.stats as stats
 
 from . import config
 from . import utils
+from .constituents import load_constituents
 
 
 class SelectionEngine:
-    def __init__(self, data_cache: dict = None):
+    def __init__(self, data_cache: dict = None,
+                 use_constituents_cache: bool | None = None,
+                 constituents_cache_dir=None):
         self.data_cache    = data_cache or {}
         self.scan_cache    = {}     # {(date, lookback): sorted_list}
         self.metrics_cache = {}     # {(ticker, date, lookback, ema, atr): dict}
+        self.use_constituents_cache = use_constituents_cache
+        self.constituents_cache_dir = constituents_cache_dir
         self.constituents_df = self._load_constituents()
         self._all_tickers_loaded = False
 
@@ -26,19 +31,11 @@ class SelectionEngine:
         path = config.REF_DIR / config.CONST_FILE
         print(f"Loading constituents from {path}...")
         try:
-            xl = pd.ExcelFile(path, engine="openpyxl")
-            valid_sheets = [s for s in xl.sheet_names if s.isdigit()]
-            frames = []
-            for sheet in valid_sheets:
-                df = pd.read_excel(xl, sheet_name=sheet)
-                if "Date" in df.columns:
-                    df["Date"] = pd.to_datetime(df["Date"])
-                    df.set_index("Date", inplace=True)
-                    frames.append(df)
-            if not frames:
-                return pd.DataFrame()
-            full = pd.concat(frames).sort_index()
-            return full
+            return load_constituents(
+                path,
+                use_cache=self.use_constituents_cache,
+                cache_dir=self.constituents_cache_dir,
+            )
         except Exception as e:
             print(f"Error loading constituents: {e}")
             return pd.DataFrame()

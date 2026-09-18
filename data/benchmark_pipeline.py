@@ -28,7 +28,9 @@ def fingerprint(root: Path) -> list[dict]:
              "sha256": hashlib.sha256(p.read_bytes()).hexdigest()} for p in paths]
 
 
-def measure_once(root: Path, start: str, end: str) -> dict:
+def measure_once(root: Path, start: str, end: str,
+                 constituents_cache: bool | None = False,
+                 constituents_cache_dir: Path | None = None) -> dict:
     from strategies.sp500_momentum import config, utils
     from strategies.sp500_momentum.backtester import SP500Backtester
     from strategies.sp500_momentum.selection import SelectionEngine
@@ -58,7 +60,10 @@ def measure_once(root: Path, start: str, end: str) -> dict:
 
     with patch.multiple(config, **bindings), patch.object(utils, "load_stock", timed_load):
         t = perf_counter()
-        selector = SelectionEngine()
+        selector = SelectionEngine(
+            use_constituents_cache=constituents_cache,
+            constituents_cache_dir=constituents_cache_dir,
+        )
         constituents_seconds = perf_counter() - t
         if selector.constituents_df.empty:
             raise ValueError("Constituents load failed")
@@ -114,7 +119,10 @@ def measure_once(root: Path, start: str, end: str) -> dict:
             "trades_sha256": hashlib.sha256(trade_bytes).hexdigest()}
 
 
-def benchmark(root: Path, start: str, end: str, repeats: int = 3) -> dict:
+def benchmark(root: Path, start: str, end: str, repeats: int = 3,
+              constituents_cache: bool | None = False,
+              warm_constituents_cache: bool = False,
+              constituents_cache_dir: Path | None = None) -> dict:
     if repeats < 1:
         raise ValueError("repeats must be positive")
     if pd.Timestamp(start) > pd.Timestamp(end):
@@ -124,10 +132,20 @@ def benchmark(root: Path, start: str, end: str, repeats: int = 3) -> dict:
         if pd.isna(stamp) or stamp.tz is not None or stamp != stamp.normalize():
             raise ValueError("benchmark requires timezone-free session dates")
     before = fingerprint(root)
+    if warm_constituents_cache:
+        if constituents_cache is False:
+            raise ValueError("cannot warm a disabled Constituents cache")
+        from strategies.sp500_momentum import config
+        from strategies.sp500_momentum.selection import SelectionEngine
+        with patch.multiple(config, REF_DIR=root / "reference"):
+            with redirect_stdout(io.StringIO()):
+                SelectionEngine(use_constituents_cache=True,
+                                constituents_cache_dir=constituents_cache_dir)
     runs = []
     for _ in range(repeats):
         with redirect_stdout(io.StringIO()):
-            runs.append(measure_once(root, start, end))
+            runs.append(measure_once(root, start, end, constituents_cache,
+                                     constituents_cache_dir))
     if fingerprint(root) != before:
         raise ValueError("dataset changed during benchmark; discard timings")
     commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parent.parent,
@@ -140,6 +158,8 @@ def benchmark(root: Path, start: str, end: str, repeats: int = 3) -> dict:
     return {"schema_version": 1, "strategy": "SP500", "start": start, "end": end,
             "git_commit": commit, "python": platform.python_version(), "pandas": pd.__version__,
             "platform": platform.platform(), "repeats": repeats, "runs": runs,
+            "constituents_cache": constituents_cache,
+            "warm_constituents_cache": warm_constituents_cache,
             "median_seconds": {k: median(r[k] for r in runs) for k in keys},
             "outputs_repeatable": len({(r["history_sha256"], r["trades_sha256"]) for r in runs}) == 1,
             "sources": before, "code_sources": code_sources,
@@ -157,9 +177,16 @@ def main() -> int:
     parser.add_argument("--start", required=True)
     parser.add_argument("--end", required=True)
     parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--constituents-cache", choices=("default", "on", "off"),
+                        default="off")
+    parser.add_argument("--warm-constituents-cache", action="store_true")
+    parser.add_argument("--constituents-cache-dir", type=Path)
     args = parser.parse_args()
+    cache_mode = {"default": None, "on": True, "off": False}[args.constituents_cache]
     try:
-        result = benchmark(args.data_root.resolve(), args.start, args.end, args.repeats)
+        result = benchmark(args.data_root.resolve(), args.start, args.end, args.repeats,
+                           cache_mode, args.warm_constituents_cache,
+                           args.constituents_cache_dir)
     except (OSError, ValueError, TypeError) as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False))
         return 2

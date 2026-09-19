@@ -33,7 +33,7 @@ py data/identity_audit.py repair `
 
 ## Append guard
 
-Manifest 中 `append: refuse` 的 20 個代碼不再由 daily updater 盲目 append。`update_data.py --stocks` 會逐檔回報 `identity guard refuses provider append`，直到對應檔案被隔離、截斷或另有人工核准的資料來源。這個拒絕是 fail-closed：不會刪除或改寫既有 CSV。
+Manifest 中 `append: refuse` 的 20 個代碼不再由 daily updater 盲目 append。`update_data.py --stocks` 會在 job log 逐檔記錄 `identity guard refuses provider append; skipped as reviewed`，但這是已審核的預期 skip，不列入 update errors，也不觸發 Telegram 部分失敗通知。這個拒絕是 fail-closed：不會刪除或改寫既有 CSV；若 manifest 無法讀取或格式錯誤，更新仍會直接失敗。
 
 | 類型 | 代碼 | staged action |
 |---|---|---|

@@ -226,8 +226,10 @@ def update_stocks(batch_size: int = 50) -> list[str]:
     for p in csvs:
         guard_reason = identity_guard_reason(p.stem, IDENTITY_MANIFEST_PATH)
         if guard_reason:
-            errors.append(f"{p.stem}: {guard_reason}")
-            print(f"    {p.stem}: {guard_reason}")
+            # This is an expected, reviewed disposition rather than an update
+            # failure.  Keep the fail-closed skip visible in the job log, but
+            # do not turn every daily run into a Telegram warning.
+            print(f"    {p.stem}: {guard_reason}; skipped as reviewed")
             continue
         try:
             ld = _last_date(p)

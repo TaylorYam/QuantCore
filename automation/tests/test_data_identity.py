@@ -176,7 +176,7 @@ def updater(tmp_path, monkeypatch):
     return module
 
 
-def test_updater_refuses_guarded_append_and_still_updates_unlisted_symbol(
+def test_updater_silently_refuses_guarded_append_and_updates_unlisted_symbol(
     updater, tmp_path, monkeypatch,
 ):
     _write_csv(updater.STOCK_DIR / "NFX.csv", [_row("2019-02-13", 17.07, 100)])
@@ -195,8 +195,7 @@ def test_updater_refuses_guarded_append_and_still_updates_unlisted_symbol(
     nfx_before = (updater.STOCK_DIR / "NFX.csv").read_bytes()
     errors = updater.update_stocks(batch_size=1)
 
-    assert any("NFX: identity guard refuses provider append" in error
-               for error in errors)
+    assert errors == []
     assert (updater.STOCK_DIR / "NFX.csv").read_bytes() == nfx_before
     assert pd.read_csv(updater.STOCK_DIR / "A.csv")["Date"].tolist() == [
         "2026-09-15", "2026-09-16"

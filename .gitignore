@@ -18,6 +18,7 @@ env/
 data/stocks/
 data/etfs/
 data/reference/
+data/backups/
 data/checksums.sha256
 
 # Output（回測結果本機保留，不上傳）

@@ -173,6 +173,8 @@ def updater(tmp_path, monkeypatch):
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "STOCK_DIR", tmp_path / "stocks")
     monkeypatch.setattr(module, "TODAY", "2026-09-17")
+    monkeypatch.setattr(module, "_download_ohlcv",
+                        lambda *a, **k: pytest.fail("offline test reached the network (#53 refetch)"))
     return module
 
 
@@ -187,9 +189,10 @@ def test_updater_silently_refuses_guarded_append_and_updates_unlisted_symbol(
     }])
     monkeypatch.setattr(updater, "IDENTITY_MANIFEST_PATH", manifest)
 
-    new = pd.DataFrame({key: [11] for key in (
+    # the download re-reads the stored bar (#53 overlap check) plus the new one
+    new = pd.DataFrame({key: [10, 11] for key in (
         "Open", "High", "Low", "Close", "Adj Close", "Volume",
-    )}, index=pd.to_datetime(["2026-09-16"]))
+    )}, index=pd.to_datetime(["2026-09-15", "2026-09-16"]))
     monkeypatch.setattr(updater.yf, "download", lambda *args, **kwargs: new)
 
     nfx_before = (updater.STOCK_DIR / "NFX.csv").read_bytes()

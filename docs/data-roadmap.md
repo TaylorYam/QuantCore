@@ -81,3 +81,10 @@ Storage/loader refactors must capture OLD before editing and NEW afterward for
 backup/restore each round. Data corrections that change signals are separate work.
 CI green and human approval are required before merge. The live main checkout
 is deployment, so switching it is a separate deliberate release action.
+
+Issue #73 cutover rehearsal now has an offline reproducible tool and passing
+real-log copy/append/rollback evidence; see [the release gates](sqlite-storage.md#cutover-rehearsal-and-remaining-release-gates-2026-09-22).
+The 15-scenario OLD/NEW capture is still blocked on the authoritative historical
+market-data directory (the inspected live stocks/etfs directories were empty).
+The actual QuantCore scheduler host/actions also remain to be identified. These
+are explicit incomplete release gates; the live backend has not been switched.

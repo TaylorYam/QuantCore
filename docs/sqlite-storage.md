@@ -91,3 +91,99 @@ database and exported files are local staging artifacts and are not committed;
 the live Excel files were read only. The 39 same-day duplicate-key groups in
 the source are retained as separate occurrence rows because 38 groups contain
 different NAV or price observations.
+
+## Cutover rehearsal and remaining release gates (2026-09-22)
+
+Reproduce the isolated rehearsal from a development worktree with a fresh output
+path (the command refuses an existing output directory):
+
+```powershell
+python -m data.rehearse_sqlite_cutover `
+  --portfolio C:/QuantCore-master/automation/portfolio_tracker.xlsx `
+  --trades C:/QuantCore-master/automation/trade_log.xlsx `
+  --output output/issue-73/rehearsal
+```
+
+The tool copies the inputs before using the logger and verifies source file
+SHA-256 hashes before and after. It never loads account configuration, connects
+to IB, sends Telegram, or accesses runtime state. Its local `report.json` records:
+
+- First-use import and export: 5,054 snapshots and 921 trades, with the same
+  canonical hashes reported above.
+- Two explicit snapshot captures on the same date survive; retrying the first
+  updates it. Retrying one order identity updates the fill without another row.
+- An injected exception after SQL insertion rolls back the transaction and leaves
+  both Excel files byte-identical.
+- Backup/restore preserves complete database records, including runtime
+  identities, and the restored Excel projections reconcile.
+- Restoring the pre-runtime backup returns to the original source records.
+
+Reconciliation now compares occurrence-aware canonical **Excel-visible records**
+on both sides. Excel does not carry runtime capture/order keys; comparing these
+keys with import-derived keys previously reported a false mismatch after a
+runtime append. Internal SQLite identities are not covered by the projection
+hash; the rehearsal separately compares complete database records after restore,
+while retry tests verify identity behavior. Identical duplicate rows remain
+counted, and removing one fails reconciliation.
+
+Offline validation: `python -m pytest automation/tests/ -v` produced
+**618 passed, 20 skipped**. Historical-data tests may skip in the isolated worktree;
+this result does not replace signal/state characterization.
+
+### Unfinished characterization gate
+
+The OLD capture on the unchanged `3e5c5a8` worktree failed before producing its
+matrix: `C:/QuantCore-master/data/etfs` and `data/stocks` were empty when inspected,
+so `SPY.csv` and `SSO.csv` could not be loaded. No OLD/NEW equality is claimed.
+The harness's `finally` cleanup left its isolated state directory empty.
+Provide the authoritative historical-data directory, then capture the unchanged
+baseline and candidate against the same frozen inputs. Set
+`QUANTCORE_DISABLE_CONSTITUENTS_CACHE=1` to avoid writing caches under the input
+reference directory. Use `QUANTCORE_LOG_BACKEND=excel` for OLD and `sqlite` for NEW.
+Compare all 15 account/scenario signal outputs and state file bytes, and verify
+state restoration after each round. The harness covers SP500 signal/state; it
+contains no logger calls, so the separate runtime rehearsal is also required.
+
+### Scheduler activation and rollback plan (not applied)
+
+The current Windows Task Scheduler inventory contains no action referencing
+QuantCore. The actual scheduler host/actions must be identified before activation;
+the checked-in batch launchers alone are not evidence of installed tasks.
+
+Use an explicit process-scoped `QUANTCORE_LOG_BACKEND=sqlite` in the verified
+launcher for **every log-writing process**, including the panel when it can log.
+Do not rely on setting an environment variable in an interactive terminal: that
+does not change an existing panel or a separately launched scheduled process.
+Prefer a reviewed launcher that sets the variable and then runs the existing
+Python executable, arguments and working directory without changing schedules.
+Do not change `accounts.json` or `config.json`. Export and save the actual task
+XML and launcher files before any approved release change.
+
+After CI and human PR approval, and explicit live-release approval:
+
+1. Identify every writer and stop concurrent writes for the cutover window.
+   Verify the deployed revision, scheduler actions and panel launch environment.
+2. Back up both current Excel files and runtime state; import to the live SQLite
+   path only during this approved window. Reconcile both source files, export to
+   separate verification paths, reconcile those, and take an atomic SQLite backup.
+3. Enable the reviewed launcher environment consistently for all writers, restart
+   existing writer processes with that environment, and resume the schedules.
+4. After the first normal scheduled write, reconcile the database with both
+   projections and verify that runtime state handling is unchanged. Keep Issue
+   #73 open until live activation and rollback evidence are recorded.
+
+For an Excel projection error after a successful SQLite commit, treat SQLite as
+current: repair access and regenerate **both** projections with `export`. Do not
+rerun a trading job to recover a workbook. Export currently writes the two files
+sequentially, so a failure can leave one newer than the other; reconcile both
+before allowing report consumers to use them.
+
+For rollback to the Excel backend, pause all writers, back up the current SQLite
+store, export its latest committed rows to both Excel files and reconcile them,
+then restore the previous launcher environment and restart writer processes.
+Using the pre-cutover Excel backup after new SQLite writes would lose those new
+records. Keep the retired SQLite database as an archive; before a later SQLite
+reactivation, reconcile/import the intervening Excel records into a fresh store
+rather than reusing a stale database merely because its file exists. Restoring an
+older SQLite backup is a separate data-recovery decision, not the normal backend
+rollback.

@@ -244,6 +244,19 @@ def get_market_regime_state(signal_date=None) -> dict:
 
     spy_df = utils.load_benchmark(sp_cfg.ETF_DIR / "SPY.csv")
     sso_df = utils.load_benchmark(sp_cfg.ETF_DIR / "SSO.csv")
+
+    # MarketRegime needs both benchmark frames to construct its state.  The
+    # CSV loader uses None as its missing/malformed sentinel; convert that
+    # sentinel into the existing empty-state contract so callers can halt
+    # safely instead of leaking AttributeError/TypeError from the constructor.
+    invalid = []
+    for label, frame in (("SPY", spy_df), ("SSO", sso_df)):
+        if frame is None or frame.empty or "Close" not in frame.columns:
+            invalid.append(label)
+    if invalid:
+        log.error("Market regime benchmark unavailable: %s", ", ".join(invalid))
+        return {}
+
     regime = MarketRegime(spy_df, sso_df)
 
     if signal_date is None:

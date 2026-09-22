@@ -57,6 +57,24 @@ def test_sr_etfs_is_single_source_across_modules():
     assert rebalance_ib.SR_ETFS is ib_fetcher.SR_ETFS
 
 
+def test_get_market_regime_state_missing_benchmark_fails_closed(monkeypatch):
+    """Missing SSO must return no state, not leak a NoneType exception."""
+    import pandas as pd
+    import signals
+    from strategies.sp500_momentum import utils
+
+    spy = pd.DataFrame(
+        {"Close": [100.0, 101.0]},
+        index=pd.to_datetime(["2026-09-21", "2026-09-22"]),
+    )
+
+    def fake_load(path):
+        return None if Path(path).name == "SSO.csv" else spy
+
+    monkeypatch.setattr(utils, "load_benchmark", fake_load)
+    assert signals.get_market_regime_state(pd.Timestamp("2026-09-22")) == {}
+
+
 # ── Data-dependent tests ─────────────────────────────────────────────
 
 @skip_no_data

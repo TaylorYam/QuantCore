@@ -89,6 +89,16 @@ def test_missing_spy_history_is_reported(daily_check_env):
             in _check().render())
 
 
+def test_unreadable_spy_data_is_reported_without_none_type_error(daily_check_env):
+    """A missing/unreadable benchmark must halt with an actionable alert."""
+    daily_check_env.spy = None
+    rendered = _check().render()
+    assert ("<b>Taylor</b> ❌ 日度風控失敗\n"
+            "SPY 資料不可用（檔案不存在或格式錯誤），本次沒有做 dip-buy 檢查"
+            in rendered)
+    assert "NoneType" not in rendered
+
+
 def test_missing_market_regime_is_reported(daily_check_env):
     daily_check_env.regime = {}
     assert ("<b>Taylor</b> ❌ 日度風控失敗\n讀不到市場狀態資料（SPY / MA200），本次沒有做 dip-buy 檢查"

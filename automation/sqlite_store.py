@@ -571,8 +571,11 @@ def reconcile(path: str | Path, portfolio_file: str | Path | None = None,
     source_trades = pd.read_excel(trade_file, sheet_name=TRADE_SHEET) if trade_file and Path(trade_file).exists() else None
     expected_snapshots = _snapshot_records(source_snapshots) if source_snapshots is not None else {}
     expected_trades = _trade_records(source_trades) if source_trades is not None else {}
-    actual_snapshots = {r["idempotency_key"]: r for r in _query(path, "portfolio_snapshots")}
-    actual_trades = {r["idempotency_key"]: r for r in _query(path, "trades")}
+    # Excel has no runtime identity columns. Compare the public projection
+    # using the same occurrence-aware canonicalization on both sides. Runtime
+    # keys remain in SQLite and are verified separately by backup/retry checks.
+    actual_snapshots = _snapshot_records(_export_frame(path, "portfolio_snapshots"))
+    actual_trades = _trade_records(_export_frame(path, "trades"))
 
     def result(expected: dict, actual: dict, table: str, source_count: int) -> dict:
         return {

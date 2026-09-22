@@ -81,3 +81,15 @@ Storage/loader refactors must capture OLD before editing and NEW afterward for
 backup/restore each round. Data corrections that change signals are separate work.
 CI green and human approval are required before merge. The live main checkout
 is deployment, so switching it is a separate deliberate release action.
+
+Issue #73 cutover rehearsal now has a reproducible offline tool and passing
+real-log copy/append/rollback evidence; see [the release gates](sqlite-storage.md#cutover-rehearsal-and-remaining-release-gates-2026-09-22).
+The 3-account × 5-scenario OLD/NEW comparison passed byte-for-byte using one
+existing frozen historical snapshot; all six seeded state files were restored
+per round and 677 input-file hashes stayed unchanged. Full offline tests:
+619 passed, 20 skipped. The inspected live stocks/etfs directories remain empty,
+including under an elevated read-only check, so production data readiness remains
+an open cutover gate. An authorized elevated XML export on 2026-09-22 verified
+all eight SYSTEM task actions and their Python/script paths without changing
+or starting tasks. The live backend has not been switched; activation remains
+a separate release action after final live backup/reconciliation and approval.

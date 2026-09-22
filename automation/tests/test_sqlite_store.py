@@ -201,3 +201,23 @@ def test_runtime_append_rolls_back_both_tables(tmp_path, monkeypatch):
         )
     assert store._query(db, "portfolio_snapshots") == []
     assert store._query(db, "trades") == []
+
+
+def test_runtime_export_reconciles_without_losing_duplicate_rows(tmp_path):
+    db = tmp_path / 'runtime.sqlite3'
+    snapshots, trades = frames()
+    store.append_runtime(db, snapshots=snapshots.iloc[:1],
+                         snapshot_identities=['capture-a'],
+                         trades=trades.iloc[:1], trade_identities=['order-a'])
+    store.append_runtime(db, snapshots=snapshots.iloc[:1],
+                         snapshot_identities=['capture-b'],
+                         trades=trades.iloc[:1], trade_identities=['order-b'])
+    portfolio, trade = tmp_path / 'portfolio.xlsx', tmp_path / 'trade.xlsx'
+    store.export_excel(db, portfolio, trade)
+    report = store.reconcile(db, portfolio, trade)
+    assert all(item['match'] for item in report.values())
+    assert all(item['database_rows'] == 2 for item in report.values())
+    # Removing an identical occurrence must still fail reconciliation.
+    with pd.ExcelWriter(portfolio, engine='openpyxl') as writer:
+        snapshots.iloc[:1].to_excel(writer, sheet_name='Daily', index=False)
+    assert not store.reconcile(db, portfolio, trade)['portfolio_snapshots']['match']

@@ -1,10 +1,12 @@
 """Characterization matrix uses isolated state and restores every byte."""
 import pandas as pd
+import pytest
 
 from data.characterize_constituents import capture
 
 
-def test_capture_three_accounts_five_scenarios_and_restore_state(tmp_path):
+@pytest.mark.parametrize("state_name", ["Taylor", "taylor"])
+def test_capture_three_accounts_five_scenarios_and_restore_state(tmp_path, state_name):
     root = tmp_path / "data"
     for folder in ("stocks", "etfs", "reference"):
         (root / folder).mkdir(parents=True)
@@ -25,9 +27,9 @@ def test_capture_three_accounts_five_scenarios_and_restore_state(tmp_path):
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     original = b"keep these exact bytes\r\n"
-    (state_dir / "sp500_state_Taylor.json").write_bytes(original)
+    (state_dir / f"sp500_state_{state_name}.json").write_bytes(original)
     result = capture(root, state_dir)
     assert len(result["matrix"]) == 15
     assert len(result["constituents"]["daily_sha256"]) == len(days)
-    assert (state_dir / "sp500_state_Taylor.json").read_bytes() == original
-    assert sorted(p.name for p in state_dir.iterdir()) == ["sp500_state_Taylor.json"]
+    assert (state_dir / f"sp500_state_{state_name}.json").read_bytes() == original
+    assert sorted(p.name for p in state_dir.iterdir()) == [f"sp500_state_{state_name}.json"]

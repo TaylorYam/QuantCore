@@ -59,6 +59,7 @@ automation/charts/
 automation/*.xlsx
 automation/*.xlsx.bak
 automation/*.bak_*
+automation/quantcore_logs.sqlite3*
 
 # IB / IBC config
 jts.ini

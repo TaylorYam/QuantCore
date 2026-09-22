@@ -42,6 +42,17 @@ the OLD/NEW signal/state characterization required for a future migration.
 
 ## Subsequent tasks, each with its own Issue / branch / PR
 
+### Current implementation status (2026-09-22)
+
+- Phase 1 and the session/Constituents audit are complete (#46, #48, #49).
+- Coverage repair, identity review, historical aliases, and the Constituents
+  cache are merged (#50, #51, #54, #55, #56).
+- Validated staging, atomic publication, manifests, and the price continuity
+  repair are merged (#53, #67). The live Excel logs remain the current writer.
+- Roadmap item 3 is being implemented as a reversible staging migration in
+  [Issue #69](https://github.com/TaylorYam/QuantCore/issues/69). No live
+  cutover occurs as part of that issue.
+
 Issue #48 adds an exact-snapshot coverage audit and SP500 stage timing tools;
 see [the session coverage study](data-session-study.md) for commands, measured
 findings, calendar evidence and limitations. Issue #50 corrects the reference

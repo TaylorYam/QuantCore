@@ -50,3 +50,21 @@ The migration is not a live cutover. A later approval step must first compare
 the exported workbooks with the source, run the full characterization harness,
 and then change the writer and readers together. Until that step, Excel is the
 authoritative log and SQLite is a reviewable copy.
+
+## Real-log staging verification (2026-09-22)
+
+Read-only copies of the live workbooks were imported under an isolated output
+directory. The source and database hashes below are over canonical records
+sorted by idempotency key:
+
+| Table | Source rows | SQLite rows | Missing keys | Unexpected keys | Hash |
+|---|---:|---:|---:|---:|---|
+| `portfolio_snapshots` | 5,054 | 5,054 | 0 | 0 | `268d2242612cfb70ba144495e68a8c54ce870bba7f4f78b9049843d67e96db0b` |
+| `trades` | 921 | 921 | 0 | 0 | `573253ca0c9aef5ad5fe009a73634e815c97eac7b69497f400daf24cd5dca830` |
+
+The database-exported workbooks reconciled to the same hashes. An atomic
+SQLite backup and restore also reconciled to the same source rows. The output
+database and exported files are local staging artifacts and are not committed;
+the live Excel files were read only. The 39 same-day duplicate-key groups in
+the source are retained as separate occurrence rows because 38 groups contain
+different NAV or price observations.

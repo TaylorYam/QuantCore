@@ -47,10 +47,9 @@ publishes the result atomically; `restore` validates the backup before replacing
 the target database. The existing Excel files are never modified by `import`
 or `reconcile`.
 
-The migration is not a live cutover. A later approval step must first compare
-the exported workbooks with the source, run the full characterization harness,
-and then change the writer and readers together. Until that step, Excel is the
-authoritative log and SQLite is a reviewable copy.
+The migration was initially staged as a reviewable copy. The live cutover record
+below documents the later approved activation; the rollback procedure remains
+the source of truth for recovery.
 
 ## Runtime writer seam
 
@@ -168,7 +167,13 @@ The separate runtime rehearsal verifies the storage behavior. It does not prove
 that the currently empty live data directories are operational; identify the
 active live data location before an approved production release.
 
-### Scheduler activation and rollback plan (not applied)
+### Scheduler activation and rollback record (2026-09-22)
+
+The SQLite backend is now enabled for the live scheduled log writers. The
+activation was performed after the frozen-input characterization, real-log
+rehearsal, CI checks and a fresh live import/backup. No task was started during
+the change. The first ordinary scheduled writer run remains an operational
+follow-up because trading tasks must not be started as an offline validation.
 
 On 2026-09-22 at 20:27 Taipei, an authorized elevated **read-only** export
 captured all eight QuantCore task XML definitions. Their SHA-256 hashes are
@@ -201,8 +206,12 @@ confirmed writer actions through the approved process-scoped launcher. Do not
 run the installer as a way to inspect or change only this setting: it replaces
 multiple tasks.
 
-Use an explicit process-scoped `QUANTCORE_LOG_BACKEND=sqlite` in the verified
-launcher for **every log-writing process**, including the panel when it can log.
+Use the checked-in `automation/run_with_sqlite_backend.py` wrapper, which sets an
+explicit process-scoped `QUANTCORE_LOG_BACKEND=sqlite` for **every scheduled
+log-writing process**. The four live actions now wrapped are DailyReport,
+Tuesday rebalance, Wednesday rebalance and the SkewLS check. The panel is not a
+scheduled task; launch it through the same wrapper when it is used for manual
+orders.
 Do not rely on setting an environment variable in an interactive terminal: that
 does not change an existing panel or a separately launched scheduled process.
 Prefer a reviewed launcher that sets the variable and then runs the existing
@@ -210,7 +219,28 @@ Python executable, arguments and working directory without changing schedules.
 Do not change `accounts.json` or `config.json`. Export and save the actual task
 XML and launcher files before any approved release change.
 
-After CI and human PR approval, and explicit live-release approval:
+The live activation evidence is stored outside Git under the cutover artifact
+directory. The initial import and acceptance checks reported:
+
+| Check | Result |
+|---|---|
+| Data files | 637 stock CSVs and 25 ETF CSVs present; all ETF files and 598 stocks reached 2026-09-21 |
+| SQLite import | 5,054 portfolio snapshots and 921 trades |
+| Source reconciliation | Snapshot hash `268d2242612cfb70ba144495e68a8c54ce870bba7f4f78b9049843d67e96db0b`; trade hash `573253ca0c9aef5ad5fe009a73634e815c97eac7b69497f400daf24cd5dca830` |
+| Export reconciliation | Both generated Excel projections matched SQLite with zero missing/unexpected keys |
+| Atomic backup/restore | Backup restored and reconciled to both source hashes |
+| Runtime acceptance | Synthetic append reached 5,055/922 rows, then restored to 5,054/921 and both source hashes |
+| Excel compatibility | Current portfolio and trade workbooks stayed byte-identical to the pre-cutover copies |
+| Task actions | Four writer actions wrapped; four non-writer tasks unchanged; SYSTEM principal and non-action settings preserved |
+
+The data health audit has three explicit existing exceptions: one invalid
+historical `CSRA` High/Low row, one invalid `VIX` Open row, and the reviewed
+identity-guarded `DOW`/`SNDK` files that intentionally refuse provider append.
+These are recorded in the local health report and must be resolved or accepted
+separately before relying on a clean strategy-data gate. They do not change the
+SQLite log hashes or backend activation.
+
+The following operational steps apply after the first scheduled writer run:
 
 1. Identify every writer and stop concurrent writes for the cutover window.
    Verify the deployed revision, scheduler actions and panel launch environment.

@@ -82,14 +82,14 @@ backup/restore each round. Data corrections that change signals are separate wor
 CI green and human approval are required before merge. The live main checkout
 is deployment, so switching it is a separate deliberate release action.
 
-Issue #73 cutover rehearsal now has a reproducible offline tool and passing
-real-log copy/append/rollback evidence; see [the release gates](sqlite-storage.md#cutover-rehearsal-and-remaining-release-gates-2026-09-22).
+Issue #73's cutover rehearsal, frozen-input characterization and live activation
+are recorded in [the storage runbook](sqlite-storage.md#scheduler-activation-and-rollback-record-2026-09-22).
 The 3-account × 5-scenario OLD/NEW comparison passed byte-for-byte using one
-existing frozen historical snapshot; all six seeded state files were restored
-per round and 677 input-file hashes stayed unchanged. Full offline tests:
-619 passed, 20 skipped. The inspected live stocks/etfs directories remain empty,
-including under an elevated read-only check, so production data readiness remains
-an open cutover gate. An authorized elevated XML export on 2026-09-22 verified
-all eight SYSTEM task actions and their Python/script paths without changing
-or starting tasks. The live backend has not been switched; activation remains
-a separate release action after final live backup/reconciliation and approval.
+frozen historical snapshot; all six seeded state files were restored per round
+and 677 input-file hashes stayed unchanged. Full offline tests: 619 passed, 20
+skipped. Live data now has 637 stock CSVs and 25 ETF CSVs after a read-only
+staging copy plus incremental provider update; 598 stocks and all ETFs reached
+2026-09-21. Four scheduled writer actions now use the SQLite wrapper, and live
+SQLite reconciles to 5,054 snapshots / 921 trades with the recorded source
+hashes. The first ordinary scheduled writer run remains the final operational
+follow-up; do not start trading tasks as an offline test.

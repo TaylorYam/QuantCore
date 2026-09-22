@@ -82,7 +82,18 @@ def run_daily_check(account_name: str, digest: Digest):
     tg = {"token": ctx.tg_token, "chat_id": ctx.tg_chat_id}
 
     # ── 載入市場資料（SPY df 用於取 trading day index，非 strategy logic）
-    spy_df = utils.load_benchmark(sp_cfg.ETF_DIR / "SPY.csv")
+    spy_path = sp_cfg.ETF_DIR / "SPY.csv"
+    spy_df = utils.load_benchmark(spy_path)
+
+    # load_benchmark deliberately returns None for a missing, empty, or
+    # malformed CSV.  This is a hard precondition for the daily risk check:
+    # fail closed with an actionable alert before any len/index access.
+    if spy_df is None:
+        log.error(f"SPY benchmark unavailable: {spy_path}")
+        digest.add(account_name, "❌ 日度風控失敗",
+                   ["SPY 資料不可用（檔案不存在或格式錯誤），本次沒有做 dip-buy 檢查"],
+                   "error", **tg)
+        return
 
     if len(spy_df) < 2:
         log.error("SPY data too short")

@@ -237,7 +237,7 @@ provider 的分割紀錄卻記在 05-28；影響 Skew LS 回測損益（live 訊
 ## 11. 範圍外發現
 
 1. **sector ETF／SPY 的 Close 語意在 2025-12 前後不同**（第 9 節）：SR 動能、Skew LS 偏態、SPY MA200 讀的 Close
-   前段含息、後段不含；反向 ETF 05-13 的反分割跳動也要在決定語意後一起修。
+   前段含息、後段不含；反向 ETF 05-13 的反分割跳動也要在決定語意後一起修 → [#68](https://github.com/TaylorYam/QuantCore/issues/68)。
 2. **代碼身分錯誤的既有檔仍在被追加**：BBBY、CSRA 目前的 K 棒來自重用代碼的新證券，重疊比對一致所以照常追加
    （本規則只擋「在追加當下」發生的身分改變）；scan 會把它們列為「核對不過」，處置屬
    [#55](https://github.com/TaylorYam/QuantCore/issues/55) 的覆核名單。

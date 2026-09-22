@@ -49,9 +49,10 @@ the OLD/NEW signal/state characterization required for a future migration.
   cache are merged (#50, #51, #54, #55, #56).
 - Validated staging, atomic publication, manifests, and the price continuity
   repair are merged (#53, #67). The live Excel logs remain the current writer.
-- Roadmap item 3 is being implemented as a reversible staging migration in
-  [Issue #69](https://github.com/TaylorYam/QuantCore/issues/69). No live
-  cutover occurs as part of that issue.
+- Roadmap item 3 staging is merged in
+  [Issue #69](https://github.com/TaylorYam/QuantCore/issues/69). The real-log
+  staging run reconciled without loss; live cutover remains a separate,
+  explicitly approved release action.
 
 Issue #48 adds an exact-snapshot coverage audit and SP500 stage timing tools;
 see [the session coverage study](data-session-study.md) for commands, measured

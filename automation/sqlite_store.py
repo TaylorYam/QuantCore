@@ -22,7 +22,7 @@ from typing import Iterable, Mapping
 import pandas as pd
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 PORTFOLIO_SHEET = "Daily"
 TRADE_SHEET = "Trades"
 
@@ -51,6 +51,7 @@ _SNAPSHOT_COLUMNS = {
     "mkt_val": "REAL",
     "unreal_pnl": "REAL",
     "unreal_pnl_pct": "REAL",
+    "occurrence": "INTEGER NOT NULL",
 }
 _TRADE_COLUMNS = {
     "datetime": "TEXT NOT NULL",
@@ -109,7 +110,8 @@ def _schema(conn: sqlite3.Connection) -> None:
             mkt_val REAL,
             unreal_pnl REAL,
             unreal_pnl_pct REAL,
-            UNIQUE(date, account, symbol)
+            occurrence INTEGER NOT NULL,
+            UNIQUE(date, account, symbol, occurrence)
         );
         CREATE TABLE IF NOT EXISTS trades (
             idempotency_key TEXT PRIMARY KEY,
@@ -218,6 +220,7 @@ def _row(frame: pd.DataFrame, fields: tuple[str, ...]) -> list[dict]:
 
 def _snapshot_records(frame: pd.DataFrame) -> dict[str, dict]:
     result: dict[str, dict] = {}
+    occurrences: Counter[tuple[str, str, str]] = Counter()
     for source in _row(frame, SNAPSHOT_FIELDS):
         item = {
             "date": _text(source["Date"], field="Date", required=True),
@@ -234,9 +237,15 @@ def _snapshot_records(frame: pd.DataFrame) -> dict[str, dict]:
             "unreal_pnl": _number(source["UnrealPnL"], field="UnrealPnL"),
             "unreal_pnl_pct": _number(source["UnrealPnL%"], field="UnrealPnL%"),
         }
-        # A daily snapshot is one row per account/date/symbol.  If a legacy
-        # Excel file contains a repeated run, the last row is authoritative.
-        key = f"snapshot:{item['date']}:{item['account']}:{item['symbol']}"
+        # Excel has no timestamp for snapshots.  Preserve every source row;
+        # repeated rows can represent separate captures with different NAV or
+        # prices.  The occurrence is stable for a given source file order and
+        # makes re-importing that file idempotent without losing same-day rows.
+        natural = (item["date"], item["account"], item["symbol"])
+        occurrence = occurrences[natural]
+        occurrences[natural] += 1
+        item["occurrence"] = occurrence
+        key = f"snapshot:{item['date']}:{item['account']}:{item['symbol']}:{occurrence}"
         item["idempotency_key"] = key
         result[key] = item
     return result
@@ -287,8 +296,8 @@ def _insert(conn: sqlite3.Connection, table: str, records: Mapping[str, dict]) -
         fields = ["idempotency_key", *_SNAPSHOT_COLUMNS]
         placeholders = ",".join("?" for _ in fields)
         sql = f"INSERT INTO {table} ({','.join(fields)}) VALUES ({placeholders}) " \
-              "ON CONFLICT(date, account, symbol) DO UPDATE SET " + \
-              ",".join(f"{f}=excluded.{f}" for f in _SNAPSHOT_COLUMNS if f not in {"date", "account", "symbol"})
+              "ON CONFLICT(idempotency_key) DO UPDATE SET " + \
+              ",".join(f"{f}=excluded.{f}" for f in _SNAPSHOT_COLUMNS if f != "occurrence")
     elif table == "trades":
         fields = ["idempotency_key", *_TRADE_COLUMNS]
         placeholders = ",".join("?" for _ in fields)
@@ -387,8 +396,13 @@ def export_excel(path: str | Path, portfolio_file: str | Path,
 
 
 def _hash_records(records: Mapping[str, dict]) -> str:
-    payload = json.dumps(list(records.values()), sort_keys=True, separators=(",", ":"),
-                         ensure_ascii=False, default=str).encode("utf-8")
+    # Source Excel order and the database query order are intentionally
+    # different.  Hash by key so reconciliation reports equality for the
+    # same records regardless of insertion or SQL sort order.
+    payload = json.dumps(
+        [[key, records[key]] for key in sorted(records)],
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str,
+    ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -396,9 +410,9 @@ def reconcile(path: str | Path, portfolio_file: str | Path | None = None,
               trade_file: str | Path | None = None) -> dict:
     """Compare canonical source rows with the SQLite rows.
 
-    Exact duplicate snapshot rows in legacy Excel are reported as dropped;
-    they do not make the migration fail because the natural key is the daily
-    account/symbol identity.  A changed row with the same key is updated.
+    Snapshot rows sharing a date/account/symbol are retained with a source
+    occurrence number because Excel does not carry a capture timestamp.
+    Re-importing the same source is idempotent while preserving those rows.
     """
     source_snapshots = pd.read_excel(portfolio_file, sheet_name=PORTFOLIO_SHEET) if portfolio_file and Path(portfolio_file).exists() else None
     source_trades = pd.read_excel(trade_file, sheet_name=TRADE_SHEET) if trade_file and Path(trade_file).exists() else None

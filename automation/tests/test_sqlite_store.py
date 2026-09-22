@@ -115,21 +115,25 @@ def test_export_then_reconcile_is_lossless(tmp_path):
     report = store.reconcile(db, portfolio, trade)
     assert report["portfolio_snapshots"]["match"] is True
     assert report["trades"]["match"] is True
+    assert report["portfolio_snapshots"]["source_hash"] == report["portfolio_snapshots"]["database_hash"]
+    assert report["trades"]["source_hash"] == report["trades"]["database_hash"]
 
 
-def test_duplicate_legacy_snapshot_is_collapsed_and_reported_by_key(tmp_path):
+def test_same_day_snapshot_rows_are_preserved_by_occurrence(tmp_path):
     db = tmp_path / "logs.sqlite3"
     snapshots, _ = frames()
     duplicated = pd.concat([snapshots, snapshots.iloc[[0]]], ignore_index=True)
     store.import_frames(db, duplicated, None)
-    assert len(store._query(db, "portfolio_snapshots")) == 2
+    assert len(store._query(db, "portfolio_snapshots")) == 3
     source = tmp_path / "portfolio.xlsx"
     with pd.ExcelWriter(source, engine="openpyxl") as writer:
         duplicated.to_excel(writer, sheet_name="Daily", index=False)
     report = store.reconcile(db, source, None)
     assert report["portfolio_snapshots"]["match"] is True
     assert report["portfolio_snapshots"]["source_rows"] == 3
-    assert report["portfolio_snapshots"]["duplicates_dropped"] == 1
+    assert report["portfolio_snapshots"]["source_unique_rows"] == 3
+    assert report["portfolio_snapshots"]["duplicates_dropped"] == 0
+    assert report["portfolio_snapshots"]["match"] is True
 
 
 def test_runtime_state_is_not_a_sqlite_table(tmp_path):

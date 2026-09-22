@@ -5,7 +5,7 @@
 rotation 賣掉。[#55](https://github.com/TaylorYam/QuantCore/issues/55) 的身分守門擋的是「已覆核的代碼
 不准再追加」，本 Issue 補的是「**在追加當下**發現 provider 調整或換了證券」。本文件記錄新的更新規則、
 判定門檻的資料依據、全檔掃描結果、staging 的 OLD/NEW、characterization、log 重播、回測 A/B，
-以及 live 部署與回復步驟。**live 資料替換是另行核准的部署動作，本 PR 不做。**
+以及 live 部署與回復步驟。**live 資料替換是另行核准的動作；使用者於 2026-09-22 核准後已執行，紀錄見第 10 節。**
 
 ## 重跑方式
 
@@ -215,6 +215,21 @@ provider 的分割紀錄卻記在 05-28；影響 Skew LS 回測損益（live 訊
   2. `apply --dry-run`：必須沒有 problems（live 檔 hash 仍等於 OLD）。
   3. `apply`：先把每個要換的 live 檔備份到 `data/backups/issue53_<時間>/stocks/`（已加入 `.gitignore`），再逐檔原子替換，
      逐檔比對 NEW hash；紀錄寫在備份資料夾的 `apply-record.json`。
+### 部署紀錄（2026-09-22 15:09，使用者核准）
+
+13 檔全部換成第 4 節的 NEW（HON 依使用者決定跟 provider 走）。前置檢查：live 逐檔 hash 仍等於 OLD；
+備份 `data/backups/issue53_20260922_150944/stocks/`（13 檔，附 `apply-record.json`）；逐檔原子替換後 hash 全等於 NEW。
+
+部署後驗證：
+
+- 13 檔對 provider 重新判定全部 `consistent`。
+- `python -m data.health --data-root data --expected-session 2026-09-21`：無整體問題；只有既有的 CSRA（代碼重用檔，#55 覆核名單）
+  與 VIX 各一個欄位異常，與本次無關。
+- 用 live 資料重跑 characterization：15 個情境、3 個 preview 工具、前 30 名排名與 staging 的 NEW **完全相同**，
+  三帳戶權重與部署前一致（CRL 27.0%／IQV 33.4%／VEEV 22.6%／PANW 17.0%，signal date 2026-09-15）。
+
+程式尚未合併時，舊版每日更新仍會正常追加這些檔（修好後的最後一列與 provider 同尺度）。
+
 - **回復**：把備份資料夾裡的檔複製回 `data/stocks/`。若之後已跑過每日更新，被回復的檔會少掉之後追加的 K 棒，
   下一次 04:30 會自動補回（下載窗從最後一列往前 30 天開始）。注意：程式已上線時，分割仍在 30 天窗內的檔
   （目前只有 APH，到 10-02 04:30 為止）回復後會在下一次更新再被自動替換。

@@ -127,28 +127,64 @@ while retry tests verify identity behavior. Identical duplicate rows remain
 counted, and removing one fails reconciliation.
 
 Offline validation: `python -m pytest automation/tests/ -v` produced
-**618 passed, 20 skipped**. Historical-data tests may skip in the isolated worktree;
+**619 passed, 20 skipped**. Historical-data tests may skip in the isolated worktree;
 this result does not replace signal/state characterization.
 
-### Unfinished characterization gate
+### Completed frozen-input characterization
 
-The OLD capture on the unchanged `3e5c5a8` worktree failed before producing its
-matrix: `C:/QuantCore-master/data/etfs` and `data/stocks` were empty when inspected,
-so `SPY.csv` and `SSO.csv` could not be loaded. No OLD/NEW equality is claimed.
-The harness's `finally` cleanup left its isolated state directory empty.
-Provide the authoritative historical-data directory, then capture the unchanged
-baseline and candidate against the same frozen inputs. Set
-`QUANTCORE_DISABLE_CONSTITUENTS_CACHE=1` to avoid writing caches under the input
-reference directory. Use `QUANTCORE_LOG_BACKEND=excel` for OLD and `sqlite` for NEW.
-Compare all 15 account/scenario signal outputs and state file bytes, and verify
-state restoration after each round. The harness covers SP500 signal/state; it
-contains no logger calls, so the separate runtime rehearsal is also required.
+The initial attempt using `C:/QuantCore-master/data` could not load SPY/SSO:
+its stocks/etfs directories were empty. A complete existing historical snapshot
+was subsequently located at
+`C:/QuantCore-master/output/issue55-live-staging-20260919-005022`.
+The comparison used that **same frozen snapshot** for both revisions:
+
+| Evidence | Result |
+|---|---|
+| OLD | `6763ca4`, before the runtime writer seam, Excel environment |
+| NEW | `56e469a`, candidate including harness cleanup fix, SQLite environment |
+| Accounts / scenarios | Taylor, Rosa, Yvonne × all five existing SP500 scenarios = 15 |
+| Complete output bytes | Identical, SHA-256 `eb3b4557a0ee2aa53319253eee29cb8866e292a5d17644141ad390a785a659d7` |
+| Input manifest | 677 files (637 stock CSVs, 25 ETF CSVs, 15 reference workbooks), all hashes unchanged after both runs |
+| Manifest hash | `323fdf35d60224247cdf1366dac926fbb97ca4707d4fe67c827c7ef4cacb3523` (SHA-256 of sorted-key JSON mapping relative paths to SHA-256, default JSON separators) |
+| State restoration | All six seeded SP500/SkewLS files restored byte-for-byte in each independent state directory |
+
+Both runs disabled constituent-cache writes with
+`QUANTCORE_DISABLE_CONSTITUENTS_CACHE=1` and blocked socket connections. The
+existing `data.characterize_constituents` harness generated each matrix. Its
+output includes canonical signal hashes and exact SP500 state file UTF-8 bytes.
+Detailed output, input manifest and summary remain local under the development
+worktree's `output/issue-73/`; no live state or input data was changed.
+
+The first seeded run exposed a Windows case-insensitive cleanup bug in the
+harness: interleaving deletion of generated filenames with restoration could
+remove an already-restored differently cased filename. Cleanup now removes
+created names first and then restores every original. The regression test covers
+both `Taylor` and `taylor` filenames. That failed run is not counted as passing
+evidence; the successful comparison was rerun with normal Account filenames.
+
+This proves SP500 signal/state equivalence on a frozen historical dataset; the
+harness contains no logger calls and does not execute SR/SkewLS signal generation.
+The separate runtime rehearsal verifies the storage behavior. It does not prove
+that the currently empty live data directories are operational; identify the
+active live data location before an approved production release.
 
 ### Scheduler activation and rollback plan (not applied)
 
-The current Windows Task Scheduler inventory contains no action referencing
-QuantCore. The actual scheduler host/actions must be identified before activation;
-the checked-in batch launchers alone are not evidence of installed tasks.
+The current user's Windows Task Scheduler inventory exposes no QuantCore action.
+Direct `schtasks /query /tn QuantCore_DailyReport /xml` and the equivalent query
+for `QuantCore_SR_Rebalance_Tue` both return **Access is denied**. This does not
+prove that the tasks are absent. An authorized task XML export is needed to
+verify the actual executable, arguments, working directory and principal before
+activation; the checked-in launchers are not evidence of installed task settings.
+
+The logger call sites are `daily_report.py`, `rebalance_ib.py` and the panel's
+manual-order path. `install_all_tasks.py::task_specs` defines the expected daily
+report and Tuesday/Wednesday/SkewLS rebalance task names. It registers direct
+Python actions, so editing the legacy `.bat` launchers alone would not switch
+those tasks. Verify the installed actions against this source, then route the
+confirmed writer actions through the approved process-scoped launcher. Do not
+run the installer as a way to inspect or change only this setting: it replaces
+multiple tasks.
 
 Use an explicit process-scoped `QUANTCORE_LOG_BACKEND=sqlite` in the verified
 launcher for **every log-writing process**, including the panel when it can log.

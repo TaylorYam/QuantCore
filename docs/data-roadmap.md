@@ -82,9 +82,13 @@ backup/restore each round. Data corrections that change signals are separate wor
 CI green and human approval are required before merge. The live main checkout
 is deployment, so switching it is a separate deliberate release action.
 
-Issue #73 cutover rehearsal now has an offline reproducible tool and passing
+Issue #73 cutover rehearsal now has a reproducible offline tool and passing
 real-log copy/append/rollback evidence; see [the release gates](sqlite-storage.md#cutover-rehearsal-and-remaining-release-gates-2026-09-22).
-The 15-scenario OLD/NEW capture is still blocked on the authoritative historical
-market-data directory (the inspected live stocks/etfs directories were empty).
-The actual QuantCore scheduler host/actions also remain to be identified. These
-are explicit incomplete release gates; the live backend has not been switched.
+The 3-account × 5-scenario OLD/NEW comparison passed byte-for-byte using one
+existing frozen historical snapshot; all six seeded state files were restored
+per round and 677 input-file hashes stayed unchanged. Full offline tests:
+619 passed, 20 skipped. The inspected live stocks/etfs directories remain empty,
+so the active data location must still be verified for production. Direct queries
+for QuantCore scheduler XML return Access is denied; an authorized XML export is
+needed to verify installed actions. These are incomplete live release gates;
+the live backend has not been switched.

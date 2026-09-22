@@ -6,8 +6,11 @@ Excel writer and strategy runtime state unchanged.
 
 `automation/sqlite_store.py` owns two tables:
 
-- `portfolio_snapshots`: one row per account, date and symbol. `Strategy` is
-  stored exactly as the existing heuristic classification string.
+- `portfolio_snapshots`: every source row, keyed by account/date/symbol plus
+  its occurrence in the source workbook. Excel does not store a capture time,
+  so same-day rows are retained instead of silently collapsing different NAV
+  or price observations. `Strategy` is stored exactly as the existing
+  heuristic classification string.
 - `trades`: one row per logged order, including the fill fields. A stable hash
   key is derived from the order identity and its occurrence among otherwise
   identical rows, so repeated imports update the same record.

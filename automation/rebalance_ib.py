@@ -122,6 +122,10 @@ def place_orders(ib: IB, order_list: list, ctx: AccountCtx) -> tuple:
         else:
             trade = ib.placeOrder(contract, order)
             trades.append(trade)
+            # Preserve the broker identity for an idempotent SQLite log write.
+            # Excel output remains unchanged because this is metadata on the
+            # in-memory order dict only.
+            o["order_id"] = str(trade.order.orderId)
             log.info(f"  {ctx.order_type} {o['action']:4s} {qty:5d} {sym}"
                      f"  orderId={trade.order.orderId}  ({o.get('strategy', '')})")
         placed.append(o)

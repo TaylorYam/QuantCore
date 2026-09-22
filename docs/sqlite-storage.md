@@ -1,8 +1,9 @@
 # SQLite staging store for account logs
 
-This is the staging implementation for roadmap item 3. It migrates copies of
-the two existing Excel logs into one SQLite database while leaving the live
-Excel writer and strategy runtime state unchanged.
+This is the storage implementation for roadmap item 3. It migrates copies of
+the two existing Excel logs into one SQLite database and provides a reversible
+runtime writer seam. The live-compatible default remains the Excel writer;
+the SQLite writer is selected only with an explicit environment variable.
 
 `automation/sqlite_store.py` owns two tables:
 
@@ -50,6 +51,28 @@ The migration is not a live cutover. A later approval step must first compare
 the exported workbooks with the source, run the full characterization harness,
 and then change the writer and readers together. Until that step, Excel is the
 authoritative log and SQLite is a reviewable copy.
+
+## Runtime writer seam
+
+`automation/excel_logger.py` continues to use Excel when
+`QUANTCORE_LOG_BACKEND` is unset (or set to `excel`). Setting
+`QUANTCORE_LOG_BACKEND=sqlite` makes the logger initialize or validate
+`automation/quantcore_logs.sqlite3`, append through `sqlite_store.append_runtime`
+in one transaction, and regenerate both Excel workbooks as compatibility
+projections after the database commit. Runtime state JSON files are untouched.
+
+Runtime appends require an explicit capture or order identity. Reusing that
+identity updates the same row; a new identity on the same date/account/symbol
+is retained as a separate occurrence. Callers can pass `capture_id` to
+`append_daily_snapshot` and `append_trade_log`; broker order ids are used when
+available for trade rows. The default Excel path does not change until the
+characterization and release checks approve the switch.
+
+The isolated staging copy measured a 473.76 ms median to read both Excel
+workbooks versus 22.99 ms for the equivalent SQLite queries (5,054 snapshots
+and 921 trades, five samples). Rebuilding the Excel compatibility projection
+was 612.93 ms median, so the projection remains an intentional compatibility
+cost during rollout.
 
 ## Real-log staging verification (2026-09-22)
 

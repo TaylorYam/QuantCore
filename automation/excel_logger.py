@@ -6,11 +6,14 @@ QuantCore Automation — Excel 日誌記錄
 
 from pathlib import Path
 from datetime import datetime, date
+import os
+from uuid import uuid4
 import pandas as pd
 
 BASE_DIR       = Path(__file__).parent
 PORTFOLIO_FILE = BASE_DIR / 'portfolio_tracker.xlsx'
 TRADE_FILE     = BASE_DIR / 'trade_log.xlsx'
+SQLITE_FILE    = BASE_DIR / 'quantcore_logs.sqlite3'
 PORT_SHEET     = 'Daily'
 TRADE_SHEET    = 'Trades'
 
@@ -50,7 +53,7 @@ def _classify_strategy(symbol: str, position: float) -> str:
 
 
 # ── 通用：附加到 Excel ────────────────────────────────────────────────────────
-def _append(filepath: Path, sheet: str, rows: list) -> None:
+def _append_excel(filepath: Path, sheet: str, rows: list) -> None:
     """將 rows（list of dict）附加到 Excel 工作表；不存在則新建含標頭的檔案。
 
     若檔案已存在，會依舊檔欄序對齊 rows；遇到 dict 有但舊檔沒有的新欄位時，
@@ -89,10 +92,63 @@ def _append(filepath: Path, sheet: str, rows: list) -> None:
                             header=False, startrow=len(existing) + 1)
 
 
+def _log_backend() -> str:
+    """Return the explicitly selected log backend.
+
+    Excel remains the default for an unchanged deployment.  The SQLite
+    backend is enabled only by setting ``QUANTCORE_LOG_BACKEND=sqlite`` after
+    the staged store, characterization and rollback checks are approved.
+    """
+    return os.getenv('QUANTCORE_LOG_BACKEND', 'excel').strip().casefold() or 'excel'
+
+
+def _ensure_sqlite_store():
+    """Initialize SQLite, importing the legacy workbooks on first use."""
+    import sqlite_store
+
+    if SQLITE_FILE.exists():
+        sqlite_store.initialize(SQLITE_FILE)
+    else:
+        sqlite_store.import_excel(
+            SQLITE_FILE,
+            PORTFOLIO_FILE if PORTFOLIO_FILE.exists() else None,
+            TRADE_FILE if TRADE_FILE.exists() else None,
+        )
+    return sqlite_store
+
+
+def _append_rows(sheet: str, rows: list, identities: list[str]) -> None:
+    """Write rows to the selected backend and refresh Excel compatibility files."""
+    if not rows:
+        return
+    backend = _log_backend()
+    if backend == 'excel':
+        _append_excel(PORTFOLIO_FILE if sheet == PORT_SHEET else TRADE_FILE,
+                      sheet, rows)
+        return
+    if backend != 'sqlite':
+        raise ValueError(f'unsupported QUANTCORE_LOG_BACKEND: {backend!r}')
+
+    sqlite_store = _ensure_sqlite_store()
+    frame = pd.DataFrame(rows)
+    if sheet == PORT_SHEET:
+        sqlite_store.append_runtime(
+            SQLITE_FILE, snapshots=frame, snapshot_identities=identities,
+        )
+    else:
+        sqlite_store.append_runtime(
+            SQLITE_FILE, trades=frame, trade_identities=identities,
+        )
+    # Excel remains a generated compatibility projection for the panel and
+    # reports.  The database commit occurs before this export.
+    sqlite_store.export_excel(SQLITE_FILE, PORTFOLIO_FILE, TRADE_FILE)
+
+
 # ── 每日持倉快照 ──────────────────────────────────────────────────────────────
 def append_daily_snapshot(nav: float, pos_detail: list, prices: dict,
                           cushion_pct: float = 0.0, excess_liq: float = 0.0,
-                          account_name: str = "") -> None:
+                          account_name: str = "",
+                          capture_id: str | None = None) -> None:
     today = date.today().isoformat()
     rows = []
     for p in pos_detail:
@@ -120,13 +176,19 @@ def append_daily_snapshot(nav: float, pos_detail: list, prices: dict,
             'UnrealPnL%': upnl_pct,
         }
         rows.append(row)
-    _append(PORTFOLIO_FILE, PORT_SHEET, rows)
+    capture = str(capture_id or uuid4().hex)
+    identities = [
+        f"snapshot:{capture}:{account_name}:{row['Symbol']}"
+        for row in rows
+    ]
+    _append_rows(PORT_SHEET, rows, identities)
 
 
 # ── 交易記錄 ──────────────────────────────────────────────────────────────────
 def append_trade_log(placed: list, fill_results: list, signal_date,
                      order_type: str, leverage: float, dry_run: bool,
-                     strategy: str = "", account_name: str = "") -> None:
+                     strategy: str = "", account_name: str = "",
+                     capture_id: str | None = None) -> None:
     now      = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     today    = date.today().isoformat()
     fill_map = {canonical_symbol(f['symbol']): f for f in fill_results}
@@ -162,4 +224,14 @@ def append_trade_log(placed: list, fill_results: list, signal_date,
             'Leverage':   leverage,
             'DryRun':     dry_run,
         })
-    _append(TRADE_FILE, TRADE_SHEET, rows)
+    capture = str(capture_id or uuid4().hex)
+    identities = []
+    for index, order in enumerate(placed):
+        # A broker order id is stable across a retry when available.  Dry-run
+        # and panel callers can pass capture_id explicitly; otherwise the
+        # generated call id intentionally represents a new log event.
+        order_id = order.get('idempotency_key') or order.get('order_id')
+        identity = (f"trade:{account_name}:{order_id}" if order_id
+                    else f"trade:{account_name}:{capture}:{index}")
+        identities.append(identity)
+    _append_rows(TRADE_SHEET, rows, identities)

@@ -91,9 +91,10 @@ def test_malformed_nonempty_response_is_not_success(updater, monkeypatch):
 def test_successful_update_preserves_price_columns(updater, monkeypatch):
     path = updater.STOCK_DIR / "A.csv"
     csv(path)
-    new = pd.DataFrame({k: [11] for k in
+    # the download re-reads the stored bar (#53 overlap check) plus the new one
+    new = pd.DataFrame({k: [10, 11] for k in
                        ("Open", "High", "Low", "Close", "Adj Close", "Volume")},
-                       index=pd.to_datetime(["2026-09-16"]))
+                       index=pd.to_datetime(["2026-09-15", "2026-09-16"]))
     monkeypatch.setattr(updater.yf, "download", lambda *a, **k: new)
     assert updater.update_stocks() == []
     written = pd.read_csv(path)

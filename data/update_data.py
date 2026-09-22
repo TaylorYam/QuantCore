@@ -1,6 +1,14 @@
 """
 QuantCore — 增量資料更新
-每次執行只下載「上次更新日期之後」的新資料，追加到現有 CSV。
+每次執行下載「上次更新日期之後」的新資料，追加到現有 CSV。
+
+新資料連同最近 OVERLAP_DAYS 天已存的 K 棒一起下載做比對（#53）：provider 分割、
+反分割或以分割記錄的配發會回頭調整整段歷史，只 append 會在分割日留下假跳空；
+代碼改指別家證券時，append 會把兩家公司接在同一檔。比對結果：
+  - 一致 → 照舊只追加新 K 棒
+  - 個股被調整 → 抓完整歷史核對是同一證券後原子替換整檔；核對不過 → 不續寫、回報
+  - ETF 被調整 → 不續寫、回報（ETF 檔 2026 前的 Close 已含息，整檔重抓會改變
+    SR／Skew LS 的輸入，需人工處理）
 
 用法：
     cd C:/QuantCore-master
@@ -10,15 +18,19 @@ QuantCore — 增量資料更新
 """
 
 import argparse
+import sys
 import pandas as pd
 import yfinance as yf
 from pathlib import Path
 from datetime import date, timedelta
 
-try:
-    from data.identity_audit import identity_guard_reason
-except ModuleNotFoundError:  # direct ``python data/update_data.py`` execution
-    from identity_audit import identity_guard_reason
+_REPO = Path(__file__).resolve().parent.parent
+if str(_REPO) not in sys.path:  # python data/update_data.py
+    sys.path.insert(0, str(_REPO))
+from data.identity_audit import identity_guard_reason  # noqa: E402
+from data.price_continuity import (OVERLAP_DAYS, PRICE_COLS, SPLIT_COL,  # noqa: E402
+                                   atomic_write, compare_history, frame_bytes,
+                                   replacement, window_check)
 
 ROOT      = Path(__file__).resolve().parent.parent / "data"
 ETF_DIR   = ROOT / "etfs"
@@ -43,11 +55,21 @@ def _last_date(csv_path: Path) -> str:
     return str(df.index[-1].date())
 
 
+def _next_day(last: str) -> str:
+    return str((pd.to_datetime(last) + timedelta(days=1)).date())
+
+
+def _window_start(last: str) -> str:
+    """下載起點：最後一列往前 OVERLAP_DAYS 天，重抓的舊 K 棒用來比對（#53）。"""
+    return str((pd.to_datetime(last) - timedelta(days=OVERLAP_DAYS)).date())
+
+
 def _append(existing_path: Path, new_df: pd.DataFrame) -> int:
     """
-    將 new_df 追加到現有 CSV，去重後存回。
+    將 new_df 的價格欄位追加到現有 CSV，去重後存回。
     回傳新增行數。
     """
+    new_df = new_df[[c for c in PRICE_COLS if c in new_df.columns]]
     old = pd.read_csv(existing_path, index_col=0, parse_dates=True)
     combined = pd.concat([old, new_df])
     combined.index = pd.to_datetime(combined.index).normalize()
@@ -59,15 +81,57 @@ def _append(existing_path: Path, new_df: pd.DataFrame) -> int:
     return max(added, 0)
 
 
+def _store(path: Path, window: pd.DataFrame, errors: list[str], refetch: bool) -> int | None:
+    """
+    追加 path 最後一列之後的 K 棒；重抓的已存 K 棒顯示 provider 調整過歷史或
+    代碼換了證券時（#53）：refetch=True（個股）抓完整歷史核對後整檔替換，
+    否則不續寫並回報。回傳新增行數；未寫入回傳 None（原因已加進 errors）。
+    """
+    tk = path.stem
+    local = pd.read_csv(path, index_col=0, parse_dates=True)
+    last = local.index[-1]
+    if not (window.index > last).any():
+        return 0      # nothing to append; stored history is audited by price_continuity scan
+    reasons = window_check(local, window)
+    if not reasons:
+        return _append(path, window[window.index > last])
+    why = "; ".join(reasons)
+    if not refetch:
+        errors.append(f"{tk}: provider 調整了已存的歷史價格，ETF 檔不自動重抓，已停止續寫（{why}）")
+        return None
+    fetch_errors: list[str] = []
+    full = _download_ohlcv(tk, str(local.index[0].date()), TODAY, errors=fetch_errors)
+    if full is None:
+        detail = "; ".join(fetch_errors) or "empty response"
+        errors.append(f"{tk}: 需核對完整歷史（{why}），下載失敗，未續寫（{detail}）")
+        return None
+    verdict = compare_history(local, full)
+    if verdict["status"] == "consistent":
+        return _append(path, full[full.index > last])
+    if verdict["status"] == "rescaled":
+        new = replacement(local, full)
+        atomic_write(path, frame_bytes(new))
+        events = [f"{s['date']} x{s['ratio']:g}" for s in verdict["steps"]]
+        events += [f"{d} x{f:g}（待生效）" for d, f in verdict["pending_splits"]]
+        events += [f"Adj Close {s['date']}" for s in verdict["adj_steps"]]
+        odd = [f"{d} x{f:g}" for d, f in verdict["nonstandard_factors"]]
+        print(f"    {tk}: provider 調整過歷史（{', '.join(events)}），已換成完整歷史 "
+              f"{len(local)}→{len(new)} 列" + (f"；非整數比例待人工確認：{', '.join(odd)}" if odd else ""))
+        return int((new.index > last).sum())
+    errors.append(f"{tk}: provider 歷史與本地檔核對不過（可能已是別的證券），已停止續寫"
+                  f"（{'; '.join(verdict['reasons']) or verdict['status']}）")
+    return None
+
+
 def _extract_ticker(raw: pd.DataFrame, tk: str, errors: list[str] | None = None) -> pd.DataFrame | None:
     """
-    從 yf.download() 批次結果中提取單一 ticker 的 OHLCV。
+    從 yf.download() 批次結果中提取單一 ticker 的 OHLCV（與分割紀錄）。
     相容 yfinance < 1.0（raw["Open"][tk]）和 >= 1.0（raw[tk]["Open"] 或 MultiIndex）。
     """
     if raw.empty:
         return None
     try:
-        cols = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
+        cols = PRICE_COLS + [SPLIT_COL]
         if raw.columns.nlevels == 2:
             # MultiIndex columns
             top_level = raw.columns.get_level_values(0).unique()
@@ -95,7 +159,7 @@ def _extract_ticker(raw: pd.DataFrame, tk: str, errors: list[str] | None = None)
 
 def _download_ohlcv(ticker: str, start: str, end: str,
                     auto_adjust: bool = False, errors: list[str] | None = None) -> pd.DataFrame | None:
-    """下載 OHLCV，失敗回傳 None。"""
+    """下載 OHLCV（與分割紀錄），失敗回傳 None。"""
     try:
         raw = yf.Ticker(ticker).history(
             start=start, end=end, auto_adjust=auto_adjust
@@ -104,7 +168,7 @@ def _download_ohlcv(ticker: str, start: str, end: str,
             return None
         raw.index = pd.to_datetime(raw.index).tz_localize(None).normalize()
         raw.index.name = "Date"
-        cols = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
+        cols = PRICE_COLS + [SPLIT_COL]
         df = pd.DataFrame({c: raw[c] for c in cols if c in raw.columns})
         df = df[~df.index.duplicated(keep="last")].sort_index()
         df = df.dropna(subset=["Close"])
@@ -142,19 +206,20 @@ def update_etfs() -> list[str]:
     if not starts:
         return errors
     earliest = min(starts.values())
-    start = str((pd.to_datetime(earliest) + timedelta(days=1)).date())
+    start = _window_start(earliest)
+    current = _next_day(earliest) >= TODAY
 
-    if start >= TODAY:
+    if current:
         print(f"  ETF 資料已是最新（{earliest}），無需更新。")
         # VIX is checked independently below.
 
-    print(f"  下載區間：{start} → {TODAY}")
+    print(f"  下載區間：{start} → {TODAY}（含最近 {OVERLAP_DAYS} 天已存資料比對）")
 
     # 批次下載（yfinance >= 1.0 欄位格式：group_by="ticker" → raw[tk] 取子 DataFrame）
     tickers_str = " ".join(ALL_ETFS)
     try:
-        raw = None if start >= TODAY else yf.download(tickers_str, start=start, end=TODAY,
-                          auto_adjust=False, group_by="ticker",
+        raw = None if current else yf.download(tickers_str, start=start, end=TODAY,
+                          auto_adjust=False, actions=True, group_by="ticker",
                           progress=False)
     except Exception as e:
         print(f"  批次下載失敗：{e}，改逐一下載")
@@ -164,23 +229,26 @@ def update_etfs() -> list[str]:
         csv_path = ETF_DIR / f"{tk}.csv"
         if tk not in starts:
             continue
-        start_tk = str((pd.to_datetime(starts[tk]) + timedelta(days=1)).date())
-        if start_tk >= TODAY:
+        if _next_day(starts[tk]) >= TODAY:
             print(f"  {tk:6s}  已最新")
             continue
 
         try:
+            window_start = _window_start(starts[tk])
             if raw is not None:
                 df = _extract_ticker(raw, tk, errors)
             else:
-                df = _download_ohlcv(tk, start_tk, TODAY, errors=errors)
+                df = _download_ohlcv(tk, window_start, TODAY, errors=errors)
 
             if df is None or df.empty:
                 print(f"  {tk:6s}  無新資料")
                 continue
 
-            added = _append(csv_path, df)
-            print(f"  {tk:6s}  +{added} 筆  (至 {str(df.index[-1].date())})")
+            added = _store(csv_path, df[df.index >= window_start], errors, refetch=False)
+            if added is None:
+                print(f"  {tk:6s}  未續寫（見錯誤）")
+            else:
+                print(f"  {tk:6s}  +{added} 筆  (至 {str(df.index[-1].date())})")
         except Exception as e:
             errors.append(f"{tk}: {e}")
             print(f"  {tk:6s}  ERROR: {e}")
@@ -189,13 +257,14 @@ def update_etfs() -> list[str]:
     vix_path = ETF_DIR / "VIX.csv"
     try:
         if vix_path.exists():
-            vix_start = str((pd.to_datetime(_last_date(vix_path)) + timedelta(days=1)).date())
-            if vix_start < TODAY:
-                df = _download_ohlcv(VIX_TICKER, vix_start, TODAY, errors=errors)
+            vix_last = _last_date(vix_path)
+            if _next_day(vix_last) < TODAY:
+                df = _download_ohlcv(VIX_TICKER, _window_start(vix_last), TODAY, errors=errors)
                 if df is not None and not df.empty:
                     df["Volume"] = 0
-                    added = _append(vix_path, df)
-                    print(f"  {'VIX':6s}  +{added} 筆  (至 {str(df.index[-1].date())})")
+                    added = _store(vix_path, df, errors, refetch=False)
+                    if added is not None:
+                        print(f"  {'VIX':6s}  +{added} 筆  (至 {str(df.index[-1].date())})")
             else:
                 print(f"  {'VIX':6s}  已最新")
         else:
@@ -221,7 +290,7 @@ def update_stocks(batch_size: int = 50) -> list[str]:
 
     print(f"  共 {len(csvs)} 支個股")
 
-    # 依 last_date 分組，同一天起始的批次一起下
+    # 依下載起點（last_date 往前 OVERLAP_DAYS 天）分組，同一天起始的批次一起下
     groups: dict[str, list] = {}
     for p in csvs:
         guard_reason = identity_guard_reason(p.stem, IDENTITY_MANIFEST_PATH)
@@ -233,10 +302,9 @@ def update_stocks(batch_size: int = 50) -> list[str]:
             continue
         try:
             ld = _last_date(p)
-            start = str((pd.to_datetime(ld) + timedelta(days=1)).date())
-            if start >= TODAY:
+            if _next_day(ld) >= TODAY:
                 continue
-            groups.setdefault(start, []).append(p)
+            groups.setdefault(_window_start(ld), []).append(p)
         except Exception as exc:
             errors.append(f"{p.stem}: unreadable CSV: {exc}")
             continue
@@ -250,7 +318,7 @@ def update_stocks(batch_size: int = 50) -> list[str]:
 
     for start, paths in sorted(groups.items()):
         tickers = [p.stem for p in paths]
-        print(f"\n  起始 {start}：{len(tickers)} 支")
+        print(f"\n  起始 {start}（含最近 {OVERLAP_DAYS} 天已存資料比對）：{len(tickers)} 支")
 
         # 分批下載（避免一次太多）
         for i in range(0, len(tickers), batch_size):
@@ -259,7 +327,7 @@ def update_stocks(batch_size: int = 50) -> list[str]:
 
             try:
                 raw = yf.download(batch_str, start=start, end=TODAY,
-                                  auto_adjust=False, group_by="ticker",
+                                  auto_adjust=False, actions=True, group_by="ticker",
                                   progress=False)
             except Exception as e:
                 errors.extend(f"{tk}: download failed: {e}" for tk in batch)
@@ -274,8 +342,8 @@ def update_stocks(batch_size: int = 50) -> list[str]:
                         print(f"    {tk}: no data returned; freshness unverified")
                         continue
 
-                    added = _append(csv_path, df)
-                    if added > 0:
+                    added = _store(csv_path, df, errors, refetch=True)
+                    if added:
                         total_added += added
                         total_updated += 1
                 except Exception as e:

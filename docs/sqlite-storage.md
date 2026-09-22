@@ -170,18 +170,15 @@ active live data location before an approved production release.
 
 ### Scheduler activation and rollback plan (not applied)
 
-The current user's Windows Task Scheduler inventory exposes no QuantCore action.
-Direct `schtasks /query /tn QuantCore_DailyReport /xml` and the equivalent query
-for `QuantCore_SR_Rebalance_Tue` both return **Access is denied**. This does not
-prove that the tasks are absent. An authorized task XML export is needed to
-verify the actual executable, arguments, working directory and principal before
-activation; the checked-in launchers are not evidence of installed task settings.
-
-An existing local inventory, `C:/QuantCore-master/output/quantcore_tasks.txt`
-(last modified 2026-09-15 11:21 Taipei), records eight QuantCore tasks running as
-SYSTEM with direct Python actions. It agrees with the checked-in task definitions,
-but is historical evidence, not a substitute for a current XML export. The
-reviewed activation targets for log writers are:
+On 2026-09-22 at 20:27 Taipei, an authorized elevated **read-only** export
+captured all eight QuantCore task XML definitions. Their SHA-256 hashes are
+recorded in the local `output/issue-73/task-xml-20260922-202722/manifest.json`.
+All use SYSTEM (`S-1-5-18`) and direct Python 3.13 executable actions; executable
+and script paths exist, script arguments agree with the expected task definitions,
+and no action specifies a working directory. No tasks were started or modified.
+This resolves the earlier non-elevated Access is denied inspection failure.
+The export agrees with the saved 2026-09-15 inventory. The reviewed activation
+targets for log writers are:
 
 | Existing task / entry point | Existing script and arguments | Proposed process setting |
 |---|---|---|

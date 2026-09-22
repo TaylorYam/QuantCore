@@ -88,7 +88,8 @@ The 3-account × 5-scenario OLD/NEW comparison passed byte-for-byte using one
 existing frozen historical snapshot; all six seeded state files were restored
 per round and 677 input-file hashes stayed unchanged. Full offline tests:
 619 passed, 20 skipped. The inspected live stocks/etfs directories remain empty,
-so the active data location must still be verified for production. Direct queries
-for QuantCore scheduler XML return Access is denied; an authorized XML export is
-needed to verify installed actions. These are incomplete live release gates;
-the live backend has not been switched.
+including under an elevated read-only check, so production data readiness remains
+an open cutover gate. An authorized elevated XML export on 2026-09-22 verified
+all eight SYSTEM task actions and their Python/script paths without changing
+or starting tasks. The live backend has not been switched; activation remains
+a separate release action after final live backup/reconciliation and approval.

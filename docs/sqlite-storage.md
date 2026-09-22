@@ -177,6 +177,24 @@ prove that the tasks are absent. An authorized task XML export is needed to
 verify the actual executable, arguments, working directory and principal before
 activation; the checked-in launchers are not evidence of installed task settings.
 
+An existing local inventory, `C:/QuantCore-master/output/quantcore_tasks.txt`
+(last modified 2026-09-15 11:21 Taipei), records eight QuantCore tasks running as
+SYSTEM with direct Python actions. It agrees with the checked-in task definitions,
+but is historical evidence, not a substitute for a current XML export. The
+reviewed activation targets for log writers are:
+
+| Existing task / entry point | Existing script and arguments | Proposed process setting |
+|---|---|---|
+| `QuantCore_DailyReport` | `daily_report.py --account all` | `QUANTCORE_LOG_BACKEND=sqlite` |
+| `QuantCore_SR_Rebalance_Tue` | `rebalance_ib.py --mode all --account all` | same |
+| `QuantCore_SP500_Rebalance_Wed` | `rebalance_ib.py --mode all --account all` | same |
+| `QuantCore_SkewLS_DailyCheck` | `rebalance_ib.py --mode skewls --account all` | same |
+| Panel manual-order process | existing panel launcher | same; restart after activation |
+
+Preserve the verified Python executable, principal, triggers and script arguments.
+Use an explicit launcher-local environment, with the current XML saved first;
+never change SYSTEM-wide environment values as an implicit switch for all jobs.
+
 The logger call sites are `daily_report.py`, `rebalance_ib.py` and the panel's
 manual-order path. `install_all_tasks.py::task_specs` defines the expected daily
 report and Tuesday/Wednesday/SkewLS rebalance task names. It registers direct

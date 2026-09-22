@@ -90,12 +90,15 @@ def capture(data_root: Path, state_dir: Path) -> dict:
                 "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
                 "constituents": constituents, "matrix": matrix}
     finally:
-        for name in created | set(original_state):
+        # Remove generated names before restoring originals. On Windows,
+        # e.g. Taylor/taylor name the same file; interleaving removal/restoration
+        # can delete a file that was just restored, depending on set order.
+        for name in created - set(original_state):
             path = state_dir / name
-            if name in original_state:
-                path.write_bytes(original_state[name])
-            elif path.exists():
+            if path.exists():
                 path.unlink()
+        for name, payload in original_state.items():
+            (state_dir / name).write_bytes(payload)
 
 
 def main() -> int:

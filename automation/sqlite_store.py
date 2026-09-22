@@ -218,25 +218,53 @@ def _row(frame: pd.DataFrame, fields: tuple[str, ...]) -> list[dict]:
     return frame.loc[:, list(fields)].to_dict("records")
 
 
+def _snapshot_item(source: Mapping[str, object]) -> dict:
+    """Normalize one legacy snapshot row without assigning its occurrence."""
+    return {
+        "date": _text(source["Date"], field="Date", required=True),
+        "account": _text(source["Account"], field="Account"),
+        "nav": _number(source["NAV"], field="NAV"),
+        "cushion_pct": _number(source["Cushion%"], field="Cushion%"),
+        "excess_liq": _number(source["ExcessLiq"], field="ExcessLiq"),
+        "symbol": _text(source["Symbol"], field="Symbol", required=True),
+        "strategy": _text(source["Strategy"], field="Strategy"),
+        "shares": _number(source["Shares"], field="Shares"),
+        "avg_cost": _number(source["AvgCost"], field="AvgCost"),
+        "mkt_px": _number(source["MktPx"], field="MktPx"),
+        "mkt_val": _number(source["MktVal"], field="MktVal"),
+        "unreal_pnl": _number(source["UnrealPnL"], field="UnrealPnL"),
+        "unreal_pnl_pct": _number(source["UnrealPnL%"], field="UnrealPnL%"),
+    }
+
+
+def _trade_item(source: Mapping[str, object]) -> dict:
+    """Normalize one legacy trade row without assigning its occurrence."""
+    return {
+        "datetime": _text(source["DateTime"], field="DateTime", required=True),
+        "date": _text(source["Date"], field="Date", required=True),
+        "account": _text(source["Account"], field="Account"),
+        "signal_date": _text(source["SignalDate"], field="SignalDate"),
+        "strategy": _text(source["Strategy"], field="Strategy"),
+        "symbol": _text(source["Symbol"], field="Symbol", required=True),
+        "action": _text(source["Action"], field="Action", required=True),
+        "qty": _number(source["Qty"], field="Qty", integer=True),
+        "est_price": _number(source["EstPrice"], field="EstPrice"),
+        "est_value": _number(source["EstValue"], field="EstValue"),
+        "fill_price": _number(source["FillPrice"], field="FillPrice"),
+        "fill_qty": _number(source["FillQty"], field="FillQty"),
+        "fill_value": _number(source["FillValue"], field="FillValue"),
+        "fill_status": _text(source["FillStatus"], field="FillStatus"),
+        "order_type": _text(source["OrderType"], field="OrderType"),
+        "leverage": _number(source["Leverage"], field="Leverage"),
+        "dry_run": _bool(source["DryRun"], field="DryRun"),
+    }
+
+
 def _snapshot_records(frame: pd.DataFrame) -> dict[str, dict]:
     result: dict[str, dict] = {}
     occurrences: Counter[tuple[str, str, str]] = Counter()
     for source in _row(frame, SNAPSHOT_FIELDS):
-        item = {
-            "date": _text(source["Date"], field="Date", required=True),
-            "account": _text(source["Account"], field="Account"),
-            "nav": _number(source["NAV"], field="NAV"),
-            "cushion_pct": _number(source["Cushion%"], field="Cushion%"),
-            "excess_liq": _number(source["ExcessLiq"], field="ExcessLiq"),
-            "symbol": _text(source["Symbol"], field="Symbol", required=True),
-            "strategy": _text(source["Strategy"], field="Strategy"),
-            "shares": _number(source["Shares"], field="Shares"),
-            "avg_cost": _number(source["AvgCost"], field="AvgCost"),
-            "mkt_px": _number(source["MktPx"], field="MktPx"),
-            "mkt_val": _number(source["MktVal"], field="MktVal"),
-            "unreal_pnl": _number(source["UnrealPnL"], field="UnrealPnL"),
-            "unreal_pnl_pct": _number(source["UnrealPnL%"], field="UnrealPnL%"),
-        }
+        item = _snapshot_item(source)
         # Excel has no timestamp for snapshots.  Preserve every source row;
         # repeated rows can represent separate captures with different NAV or
         # prices.  The occurrence is stable for a given source file order and
@@ -255,25 +283,7 @@ def _trade_records(frame: pd.DataFrame) -> dict[str, dict]:
     result: dict[str, dict] = {}
     occurrences: Counter[str] = Counter()
     for source in _row(frame, TRADE_FIELDS):
-        base = {
-            "datetime": _text(source["DateTime"], field="DateTime", required=True),
-            "date": _text(source["Date"], field="Date", required=True),
-            "account": _text(source["Account"], field="Account"),
-            "signal_date": _text(source["SignalDate"], field="SignalDate"),
-            "strategy": _text(source["Strategy"], field="Strategy"),
-            "symbol": _text(source["Symbol"], field="Symbol", required=True),
-            "action": _text(source["Action"], field="Action", required=True),
-            "qty": _number(source["Qty"], field="Qty", integer=True),
-            "est_price": _number(source["EstPrice"], field="EstPrice"),
-            "est_value": _number(source["EstValue"], field="EstValue"),
-            "fill_price": _number(source["FillPrice"], field="FillPrice"),
-            "fill_qty": _number(source["FillQty"], field="FillQty"),
-            "fill_value": _number(source["FillValue"], field="FillValue"),
-            "fill_status": _text(source["FillStatus"], field="FillStatus"),
-            "order_type": _text(source["OrderType"], field="OrderType"),
-            "leverage": _number(source["Leverage"], field="Leverage"),
-            "dry_run": _bool(source["DryRun"], field="DryRun"),
-        }
+        base = _trade_item(source)
         natural = json.dumps(
             {k: base[k] for k in (
                 "datetime", "date", "account", "signal_date", "strategy",
@@ -309,6 +319,147 @@ def _insert(conn: sqlite3.Connection, table: str, records: Mapping[str, dict]) -
     for item in records.values():
         conn.execute(sql, tuple(item[field] for field in fields))
     return len(records)
+
+
+def _runtime_snapshot_records(
+    conn: sqlite3.Connection,
+    frame: pd.DataFrame,
+    identities: Iterable[str],
+) -> dict[str, dict]:
+    """Normalize runtime rows using caller-owned capture identities.
+
+    Excel snapshots have no timestamp, so a caller must provide an identity
+    for each capture.  Existing identities reuse their stored occurrence;
+    new identities append after the current rows for the same date/account/
+    symbol.  This keeps retries idempotent while preserving repeated captures.
+    """
+    rows = _row(frame, SNAPSHOT_FIELDS)
+    keys = [str(identity).strip() for identity in identities]
+    if len(keys) != len(rows) or any(not key for key in keys):
+        raise StoreError("runtime snapshot identities must match non-empty row count")
+    if len(set(keys)) != len(keys):
+        raise StoreError("runtime snapshot identities must be unique")
+    existing = {
+        row["idempotency_key"]: int(row["occurrence"])
+        for row in conn.execute(
+            "SELECT idempotency_key, occurrence FROM portfolio_snapshots "
+            "WHERE idempotency_key IN (%s)" % ",".join("?" for _ in keys),
+            keys,
+        ).fetchall()
+    } if keys else {}
+    next_occurrence: dict[tuple[str, str, str], int] = {}
+    result: dict[str, dict] = {}
+    for source, key in zip(rows, keys):
+        item = _snapshot_item(source)
+        natural = (item["date"], item["account"], item["symbol"])
+        if key in existing:
+            occurrence = existing[key]
+        else:
+            if natural not in next_occurrence:
+                row = conn.execute(
+                    "SELECT COALESCE(MAX(occurrence), -1) + 1 "
+                    "FROM portfolio_snapshots WHERE date=? AND account=? AND symbol=?",
+                    natural,
+                ).fetchone()
+                next_occurrence[natural] = int(row[0])
+            occurrence = next_occurrence[natural]
+            next_occurrence[natural] += 1
+        item["occurrence"] = occurrence
+        item["idempotency_key"] = key
+        result[key] = item
+    return result
+
+
+def _runtime_trade_records(
+    conn: sqlite3.Connection,
+    frame: pd.DataFrame,
+    identities: Iterable[str],
+) -> dict[str, dict]:
+    """Normalize runtime rows using explicit order/fill identities."""
+    rows = _row(frame, TRADE_FIELDS)
+    keys = [str(identity).strip() for identity in identities]
+    if len(keys) != len(rows) or any(not key for key in keys):
+        raise StoreError("runtime trade identities must match non-empty row count")
+    if len(set(keys)) != len(keys):
+        raise StoreError("runtime trade identities must be unique")
+    existing = {
+        row["idempotency_key"]: int(row["occurrence"])
+        for row in conn.execute(
+            "SELECT idempotency_key, occurrence FROM trades "
+            "WHERE idempotency_key IN (%s)" % ",".join("?" for _ in keys),
+            keys,
+        ).fetchall()
+    } if keys else {}
+    next_occurrence: dict[tuple, int] = {}
+    result: dict[str, dict] = {}
+    for source, key in zip(rows, keys):
+        item = _trade_item(source)
+        natural = (
+            item["datetime"], item["account"], item["symbol"],
+            item["action"], item["qty"],
+        )
+        if key in existing:
+            occurrence = existing[key]
+        else:
+            if natural not in next_occurrence:
+                row = conn.execute(
+                    "SELECT COALESCE(MAX(occurrence), -1) + 1 FROM trades "
+                    "WHERE datetime=? AND account=? AND symbol=? AND action=? AND qty=?",
+                    natural,
+                ).fetchone()
+                next_occurrence[natural] = int(row[0])
+            occurrence = next_occurrence[natural]
+            next_occurrence[natural] += 1
+        item["occurrence"] = occurrence
+        item["idempotency_key"] = key
+        result[key] = item
+    return result
+
+
+def append_runtime(
+    path: str | Path,
+    *,
+    snapshots: pd.DataFrame | None = None,
+    snapshot_identities: Iterable[str] | None = None,
+    trades: pd.DataFrame | None = None,
+    trade_identities: Iterable[str] | None = None,
+) -> dict[str, int]:
+    """Append runtime records in one transaction using explicit identities.
+
+    The identity is supplied by the caller (a capture id or broker/order id),
+    so retrying the same event updates its row instead of appending a second
+    copy.  This API deliberately does not infer identity from mutable prices
+    or from the current clock.
+    """
+    snapshot_ids = list(snapshot_identities or [])
+    trade_ids = list(trade_identities or [])
+    if snapshots is not None and len(snapshots) != len(snapshot_ids):
+        raise StoreError("snapshot_identities are required for every runtime snapshot")
+    if trades is not None and len(trades) != len(trade_ids):
+        raise StoreError("trade_identities are required for every runtime trade")
+    target = initialize(path)
+    conn = _connect(target)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        snapshot_records = (
+            _runtime_snapshot_records(conn, snapshots, snapshot_ids)
+            if snapshots is not None else {}
+        )
+        trade_records = (
+            _runtime_trade_records(conn, trades, trade_ids)
+            if trades is not None else {}
+        )
+        inserted = {
+            "portfolio_snapshots": _insert(conn, "portfolio_snapshots", snapshot_records),
+            "trades": _insert(conn, "trades", trade_records),
+        }
+        conn.commit()
+        return inserted
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def import_frames(path: str | Path, snapshots: pd.DataFrame | None = None,
@@ -349,7 +500,9 @@ def _query(path: str | Path, table: str) -> list[dict]:
     target = initialize(path)
     conn = _connect(target)
     try:
-        rows = conn.execute(f"SELECT * FROM {table} ORDER BY idempotency_key").fetchall()
+        # Preserve append order for the Excel compatibility projection and UI;
+        # reconciliation hashes are key-sorted independently of this order.
+        rows = conn.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
     finally:
         conn.close()
     return [dict(row) for row in rows]

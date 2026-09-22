@@ -51,8 +51,10 @@ the OLD/NEW signal/state characterization required for a future migration.
   repair are merged (#53, #67). The live Excel logs remain the current writer.
 - Roadmap item 3 staging is merged in
   [Issue #69](https://github.com/TaylorYam/QuantCore/issues/69). The real-log
-  staging run reconciled without loss; live cutover remains a separate,
-  explicitly approved release action.
+  staging run reconciled without loss. A reversible runtime writer seam is
+  prepared in [Issue #73](https://github.com/TaylorYam/QuantCore/issues/73);
+  the live backend switch remains a separate, explicitly approved release
+  action.
 
 Issue #48 adds an exact-snapshot coverage audit and SP500 stage timing tools;
 see [the session coverage study](data-session-study.md) for commands, measured

@@ -146,3 +146,58 @@ def test_runtime_state_is_not_a_sqlite_table(tmp_path):
     finally:
         conn.close()
     assert "sp500_state" not in tables and "skewls_state" not in tables
+
+
+def test_runtime_append_is_idempotent_and_preserves_repeated_captures(tmp_path):
+    db = tmp_path / "logs.sqlite3"
+    snapshots, trades = frames()
+
+    assert store.append_runtime(
+        db, snapshots=snapshots.iloc[:1], snapshot_identities=["capture-a"],
+        trades=trades.iloc[:1], trade_identities=["order-1"],
+    ) == {"portfolio_snapshots": 1, "trades": 1}
+
+    changed = snapshots.iloc[:1].copy()
+    changed.loc[changed.index[0], "MktPx"] = 111
+    assert store.append_runtime(
+        db, snapshots=changed, snapshot_identities=["capture-a"],
+        trades=trades.iloc[:1], trade_identities=["order-1"],
+    ) == {"portfolio_snapshots": 1, "trades": 1}
+    assert len(store._query(db, "portfolio_snapshots")) == 1
+    assert store._query(db, "portfolio_snapshots")[0]["mkt_px"] == 111.0
+
+    # A second capture on the same date/account/symbol is retained separately.
+    assert store.append_runtime(
+        db, snapshots=changed, snapshot_identities=["capture-b"],
+    ) == {"portfolio_snapshots": 1, "trades": 0}
+    rows = store._query(db, "portfolio_snapshots")
+    assert [row["occurrence"] for row in rows] == [0, 1]
+
+
+def test_runtime_append_requires_explicit_identities(tmp_path):
+    db = tmp_path / "logs.sqlite3"
+    snapshots, trades = frames()
+    with pytest.raises(store.StoreError, match="identities"):
+        store.append_runtime(db, snapshots=snapshots.iloc[:1])
+    with pytest.raises(store.StoreError, match="identities"):
+        store.append_runtime(db, trades=trades.iloc[:1])
+
+
+def test_runtime_append_rolls_back_both_tables(tmp_path, monkeypatch):
+    db = tmp_path / "logs.sqlite3"
+    snapshots, trades = frames()
+    original = store._insert
+
+    def fail_on_trades(conn, table, records):
+        if table == "trades":
+            raise RuntimeError("simulated runtime writer failure")
+        return original(conn, table, records)
+
+    monkeypatch.setattr(store, "_insert", fail_on_trades)
+    with pytest.raises(RuntimeError, match="simulated runtime writer failure"):
+        store.append_runtime(
+            db, snapshots=snapshots.iloc[:1], snapshot_identities=["capture-a"],
+            trades=trades.iloc[:1], trade_identities=["order-1"],
+        )
+    assert store._query(db, "portfolio_snapshots") == []
+    assert store._query(db, "trades") == []

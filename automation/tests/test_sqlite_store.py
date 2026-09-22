@@ -115,6 +115,8 @@ def test_export_then_reconcile_is_lossless(tmp_path):
     report = store.reconcile(db, portfolio, trade)
     assert report["portfolio_snapshots"]["match"] is True
     assert report["trades"]["match"] is True
+    assert report["portfolio_snapshots"]["source_hash"] == report["portfolio_snapshots"]["database_hash"]
+    assert report["trades"]["source_hash"] == report["trades"]["database_hash"]
 
 
 def test_duplicate_legacy_snapshot_is_collapsed_and_reported_by_key(tmp_path):

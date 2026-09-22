@@ -387,8 +387,13 @@ def export_excel(path: str | Path, portfolio_file: str | Path,
 
 
 def _hash_records(records: Mapping[str, dict]) -> str:
-    payload = json.dumps(list(records.values()), sort_keys=True, separators=(",", ":"),
-                         ensure_ascii=False, default=str).encode("utf-8")
+    # Source Excel order and the database query order are intentionally
+    # different.  Hash by key so reconciliation reports equality for the
+    # same records regardless of insertion or SQL sort order.
+    payload = json.dumps(
+        [[key, records[key]] for key in sorted(records)],
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str,
+    ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 

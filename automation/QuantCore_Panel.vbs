@@ -30,4 +30,4 @@ If pyExe = "" Then
     pyExe = "pythonw.exe"
 End If
 
-WshShell.Run """" & pyExe & """ ""control_panel.py""", 0, False
+WshShell.Run """" & pyExe & """ ""run_with_sqlite_backend.py"" --script ""control_panel.py""", 0, False

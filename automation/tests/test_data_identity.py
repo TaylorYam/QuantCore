@@ -124,20 +124,53 @@ def test_provider_identity_requires_matching_name_and_first_trade():
     }) == ["provider_name_mismatch", "provider_first_trade_mismatch"]
 
 
-def test_default_manifest_reconciles_issue_50_identity_findings():
+def test_default_manifest_reconciles_reviewed_identity_findings():
     rules = load_manifest()["rules"]
     assert {rule["symbol"] for rule in rules} == {
-        "COL", "NFX", "AVB", "TWX", "AET",
+        "COL", "CSRA", "NFX", "AVB", "TWX", "AET",
         "STI", "INFO", "CA", "DOW", "SE", "EMC", "TE", "CCE",
         "SNDK", "ADT", "CAM", "POM", "PCL", "NE", "TEG",
     }
     assert {rule["symbol"] for rule in rules
             if rule["action"] == "quarantine"} == {"COL"}
     assert {rule["symbol"] for rule in rules
-            if rule["action"] == "truncate"} == {"NFX", "AVB", "TWX", "AET"}
+            if rule["action"] == "truncate"} == {
+                "CSRA", "NFX", "AVB", "TWX", "AET"
+            }
     assert all(rule["append"] == "refuse" for rule in rules)
     assert {rule["symbol"] for rule in rules
             if rule.get("append_after_provider_first_trade")} == {"DOW", "SNDK"}
+
+
+def test_issue82_csra_reuse_is_truncated_and_future_appends_are_refused(tmp_path):
+    rule = next(rule for rule in load_manifest()["rules"]
+                if rule["symbol"] == "CSRA")
+    assert rule["action"] == "truncate"
+    assert rule["valid_through"] == "2018-04-03"
+    assert rule["provider_identity"] == {
+        "name": "Cohen & Steers Real Assets Active ETF",
+        "first_trade": "2026-08-12",
+    }
+    assert identity_guard_reason(
+        "CSRA", local_first_date="2015-11-16"
+    ) == "identity guard refuses provider append"
+
+    source = tmp_path / "source"
+    legacy = _row("2018-04-03", 41.23, 17803828, open_=41.26,
+                  high=41.26, low=41.23)
+    reused = _row("2026-08-12", 25.13, 0, open_=25.14, high=0, low=0)
+    _write_csv(source / "stocks" / "CSRA.csv", [legacy, reused])
+    before = (source / "stocks" / "CSRA.csv").read_bytes()
+    manifest = _manifest(tmp_path / "manifest.json", [rule])
+
+    output = tmp_path / "staging"
+    report = stage_repair(source, output, manifest)
+
+    staged = pd.read_csv(output / "stocks" / "CSRA.csv")
+    assert staged["Date"].tolist() == ["2018-04-03"]
+    assert report["actions"][0]["removed_rows"] == 1
+    assert report["after"]["clean"] is True
+    assert (source / "stocks" / "CSRA.csv").read_bytes() == before
 
 
 @pytest.mark.parametrize(
@@ -209,14 +242,21 @@ def updater(tmp_path, monkeypatch):
 
 
 def test_updater_silently_refuses_guarded_append_and_updates_unlisted_symbol(
-    updater, tmp_path, monkeypatch,
+    updater, tmp_path, monkeypatch, capsys,
 ):
     _write_csv(updater.STOCK_DIR / "NFX.csv", [_row("2019-02-13", 17.07, 100)])
+    _write_csv(updater.STOCK_DIR / "CSRA.csv", [
+        _row("2018-04-03", 41.23, 17803828, open_=41.26,
+             high=41.26, low=41.23),
+    ])
     _write_csv(updater.STOCK_DIR / "A.csv", [_row("2026-09-15", 10, 100)])
-    manifest = _manifest(tmp_path / "manifest.json", [{
-        "symbol": "NFX", "action": "truncate", "append": "refuse",
-        "valid_through": "2019-02-13",
-    }])
+    csra_rule = next(rule for rule in load_manifest()["rules"]
+                     if rule["symbol"] == "CSRA")
+    manifest = _manifest(tmp_path / "manifest.json", [
+        {"symbol": "NFX", "action": "truncate", "append": "refuse",
+         "valid_through": "2019-02-13"},
+        csra_rule,
+    ])
     monkeypatch.setattr(updater, "IDENTITY_MANIFEST_PATH", manifest)
 
     # the download re-reads the stored bar (#53 overlap check) plus the new one
@@ -226,10 +266,15 @@ def test_updater_silently_refuses_guarded_append_and_updates_unlisted_symbol(
     monkeypatch.setattr(updater.yf, "download", lambda *args, **kwargs: new)
 
     nfx_before = (updater.STOCK_DIR / "NFX.csv").read_bytes()
+    csra_before = (updater.STOCK_DIR / "CSRA.csv").read_bytes()
     errors = updater.update_stocks(batch_size=1)
 
     assert errors == []
     assert (updater.STOCK_DIR / "NFX.csv").read_bytes() == nfx_before
+    assert (updater.STOCK_DIR / "CSRA.csv").read_bytes() == csra_before
+    output = capsys.readouterr().out
+    assert "NFX: identity guard refuses provider append; skipped as reviewed" in output
+    assert "CSRA: identity guard refuses provider append; skipped as reviewed" in output
     assert pd.read_csv(updater.STOCK_DIR / "A.csv")["Date"].tolist() == [
         "2026-09-15", "2026-09-16"
     ]

@@ -12,7 +12,8 @@ import numpy as np
 import pandas as pd
 
 
-def inspect_csv(path: Path, *, adjusted: bool = False) -> dict:
+def inspect_csv(path: Path, *, adjusted: bool = False,
+                adjusted_close_fallback: bool = False) -> dict:
     started = perf_counter()
     result = {"file": path.name, "issues": []}
     try:
@@ -22,7 +23,7 @@ def inspect_csv(path: Path, *, adjusted: bool = False) -> dict:
         df = pd.read_csv(io.BytesIO(content))
         result["rows"] = len(df)
         required = ["Date", "Open", "High", "Low", "Close", "Volume"]
-        if adjusted:
+        if adjusted and not adjusted_close_fallback:
             required.append("Adj Close")
         missing = sorted(set(required) - set(df.columns))
         if missing:
@@ -70,8 +71,12 @@ def audit(root: Path, expected_session: str | None = None,
         if not paths:
             issues.append(f"{category}: no CSV files")
         for path in paths:
-            row = inspect_csv(path, adjusted=True)
+            vix_uses_close = category == "etfs" and path.stem.upper() == "VIX"
+            row = inspect_csv(path, adjusted=True,
+                              adjusted_close_fallback=vix_uses_close)
             row["category"] = category
+            if vix_uses_close:
+                row["adjusted_close_fallback"] = "Close"
             if expected_session and category == "stocks" and path.stem in required_stocks:
                 if row.get("last_session", "") < expected_session:
                     row["issues"].append({"required_session_missing": expected_session})

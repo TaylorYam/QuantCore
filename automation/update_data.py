@@ -27,6 +27,7 @@ if str(ROOT_DIR) not in sys.path:
 # ── 日誌 ──────────────────────────────────────────────────────────────────────
 from log_setup import setup_logging
 log = logging.getLogger(__name__)
+from data.update_outcomes import outcome_errors
 
 # ── Telegram（統一由 notify.py 提供）─────────────────────────────────────
 from notify import tg_send as _tg
@@ -65,7 +66,7 @@ def main() -> list[str]:
     log.info("Step 1: Updating ETFs...")
     try:
         from data.update_data import update_etfs
-        errors.extend(update_etfs() or [])
+        errors.extend(outcome_errors(update_etfs() or []))
         log.info("ETF update done.")
     except Exception as e:
         log.error(f"ETF update failed: {e}", exc_info=True)
@@ -75,7 +76,7 @@ def main() -> list[str]:
     log.info("Step 2: Updating stocks...")
     try:
         from data.update_data import update_stocks
-        errors.extend(update_stocks() or [])
+        errors.extend(outcome_errors(update_stocks() or []))
         log.info("Stock update done.")
     except Exception as e:
         log.error(f"Stock update failed: {e}", exc_info=True)

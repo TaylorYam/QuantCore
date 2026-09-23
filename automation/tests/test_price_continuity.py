@@ -262,7 +262,7 @@ def test_update_appends_only_new_bars_and_keeps_stored_rows(updater, monkeypatch
     served.loc[DAYS[109], "Close"] *= 1.0005    # provider revision of a stored bar
     calls = serve(monkeypatch, updater, {"AAA": served})
     before = path.read_bytes()
-    assert updater.update_stocks() == []
+    assert all(result["status"] == "updated" for result in updater.update_stocks())
     got = pc.read_csv(path)
     assert len(got) == 120 and got.loc[DAYS[109], "Close"] == pytest.approx(value[109], abs=1e-6)
     assert path.read_bytes().startswith(before)
@@ -275,7 +275,7 @@ def test_update_replaces_the_file_after_a_split(updater, monkeypatch):
     path = updater.STOCK_DIR / "APH.csv"
     write(path, local.iloc[:110])
     serve(monkeypatch, updater, {"APH": provider})
-    assert updater.update_stocks() == []
+    assert all(result["status"] == "updated" for result in updater.update_stocks())
     got = pc.read_csv(path)
     assert len(got) == 120
     assert np.allclose(got["Close"], provider["Close"], atol=1e-6)
@@ -288,7 +288,7 @@ def test_update_replaces_the_file_after_a_reverse_split(updater, monkeypatch):
     path = updater.STOCK_DIR / "DD.csv"
     write(path, local.iloc[:110])              # split is after the last stored bar
     serve(monkeypatch, updater, {"DD": provider})
-    assert updater.update_stocks() == []
+    assert all(result["status"] == "updated" for result in updater.update_stocks())
     assert np.allclose(pc.read_csv(path)["Close"], provider["Close"], atol=1e-6)
 
 
@@ -298,9 +298,11 @@ def test_update_refuses_a_symbol_that_now_points_at_another_security(updater, mo
     before = path.read_bytes()
     # the provider symbol now resolves to a security listed on DAYS[95]
     serve(monkeypatch, updater, {"NFX": bars(walk(9, start=25.0)[95:], days=DAYS[95:], splits={})})
-    errors = updater.update_stocks()
-    assert len(errors) == 1 and errors[0].startswith("NFX: provider 歷史與本地檔核對不過")
-    assert "provider lacks" in errors[0]
+    result = updater.update_stocks()[0]
+    assert result["status"] == "invalid_response"
+    assert result["ticker"] == "NFX"
+    assert "provider 歷史與本地檔核對不過" in result["detail"]
+    assert "provider lacks" in result["detail"]
     assert path.read_bytes() == before
 
 
@@ -311,7 +313,7 @@ def test_update_without_new_bars_does_not_check_or_report(updater, monkeypatch):
     write(path, bars(walk()[:100]))
     before = path.read_bytes()
     serve(monkeypatch, updater, {"AVB": bars(walk()[:100] / 2.793, splits={DAYS[95]: 2.793})})
-    assert updater.update_stocks() == []
+    assert updater.update_stocks()[0]["status"] == "no_new_bars"
     assert path.read_bytes() == before
 
 
@@ -322,8 +324,9 @@ def test_update_refuses_when_the_full_history_download_fails(updater, monkeypatc
     before = path.read_bytes()
     serve(monkeypatch, updater, {"KLAC": provider})
     monkeypatch.setattr(updater, "_download_ohlcv", lambda *a, **k: None)
-    errors = updater.update_stocks()
-    assert len(errors) == 1 and "下載失敗" in errors[0]
+    result = updater.update_stocks()[0]
+    assert result["status"] == "download_failed"
+    assert "下載失敗" in result["detail"]
     assert path.read_bytes() == before
 
 
@@ -334,8 +337,8 @@ def test_etf_split_rescale_is_validated_then_rewritten(updater, monkeypatch):
     write(updater.ETF_DIR / "VIX.csv", bars(walk(5, start=17.0)))      # VIX already current
     provider = bars(value * 2, splits={DAYS[112]: 0.5})
     serve(monkeypatch, updater, {"REW": provider})
-    errors = updater.update_etfs()
-    assert errors == []
+    results = {result["ticker"]: result for result in updater.update_etfs()}
+    assert results["REW"]["status"] == "updated"
     assert np.allclose(pc.read_csv(path)["Close"], provider["Close"], atol=1e-6)
     assert pc.compare_history(pc.read_csv(path), provider)["status"] == "consistent"
 
@@ -349,7 +352,8 @@ def test_etf_small_adjusted_close_rebase_refreshes_full_provider_history(updater
     provider = bars(value, adj=value * 0.995)
     serve(monkeypatch, updater, {"REW": provider})
 
-    assert updater.update_etfs() == []
+    assert all(result["status"] in {"no_update_required", "updated"}
+               for result in updater.update_etfs())
 
     got = pc.read_csv(path)
     assert len(got) == len(provider)
@@ -366,9 +370,10 @@ def test_etf_update_refuses_provider_history_without_adjusted_close(updater, mon
     serve(monkeypatch, updater, {"REW": provider})
     before = path.read_bytes()
 
-    errors = updater.update_etfs()
+    results = {result["ticker"]: result for result in updater.update_etfs()}
 
-    assert any("REW: provider omitted valid Adj Close" in error for error in errors)
+    assert results["REW"]["status"] == "invalid_response"
+    assert "provider omitted valid Adj Close" in results["REW"]["detail"]
     assert path.read_bytes() == before
 
 

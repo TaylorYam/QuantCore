@@ -29,17 +29,23 @@ infer listing dates, delistings, exchange holidays or internal session gaps.
 Do not supply today's calendar date automatically: Reference Close is the last
 completed session, not the upcoming Execution Session.
 
-Update functions return confirmed errors. The automation entry point propagates
-them into its existing failure notification and Daily Run Summary. Standalone
-and shared CLIs exit nonzero for confirmed errors. Empty vendor responses alone
+ETF and stock update functions return one JSON-serializable outcome per local
+ticker, with statuses for updated, already current, no new bars, inconclusive
+empty response, identity-guard hold, invalid response, download failure and
+local data error. The automation entry point aggregates confirmed error
+outcomes into its existing failure notification and Daily Run Summary;
+standalone and shared CLIs exit nonzero for those errors. Empty vendor responses
 remain inconclusive: an inactive member of the historical Universe or a market
-holiday need not have new bars. Empty responses are not proof of completeness;
-the explicit freshness audit is separate. No new notification channel is added.
+holiday need not have new bars. They do not prove completeness; the explicit
+Reference Close/Constituents freshness audit is separate. No notification
+channel is added. Outcomes report rows added, but do not measure provider
+completeness or count individual historical rows revised during a full refresh.
 
 The 2026-09-23 read-only audit checked 664 CSVs and found the two #82 findings:
 CSRA High/Low on 2026-08-12 and VIX Open on 2026-04-02. Source-backed repairs
-are staged and reconciled in [the #82 data-quality report](data-quality-issue82.md).
-The staged audit has no remaining findings. The report makes no strategy
+were merged in PR #89, published to the live data archive, and reconciled in
+[the #82 data-quality report](data-quality-issue82.md). The post-publication
+audit checked 664 CSVs with zero findings. The report makes no strategy
 performance inference.
 
 Validation: synthetic temporary CSVs and mocked downloads/config/notification;
@@ -54,12 +60,16 @@ the OLD/NEW signal/state characterization required for a future migration.
 
 - The exact-session / Constituents coverage audit and SP500 stage timings are
   complete (#46, #48, #49); see [the session coverage study](data-session-study.md).
-  Structured per-ticker update outcomes remain a tracked follow-up (#83).
+  Structured per-ticker update outcomes are implemented for #83; empty
+  responses remain inconclusive, and only confirmed errors affect job status.
 - Coverage repair, identity review, historical aliases and the Constituents
   cache are merged (#50, #51, #54, #55, #56). The source-verified DOW/SNDK
   repair is merged as PR #86 and Issue #81 is closed.
 - ETF close semantics and inverse-ETF split histories were resolved by merged
   PR #88; Issue #68 is closed and the verified data refresh is recorded locally.
+- Issue #82 is closed by merged PR #89; the CSRA identity correction and VIX
+  OHLC repair are published, with a clean post-publication audit recorded in
+  [the #82 data-quality report](data-quality-issue82.md).
 - Validated staging, atomic publication, dataset manifests and price continuity
   repair are merged (#53, #67); see [the coverage repair report](data-coverage-repair.md).
 - Roadmap item 3, authoritative SQLite logging, is complete (#69, #73). The
@@ -75,9 +85,10 @@ silently alter research inputs.
 
 ### Roadmap status
 
-1. **Implemented:** verified session/Constituents coverage and pipeline timings.
-   Structured per-ticker outcomes, including unknown/no-data, remain open in
-   [Issue #83](https://github.com/TaylorYam/QuantCore/issues/83).
+1. **Implemented:** verified session/Constituents coverage and pipeline timings,
+   plus structured per-ticker outcomes. Empty responses remain inconclusive;
+   confirmed failures flow to existing job status and notification paths
+   ([Issue #83](https://github.com/TaylorYam/QuantCore/issues/83)).
 2. **Implemented:** validated staging, atomic publication and dataset manifests
    (#53, #67), with price precision, ordering and adjustment behavior preserved.
 3. **Complete:** account snapshots and trade/fill logs use the authoritative
@@ -90,26 +101,21 @@ silently alter research inputs.
 ### Priority order (2026-09-23)
 
 0. **Release sync:** the live checkout `C:\QuantCore-master` is synchronized
-   with `origin/main` at `b09774e`, including PRs #86, #87 and #88. There is no
-   outstanding code sync task.
-1. [Issue #82](https://github.com/TaylorYam/QuantCore/issues/82): source-verified
-   CSRA identity cleanup and VIX OHLC correction are staged; the health-audit
-   exception and regression coverage are included in the pending PR.
-2. [Issue #83](https://github.com/TaylorYam/QuantCore/issues/83): add structured
-   per-ticker update outcomes after the data-quality findings are resolved.
-   Empty provider responses must remain inconclusive without an explicit
-   freshness failure.
+   with `origin/main` at `b31de1e`, including PRs #86 through #89. Issue #82's
+   source-verified repairs are published; the post-publication audit found no
+   remaining findings.
+1. [Issue #83](https://github.com/TaylorYam/QuantCore/issues/83): structured
+   per-ticker update outcomes are implemented on this issue branch and proceed
+   through the normal CI and review release gate. Empty provider responses
+   remain inconclusive without an explicit freshness failure.
 
 The Parquet/DuckDB prototype remains conditional on measured I/O need; it is not
 an active task.
 
 ### Tracked follow-ups
 
-- [Issue #82](https://github.com/TaylorYam/QuantCore/issues/82): source-check the
-  CSRA and VIX repairs through CI, human review and the planned local data
-  publication.
-- [Issue #83](https://github.com/TaylorYam/QuantCore/issues/83): structured
-  per-ticker update outcomes.
+- [Issue #83](https://github.com/TaylorYam/QuantCore/issues/83): merge the
+  structured per-ticker outcome implementation after CI and human review.
 
 Storage/loader refactors still require OLD/NEW characterization for 3 Accounts ×
 5 scenarios, byte comparison of signals and state, and isolated state

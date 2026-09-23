@@ -29,6 +29,7 @@ _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:  # python data/update_data.py
     sys.path.insert(0, str(_REPO))
 from data.identity_audit import identity_guard_reason  # noqa: E402
+from data.update_outcomes import UpdateOutcome, outcome  # noqa: E402
 from data.price_continuity import (OVERLAP_DAYS, PRICE_COLS, SPLIT_COL,  # noqa: E402
                                    atomic_write, compare_history, frame_bytes,
                                    replacement, window_check)
@@ -189,13 +190,23 @@ def _extract_ticker(raw: pd.DataFrame, tk: str, errors: list[str] | None = None)
 
 def _download_ohlcv(ticker: str, start: str, end: str,
                     auto_adjust: bool = False, errors: list[str] | None = None) -> pd.DataFrame | None:
-    """下載 OHLCV（與分割紀錄），失敗回傳 None。"""
+    """下載 OHLCV（與分割紀錄）；空回應保持未知，下載和格式錯誤分開回報。"""
     try:
         raw = yf.Ticker(ticker).history(
             start=start, end=end, auto_adjust=auto_adjust
         )
-        if raw.empty:
-            return None
+    except Exception as e:
+        if errors is not None:
+            errors.append(f"{ticker}: download failed: {e}")
+        print(f"    ERROR {ticker}: {e}")
+        return None
+    if raw is None or raw.empty:
+        return None
+    if "Close" not in raw.columns:
+        if errors is not None:
+            errors.append(f"{ticker}: invalid download response: missing Close column")
+        return None
+    try:
         raw.index = pd.to_datetime(raw.index).tz_localize(None).normalize()
         raw.index.name = "Date"
         cols = PRICE_COLS + [SPLIT_COL]
@@ -205,16 +216,58 @@ def _download_ohlcv(ticker: str, start: str, end: str,
         return df if not df.empty else None
     except Exception as e:
         if errors is not None:
-            errors.append(f"{ticker}: download failed: {e}")
-        print(f"    ERROR {ticker}: {e}")
+            errors.append(f"{ticker}: invalid download response: {e}")
         return None
 
 
 # ── ETF 更新 ──────────────────────────────────────────────────────────────────
 
-def update_etfs() -> list[str]:
-    """Return confirmed update errors; empty responses do not prove missing sessions."""
-    errors = []
+def _failure_status(details: list[str], default: str = "update_failed") -> str:
+    text = "; ".join(details).lower()
+    if "download failed" in text or "下載失敗" in text:
+        return "download_failed"
+    if ("invalid download response" in text or "omitted valid" in text
+            or "provider 歷史與本地檔核對不過" in text
+            or "provider 調整了已存的歷史價格" in text):
+        return "invalid_response"
+    return default
+
+
+def _file_signature(path: Path) -> tuple[int, int]:
+    stat = path.stat()
+    return stat.st_size, stat.st_mtime_ns
+
+
+def _result_after_store(
+    ticker: str,
+    dataset: str,
+    path: Path,
+    before: tuple[int, int],
+    added: int | None,
+    details: list[str],
+) -> UpdateOutcome:
+    if added is None:
+        return outcome(
+            ticker, dataset, _failure_status(details),
+            "; ".join(details) or "provider data could not be stored",
+        )
+    if added > 0:
+        return outcome(ticker, dataset, "updated", f"added {added} bar(s)", rows_added=added)
+    try:
+        changed = _file_signature(path) != before
+    except OSError:
+        changed = False
+    if changed:
+        return outcome(ticker, dataset, "updated", "provider history reconciled; no new bars", rows_added=0)
+    return outcome(ticker, dataset, "no_new_bars", "provider response contained no bars after the local endpoint")
+
+
+def update_etfs() -> list[UpdateOutcome]:
+    """Return one plain-data update outcome per ETF and VIX.
+
+    Empty provider responses are inconclusive and do not prove missing sessions.
+    """
+    results: dict[str, UpdateOutcome] = {}
     print("=" * 55)
     print("ETF 更新")
     print("=" * 55)
@@ -223,7 +276,7 @@ def update_etfs() -> list[str]:
     paths = {tk: ETF_DIR / f"{tk}.csv" for tk in ALL_ETFS if (ETF_DIR / f"{tk}.csv").exists()}
     if not paths:
         print("  找不到 ETF CSV，請先執行 migrate_data.py")
-        return ["ETF: no existing CSV files"]
+        results["ETF"] = outcome("ETF", "etfs", "local_data_error", "no existing CSV files")
 
     # 以最舊的 last_date 作為起始（確保全部補齊）
     starts = {}
@@ -231,29 +284,32 @@ def update_etfs() -> list[str]:
         try:
             starts[tk] = _last_date(path)
         except Exception as exc:
-            errors.append(f"{tk}: unreadable CSV: {exc}")
-    errors.extend(f"{tk}: missing CSV" for tk in ALL_ETFS if tk not in paths)
-    if not starts:
-        return errors
-    earliest = min(starts.values())
-    start = _window_start(earliest)
-    current = _next_day(earliest) >= TODAY
+            results[tk] = outcome(tk, "etfs", "local_data_error", f"unreadable CSV: {exc}")
+    for tk in ALL_ETFS:
+        if tk not in paths and "ETF" not in results:
+            results[tk] = outcome(tk, "etfs", "local_data_error", "missing CSV")
 
-    if current:
+    earliest = min(starts.values()) if starts else None
+    start = _window_start(earliest) if earliest else None
+    current = earliest is None or _next_day(earliest) >= TODAY
+
+    if current and earliest:
         print(f"  ETF 資料已是最新（{earliest}），無需更新。")
         # VIX is checked independently below.
 
-    print(f"  下載區間：{start} → {TODAY}（含最近 {OVERLAP_DAYS} 天已存資料比對）")
+    if start:
+        print(f"  下載區間：{start} → {TODAY}（含最近 {OVERLAP_DAYS} 天已存資料比對）")
 
     # 批次下載（yfinance >= 1.0 欄位格式：group_by="ticker" → raw[tk] 取子 DataFrame）
     tickers_str = " ".join(ALL_ETFS)
-    try:
-        raw = None if current else yf.download(tickers_str, start=start, end=TODAY,
-                          auto_adjust=False, actions=True, group_by="ticker",
-                          progress=False)
-    except Exception as e:
-        print(f"  批次下載失敗：{e}，改逐一下載")
-        raw = None
+    raw = None
+    if starts and not current:
+        try:
+            raw = yf.download(tickers_str, start=start, end=TODAY,
+                              auto_adjust=False, actions=True, group_by="ticker",
+                              progress=False)
+        except Exception as e:
+            print(f"  批次下載失敗：{e}，改逐一下載")
 
     for tk in ALL_ETFS:
         csv_path = ETF_DIR / f"{tk}.csv"
@@ -261,33 +317,44 @@ def update_etfs() -> list[str]:
             continue
         if _next_day(starts[tk]) >= TODAY:
             print(f"  {tk:6s}  已最新")
+            results[tk] = outcome(tk, "etfs", "no_update_required", f"local data already reaches {starts[tk]}")
             continue
 
         try:
             window_start = _window_start(starts[tk])
+            ticker_details: list[str] = []
             if raw is not None:
-                df = _extract_ticker(raw, tk, errors)
+                df = _extract_ticker(raw, tk, ticker_details)
             else:
-                df = _download_ohlcv(tk, window_start, TODAY, errors=errors)
+                df = _download_ohlcv(tk, window_start, TODAY, errors=ticker_details)
 
             if df is None or df.empty:
                 print(f"  {tk:6s}  無新資料")
+                status = _failure_status(ticker_details, "inconclusive") if ticker_details else "inconclusive"
+                results[tk] = outcome(
+                    tk, "etfs", status,
+                    "; ".join(ticker_details) or "provider returned no rows; freshness unverified",
+                )
                 continue
 
             if "Adj Close" not in df or df["Adj Close"].isna().any():
-                errors.append(f"{tk}: provider omitted valid Adj Close; ETF history was not updated")
                 print(f"  {tk:6s}  無有效 Adj Close，未更新")
+                results[tk] = outcome(tk, "etfs", "invalid_response",
+                                      "provider omitted valid Adj Close; ETF history was not updated")
                 continue
 
-            added = _store(csv_path, df[df.index >= window_start], errors, refetch=True,
+            before = _file_signature(csv_path)
+            store_details: list[str] = []
+            added = _store(csv_path, df[df.index >= window_start], store_details, refetch=True,
                            refresh_adjusted_history=True)
             if added is None:
                 print(f"  {tk:6s}  未續寫（見錯誤）")
             else:
                 print(f"  {tk:6s}  +{added} 筆  (至 {str(df.index[-1].date())})")
+            results[tk] = _result_after_store(tk, "etfs", csv_path, before, added, store_details)
         except Exception as e:
-            errors.append(f"{tk}: {e}")
             print(f"  {tk:6s}  ERROR: {e}")
+            results[tk] = outcome(tk, "etfs", "update_failed", str(e))
 
     # VIX 單獨處理
     vix_path = ETF_DIR / "VIX.csv"
@@ -295,30 +362,47 @@ def update_etfs() -> list[str]:
         if vix_path.exists():
             vix_last = _last_date(vix_path)
             if _next_day(vix_last) < TODAY:
-                df = _download_ohlcv(VIX_TICKER, _window_start(vix_last), TODAY, errors=errors)
+                ticker_details = []
+                df = _download_ohlcv(VIX_TICKER, _window_start(vix_last), TODAY,
+                                     errors=ticker_details)
                 if df is not None and not df.empty:
                     if "Adj Close" not in df:
                         df["Adj Close"] = df["Close"]
                     df["Adj Close"] = df["Adj Close"].fillna(df["Close"])
                     df["Volume"] = 0
-                    added = _store(vix_path, df, errors, refetch=True,
+                    before = _file_signature(vix_path)
+                    store_details: list[str] = []
+                    added = _store(vix_path, df, store_details, refetch=True,
                                    refresh_adjusted_history=True)
                     if added is not None:
                         print(f"  {'VIX':6s}  +{added} 筆  (至 {str(df.index[-1].date())})")
+                    results["VIX"] = _result_after_store("VIX", "etfs", vix_path,
+                                                         before, added, store_details)
+                else:
+                    status = _failure_status(ticker_details, "inconclusive") if ticker_details else "inconclusive"
+                    detail = "; ".join(
+                        item.removeprefix(f"{VIX_TICKER}: ") for item in ticker_details
+                    )
+                    results["VIX"] = outcome(
+                        "VIX", "etfs", status,
+                        detail or "provider returned no rows; freshness unverified",
+                    )
             else:
                 print(f"  {'VIX':6s}  已最新")
+                results["VIX"] = outcome("VIX", "etfs", "no_update_required",
+                                         f"local data already reaches {vix_last}")
         else:
-            errors.append("VIX: missing CSV")
+            results["VIX"] = outcome("VIX", "etfs", "local_data_error", "missing CSV")
     except Exception as exc:
-        errors.append(f"VIX: {exc}")
-    return errors
+        results["VIX"] = outcome("VIX", "etfs", "local_data_error", str(exc))
+    return [results[tk] for tk in [*ALL_ETFS, "VIX", "ETF"] if tk in results]
 
 
 # ── 個股更新 ──────────────────────────────────────────────────────────────────
 
-def update_stocks(batch_size: int = 50) -> list[str]:
-    """Return confirmed per-ticker errors; historical inactive tickers remain valid."""
-    errors = []
+def update_stocks(batch_size: int = 50) -> list[UpdateOutcome]:
+    """Return one structured outcome per local ticker; empty responses stay inconclusive."""
+    results: dict[str, UpdateOutcome] = {}
     print("=" * 55)
     print("個股更新（yfinance 批次下載）")
     print("=" * 55)
@@ -326,7 +410,7 @@ def update_stocks(batch_size: int = 50) -> list[str]:
     csvs = sorted(STOCK_DIR.glob("*.csv"))
     if not csvs:
         print("  找不到個股 CSV，請先解壓縮歷史資料。")
-        return ["Stocks: no existing CSV files"]
+        return [outcome("Stocks", "stocks", "local_data_error", "no existing CSV files")]
 
     print(f"  共 {len(csvs)} 支個股")
 
@@ -341,26 +425,29 @@ def update_stocks(batch_size: int = 50) -> list[str]:
                     local_first_date=_first_date(p),
                 )
             except Exception as exc:
-                errors.append(f"{p.stem}: unreadable CSV: {exc}")
+                results[p.stem] = outcome(p.stem, "stocks", "local_data_error", f"unreadable CSV: {exc}")
                 continue
         if guard_reason:
             # This is an expected, reviewed disposition rather than an update
             # failure.  Keep the fail-closed skip visible in the job log, but
             # do not turn every daily run into a Telegram warning.
             print(f"    {p.stem}: {guard_reason}; skipped as reviewed")
+            results[p.stem] = outcome(p.stem, "stocks", "identity_guard_hold", guard_reason)
             continue
         try:
             ld = _last_date(p)
             if _next_day(ld) >= TODAY:
+                results[p.stem] = outcome(p.stem, "stocks", "no_update_required",
+                                          f"local data already reaches {ld}")
                 continue
             groups.setdefault(_window_start(ld), []).append(p)
         except Exception as exc:
-            errors.append(f"{p.stem}: unreadable CSV: {exc}")
+            results[p.stem] = outcome(p.stem, "stocks", "local_data_error", f"unreadable CSV: {exc}")
             continue
 
     if not groups:
         print(f"  個股資料已是最新，無需更新。")
-        return errors
+        return [results[p.stem] for p in csvs]
 
     total_added = 0
     total_updated = 0
@@ -379,29 +466,40 @@ def update_stocks(batch_size: int = 50) -> list[str]:
                                   auto_adjust=False, actions=True, group_by="ticker",
                                   progress=False)
             except Exception as e:
-                errors.extend(f"{tk}: download failed: {e}" for tk in batch)
                 print(f"    批次 {i//batch_size+1} 下載失敗：{e}")
+                for tk in batch:
+                    results[tk] = outcome(tk, "stocks", "download_failed", f"download failed: {e}")
                 continue
 
             for tk in batch:
                 csv_path = STOCK_DIR / f"{tk}.csv"
                 try:
-                    df = _extract_ticker(raw, tk, errors)
+                    ticker_details: list[str] = []
+                    df = _extract_ticker(raw, tk, ticker_details)
                     if df is None or df.empty:
                         print(f"    {tk}: no data returned; freshness unverified")
+                        status = _failure_status(ticker_details, "inconclusive") if ticker_details else "inconclusive"
+                        results[tk] = outcome(
+                            tk, "stocks", status,
+                            "; ".join(ticker_details) or "provider returned no rows; freshness unverified",
+                        )
                         continue
 
-                    added = _store(csv_path, df, errors, refetch=True)
-                    if added:
+                    before = _file_signature(csv_path)
+                    store_details: list[str] = []
+                    added = _store(csv_path, df, store_details, refetch=True)
+                    results[tk] = _result_after_store(tk, "stocks", csv_path,
+                                                      before, added, store_details)
+                    if results[tk]["status"] == "updated":
                         total_added += added
                         total_updated += 1
                 except Exception as e:
-                    errors.append(f"{tk}: {e}")
                     print(f"    {tk}: {e}")
+                    results[tk] = outcome(tk, "stocks", "update_failed", str(e))
 
     print(f"\n  完成：{total_updated} 支個股更新，共 +{total_added} 筆新資料")
 
-    return errors
+    return [results[p.stem] for p in csvs]
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -415,11 +513,13 @@ if __name__ == "__main__":
     do_etf    = args.etf    or (not args.etf and not args.stocks)
     do_stocks = args.stocks or (not args.etf and not args.stocks)
 
-    errors = []
+    results = []
     if do_etf:
-        errors.extend(update_etfs())
+        results.extend(update_etfs())
     if do_stocks:
-        errors.extend(update_stocks())
+        results.extend(update_stocks())
+    from data.update_outcomes import outcome_errors
+    errors = outcome_errors(results)
     for error in errors:
         print(f"ERROR: {error}")
     print(f"\n資料更新結束：{len(errors)} 個已確認錯誤；完整性請另跑 data.health。")

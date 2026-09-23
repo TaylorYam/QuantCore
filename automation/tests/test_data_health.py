@@ -1,11 +1,13 @@
 """Offline data checks and updater failures; only temporary CSVs and fake downloads."""
 import importlib.util
+import json
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from data.health import audit, inspect_csv
+from data.update_outcomes import outcome_errors
 
 
 def csv(path, dates=("2026-09-15",), **overrides):
@@ -81,6 +83,7 @@ def updater(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("market_data_updater", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module._real_download_ohlcv = module._download_ohlcv
     monkeypatch.setattr(module, "STOCK_DIR", tmp_path / "stocks")
     monkeypatch.setattr(module, "ETF_DIR", tmp_path / "etfs")
     monkeypatch.setattr(module, "ALL_ETFS", ["SPY"])
@@ -96,21 +99,45 @@ def test_partial_batch_failure_and_corrupt_csv_are_returned(updater, monkeypatch
     def fail(*args, **kwargs):
         raise RuntimeError("offline failure")
     monkeypatch.setattr(updater.yf, "download", fail)
-    errors = updater.update_stocks()
-    assert any("A: download failed" in e for e in errors)
-    assert any("B: unreadable CSV" in e for e in errors)
+    results = {result["ticker"]: result for result in updater.update_stocks()}
+    assert results["A"]["status"] == "download_failed"
+    assert "offline failure" in results["A"]["detail"]
+    assert results["B"]["status"] == "local_data_error"
+    assert "unreadable CSV" in results["B"]["detail"]
+    assert len(outcome_errors(results.values())) == 2
 
 
 def test_empty_response_does_not_claim_inactive_ticker_failure(updater):
     csv(updater.STOCK_DIR / "OLD.csv", ("2001-01-02",))
-    assert updater.update_stocks() == []
+    result = updater.update_stocks()[0]
+    assert result["ticker"] == "OLD"
+    assert result["status"] == "inconclusive"
+    assert "freshness unverified" in result["detail"]
+    assert outcome_errors([result]) == []
+
+
+def test_current_ticker_is_reported_without_claiming_an_update(updater, monkeypatch):
+    csv(updater.STOCK_DIR / "AAPL.csv", ("2026-09-16",))
+    monkeypatch.setattr(updater.yf, "download",
+                        lambda *a, **k: pytest.fail("current ticker should not download"))
+
+    result = updater.update_stocks()[0]
+
+    assert result == {
+        "ticker": "AAPL", "dataset": "stocks", "status": "no_update_required",
+        "detail": "local data already reaches 2026-09-16", "rows_added": 0,
+    }
+    assert json.loads(json.dumps(result)) == result
+    assert outcome_errors([result]) == []
 
 
 def test_malformed_nonempty_response_is_not_success(updater, monkeypatch):
     csv(updater.STOCK_DIR / "A.csv")
     monkeypatch.setattr(updater.yf, "download", lambda *a, **k:
                         pd.DataFrame({"Open": [1]}, index=pd.to_datetime(["2026-09-16"])))
-    assert "invalid download response" in updater.update_stocks()[0]
+    result = updater.update_stocks()[0]
+    assert result["status"] == "invalid_response"
+    assert "invalid download response" in result["detail"]
 
 
 def test_successful_update_preserves_price_columns(updater, monkeypatch):
@@ -121,7 +148,9 @@ def test_successful_update_preserves_price_columns(updater, monkeypatch):
                        ("Open", "High", "Low", "Close", "Adj Close", "Volume")},
                        index=pd.to_datetime(["2026-09-15", "2026-09-16"]))
     monkeypatch.setattr(updater.yf, "download", lambda *a, **k: new)
-    assert updater.update_stocks() == []
+    result = updater.update_stocks()[0]
+    assert result["status"] == "updated"
+    assert result["rows_added"] == 1
     written = pd.read_csv(path)
     assert written["Date"].tolist() == ["2026-09-15", "2026-09-16"]
     assert written["Adj Close"].tolist() == [10, 11]
@@ -145,7 +174,8 @@ def test_current_dow_and_sndk_histories_resume_at_verified_provider_identity(
         updater.yf, "download", lambda tickers, **kwargs: calls.append(tickers) or response,
     )
 
-    assert updater.update_stocks() == []
+    results = {result["ticker"]: result for result in updater.update_stocks()}
+    assert results["DOW"]["status"] == results["SNDK"]["status"] == "updated"
     assert calls == ["DOW SNDK"]
     for symbol in ("DOW", "SNDK"):
         written = pd.read_csv(updater.STOCK_DIR / f"{symbol}.csv")
@@ -163,7 +193,8 @@ def test_legacy_sndk_history_still_fails_closed(updater, monkeypatch, capsys):
 
     monkeypatch.setattr(updater.yf, "download", unexpected)
 
-    assert updater.update_stocks() == []
+    result = updater.update_stocks()[0]
+    assert result["status"] == "identity_guard_hold"
     assert "SNDK: identity guard refuses provider append; skipped as reviewed" in (
         capsys.readouterr().out
     )
@@ -174,15 +205,35 @@ def test_vix_checked_even_when_other_etfs_current(updater, monkeypatch):
     csv(updater.ETF_DIR / "SPY.csv", ("2026-09-16",))
     csv(updater.ETF_DIR / "VIX.csv")
     calls = []
-    def download(*args, **kwargs):
-        calls.append(args)
-        raise RuntimeError("VIX offline")
+    def download(ticker, start, end, *, errors=None, **kwargs):
+        calls.append((ticker, start, end))
+        errors.append(f"{ticker}: download failed: VIX offline")
+        return None
     monkeypatch.setattr(updater, "_download_ohlcv", download)
     def unexpected(*args, **kwargs):
         raise AssertionError("ETF batch already current")
     monkeypatch.setattr(updater.yf, "download", unexpected)
-    assert updater.update_etfs() == ["VIX: VIX offline"]
+    results = {result["ticker"]: result for result in updater.update_etfs()}
+    assert results["VIX"]["status"] == "download_failed"
+    assert outcome_errors(results.values()) == ["VIX: download failed: VIX offline"]
     assert calls[0][0] == "^VIX"
+
+
+def test_vix_malformed_history_is_an_invalid_response(updater, monkeypatch):
+    csv(updater.ETF_DIR / "SPY.csv", ("2026-09-16",))
+    csv(updater.ETF_DIR / "VIX.csv")
+
+    class MalformedTicker:
+        def history(self, **kwargs):
+            return pd.DataFrame({"Open": [25]}, index=pd.to_datetime(["2026-09-16"]))
+
+    monkeypatch.setattr(updater, "_download_ohlcv", updater._real_download_ohlcv)
+    monkeypatch.setattr(updater.yf, "Ticker", lambda ticker: MalformedTicker())
+    results = {result["ticker"]: result for result in updater.update_etfs()}
+
+    assert results["VIX"]["status"] == "invalid_response"
+    assert "missing Close column" in results["VIX"]["detail"]
+    assert len(outcome_errors(results.values())) == 1
 
 
 def test_scheduler_propagates_returned_errors(monkeypatch):
@@ -190,8 +241,12 @@ def test_scheduler_propagates_returned_errors(monkeypatch):
     import types
     import update_data
     fake = types.ModuleType("data.update_data")
-    fake.update_etfs = lambda: ["SPY: unreadable CSV"]
-    fake.update_stocks = lambda: ["A: download failed"]
+    fake.update_etfs = lambda: [{"ticker": "SPY", "dataset": "etfs",
+                                 "status": "local_data_error", "detail": "unreadable CSV",
+                                 "rows_added": 0}]
+    fake.update_stocks = lambda: [{"ticker": "A", "dataset": "stocks",
+                                   "status": "download_failed", "detail": "download failed",
+                                   "rows_added": 0}]
     monkeypatch.setitem(sys.modules, "data.update_data", fake)
     monkeypatch.setattr(update_data, "_load_tg_config", lambda: ("fake", "fake"))
     sent = []
@@ -200,3 +255,24 @@ def test_scheduler_propagates_returned_errors(monkeypatch):
     assert result == ["SPY: unreadable CSV", "A: download failed"]
     assert len(sent) == 1
     assert update_data.run_outcome(result)[""][0] == "warn"
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_exit"),
+    [("download_failed", 1), ("inconclusive", 0), ("identity_guard_hold", 0)],
+)
+def test_shared_cli_exit_only_for_confirmed_failures(monkeypatch, status, expected_exit):
+    import sys
+    import types
+    import shared.update_data as shared_update
+
+    fake = types.ModuleType("data.update_data")
+    fake.update_etfs = lambda: []
+    fake.update_stocks = lambda: [{
+        "ticker": "A", "dataset": "stocks", "status": status,
+        "detail": "mock provider outcome", "rows_added": 0,
+    }]
+    monkeypatch.setitem(sys.modules, "data.update_data", fake)
+    monkeypatch.setattr(sys, "argv", ["shared.update_data", "--stocks"])
+
+    assert shared_update.main() == expected_exit

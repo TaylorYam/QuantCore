@@ -39,13 +39,16 @@ def main():
     print("=" * 55)
 
     from data.update_data import update_etfs, update_stocks
+    from data.update_outcomes import outcome_errors
 
-    errors = []
+    results = []
     if do_etf:
-        errors.extend(update_etfs())
+        results.extend(update_etfs())
 
     if do_stocks:
-        errors.extend(update_stocks())
+        results.extend(update_stocks())
+
+    errors = outcome_errors(results)
 
     for error in errors:
         print(f"ERROR: {error}")

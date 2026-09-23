@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "issue": "#55",
+  "issue": "#55, #82",
   "source": {
     "finding_ids": [
       "wrong-identity-files",
@@ -26,6 +26,22 @@
       "evidence": [
         "coverage_dispositions.json: findings.wrong-identity-files",
         "Local COL.csv closes range 0.01-0.85; COL was an S&P 500 member from 2015-01-02 through 2018-11-30."
+      ]
+    },
+    {
+      "symbol": "CSRA",
+      "action": "truncate",
+      "append": "refuse",
+      "valid_through": "2018-04-03",
+      "provider_identity": {
+        "name": "Cohen & Steers Real Assets Active ETF",
+        "first_trade": "2026-08-12"
+      },
+      "reason": "The 2026 rows belong to a new ETF that reused CSRA after CSRA Inc. was acquired. Keep the old equity history through its verified final session and refuse appends under the reused symbol.",
+      "evidence": [
+        "SEC Form 8-K: after the April 3, 2018 merger consummation, CSRA Inc. shares ceased NYSE trading: https://www.sec.gov/Archives/edgar/data/1646383/000119312518106369/d562306d8k.htm",
+        "Yahoo Finance metadata identifies current CSRA as Cohen & Steers Real Assets Active ETF with firstTradeDate 2026-08-12; the issuer says the ETF began trading that day: https://www.cohenandsteers.com/news/cohen-steers-launches-real-assets-active-etf-csra/",
+        "Local stocks/CSRA.csv contains 29 post-reuse ETF rows from 2026-08-12 through 2026-09-22; the last legacy CSRA Inc. row is 2018-04-03."
       ]
     },
     {

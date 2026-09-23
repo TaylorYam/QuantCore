@@ -17,8 +17,9 @@ Stocks and ETFs require Adj Close. ETF OHLC remains the provider's raw price
 series; strategy return calculations use Adj Close and corresponding adjusted
 Open/High/Low only when the ticker's full Adj Close history is available. A
 legacy partial history stays on its existing Close/Open basis until rebuilt, so
-the price basis never changes partway through a file. VIX falls back to Close
-because it has no distributions.
+the price basis never changes partway through a file. VIX has no distributions,
+so its blank Adj Close is valid and its consumers and health audit fall back to
+Close.
 Zero volume is allowed (including VIX).
 
 For a known Reference Close and caller-verified Constituents, add
@@ -35,10 +36,11 @@ remain inconclusive: an inactive member of the historical Universe or a market
 holiday need not have new bars. Empty responses are not proof of completeness;
 the explicit freshness audit is separate. No new notification channel is added.
 
-Local read-only observation on 2026-09-18: 652 CSVs checked in about 9.6 seconds;
-CSRA High/Low and VIX Open each contained one invalid value. This is a candidate
-data-quality finding, not an instruction to rewrite prices. The generated report
-stays local. No strategy performance inference follows from these findings.
+The 2026-09-23 read-only audit checked 664 CSVs and found the two #82 findings:
+CSRA High/Low on 2026-08-12 and VIX Open on 2026-04-02. Source-backed repairs
+are staged and reconciled in [the #82 data-quality report](data-quality-issue82.md).
+The staged audit has no remaining findings. The report makes no strategy
+performance inference.
 
 Validation: synthetic temporary CSVs and mocked downloads/config/notification;
 run `python -m pytest automation/tests/ -v`. Tests needing untracked historical
@@ -56,6 +58,8 @@ the OLD/NEW signal/state characterization required for a future migration.
 - Coverage repair, identity review, historical aliases and the Constituents
   cache are merged (#50, #51, #54, #55, #56). The source-verified DOW/SNDK
   repair is merged as PR #86 and Issue #81 is closed.
+- ETF close semantics and inverse-ETF split histories were resolved by merged
+  PR #88; Issue #68 is closed and the verified data refresh is recorded locally.
 - Validated staging, atomic publication, dataset manifests and price continuity
   repair are merged (#53, #67); see [the coverage repair report](data-coverage-repair.md).
 - Roadmap item 3, authoritative SQLite logging, is complete (#69, #73). The
@@ -85,22 +89,13 @@ silently alter research inputs.
 
 ### Priority order (2026-09-23)
 
-0. **Release sync:** the live checkout `C:\QuantCore-master` is on `d8b9d8a`,
-   two commits behind `origin/main`: merged PR #86 contains the verified DOW/SNDK
-   updater repair, and #87 records the SQLite writer verification that closes
-   #84. Synchronize this reviewed state in a deliberate release window; the
-   repository root is live code. This is an operational follow-up, not an open
-   Issue.
-1. [Issue #68](https://github.com/TaylorYam/QuantCore/issues/68): resolve ETF
-   `Close` semantics and inverse-ETF split history. This is the broadest known
-   inconsistency in strategy input prices and requires staged data plus signal,
-   backtest and, if behavior changes, walk-forward evidence. See the current
-   evidence and price contract in [ETF price semantics](etf-price-semantics.md).
-2. [Issue #82](https://github.com/TaylorYam/QuantCore/issues/82): verify the two
-   invalid CSRA and VIX OHLC values against source history; correct with evidence
-   or record reviewed exceptions. The scope is narrow and can be completed
-   independently.
-3. [Issue #83](https://github.com/TaylorYam/QuantCore/issues/83): add structured
+0. **Release sync:** the live checkout `C:\QuantCore-master` is synchronized
+   with `origin/main` at `b09774e`, including PRs #86, #87 and #88. There is no
+   outstanding code sync task.
+1. [Issue #82](https://github.com/TaylorYam/QuantCore/issues/82): source-verified
+   CSRA identity cleanup and VIX OHLC correction are staged; the health-audit
+   exception and regression coverage are included in the pending PR.
+2. [Issue #83](https://github.com/TaylorYam/QuantCore/issues/83): add structured
    per-ticker update outcomes after the data-quality findings are resolved.
    Empty provider responses must remain inconclusive without an explicit
    freshness failure.
@@ -110,11 +105,9 @@ an active task.
 
 ### Tracked follow-ups
 
-- [Issue #68](https://github.com/TaylorYam/QuantCore/issues/68): resolve ETF
-  `Close` semantics and inverse-ETF split history with the required data and
-  strategy validation before changing price history.
 - [Issue #82](https://github.com/TaylorYam/QuantCore/issues/82): source-check the
-  invalid CSRA and VIX OHLC rows, then correct them or record reviewed exceptions.
+  CSRA and VIX repairs through CI, human review and the planned local data
+  publication.
 - [Issue #83](https://github.com/TaylorYam/QuantCore/issues/83): structured
   per-ticker update outcomes.
 

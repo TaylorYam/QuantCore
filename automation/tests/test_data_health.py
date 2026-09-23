@@ -60,6 +60,20 @@ def test_etf_audit_requires_adjusted_close(tmp_path):
     assert {"missing_columns": ["Adj Close"]} in report["files"][0]["issues"]
 
 
+def test_vix_audit_uses_close_when_adjusted_close_is_blank(tmp_path):
+    path = tmp_path / "etfs" / "VIX.csv"
+    csv(path, ("2026-04-02", "2026-04-03"),
+        **{"Open": [26.78, 27.0], "High": [27.89, 27.5],
+           "Low": [23.87, 25.0], "Close": [23.87, 25.5],
+           "Volume": [0, 0], "Adj Close": [None, None]})
+
+    report = audit(tmp_path)
+    record = next(item for item in report["files"] if item["file"] == "VIX.csv")
+
+    assert record["issues"] == []
+    assert record["adjusted_close_fallback"] == "Close"
+
+
 @pytest.fixture
 def updater(tmp_path, monkeypatch):
     # Avoid collision with automation/update_data.py and fake modules in notification tests.

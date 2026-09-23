@@ -83,7 +83,7 @@ Close 同時偏離 > 1% 且偏離倍數一致；最舊兩根的 Adj Close 同時
 | 判定 | 數量 | 代碼 |
 |---|---|---|
 | 需重抓 | 13 | 見下表 |
-| 核對不過（不重抓） | 7 | AVB、BBBY、EQR、LEG（provider 只剩 2026-07 之後）、CSRA（2026-08 起）、NFX（provider 的 NFX 已是別的證券）、EA（下市私有化後代碼被接上新資料）；多數已在 #55 的守門名單內 |
+| 核對不過（不重抓） | 7 | AVB、BBBY、EQR、LEG（provider 只剩 2026-07 之後）、CSRA（2026-08 起；已由 #82 截斷並加上守門）、NFX（provider 的 NFX 已是別的證券）、EA（下市私有化後代碼被接上新資料）；此為原始掃描快照 |
 | provider 無資料 | 22 | 已下市（AET、TWX…）、改名或被收購（BK、HOLX、K、MMC、SEE、TGNA…） |
 | 一致 | 595 | |
 
@@ -237,10 +237,11 @@ provider 的分割紀錄卻記在 05-28；影響 Skew LS 回測損益（live 訊
 ## 11. 範圍外發現
 
 1. **sector ETF／SPY 的 Close 語意在 2025-12 前後不同**（第 9 節）：SR 動能、Skew LS 偏態、SPY MA200 讀的 Close
-   前段含息、後段不含；反向 ETF 05-13 的反分割跳動也要在決定語意後一起修 → [#68](https://github.com/TaylorYam/QuantCore/issues/68)。
-2. **代碼身分錯誤的既有檔仍在被追加**：BBBY、CSRA 目前的 K 棒來自重用代碼的新證券，重疊比對一致所以照常追加
-   （本規則只擋「在追加當下」發生的身分改變）；scan 會把它們列為「核對不過」，處置屬
-   [#55](https://github.com/TaylorYam/QuantCore/issues/55) 的覆核名單。
+   前段含息、後段不含；反向 ETF 05-13 的反分割跳動也要在決定語意後一起修。此 follow-up 已由
+   [#68](https://github.com/TaylorYam/QuantCore/issues/68)／PR #88 處理，完整價格契約見 `etf-price-semantics.md`。
+2. **代碼身分錯誤的既有檔仍在被追加**：本次原始掃描中的 CSRA ETF 後綴已由
+   [#82](https://github.com/TaylorYam/QuantCore/issues/82) 從股票檔截斷並加入 append 拒絕規則；BBBY 的重用代碼歷史仍是獨立待覆核項目。
+   overlap 一致只能說明 provider 與本地檔重疊，不能證明兩者是同一證券。
 3. provider 的完整歷史偶爾比每日更新落後一個 session（2026-09-21 的 HUBB、UA）；判定已把這些 K 棒排除在比對外並保留，
    但若當下剛好有分割要修，會延到 provider 補上後的下一次更新才修。
 4. 04:30 抓到的最後一根 K 棒，事後 Open／High／Low／Volume 常被 provider 修正，Close 只有 6 檔被修正且都 < 0.1%；

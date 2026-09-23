@@ -33,14 +33,17 @@ py data/identity_audit.py repair `
 
 ## Append guard
 
-Manifest 中 `append: refuse` 的 20 個代碼不再由 daily updater 盲目 append。`update_data.py --stocks` 會在 job log 逐檔記錄 `identity guard refuses provider append; skipped as reviewed`，但這是已審核的預期 skip，不列入 update errors，也不觸發 Telegram 部分失敗通知。這個拒絕是 fail-closed：不會刪除或改寫既有 CSV；若 manifest 無法讀取或格式錯誤，更新仍會直接失敗。
+Manifest 中 20 個代碼預設為 `append: refuse`，daily updater 不會盲目 append。`update_data.py --stocks` 仍會逐檔記錄預期 skip，且不觸發部分失敗通知。18 個代碼維持無條件拒絕；`DOW` 與 `SNDK` 僅在本地 CSV 最早一列不早於 manifest 記錄的 provider `first_trade` 時恢復更新。日期缺失、無法解析或早於界限時仍 fail-closed。此規則只容許同一新證券接續行情，不補造舊成分股歷史，也不變更其歷史身份處置。
 
 | 類型 | 代碼 | staged action |
 |---|---|---|
 | 錯誤身分 | COL | quarantine |
 | 代碼重用／併購後接續 | NFX, AVB | truncate 到 reviewed cutoff |
 | 下市後平盤 zero-volume | TWX, AET | truncate 到最後交易日 |
-| 原成員期間零 overlap 的後來重用代碼 | STI, INFO, CA, DOW, SE, EMC, TE, CCE, SNDK, ADT, CAM, POM, PCL, NE, TEG | preserve；拒絕繼續 append |
+| 舊成分股歷史未知的代碼重用 | STI, INFO, CA, SE, EMC, TE, CCE, ADT, CAM, POM, PCL, NE, TEG | preserve；無條件拒絕 append |
+| 新公司沿用代碼 | DOW, SNDK | preserve 舊成分股歷史；僅允許本地檔從 provider `first_trade` 起始後 append |
+
+`DOW.csv` 只含 Dow Inc. 的行情，從 provider 首個 when-issued session 2019-03-20 開始；SEC 文件記錄 regular-way trading 自 2019-04-02 開始。[來源](https://www.sec.gov/Archives/edgar/data/1751788/000119312519077434/d718799dex991.htm)。`SNDK.csv` 只含 2025 年新 Sandisk 的行情，從 provider 首個 when-issued session 2025-02-13 開始；SEC 文件記錄 regular-way trading 自 2025-02-24 開始。[來源](https://www.sec.gov/Archives/edgar/data/2023554/000119312525019298/d919795d8k.htm)。舊 Dow Chemical 與 2015–2016 SanDisk 的缺失歷史仍 unresolved，沒有 ticker alias。
 
 這份修正只處理檔案身分與 coverage，不替未知的歷史證券補造 price data，也不把今日 provider 的資料反推成舊公司的行情。
 

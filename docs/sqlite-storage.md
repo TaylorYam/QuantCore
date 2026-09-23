@@ -227,12 +227,14 @@ directory. The initial import and acceptance checks on 2026-09-22 reported:
 | Excel compatibility | Current portfolio and trade workbooks stayed byte-identical to the pre-cutover copies |
 | Task actions | Four writer actions wrapped; four non-writer tasks unchanged; SYSTEM principal and non-action settings preserved |
 
-At activation, the data-health audit also listed invalid historical `CSRA`
-High/Low and `VIX` Open values, plus the then-guarded `DOW`/`SNDK` files. The
-source-verified DOW/SNDK repair was later merged in PR #86 and Issue #81 is
-closed. The CSRA and VIX rows remain tracked under
-[Issue #82](https://github.com/TaylorYam/QuantCore/issues/82); they are separate
-from SQLite log reconciliation and do not change its hashes.
+The data health audit has two explicit existing value exceptions: one invalid
+historical `CSRA` High/Low row and one invalid `VIX` Open row. The `DOW` and
+`SNDK` identity rules now allow provider append only when each local file starts
+at or after that provider identity's first-trade date; their missing earlier
+constituent history remains unresolved. The source-verified current-history
+repair was merged in PR #86 and Issue #81 is closed. CSRA and VIX remain tracked
+under [Issue #82](https://github.com/TaylorYam/QuantCore/issues/82). These data
+findings do not change the SQLite log hashes or backend activation.
 
 ### First scheduled writer verification (2026-09-23)
 

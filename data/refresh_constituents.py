@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -495,13 +496,20 @@ def atomic_apply(
     ticker_cols: list[str],
 ) -> None:
     """
-    1. Download new ticker CSVs into a staging dir.
-    2. Build new Excel under staging.
-    3. Backup existing Excel, atomically move staged files into place.
-    Failure at any stage leaves data/ unchanged (staging cleaned in finally).
+    1. Download new ticker CSVs into staging under STOCK_DIR.
+    2. Build new Excel under staging in REF_DIR.
+    3. Backup existing Excel, atomically replace staged files in place.
+    Staging under each destination parent preserves its inherited ACL.
     """
-    staging = Path(tempfile.mkdtemp(prefix="refresh_const_"))
+    ref_staging: Path | None = None
+    stock_staging: Path | None = None
     try:
+        ref_staging = Path(tempfile.mkdtemp(prefix="refresh_const_", dir=REF_DIR))
+        if new_tickers:
+            stock_staging = Path(tempfile.mkdtemp(
+                prefix="refresh_const_stocks_", dir=STOCK_DIR,
+            ))
+
         # ─ Stage 1: fetch new ticker CSVs ────────────────────────────────────
         for tk in sorted(new_tickers):
             log(f"  Downloading {tk} ({provider_symbol(tk)}) from {STOCK_HIST_START} ...")
@@ -516,7 +524,7 @@ def atomic_apply(
             cols = [c for c in ("Open", "High", "Low", "Close", "Adj Close", "Volume")
                     if c in df.columns]
             df = df[cols].dropna(subset=["Close"])
-            df.to_csv(staging / f"{provider_symbol(tk)}.csv", float_format="%.6f")
+            df.to_csv(stock_staging / f"{provider_symbol(tk)}.csv", float_format="%.6f")
             log(f"    {tk}: {len(df)} rows ({df.index.min().date()} -> {df.index.max().date()})")
 
         # ─ Stage 2: build updated Excel ──────────────────────────────────────
@@ -573,7 +581,7 @@ def atomic_apply(
                 updated_sheets[year] = new_df
 
         # Preserve non-year sheets (Summary, Counts, etc.) untouched
-        excel_temp = staging / "constituents_new.xlsx"
+        excel_temp = ref_staging / "constituents_new.xlsx"
         with pd.ExcelWriter(excel_temp, engine="openpyxl") as writer:
             for sheet_name in xl_sheet_order(updated_sheets):
                 updated_sheets[sheet_name].to_excel(writer, sheet_name=sheet_name, index=False)
@@ -588,20 +596,21 @@ def atomic_apply(
         log(f"  Backed up existing Excel -> {backup.name}")
 
         # Replace Excel
-        shutil.move(str(excel_temp), str(CONST_FILE))
+        os.replace(excel_temp, CONST_FILE)
         log(f"  Wrote {CONST_FILE.name}")
 
         # Move new ticker CSVs into stocks/
         for tk in sorted(new_tickers):
-            staged_csv = staging / f"{provider_symbol(tk)}.csv"
+            staged_csv = stock_staging / f"{provider_symbol(tk)}.csv"
             dest_csv = STOCK_DIR / f"{provider_symbol(tk)}.csv"
-            shutil.move(str(staged_csv), str(dest_csv))
+            os.replace(staged_csv, dest_csv)
             log(f"  Wrote {dest_csv.name}")
 
         log("Apply complete.")
     finally:
-        if staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
+        for staging in (ref_staging, stock_staging):
+            if staging is not None and staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
 
 
 def xl_sheet_order(sheets: dict[str, pd.DataFrame]) -> list[str]:

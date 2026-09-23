@@ -11,6 +11,7 @@ import pytest
 from data.identity_audit import (
     audit_data,
     check_provider_identity,
+    identity_guard_reason,
     load_manifest,
     stage_repair,
 )
@@ -135,6 +136,35 @@ def test_default_manifest_reconciles_issue_50_identity_findings():
     assert {rule["symbol"] for rule in rules
             if rule["action"] == "truncate"} == {"NFX", "AVB", "TWX", "AET"}
     assert all(rule["append"] == "refuse" for rule in rules)
+    assert {rule["symbol"] for rule in rules
+            if rule.get("append_after_provider_first_trade")} == {"DOW", "SNDK"}
+
+
+@pytest.mark.parametrize(
+    ("symbol", "first_trade"),
+    [("DOW", "2019-03-20"), ("SNDK", "2025-02-13")],
+)
+def test_spin_off_symbol_append_requires_local_history_to_start_at_provider_identity(
+    symbol, first_trade,
+):
+    # The original constituent histories remain unresolved. Only files whose
+    # earliest local bar is inside the verified provider identity may continue.
+    assert identity_guard_reason(symbol) == "identity guard refuses provider append"
+    assert identity_guard_reason(
+        symbol, local_first_date="2015-01-02"
+    ) == "identity guard refuses provider append"
+    assert identity_guard_reason(
+        symbol, local_first_date=first_trade
+    ) is None
+    assert identity_guard_reason(
+        symbol, local_first_date="2026-09-17"
+    ) is None
+
+
+def test_other_reused_symbol_append_remains_unconditionally_refused():
+    assert identity_guard_reason("SE", local_first_date="2026-09-17") == (
+        "identity guard refuses provider append"
+    )
 
 
 def test_stage_repair_quarantines_and_truncates_without_mutating_source(tmp_path):

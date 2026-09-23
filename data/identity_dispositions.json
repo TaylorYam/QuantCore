@@ -115,10 +115,15 @@
       "symbol": "DOW",
       "action": "preserve",
       "append": "refuse",
+      "append_after_provider_first_trade": true,
       "member_period": {"end": "2017-09-01"},
       "provider_identity": {"name": "Dow Inc.", "first_trade": "2019-03-20"},
-      "reason": "The provider symbol is the 2019 Dow Inc. spin-off, not the 2015-2017 Dow Chemical member.",
-      "evidence": ["coverage_dispositions.json: DOW/before_first"]
+      "reason": "The 2015-2017 Dow Chemical member remains unresolved. The local series begins on Dow Inc.'s verified 2019-03-20 when-issued session, so later provider bars belong to the current identity.",
+      "evidence": [
+        "coverage_dispositions.json: DOW/before_first",
+        "SEC Form 8-K: Dow Inc. when-issued trading began 2019-03-20 and regular-way trading began 2019-04-02: https://www.sec.gov/Archives/edgar/data/1751788/000119312519077434/d718799dex991.htm",
+        "Provider identity: Dow Inc., first trade 2019-03-20; local DOW.csv begins 2019-03-20."
+      ]
     },
     {
       "symbol": "SE",
@@ -159,10 +164,15 @@
       "symbol": "SNDK",
       "action": "preserve",
       "append": "refuse",
+      "append_after_provider_first_trade": true,
       "member_period": {"end": "2016-05-13"},
       "provider_identity": {"name": "Sandisk Corporation", "first_trade": "2025-02-13"},
-      "reason": "The provider symbol is the 2025 Sandisk spin-off, not the 2015-2016 SanDisk member.",
-      "evidence": ["coverage_dispositions.json: SNDK/before_first"]
+      "reason": "The 2015-2016 SanDisk member remains unresolved. The local series begins on the 2025 Sandisk when-issued session, so later provider bars belong to the current identity.",
+      "evidence": [
+        "coverage_dispositions.json: SNDK/before_first",
+        "SEC Form 8-K: SNDK when-issued trading was expected to begin 2025-02-13; regular-way trading began 2025-02-24: https://www.sec.gov/Archives/edgar/data/2023554/000119312525019298/d919795d8k.htm",
+        "Provider identity: Sandisk Corporation, first trade 2025-02-13; local SNDK.csv begins 2025-02-13."
+      ]
     },
     {
       "symbol": "ADT",

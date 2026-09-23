@@ -233,11 +233,11 @@ directory. The initial import and acceptance checks reported:
 | Excel compatibility | Current portfolio and trade workbooks stayed byte-identical to the pre-cutover copies |
 | Task actions | Four writer actions wrapped; four non-writer tasks unchanged; SYSTEM principal and non-action settings preserved |
 
-The data health audit has three explicit existing exceptions: one invalid
-historical `CSRA` High/Low row, one invalid `VIX` Open row, and the reviewed
-identity-guarded `DOW`/`SNDK` files that intentionally refuse provider append.
-These are recorded in the local health report and must be resolved or accepted
-separately before relying on a clean strategy-data gate. They do not change the
+The data health audit has two explicit existing value exceptions: one invalid
+historical `CSRA` High/Low row and one invalid `VIX` Open row. The `DOW` and
+`SNDK` identity rules now allow provider append only when each local file starts
+at or after that provider identity's first-trade date; their missing earlier
+constituent history remains unresolved. These data findings do not change the
 SQLite log hashes or backend activation.
 
 The following operational steps apply after the first scheduled writer run:

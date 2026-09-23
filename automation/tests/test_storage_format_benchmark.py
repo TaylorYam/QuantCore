@@ -89,3 +89,20 @@ def test_cold_cache_purge_rejects_ineffective_clear(monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError, match="standby list still exceeds"):
         cache._purge_cache(tmp_path / "RAMMap64.exe")
+
+
+def test_cold_cache_purge_retries_when_host_refills_standby(monkeypatch, tmp_path):
+    snapshots = iter([
+        {"standby_bytes": 4 * 1024**3, "system_cache_resident_bytes": 400 * 1024**2},
+        {"standby_bytes": 600 * 1024**2, "system_cache_resident_bytes": 50 * 1024**2},
+        {"standby_bytes": 64 * 1024**2, "system_cache_resident_bytes": 20 * 1024**2},
+    ])
+    actions = []
+    monkeypatch.setattr(cache, "_memory_counters", lambda: next(snapshots))
+    monkeypatch.setattr(cache.subprocess, "run", lambda command, **kwargs: (
+        actions.append(command[-1]) or SimpleNamespace(returncode=0)))
+
+    result = cache._purge_cache(tmp_path / "RAMMap64.exe")
+
+    assert actions == ["-Es", "-Et", "-Es", "-Et"]
+    assert len(result["after_attempts"]) == 2

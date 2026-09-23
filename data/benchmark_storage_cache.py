@@ -50,14 +50,19 @@ def _purge_cache(rammap: Path) -> dict[str, Any]:
     before = _memory_counters()
     # RAMMap accepts one Empty action per invocation. Trim active system cache,
     # then discard standby pages; both operations affect the entire host.
-    for action in ("-Es", "-Et"):
-        result = subprocess.run([str(rammap), action], timeout=60, check=False)
-        if result.returncode:
-            raise RuntimeError(f"RAMMap {action} failed with exit code {result.returncode}")
-    after = _memory_counters()
-    if after["standby_bytes"] > 512 * 1024 * 1024:
-        raise RuntimeError(f"standby list still exceeds 512 MiB after purge: {after}")
-    return {"before": before, "after": after, "rammap_actions": ["-Es", "-Et"]}
+    after_attempts = []
+    for _ in range(3):
+        for action in ("-Es", "-Et"):
+            result = subprocess.run([str(rammap), action], timeout=60, check=False)
+            if result.returncode:
+                raise RuntimeError(f"RAMMap {action} failed with exit code {result.returncode}")
+        after = _memory_counters()
+        after_attempts.append(after)
+        if after["standby_bytes"] <= 512 * 1024 * 1024:
+            return {"before": before, "after": after,
+                    "after_attempts": after_attempts,
+                    "rammap_actions": ["-Es", "-Et"]}
+    raise RuntimeError(f"standby list still exceeds 512 MiB after three purges: {after_attempts}")
 
 
 def _sp500_once(data_root: Path, parquet_root: Path, cache_dir: Path,
@@ -120,6 +125,12 @@ def benchmark(data_root: Path, output_dir: Path, rammap: Path, start: str, end: 
     cache_dir = output_dir / "constituents-cache"
     with patch.object(config, "REF_DIR", data_root / "reference"), redirect_stdout(io.StringIO()):
         SelectionEngine(use_constituents_cache=True, constituents_cache_dir=cache_dir)
+    # Exclude one-time pandas/PyArrow and strategy initialization from the
+    # measured cold run. The subsequent RAMMap purge evicts warmed file pages.
+    for strategy in ("SR", "Skew LS", "SP500"):
+        for storage_format in ("csv", "parquet"):
+            _once(strategy, storage_format, data_root, parquet_root,
+                  cache_dir, start, end)
 
     report: dict[str, Any] = {
         "schema_version": 1,
@@ -130,7 +141,7 @@ def benchmark(data_root: Path, output_dir: Path, rammap: Path, start: str, end: 
         "date_range_sp500": {"start": start, "end": end},
         "source_manifest_sha256": storage.manifest_digest(before),
         "rammap_sha256": storage._sha256_file(rammap),
-        "method": "RAMMap -Es then -Et before each cold-proxy run; an immediate second run with no purge is warm. Fresh application loaders/selectors for both. OS standby and system-cache resident counters are recorded before/after purge.",
+        "method": "One untimed warmup per strategy and format, then RAMMap -Es and -Et before each cold-proxy run; an immediate second run with no purge is warm. Fresh application loaders/selectors for both. OS standby and system-cache resident counters are recorded before/after purge.",
         "limitations": [
             "An OS standby-list purge is a cold-file-cache proxy; hardware controller caches and concurrent host activity are uncontrolled.",
             "RAMMap cache actions affect the entire Windows host, including other applications.",

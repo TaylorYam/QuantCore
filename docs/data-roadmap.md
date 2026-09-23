@@ -95,15 +95,17 @@ silently alter research inputs.
 3. **Complete:** account snapshots and trade/fill logs use the authoritative
    SQLite store with idempotency, transaction boundaries, backup/restore,
    reconciliation and Excel projections. Runtime state remains separate.
-4. **Complete, no-go for migration (#93):** the full three-strategy CSV/Parquet
-   benchmark found exact frames and outputs and 45.0% less disk use, but only
-   Skew LS cleared the 15% end-to-end speed hurdle. CSV remains the market
-   archive source of truth; see the [full benchmark report](data-storage-benchmark.md).
+4. **Complete, no-go for migration (#93, #96):** the full three-strategy
+   CSV/Parquet benchmark found exact frames and outputs and 45.0% less disk
+   use. The [cold/warm follow-up](data-storage-cold-cache.md) also found only
+   Skew LS clearing the 15% end-to-end speed hurdle in either cache condition.
+   CSV remains the market archive source of truth; see the
+   [full benchmark report](data-storage-benchmark.md).
    DuckDB was unavailable in the tested Python environment. Constituents stays
    authoritative in Excel with its derived NPZ cache; this work found no reason
    to migrate it to SQL.
 
-### Priority order (2026-09-23, after the Issue #93 benchmark)
+### Priority order (2026-09-23, after the Issue #96 follow-up)
 
 0. **Release sync:** the live checkout `C:\QuantCore-master` is synchronized
    with `origin/main`. Issues #82 and #83 are closed; Issue #82's source-verified
@@ -117,9 +119,9 @@ silently alter research inputs.
 ### Tracked follow-ups
 
 There are no open data-quality implementation follow-ups for Issues #82 or #83.
-Issue #93 is complete with a no-go decision; it does not authorize a format
-migration. Constituents remains Excel-backed with its derived NPZ cache until
-new evidence supports a different decision.
+Issues #93 and #96 are complete with a no-go decision; they do not authorize a
+format migration. Constituents remains Excel-backed with its derived NPZ cache
+until new evidence supports a different decision.
 
 Storage/loader refactors still require OLD/NEW characterization for 3 Accounts ×
 5 scenarios, byte comparison of signals and state, and isolated state

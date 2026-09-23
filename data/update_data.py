@@ -55,6 +55,15 @@ def _last_date(csv_path: Path) -> str:
     return str(df.index[-1].date())
 
 
+def _first_date(csv_path: Path) -> str:
+    """讀取 CSV 最早交易日，供日期限定的 security identity guard 使用。"""
+    df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+    if df.empty:
+        raise ValueError("CSV has no rows")
+    dates = pd.to_datetime(df.index, errors="raise")
+    return str(dates.min().date())
+
+
 def _next_day(last: str) -> str:
     return str((pd.to_datetime(last) + timedelta(days=1)).date())
 
@@ -294,6 +303,15 @@ def update_stocks(batch_size: int = 50) -> list[str]:
     groups: dict[str, list] = {}
     for p in csvs:
         guard_reason = identity_guard_reason(p.stem, IDENTITY_MANIFEST_PATH)
+        if guard_reason:
+            try:
+                guard_reason = identity_guard_reason(
+                    p.stem, IDENTITY_MANIFEST_PATH,
+                    local_first_date=_first_date(p),
+                )
+            except Exception as exc:
+                errors.append(f"{p.stem}: unreadable CSV: {exc}")
+                continue
         if guard_reason:
             # This is an expected, reviewed disposition rather than an update
             # failure.  Keep the fail-closed skip visible in the job log, but

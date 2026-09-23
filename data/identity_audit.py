@@ -11,7 +11,7 @@ and provides two deliberately separate operations:
 
 Provider identity is supplied as an optional JSON snapshot because fetching
 metadata is network-dependent and must not be part of the offline test suite.
-The daily updater uses the same reviewed manifest as an append deny-list.
+The daily updater uses the same reviewed manifest as a fail-closed append guard.
 """
 from __future__ import annotations
 
@@ -87,6 +87,18 @@ def load_manifest(path: Path = MANIFEST_PATH) -> dict:
             raise ValueError(f"{symbol}: unsupported identity action")
         if raw.get("append") not in {"refuse", "allow"}:
             raise ValueError(f"{symbol}: append must be refuse or allow")
+        allow_after_first_trade = raw.get("append_after_provider_first_trade", False)
+        if not isinstance(allow_after_first_trade, bool):
+            raise ValueError(
+                f"{symbol}: append_after_provider_first_trade must be boolean"
+            )
+        if allow_after_first_trade:
+            first_trade = (raw.get("provider_identity") or {}).get("first_trade")
+            if raw["append"] != "refuse" or not first_trade:
+                raise ValueError(
+                    f"{symbol}: bounded append requires append=refuse and provider first_trade"
+                )
+            _parse_date(first_trade)
         if raw.get("valid_through"):
             _parse_date(raw["valid_through"])
         period = raw.get("member_period") or {}
@@ -243,6 +255,8 @@ def audit_data(root: Path, manifest_path: Path = MANIFEST_PATH,
             "symbol": symbol,
             "action": raw["action"],
             "append": raw["append"],
+            "append_after_provider_first_trade": raw.get(
+                "append_after_provider_first_trade", False),
             "file": str(path),
             "issues": [],
             "status": "present" if path.is_file() else "missing",
@@ -398,11 +412,27 @@ def stage_repair(source: Path, output: Path,
     }
 
 
-def identity_guard_reason(symbol: str, manifest_path: Path = MANIFEST_PATH) -> str | None:
-    """Return the append refusal reason for a reviewed symbol, if any."""
+def identity_guard_reason(
+    symbol: str,
+    manifest_path: Path = MANIFEST_PATH,
+    *,
+    local_first_date: str | date | None = None,
+) -> str | None:
+    """Return the append refusal reason unless history starts in a reviewed identity.
+
+    For a bounded exception, appending is allowed only when the local file's
+    earliest session is on or after the provider identity's reviewed
+    first-trade date. Earlier constituent history remains fail-closed.
+    """
     rule = rules_by_symbol(manifest_path).get(_normalize_symbol(symbol))
     if rule is None or rule.get("append") != "refuse":
         return None
+    if rule.get("append_after_provider_first_trade") and local_first_date is not None:
+        boundary = _parse_date(
+            (rule.get("provider_identity") or {})["first_trade"]
+        )
+        if _parse_date(local_first_date) >= boundary:
+            return None
     return "identity guard refuses provider append"
 
 

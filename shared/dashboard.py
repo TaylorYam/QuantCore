@@ -914,16 +914,22 @@ class Dashboard(tk.Tk):
 
         try:
             from data.update_data import update_etfs, update_stocks
+            from data.update_outcomes import outcome_errors
 
+            results = []
             if mode in ("all", "etf"):
-                update_etfs()
+                results.extend(update_etfs())
             if mode in ("all", "stocks"):
-                update_stocks()
+                results.extend(update_stocks())
 
+            errors = outcome_errors(results)
+            for error in errors:
+                print(f"ERROR: {error}")
             output = buf.getvalue()
             self._data_log_append(output)
-            self._data_log_append("\nUpdate complete.\n")
-            self.after(0, lambda: self.data_status.config(text="Done!", fg=GREEN))
+            status_text, status_color = ("Error!", RED) if errors else ("Done!", GREEN)
+            self._data_log_append("\nUpdate finished with confirmed errors.\n" if errors else "\nUpdate complete.\n")
+            self.after(0, lambda: self.data_status.config(text=status_text, fg=status_color))
             self.after(0, self._refresh_data_status)
             # Clear price cache so new prices are picked up
             _price_cache.clear()

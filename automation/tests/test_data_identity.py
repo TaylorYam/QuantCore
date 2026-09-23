@@ -267,9 +267,12 @@ def test_updater_silently_refuses_guarded_append_and_updates_unlisted_symbol(
 
     nfx_before = (updater.STOCK_DIR / "NFX.csv").read_bytes()
     csra_before = (updater.STOCK_DIR / "CSRA.csv").read_bytes()
-    errors = updater.update_stocks(batch_size=1)
+    results = {result["ticker"]: result
+               for result in updater.update_stocks(batch_size=1)}
 
-    assert errors == []
+    assert results["NFX"]["status"] == "identity_guard_hold"
+    assert results["CSRA"]["status"] == "identity_guard_hold"
+    assert results["A"]["status"] == "updated"
     assert (updater.STOCK_DIR / "NFX.csv").read_bytes() == nfx_before
     assert (updater.STOCK_DIR / "CSRA.csv").read_bytes() == csra_before
     output = capsys.readouterr().out

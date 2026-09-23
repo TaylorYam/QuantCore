@@ -1,9 +1,11 @@
 # Source-verified market-data corrections (#82)
 
 As of 2026-09-23, two invalid rows were found in the read-only audit of 664
-market-data CSVs. Both repairs are staged in the local `output/issue-82-20260923-verified/`
-artifact and pass the updated health audit. Live data publication is still
-pending review and the normal release step.
+market-data CSVs. Their source-backed corrections were merged in PR #89 after
+CI and review, then published to the live data archive. The post-publication
+health audit checked all 664 CSVs with zero findings, and the identity audit
+passed with the CSRA guard in place. The source snapshot and publication record
+remain in the local ignored evidence and backup directories.
 
 ## CSRA: reused ticker in the stock archive
 
@@ -15,7 +17,7 @@ trading on 2026-08-12. CSRA Inc.'s SEC filing says its shares ceased NYSE
 trading after the merger was consummated on 2018-04-03. The local 2018-04-03
 OHLC values match the independent [historical CSRA Inc. listing](https://www.investing.com/equities/csra-inc-historical-data).
 
-The staged stock archive removes only the 29 post-reuse ETF rows. It preserves
+The published stock archive removes only the 29 post-reuse ETF rows. It preserves
 all legacy rows through 2018-04-03, byte-for-byte, and adds an identity rule
 that truncates at that date and refuses future appends under the reused symbol.
 The 2026 ETF bars are not moved into `etfs/`; that is a distinct instrument
@@ -32,7 +34,7 @@ Evidence:
 
 ## VIX: corrected official OHLC
 
-For `etfs/VIX.csv` on 2026-04-02, the staged OHLC is
+For `etfs/VIX.csv` on 2026-04-02, the published OHLC is
 `26.780000 / 27.890000 / 23.870000 / 23.870000` (Open / High / Low / Close),
 matching the [Cboe historical VIX CSV](https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv).
 The source file hash and exact source row are retained in the local stage
@@ -55,7 +57,7 @@ applied. `python -m pytest automation/tests/ -v` reports 648 passed and 20
 skipped. The tests use offline fixtures; no IB connection, live config,
 Telegram action, or strategy performance inference is involved.
 
-The local evidence directory contains the `OLD` and `NEW` data snapshots,
-source Cboe CSV, Yahoo identity snapshot and `stage-manifest.json`. It is ignored
-by Git and can be removed after the data has been published and the backup is
-no longer needed.
+The local ignored evidence directory retains the `OLD` and `NEW` data
+snapshots, source Cboe CSV, Yahoo identity snapshot and `stage-manifest.json`.
+The separately retained pre-publication backup can be removed after its normal
+retention period.

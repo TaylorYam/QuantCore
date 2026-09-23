@@ -1,11 +1,14 @@
 """Small offline checks for the research-only storage benchmark helpers."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pandas as pd
 import pytest
 
 pytest.importorskip("pyarrow")
 
+from data import benchmark_storage_cache as cache
 from data.benchmark_storage_formats import (
     _append_parquet_atomic,
     _validate_round_trips,
@@ -61,3 +64,28 @@ def test_parquet_append_stages_then_atomically_publishes_one_new_session(tmp_pat
     pd.testing.assert_frame_equal(actual, pd.concat([initial, new]))
     assert timing["total_seconds"] >= timing["publish_seconds"]
     assert not path.with_name(f".{path.name}.bench-tmp").exists()
+
+
+def test_cold_cache_purge_requires_both_actions_and_low_standby(monkeypatch, tmp_path):
+    snapshots = iter([
+        {"standby_bytes": 4 * 1024**3, "system_cache_resident_bytes": 400 * 1024**2},
+        {"standby_bytes": 64 * 1024**2, "system_cache_resident_bytes": 20 * 1024**2},
+    ])
+    actions = []
+    monkeypatch.setattr(cache, "_memory_counters", lambda: next(snapshots))
+    monkeypatch.setattr(cache.subprocess, "run", lambda command, **kwargs: (
+        actions.append(command[-1]) or SimpleNamespace(returncode=0)))
+
+    result = cache._purge_cache(tmp_path / "RAMMap64.exe")
+
+    assert actions == ["-Es", "-Et"]
+    assert result["after"]["standby_bytes"] < result["before"]["standby_bytes"]
+
+
+def test_cold_cache_purge_rejects_ineffective_clear(monkeypatch, tmp_path):
+    monkeypatch.setattr(cache, "_memory_counters", lambda: {
+        "standby_bytes": 2 * 1024**3, "system_cache_resident_bytes": 400 * 1024**2})
+    monkeypatch.setattr(cache.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0))
+
+    with pytest.raises(RuntimeError, match="standby list still exceeds"):
+        cache._purge_cache(tmp_path / "RAMMap64.exe")

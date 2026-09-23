@@ -42,54 +42,61 @@ the OLD/NEW signal/state characterization required for a future migration.
 
 ## Subsequent tasks, each with its own Issue / branch / PR
 
-### Current implementation status (2026-09-22)
+### Current implementation status (2026-09-23)
 
-- Phase 1 and the session/Constituents audit are complete (#46, #48, #49).
-- Coverage repair, identity review, historical aliases, and the Constituents
-  cache are merged (#50, #51, #54, #55, #56).
-- Validated staging, atomic publication, manifests, and the price continuity
-  repair are merged (#53, #67). The live Excel logs remain the current writer.
-- Roadmap item 3 staging is merged in
-  [Issue #69](https://github.com/TaylorYam/QuantCore/issues/69). The real-log
-  staging run reconciled without loss. A reversible runtime writer seam is
-  prepared in [Issue #73](https://github.com/TaylorYam/QuantCore/issues/73);
-  the live backend switch remains a separate, explicitly approved release
-  action.
+- The exact-session / Constituents coverage audit and SP500 stage timings are
+  complete (#46, #48, #49); see [the session coverage study](data-session-study.md).
+  Structured per-ticker update outcomes remain a tracked follow-up (#83).
+- Coverage repair, identity review, historical aliases and the Constituents
+  cache are merged (#50, #51, #54, #55, #56). The source-verified DOW/SNDK
+  repair is merged as PR #86 and Issue #81 is closed.
+- Validated staging, atomic publication, dataset manifests and price continuity
+  repair are merged (#53, #67); see [the coverage repair report](data-coverage-repair.md).
+- Roadmap item 3, authoritative SQLite logging, is complete (#69, #73). The
+  approved live cutover and first scheduled writer verification are recorded in
+  [the SQLite runbook](sqlite-storage.md#first-scheduled-writer-verification-2026-09-23).
+  SQLite is the source of truth for account logs; Excel remains a generated
+  compatibility projection. Issue #73 is closed.
 
-Issue #48 adds an exact-snapshot coverage audit and SP500 stage timing tools;
-see [the session coverage study](data-session-study.md) for commands, measured
-findings, calendar evidence and limitations. Issue #50 corrects the reference
-calendar against the official NYSE registry, adds the symbol naming contract and
-classifies/reconciles every coverage gap; see [the coverage repair report](data-coverage-repair.md).
-Automatic per-ticker update outcomes remain separate work.
+Issue #50 corrected the reference calendar against the official NYSE registry,
+added the symbol naming contract and classified/reconciled coverage gaps. Data
+quality follow-ups are tracked separately so unverified price corrections do not
+silently alter research inputs.
 
-1. Build a verified session/Constituents coverage audit and separate timings for
-   loading, indicators and backtests. Add structured per-ticker outcomes including
-   unknown/no-data, rather than treating all missing responses as failures.
-2. Introduce validated staging, atomic publication and dataset version manifests.
-   Keep existing price precision, ordering, adjustment and fill semantics. Define
-   historical revision review and rollback; never silently replace research inputs.
-3. Migrate copies of account snapshots and order/fill records to SQLite, with
-   idempotency keys, transaction boundaries, backup/restore tests and reconciliation.
-   Preserve heuristic Strategy attribution as heuristic. After approved cutover,
-   export Excel from the single authoritative store. Keep runtime state separate.
-4. Benchmark a Parquet/DuckDB research prototype only if measured I/O warrants it.
-   Retain code/parameter/dataset versions in backtest results.
+### Roadmap status
 
-Storage/loader refactors must capture OLD before editing and NEW afterward for
-3 Accounts × 5 scenarios, comparing signal and state bytes, with isolated state
-backup/restore each round. Data corrections that change signals are separate work.
-CI green and human approval are required before merge. The live main checkout
-is deployment, so switching it is a separate deliberate release action.
+1. **Implemented:** verified session/Constituents coverage and pipeline timings.
+   Structured per-ticker outcomes, including unknown/no-data, remain open in
+   [Issue #83](https://github.com/TaylorYam/QuantCore/issues/83).
+2. **Implemented:** validated staging, atomic publication and dataset manifests
+   (#53, #67), with price precision, ordering and adjustment behavior preserved.
+3. **Complete:** account snapshots and trade/fill logs use the authoritative
+   SQLite store with idempotency, transaction boundaries, backup/restore,
+   reconciliation and Excel projections. Runtime state remains separate.
+4. **Conditional research:** benchmark Parquet/DuckDB only if measured I/O shows
+   a material need; retain code, parameter and dataset versions in any resulting
+   backtest records.
 
-Issue #73's cutover rehearsal, frozen-input characterization and live activation
-are recorded in [the storage runbook](sqlite-storage.md#scheduler-activation-and-rollback-record-2026-09-22).
-The 3-account × 5-scenario OLD/NEW comparison passed byte-for-byte using one
-frozen historical snapshot; all six seeded state files were restored per round
-and 677 input-file hashes stayed unchanged. Full offline tests: 619 passed, 20
-skipped. Live data now has 637 stock CSVs and 25 ETF CSVs after a read-only
-staging copy plus incremental provider update; 598 stocks and all ETFs reached
-2026-09-21. Four scheduled writer actions now use the SQLite wrapper, and live
-SQLite reconciles to 5,054 snapshots / 921 trades with the recorded source
-hashes. The first ordinary scheduled writer run remains the final operational
-follow-up; do not start trading tasks as an offline test.
+### Tracked follow-ups
+
+- [Issue #83](https://github.com/TaylorYam/QuantCore/issues/83): structured
+  per-ticker update outcomes.
+- [Issue #82](https://github.com/TaylorYam/QuantCore/issues/82): source-check the
+  invalid CSRA and VIX OHLC rows, then correct them or record reviewed exceptions.
+- [Issue #68](https://github.com/TaylorYam/QuantCore/issues/68): resolve ETF
+  `Close` semantics and inverse-ETF split history with the required data and
+  strategy validation before changing price history.
+
+Storage/loader refactors still require OLD/NEW characterization for 3 Accounts ×
+5 scenarios, byte comparison of signals and state, and isolated state
+backup/restore. Data corrections that change signals require their own evidence.
+CI green and human approval remain required before merge. The live main checkout
+is deployment; production changes remain deliberate release actions.
+
+The SQLite frozen-input comparison passed byte-for-byte on the same historical
+snapshot: all six seeded state files were restored per round and 677 input-file
+hashes stayed unchanged. Its offline suite reported 619 passed and 20 skipped.
+At the 2026-09-22 activation snapshot, the live store reconciled to 5,054
+snapshots and 921 trades; the first scheduled writer result and its later
+reconciliation are recorded in the runbook. Do not start trading tasks as an
+offline test.

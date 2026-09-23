@@ -1,9 +1,10 @@
-# SQLite staging store for account logs
+# SQLite account-log store and cutover runbook
 
-This is the storage implementation for roadmap item 3. It migrates copies of
-the two existing Excel logs into one SQLite database and provides a reversible
-runtime writer seam. The live-compatible default remains the Excel writer;
-the SQLite writer is selected only with an explicit environment variable.
+This is the storage implementation for roadmap item 3. It migrates the two
+existing Excel logs into one SQLite database and provides a reversible runtime
+writer seam. Since the 2026-09-22 live activation, SQLite is authoritative for
+account logs and Excel is generated as a compatibility projection. Processes
+without an explicit backend setting still use the Excel fallback.
 
 `automation/sqlite_store.py` owns two tables:
 
@@ -48,8 +49,8 @@ the target database. The existing Excel files are never modified by `import`
 or `reconcile`.
 
 The migration was initially staged as a reviewable copy. The live cutover record
-below documents the later approved activation; the rollback procedure remains
-the source of truth for recovery.
+below documents the approved activation; the rollback procedure remains the
+source of truth for recovery.
 
 ## Runtime writer seam
 
@@ -64,8 +65,10 @@ Runtime appends require an explicit capture or order identity. Reusing that
 identity updates the same row; a new identity on the same date/account/symbol
 is retained as a separate occurrence. Callers can pass `capture_id` to
 `append_daily_snapshot` and `append_trade_log`; broker order ids are used when
-available for trade rows. The default Excel path does not change until the
-characterization and release checks approve the switch.
+available for trade rows. The code still falls back to Excel when the backend
+environment variable is unset. Live scheduled writers and the panel manual-order
+process explicitly select SQLite through the checked-in wrapper, as recorded in
+the activation section below.
 
 The isolated staging copy measured a 473.76 ms median to read both Excel
 workbooks versus 22.99 ms for the equivalent SQLite queries (5,054 snapshots
@@ -91,7 +94,7 @@ the live Excel files were read only. The 39 same-day duplicate-key groups in
 the source are retained as separate occurrence rows because 38 groups contain
 different NAV or price observations.
 
-## Cutover rehearsal and remaining release gates (2026-09-22)
+## Cutover rehearsal (2026-09-22)
 
 Reproduce the isolated rehearsal from a development worktree with a fresh output
 path (the command refuses an existing output directory):
@@ -163,17 +166,17 @@ evidence; the successful comparison was rerun with normal Account filenames.
 
 This proves SP500 signal/state equivalence on a frozen historical dataset; the
 harness contains no logger calls and does not execute SR/SkewLS signal generation.
-The separate runtime rehearsal verifies the storage behavior. It does not prove
-that the currently empty live data directories are operational; identify the
-active live data location before an approved production release.
+The separate runtime rehearsal verifies storage behavior. Market-data quality
+remains covered by the separate audits and tracked follow-ups in
+`docs/data-roadmap.md`.
 
 ### Scheduler activation and rollback record (2026-09-22)
 
-The SQLite backend is now enabled for the live scheduled log writers. The
-activation was performed after the frozen-input characterization, real-log
-rehearsal, CI checks and a fresh live import/backup. No task was started during
-the change. The first ordinary scheduled writer run remains an operational
-follow-up because trading tasks must not be started as an offline validation.
+The SQLite backend is enabled for the live scheduled log writers. Activation
+followed the frozen-input characterization, real-log rehearsal, CI checks and a
+fresh live import/backup. No task was started during the change. The first
+ordinary scheduled writer run and its SQLite-to-Excel reconciliation completed
+on 2026-09-23; see [First scheduled writer verification](#first-scheduled-writer-verification-2026-09-23).
 
 On 2026-09-22 at 20:27 Taipei, an authorized elevated **read-only** export
 captured all eight QuantCore task XML definitions. Their SHA-256 hashes are
@@ -182,45 +185,36 @@ All use SYSTEM (`S-1-5-18`) and direct Python 3.13 executable actions; executabl
 and script paths exist, script arguments agree with the expected task definitions,
 and no action specifies a working directory. No tasks were started or modified.
 This resolves the earlier non-elevated Access is denied inspection failure.
-The export agrees with the saved 2026-09-15 inventory. The reviewed activation
-targets for log writers are:
+The export agrees with the saved 2026-09-15 inventory. The activated log-writer
+actions are:
 
-| Existing task / entry point | Existing script and arguments | Proposed process setting |
+| Existing task / entry point | Existing script and arguments | Active process setting |
 |---|---|---|
 | `QuantCore_DailyReport` | `daily_report.py --account all` | `QUANTCORE_LOG_BACKEND=sqlite` |
 | `QuantCore_SR_Rebalance_Tue` | `rebalance_ib.py --mode all --account all` | same |
 | `QuantCore_SP500_Rebalance_Wed` | `rebalance_ib.py --mode all --account all` | same |
 | `QuantCore_SkewLS_DailyCheck` | `rebalance_ib.py --mode skewls --account all` | same |
-| Panel manual-order process | existing panel launcher | same; restart after activation |
+| Panel manual-order process | existing panel launcher | same; restarted after activation |
 
-Preserve the verified Python executable, principal, triggers and script arguments.
-Use an explicit launcher-local environment, with the current XML saved first;
-never change SYSTEM-wide environment values as an implicit switch for all jobs.
+The verified Python executable, principal, triggers and script arguments were
+preserved. The wrapper sets a process-local environment; no SYSTEM-wide
+environment value was changed.
 
 The logger call sites are `daily_report.py`, `rebalance_ib.py` and the panel's
 manual-order path. `install_all_tasks.py::task_specs` defines the expected daily
 report and Tuesday/Wednesday/SkewLS rebalance task names. It registers direct
-Python actions, so editing the legacy `.bat` launchers alone would not switch
-those tasks. Verify the installed actions against this source, then route the
-confirmed writer actions through the approved process-scoped launcher. Do not
-run the installer as a way to inspect or change only this setting: it replaces
-multiple tasks.
-
-Use the checked-in `automation/run_with_sqlite_backend.py` wrapper, which sets an
-explicit process-scoped `QUANTCORE_LOG_BACKEND=sqlite` for **every scheduled
-log-writing process**. The four live actions now wrapped are DailyReport,
-Tuesday rebalance, Wednesday rebalance and the SkewLS check. The panel is not a
-scheduled task; launch it through the same wrapper when it is used for manual
-orders.
-Do not rely on setting an environment variable in an interactive terminal: that
-does not change an existing panel or a separately launched scheduled process.
-Prefer a reviewed launcher that sets the variable and then runs the existing
-Python executable, arguments and working directory without changing schedules.
-Do not change `accounts.json` or `config.json`. Export and save the actual task
-XML and launcher files before any approved release change.
+Python actions, so editing the legacy `.bat` launchers alone does not switch
+those tasks. The installed actions were checked against this source during
+activation. The checked-in `automation/run_with_sqlite_backend.py` wrapper sets
+`QUANTCORE_LOG_BACKEND=sqlite` for the four scheduled writers; the panel uses the
+same wrapper for manual orders and was restarted after activation. For future
+task edits, preserve the verified executable, arguments, working directory,
+principal and triggers. Do not use `install_all_tasks.py` to change only the
+backend setting because it replaces multiple tasks. Task XML and launcher
+backups from activation are recorded in the local cutover artifact directory.
 
 The live activation evidence is stored outside Git under the cutover artifact
-directory. The initial import and acceptance checks reported:
+directory. The initial import and acceptance checks on 2026-09-22 reported:
 
 | Check | Result |
 |---|---|
@@ -237,21 +231,28 @@ The data health audit has two explicit existing value exceptions: one invalid
 historical `CSRA` High/Low row and one invalid `VIX` Open row. The `DOW` and
 `SNDK` identity rules now allow provider append only when each local file starts
 at or after that provider identity's first-trade date; their missing earlier
-constituent history remains unresolved. These data findings do not change the
-SQLite log hashes or backend activation.
+constituent history remains unresolved. The source-verified current-history
+repair was merged in PR #86 and Issue #81 is closed. CSRA and VIX remain tracked
+under [Issue #82](https://github.com/TaylorYam/QuantCore/issues/82). These data
+findings do not change the SQLite log hashes or backend activation.
 
-The following operational steps apply after the first scheduled writer run:
+### First scheduled writer verification (2026-09-23)
 
-1. Identify every writer and stop concurrent writes for the cutover window.
-   Verify the deployed revision, scheduler actions and panel launch environment.
-2. Back up both current Excel files and runtime state; import to the live SQLite
-   path only during this approved window. Reconcile both source files, export to
-   separate verification paths, reconcile those, and take an atomic SQLite backup.
-3. Enable the reviewed launcher environment consistently for all writers, restart
-   existing writer processes with that environment, and resume the schedules.
-4. After the first normal scheduled write, reconcile the database with both
-   projections and verify that runtime state handling is unchanged. Keep Issue
-   #73 open until live activation and rollback evidence are recorded.
+The first ordinary scheduled `DailyReport` completed from 04:40:02 to 04:40:12
+Taipei time. Its run-status record reports `ok` for Taylor, Rosa and Yvonne, with
+the top-level job error set to null. A read-only reconciliation of the live
+database with both current Excel projections produced:
+
+| Table | Excel rows | SQLite rows | Missing keys | Unexpected keys | Matching SHA-256 |
+|---|---:|---:|---:|---:|---|
+| `portfolio_snapshots` | 5,097 | 5,097 | 0 | 0 | `8486de36316377cebd4ac92e58898b9954cd3af9040ce56e546f879e4fcd2162` |
+| `trades` | 921 | 921 | 0 | 0 | `573253ca0c9aef5ad5fe009a73634e815c97eac7b69497f400daf24cd5dca830` |
+
+The source and database hashes matched for both tables, with no missing or
+unexpected rows. This completes the first scheduled-writer release check and
+the live cutover follow-up for Issue #73. Reconciliation only reads the SQLite
+database and Excel projections; it does not start a trading task or change the
+store.
 
 For an Excel projection error after a successful SQLite commit, treat SQLite as
 current: repair access and regenerate **both** projections with `export`. Do not

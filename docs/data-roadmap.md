@@ -60,8 +60,9 @@ the OLD/NEW signal/state characterization required for a future migration.
 
 - The exact-session / Constituents coverage audit and SP500 stage timings are
   complete (#46, #48, #49); see [the session coverage study](data-session-study.md).
-  Structured per-ticker update outcomes are implemented for #83; empty
-  responses remain inconclusive, and only confirmed errors affect job status.
+  Structured per-ticker update outcomes are implemented in PR #90, which closed
+  Issue #83; empty responses remain inconclusive, and only confirmed errors
+  affect job status.
 - Coverage repair, identity review, historical aliases and the Constituents
   cache are merged (#50, #51, #54, #55, #56). The source-verified DOW/SNDK
   repair is merged as PR #86 and Issue #81 is closed.
@@ -98,24 +99,23 @@ silently alter research inputs.
    a material need; retain code, parameter and dataset versions in any resulting
    backtest records.
 
-### Priority order (2026-09-23)
+### Priority order (2026-09-23, after PR #90)
 
 0. **Release sync:** the live checkout `C:\QuantCore-master` is synchronized
-   with `origin/main` at `b31de1e`, including PRs #86 through #89. Issue #82's
-   source-verified repairs are published; the post-publication audit found no
+   with `origin/main`, including PRs #86 through #90. Issue #82's
+   source-verified repairs are published and Issue #83's update outcomes are
+   merged. Both issues are closed; the post-publication audit for #82 found no
    remaining findings.
-1. [Issue #83](https://github.com/TaylorYam/QuantCore/issues/83): structured
-   per-ticker update outcomes are implemented on this issue branch and proceed
-   through the normal CI and review release gate. Empty provider responses
-   remain inconclusive without an explicit freshness failure.
+1. **No open implementation issue:** the remaining Parquet/DuckDB work is
+   conditional on measured I/O need, as described below.
 
 The Parquet/DuckDB prototype remains conditional on measured I/O need; it is not
 an active task.
 
 ### Tracked follow-ups
 
-- [Issue #83](https://github.com/TaylorYam/QuantCore/issues/83): merge the
-  structured per-ticker outcome implementation after CI and human review.
+There are no open data-quality implementation follow-ups for Issues #82 or #83.
+The Parquet/DuckDB prototype remains conditional on measured I/O need.
 
 Storage/loader refactors still require OLD/NEW characterization for 3 Accounts ×
 5 scenarios, byte comparison of signals and state, and isolated state

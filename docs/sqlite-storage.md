@@ -228,15 +228,16 @@ directory. The initial import and acceptance checks on 2026-09-22 reported:
 | Task actions | Four writer actions wrapped; four non-writer tasks unchanged; SYSTEM principal and non-action settings preserved |
 
 The data health audit at activation time had two market-data findings: one
-invalid historical `CSRA` High/Low row and one invalid `VIX` Open row. The
-source-backed corrections and resulting clean staged audit are recorded in
-[`data-quality-issue82.md`](data-quality-issue82.md); they are separate from
-the SQLite store. The `DOW` and
+invalid historical `CSRA` High/Low row and one invalid `VIX` Open row. These
+were tracked under Issue #82 and later corrected in PR #89; the repairs were
+published and the post-publication audit found no remaining findings, as
+recorded in [`data-quality-issue82.md`](data-quality-issue82.md). They are
+separate from the SQLite store. The `DOW` and
 `SNDK` identity rules now allow provider append only when each local file starts
 at or after that provider identity's first-trade date; their missing earlier
 constituent history remains unresolved. The source-verified current-history
-repair was merged in PR #86 and Issue #81 is closed. The CSRA and VIX findings
-are tracked under [Issue #82](https://github.com/TaylorYam/QuantCore/issues/82).
+repair was merged in PR #86 and Issue #81 is closed. Issue #82 is also closed
+after the source-verified CSRA and VIX repairs in PR #89.
 These data findings do not change the SQLite log hashes or backend activation.
 
 ### First scheduled writer verification (2026-09-23)

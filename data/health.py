@@ -70,7 +70,7 @@ def audit(root: Path, expected_session: str | None = None,
         if not paths:
             issues.append(f"{category}: no CSV files")
         for path in paths:
-            row = inspect_csv(path, adjusted=category == "stocks")
+            row = inspect_csv(path, adjusted=True)
             row["category"] = category
             if expected_session and category == "stocks" and path.stem in required_stocks:
                 if row.get("last_session", "") < expected_session:

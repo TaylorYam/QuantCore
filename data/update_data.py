@@ -7,8 +7,9 @@ QuantCore — 增量資料更新
 代碼改指別家證券時，append 會把兩家公司接在同一檔。比對結果：
   - 一致 → 照舊只追加新 K 棒
   - 個股被調整 → 抓完整歷史核對是同一證券後原子替換整檔；核對不過 → 不續寫、回報
-  - ETF 被調整 → 不續寫、回報（ETF 檔 2026 前的 Close 已含息，整檔重抓會改變
-    SR／Skew LS 的輸入，需人工處理）
+  - ETF 原始 OHLC、含息 Adj Close 分欄儲存。ETF overlap 若有原始價格分割或
+    Adj Close 重編，先比對完整歷史；證實同一證券後才以 provider 全歷史原子替換。
+    證券身分或歷史無法核對時停止續寫並回報。
 
 用法：
     cd C:/QuantCore-master
@@ -90,7 +91,8 @@ def _append(existing_path: Path, new_df: pd.DataFrame) -> int:
     return max(added, 0)
 
 
-def _store(path: Path, window: pd.DataFrame, errors: list[str], refetch: bool) -> int | None:
+def _store(path: Path, window: pd.DataFrame, errors: list[str], refetch: bool,
+           *, refresh_adjusted_history: bool = False) -> int | None:
     """
     追加 path 最後一列之後的 K 棒；重抓的已存 K 棒顯示 provider 調整過歷史或
     代碼換了證券時（#53）：refetch=True（個股）抓完整歷史核對後整檔替換，
@@ -101,7 +103,12 @@ def _store(path: Path, window: pd.DataFrame, errors: list[str], refetch: bool) -
     last = local.index[-1]
     if not (window.index > last).any():
         return 0      # nothing to append; stored history is audited by price_continuity scan
-    reasons = window_check(local, window)
+    if refresh_adjusted_history and tk not in ("VIX", "^VIX"):
+        if "Adj Close" not in window or window["Adj Close"].isna().any():
+            errors.append(f"{tk}: provider omitted valid Adj Close; ETF history was not updated")
+            return None
+    reasons = (window_check(local, window, adj_close_tol=1e-6)
+               if refresh_adjusted_history else window_check(local, window))
     if not reasons:
         return _append(path, window[window.index > last])
     why = "; ".join(reasons)
@@ -114,8 +121,22 @@ def _store(path: Path, window: pd.DataFrame, errors: list[str], refetch: bool) -
         detail = "; ".join(fetch_errors) or "empty response"
         errors.append(f"{tk}: 需核對完整歷史（{why}），下載失敗，未續寫（{detail}）")
         return None
+    if refresh_adjusted_history and tk in ("VIX", "^VIX"):
+        if "Adj Close" not in full:
+            full["Adj Close"] = full["Close"]
+        full["Adj Close"] = full["Adj Close"].fillna(full["Close"])
+    if refresh_adjusted_history and tk not in ("VIX", "^VIX") and (
+            "Adj Close" not in full or full["Adj Close"].isna().any()):
+        errors.append(f"{tk}: full-history response omitted valid Adj Close; ETF history was not updated")
+        return None
     verdict = compare_history(local, full)
     if verdict["status"] == "consistent":
+        if refresh_adjusted_history and any("Adj Close" in reason for reason in reasons):
+            new = replacement(local, full)
+            atomic_write(path, frame_bytes(new))
+            print(f"    {tk}: provider updated adjusted-price history; refreshed full history "
+                  f"{len(local)}→{len(new)} rows")
+            return int((new.index > last).sum())
         return _append(path, full[full.index > last])
     if verdict["status"] == "rescaled":
         new = replacement(local, full)
@@ -253,7 +274,13 @@ def update_etfs() -> list[str]:
                 print(f"  {tk:6s}  無新資料")
                 continue
 
-            added = _store(csv_path, df[df.index >= window_start], errors, refetch=False)
+            if "Adj Close" not in df or df["Adj Close"].isna().any():
+                errors.append(f"{tk}: provider omitted valid Adj Close; ETF history was not updated")
+                print(f"  {tk:6s}  無有效 Adj Close，未更新")
+                continue
+
+            added = _store(csv_path, df[df.index >= window_start], errors, refetch=True,
+                           refresh_adjusted_history=True)
             if added is None:
                 print(f"  {tk:6s}  未續寫（見錯誤）")
             else:
@@ -270,8 +297,12 @@ def update_etfs() -> list[str]:
             if _next_day(vix_last) < TODAY:
                 df = _download_ohlcv(VIX_TICKER, _window_start(vix_last), TODAY, errors=errors)
                 if df is not None and not df.empty:
+                    if "Adj Close" not in df:
+                        df["Adj Close"] = df["Close"]
+                    df["Adj Close"] = df["Adj Close"].fillna(df["Close"])
                     df["Volume"] = 0
-                    added = _store(vix_path, df, errors, refetch=False)
+                    added = _store(vix_path, df, errors, refetch=True,
+                                   refresh_adjusted_history=True)
                     if added is not None:
                         print(f"  {'VIX':6s}  +{added} 筆  (至 {str(df.index[-1].date())})")
             else:

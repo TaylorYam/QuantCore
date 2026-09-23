@@ -5,6 +5,7 @@ Sector Rotation MOM — 資料載入
 
 import pandas as pd
 from pathlib import Path
+from data.price_semantics import total_return_ohlc
 from . import config
 
 
@@ -35,7 +36,7 @@ def load_data() -> dict:
 
     close_dict, open_dict = {}, {}
     for tk in tickers:
-        df = _load_ticker(tk)
+        df = total_return_ohlc(_load_ticker(tk))
         close_dict[tk] = df["Close"]
         open_dict[tk]  = df["Open"]
 

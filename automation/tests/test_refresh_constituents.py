@@ -1,15 +1,15 @@
 """
-Unit tests for data/refresh_constituents.py — gap reconstruction boundary
-semantics and the G5 rename/M&A keyword gate.
+Offline tests for data/refresh_constituents.py.
 
 Regression anchor: the 2026-06-01 FDXF case. Wikipedia's changes table dated
 the FedEx Freight addition June 1 — the same day as the last snapshot — and
 the old strictly-greater gap filter skipped it forever (G1 cross-check then
 hard-halted every subsequent run). Boundary events must be included; event
 application is set.add/discard so replaying an already-reflected event is a
-no-op.
+no-op. The publication integration test uses temporary directories and a fake
+provider response to verify destination-local staging and replacement.
 
-Pure functions only — no network, no Excel, no Wikipedia.
+No network or Wikipedia access.
 """
 
 from __future__ import annotations

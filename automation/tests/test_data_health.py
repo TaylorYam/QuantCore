@@ -49,6 +49,17 @@ def test_unreadable_and_missing_columns(tmp_path):
     assert inspect_csv(tmp_path / "missing.csv")["issues"]
 
 
+def test_etf_audit_requires_adjusted_close(tmp_path):
+    path = tmp_path / "etfs" / "SPY.csv"
+    path.parent.mkdir(parents=True)
+    pd.DataFrame({"Date": ["2026-09-15"], "Open": [1], "High": [1],
+                  "Low": [1], "Close": [1], "Volume": [0]}).to_csv(path, index=False)
+
+    report = audit(tmp_path)
+
+    assert {"missing_columns": ["Adj Close"]} in report["files"][0]["issues"]
+
+
 @pytest.fixture
 def updater(tmp_path, monkeypatch):
     # Avoid collision with automation/update_data.py and fake modules in notification tests.

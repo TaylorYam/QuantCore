@@ -1,16 +1,21 @@
 """
 QuantCore 資料遷移腳本
-統一格式：CSV，欄位 Date, Open, High, Low, Close, Volume
+統一格式：CSV，欄位 Date, Open, High, Low, Close, Adj Close, Volume
 來源：
   - ETF/基準：yfinance 重新下載（確保 OHLCV 完整）
   - SP500 成分股：從舊資料夾轉換
   - 參考檔案：直接複製
 """
 
-import os, shutil
+import os, shutil, sys
 import pandas as pd
 import yfinance as yf
 from pathlib import Path
+
+_REPO = Path(__file__).resolve().parent.parent
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+from data.price_semantics import extract_batched_history
 
 # ── 路徑設定 ──────────────────────────────────────────────────
 ROOT        = Path(__file__).resolve().parent.parent / "data"
@@ -26,10 +31,11 @@ SECTOR_ETFS = ["XLK","XLF","XLV","XLE","XLI","XLY","XLB","XLP","XLU","XLC","XLRE
 BENCHMARKS  = ["SPY","SSO","QQQ"]
 VIX_TICKER  = "^VIX"
 
-ALL_ETFS    = SECTOR_ETFS + BENCHMARKS  # VIX 單獨處理
+INVERSE_ETFS = ["REW","SEF","RXD","ERY","SIJ","SCC","SMN","SZK","SDP","REK"]
+ALL_ETFS    = SECTOR_ETFS + BENCHMARKS + INVERSE_ETFS  # VIX 單獨處理
 
 # ── 統一格式函數 ──────────────────────────────────────────────
-COLS = ["Open", "High", "Low", "Close", "Volume"]
+COLS = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
 
 def standardize(df: pd.DataFrame) -> pd.DataFrame:
     """統一欄位、清理索引、排序"""
@@ -37,15 +43,19 @@ def standardize(df: pd.DataFrame) -> pd.DataFrame:
     df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
     df.index.name = "Date"
 
-    # 補齊欄位（VIX 沒有 Volume）
+    # Adj Close 缺席時才退回 Close（例如沒有分配的 VIX 資料源）。
+    if "Adj Close" not in df and "Close" in df:
+        df["Adj Close"] = df["Close"]
+    # 補齊其餘欄位（VIX 沒有 Volume）
     for c in COLS:
         if c not in df.columns:
             df[c] = 0
+    df["Adj Close"] = df["Adj Close"].fillna(df["Close"])
 
     df = df[COLS]
     df = df.sort_index()
     df = df[~df.index.duplicated(keep="last")]
-    df = df.dropna(subset=["Open","Close"])
+    df = df.dropna(subset=["Open","Close","Adj Close"])
     return df
 
 
@@ -67,13 +77,10 @@ hist.index = pd.to_datetime(hist.index).tz_localize(None).normalize()
 ok, fail = [], []
 for tk in ALL_ETFS:
     try:
-        df = pd.DataFrame({
-            "Open":   hist["Open"][tk],
-            "High":   hist["High"][tk],
-            "Low":    hist["Low"][tk],
-            "Close":  hist["Close"][tk],
-            "Volume": hist["Volume"][tk],
-        })
+        ticker_hist = extract_batched_history(hist, tk)
+        df = pd.DataFrame({c: ticker_hist[c] for c in
+                           ("Open", "High", "Low", "Close", "Adj Close", "Volume")
+                           if c in ticker_hist.columns})
         df = standardize(df)
         save(df, ETF_DIR / f"{tk}.csv")
         ok.append(tk)
@@ -92,6 +99,7 @@ try:
         "High":   vix_raw["High"],
         "Low":    vix_raw["Low"],
         "Close":  vix_raw["Close"],
+        "Adj Close": vix_raw["Adj Close"] if "Adj Close" in vix_raw else vix_raw["Close"],
         "Volume": 0,
     })
     vix = standardize(vix)

@@ -204,11 +204,13 @@ def run_backtest_proxy(
 
     if commission_model == "per_trade":
         # 把對應的 price 也組成 prefixed DataFrame
-        prices_long   = sector_close[long_w.columns].rename(
+        raw_sector_close = data.get("sector_raw_close", sector_close)
+        raw_inv_close = data.get("inv_raw_close", inv_close)
+        prices_long   = raw_sector_close[long_w.columns].rename(
             columns=lambda c: f"L_{c}")
-        prices_inv    = inv_close[inv_w.columns].rename(
+        prices_inv    = raw_inv_close[inv_w.columns].rename(
             columns=lambda c: f"I_{c}")
-        prices_direct = sector_close[xlc_short_w.columns].rename(
+        prices_direct = raw_sector_close[xlc_short_w.columns].rename(
             columns=lambda c: f"S_{c}")
         prices_combined = pd.concat(
             [prices_long, prices_inv, prices_direct], axis=1,

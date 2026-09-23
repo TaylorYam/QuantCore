@@ -197,6 +197,17 @@ def test_window_dividend_in_adj_close_is_ignored_but_rebasing_is_not():
     assert pc.window_check(local, rebased)[0].startswith("provider Adj Close")
 
 
+def test_etf_window_check_detects_small_adjusted_close_rebase():
+    value = walk()
+    local = bars(value[:100])
+    adjusted = bars(value[80:110], adj=value[80:110] * 0.995, days=DAYS[80:])
+
+    assert pc.window_check(local, adjusted) == []
+    assert pc.window_check(local, adjusted, adj_close_tol=1e-6)[0].startswith(
+        "provider Adj Close"
+    )
+
+
 # ── daily update (data/update_data.py) with fake yfinance ────────────────────
 
 @pytest.fixture
@@ -316,17 +327,68 @@ def test_update_refuses_when_the_full_history_download_fails(updater, monkeypatc
     assert path.read_bytes() == before
 
 
-def test_etf_rescale_is_reported_not_rewritten(updater, monkeypatch):
+def test_etf_split_rescale_is_validated_then_rewritten(updater, monkeypatch):
     value = walk(start=14.0)
     path = updater.ETF_DIR / "REW.csv"
     write(path, bars(value[:110]))
     write(updater.ETF_DIR / "VIX.csv", bars(walk(5, start=17.0)))      # VIX already current
-    before = path.read_bytes()
-    serve(monkeypatch, updater, {"REW": bars(value * 2, splits={DAYS[112]: 0.5})})
+    provider = bars(value * 2, splits={DAYS[112]: 0.5})
+    serve(monkeypatch, updater, {"REW": provider})
     errors = updater.update_etfs()
-    assert len(errors) == 1
-    assert errors[0].startswith("REW: provider 調整了已存的歷史價格，ETF 檔不自動重抓")
+    assert errors == []
+    assert np.allclose(pc.read_csv(path)["Close"], provider["Close"], atol=1e-6)
+    assert pc.compare_history(pc.read_csv(path), provider)["status"] == "consistent"
+
+
+def test_etf_small_adjusted_close_rebase_refreshes_full_provider_history(updater, monkeypatch):
+    value = walk()
+    path = updater.ETF_DIR / "REW.csv"
+    local = bars(value[:110])
+    write(path, local)
+    write(updater.ETF_DIR / "VIX.csv", bars(walk(5, start=17.0)))
+    provider = bars(value, adj=value * 0.995)
+    serve(monkeypatch, updater, {"REW": provider})
+
+    assert updater.update_etfs() == []
+
+    got = pc.read_csv(path)
+    assert len(got) == len(provider)
+    assert np.allclose(got["Close"], provider["Close"], atol=1e-6)
+    assert np.allclose(got["Adj Close"], provider["Adj Close"], atol=1e-6)
+
+
+def test_etf_update_refuses_provider_history_without_adjusted_close(updater, monkeypatch):
+    path = updater.ETF_DIR / "REW.csv"
+    local = bars(walk()[:110])
+    write(path, local)
+    write(updater.ETF_DIR / "VIX.csv", bars(walk(5, start=17.0)))
+    provider = bars(walk()).drop(columns=["Adj Close"])
+    serve(monkeypatch, updater, {"REW": provider})
+    before = path.read_bytes()
+
+    errors = updater.update_etfs()
+
+    assert any("REW: provider omitted valid Adj Close" in error for error in errors)
     assert path.read_bytes() == before
+
+
+def test_vix_full_refresh_uses_close_when_provider_omits_adjusted_close(updater, monkeypatch):
+    path = updater.ETF_DIR / "VIX.csv"
+    value = walk()
+    local = bars(value[:110])
+    write(path, local)
+    window = bars(value[80:], adj=value[80:] * 1.002, days=DAYS[80:])
+    full = bars(value).drop(columns=["Adj Close"])
+    monkeypatch.setattr(updater, "_download_ohlcv", lambda *a, **k: full)
+    errors = []
+
+    added = updater._store(path, window, errors, refetch=True,
+                           refresh_adjusted_history=True)
+
+    stored = pc.read_csv(path)
+    assert added == len(value) - len(local)
+    assert errors == []
+    assert np.allclose(stored["Adj Close"], stored["Close"], atol=1e-6)
 
 
 # ── scan → classify → stage → apply (one-time repair) ────────────────────────

@@ -14,6 +14,16 @@ class MarketRegime:
         self._calculate_indicators()
 
     def _calculate_indicators(self):
+        if "Adj Close" in self.spy.columns:
+            raw_adjusted = self.spy["Adj Close"]
+            adjusted = pd.to_numeric(raw_adjusted, errors="coerce")
+            malformed = raw_adjusted.notna() & adjusted.isna()
+            if malformed.any():
+                raise ValueError("SPY Adj Close contains non-numeric values")
+            if adjusted.notna().all():
+                if not np.isfinite(adjusted).all() or (adjusted <= 0).any():
+                    raise ValueError("SPY Adj Close contains invalid prices")
+                self.spy["Close"] = adjusted
         self.spy["MA200"]  = self.spy["Close"].rolling(200).mean()
         self.spy["ATH"]    = self.spy["Close"].cummax()
         self.spy["SPY_DD"] = (self.spy["Close"] - self.spy["ATH"]) / self.spy["ATH"]

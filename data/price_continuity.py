@@ -244,7 +244,8 @@ def _standard_factor(f: float) -> bool:
     return False
 
 
-def window_check(local: pd.DataFrame, window: pd.DataFrame) -> list[str]:
+def window_check(local: pd.DataFrame, window: pd.DataFrame, *,
+                 adj_close_tol: float = WINDOW_ADJ_TOL) -> list[str]:
     """Reasons to verify the provider's full history before appending; [] = append.
 
     A provider rescale moves every bar before the event by the same factor, so
@@ -262,7 +263,7 @@ def window_check(local: pd.DataFrame, window: pd.DataFrame) -> list[str]:
             reasons.append("no re-downloaded bar overlaps the local file")
         return reasons
     lead = overlap[:2]
-    for col, tol in (("Close", WINDOW_CLOSE_TOL), ("Adj Close", WINDOW_ADJ_TOL)):
+    for col, tol in (("Close", WINDOW_CLOSE_TOL), ("Adj Close", adj_close_tol)):
         if col not in local or col not in window:
             continue
         r = _ratio(window.loc[lead, col], local.loc[lead, col])

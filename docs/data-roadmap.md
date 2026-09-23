@@ -13,7 +13,13 @@ Exit 1 means findings, including missing input directories; 0 means the checks
 performed found no issues. Neither means the dataset is proven complete.
 The report records file hashes, row counts, date bounds, read/check duration,
 missing columns, invalid numeric values, duplicate sessions and unsorted dates.
-Stocks require Adj Close; ETFs do not. Zero volume is allowed (including VIX).
+Stocks and ETFs require Adj Close. ETF OHLC remains the provider's raw price
+series; strategy return calculations use Adj Close and corresponding adjusted
+Open/High/Low only when the ticker's full Adj Close history is available. A
+legacy partial history stays on its existing Close/Open basis until rebuilt, so
+the price basis never changes partway through a file. VIX falls back to Close
+because it has no distributions.
+Zero volume is allowed (including VIX).
 
 For a known Reference Close and caller-verified Constituents, add
 `--expected-session YYYY-MM-DD --required-stocks AAPL,MSFT`.
@@ -77,15 +83,40 @@ silently alter research inputs.
    a material need; retain code, parameter and dataset versions in any resulting
    backtest records.
 
+### Priority order (2026-09-23)
+
+0. **Release sync:** the live checkout `C:\QuantCore-master` is on `d8b9d8a`,
+   two commits behind `origin/main`: merged PR #86 contains the verified DOW/SNDK
+   updater repair, and #87 records the SQLite writer verification that closes
+   #84. Synchronize this reviewed state in a deliberate release window; the
+   repository root is live code. This is an operational follow-up, not an open
+   Issue.
+1. [Issue #68](https://github.com/TaylorYam/QuantCore/issues/68): resolve ETF
+   `Close` semantics and inverse-ETF split history. This is the broadest known
+   inconsistency in strategy input prices and requires staged data plus signal,
+   backtest and, if behavior changes, walk-forward evidence. See the current
+   evidence and price contract in [ETF price semantics](etf-price-semantics.md).
+2. [Issue #82](https://github.com/TaylorYam/QuantCore/issues/82): verify the two
+   invalid CSRA and VIX OHLC values against source history; correct with evidence
+   or record reviewed exceptions. The scope is narrow and can be completed
+   independently.
+3. [Issue #83](https://github.com/TaylorYam/QuantCore/issues/83): add structured
+   per-ticker update outcomes after the data-quality findings are resolved.
+   Empty provider responses must remain inconclusive without an explicit
+   freshness failure.
+
+The Parquet/DuckDB prototype remains conditional on measured I/O need; it is not
+an active task.
+
 ### Tracked follow-ups
 
-- [Issue #83](https://github.com/TaylorYam/QuantCore/issues/83): structured
-  per-ticker update outcomes.
-- [Issue #82](https://github.com/TaylorYam/QuantCore/issues/82): source-check the
-  invalid CSRA and VIX OHLC rows, then correct them or record reviewed exceptions.
 - [Issue #68](https://github.com/TaylorYam/QuantCore/issues/68): resolve ETF
   `Close` semantics and inverse-ETF split history with the required data and
   strategy validation before changing price history.
+- [Issue #82](https://github.com/TaylorYam/QuantCore/issues/82): source-check the
+  invalid CSRA and VIX OHLC rows, then correct them or record reviewed exceptions.
+- [Issue #83](https://github.com/TaylorYam/QuantCore/issues/83): structured
+  per-ticker update outcomes.
 
 Storage/loader refactors still require OLD/NEW characterization for 3 Accounts ×
 5 scenarios, byte comparison of signals and state, and isolated state

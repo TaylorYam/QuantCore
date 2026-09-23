@@ -11,6 +11,7 @@ Sector Skew LS — 資料載入
 from __future__ import annotations
 import pandas as pd
 
+from data.price_semantics import total_return_ohlc
 from . import config
 
 
@@ -54,6 +55,10 @@ def load_data() -> dict:
     inv_dfs    = {t: _load_one(t) for t in config.INVERSE_TICKERS}
     spy_df     = _load_one(config.BENCHMARK_TICKER)
     vix_df     = _load_one(config.VIX_LOCAL_NAME)
+    adjusted_sector_dfs = {t: total_return_ohlc(df) for t, df in sector_dfs.items()}
+    adjusted_inv_dfs = {t: total_return_ohlc(df) for t, df in inv_dfs.items()}
+    adjusted_spy_df = total_return_ohlc(spy_df)
+    adjusted_vix_df = total_return_ohlc(vix_df)
 
     # ── 各自的最早日 ────────────────────────────────────────────────
     earliest = {}
@@ -68,15 +73,17 @@ def load_data() -> dict:
     latest_inception_ticker = max(earliest, key=earliest.get)
 
     # ── 組成 DataFrame（以共同 dates 對齊）──────────────────────────
-    sector_close = pd.DataFrame({t: df["Close"] for t, df in sector_dfs.items()})
-    sector_open  = pd.DataFrame({t: df["Open"]  for t, df in sector_dfs.items()})
-    inv_close    = pd.DataFrame({t: df["Close"] for t, df in inv_dfs.items()})
-    inv_open     = pd.DataFrame({t: df["Open"]  for t, df in inv_dfs.items()})
+    sector_close = pd.DataFrame({t: df["Close"] for t, df in adjusted_sector_dfs.items()})
+    sector_open  = pd.DataFrame({t: df["Open"]  for t, df in adjusted_sector_dfs.items()})
+    sector_raw_close = pd.DataFrame({t: df["Close"] for t, df in sector_dfs.items()})
+    inv_close    = pd.DataFrame({t: df["Close"] for t, df in adjusted_inv_dfs.items()})
+    inv_open     = pd.DataFrame({t: df["Open"]  for t, df in adjusted_inv_dfs.items()})
+    inv_raw_close = pd.DataFrame({t: df["Close"] for t, df in inv_dfs.items()})
 
     # SPY 為對齊基準（流動性最高、最完整）
     common = (sector_close.dropna(how="all")
                           .index
-                          .intersection(spy_df.index)
+                          .intersection(adjusted_spy_df.index)
                           .intersection(vix_df.index)
                           .intersection(inv_close.dropna(how="all").index))
     common = common[common >= latest_inception].sort_values()
@@ -88,15 +95,19 @@ def load_data() -> dict:
     sector_open  = sector_open.reindex(common)
     inv_close    = inv_close.reindex(common)
     inv_open     = inv_open.reindex(common)
-    spy_close    = spy_df["Close"].reindex(common)
-    spy_open     = spy_df["Open"].reindex(common)
-    vix_close    = vix_df["Close"].reindex(common)
+    sector_raw_close = sector_raw_close.reindex(common)
+    inv_raw_close = inv_raw_close.reindex(common)
+    spy_close    = adjusted_spy_df["Close"].reindex(common)
+    spy_open     = adjusted_spy_df["Open"].reindex(common)
+    vix_close    = adjusted_vix_df["Close"].reindex(common)
 
     # 共同日期內仍有 NaN 表示該 ticker 那天無交易；前向填補（與 PDF 一致）
     sector_close = sector_close.ffill()
     sector_open  = sector_open.ffill()
     inv_close    = inv_close.ffill()
     inv_open     = inv_open.ffill()
+    sector_raw_close = sector_raw_close.ffill()
+    inv_raw_close = inv_raw_close.ffill()
     spy_close    = spy_close.ffill()
     spy_open     = spy_open.ffill()
     vix_close    = vix_close.ffill()
@@ -106,6 +117,8 @@ def load_data() -> dict:
         "sector_open":  sector_open[config.SECTOR_TICKERS],
         "inv_close":    inv_close[config.INVERSE_TICKERS],
         "inv_open":     inv_open[config.INVERSE_TICKERS],
+        "sector_raw_close": sector_raw_close[config.SECTOR_TICKERS],
+        "inv_raw_close": inv_raw_close[config.INVERSE_TICKERS],
         "spy_close":    spy_close,
         "spy_open":     spy_open,
         "vix_close":    vix_close,

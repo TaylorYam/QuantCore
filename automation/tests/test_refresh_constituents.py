@@ -14,6 +14,8 @@ Pure functions only — no network, no Excel, no Wikipedia.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -218,6 +220,62 @@ def test_g0_halts_when_calendar_ends_before_today():
 def test_g7_passes_thanksgiving_week_with_half_day():
     cal = _official("2026-11-16", "2026-12-04")
     assert gate_g7_calendar(cal, pd.Timestamp("2026-11-25"), pd.Timestamp("2026-12-02")) == []
+
+
+def test_atomic_apply_stages_new_and_replaced_files_under_destination_directories(
+    tmp_path, monkeypatch,
+):
+    """SYSTEM refresh output must inherit the destination trees' Windows ACLs."""
+    import data.refresh_constituents as refresh
+
+    ref_dir = tmp_path / "reference"
+    stock_dir = tmp_path / "stocks"
+    ref_dir.mkdir()
+    stock_dir.mkdir()
+    const_file = ref_dir / "sp500_constituents_daily.xlsx"
+    pd.DataFrame({"Date": [pd.Timestamp("2026-01-01")], "T1": ["AAA"]}).to_excel(
+        const_file, sheet_name="2026", index=False,
+    )
+
+    # Exercise both an existing destination and a newly created ticker file.
+    (stock_dir / "AAA.csv").write_text("old contents", encoding="utf-8")
+    monkeypatch.setattr(refresh, "REF_DIR", ref_dir)
+    monkeypatch.setattr(refresh, "STOCK_DIR", stock_dir)
+    monkeypatch.setattr(refresh, "CONST_FILE", const_file)
+    monkeypatch.setattr(refresh, "log", lambda *_args, **_kwargs: None)
+
+    real_mkdtemp = refresh.tempfile.mkdtemp
+    staging_parents = []
+
+    def tracked_mkdtemp(*, prefix, dir=None):
+        staging_parents.append(Path(dir) if dir is not None else None)
+        return real_mkdtemp(prefix=prefix, dir=dir)
+
+    monkeypatch.setattr(refresh.tempfile, "mkdtemp", tracked_mkdtemp)
+
+    class FakeTicker:
+        def history(self, **_kwargs):
+            return pd.DataFrame(
+                {
+                    "Open": [10.0], "High": [11.0], "Low": [9.0],
+                    "Close": [10.5], "Adj Close": [10.5], "Volume": [100],
+                },
+                index=pd.DatetimeIndex(["2026-01-02"]),
+            )
+
+    monkeypatch.setattr(refresh.yf, "Ticker", lambda _symbol: FakeTicker())
+
+    refresh.atomic_apply(
+        {pd.Timestamp("2026-01-02"): {"AAA", "BBB"}},
+        {"AAA", "BBB"},
+        {"2026": pd.DataFrame({"Date": [pd.Timestamp("2026-01-01")], "T1": ["AAA"]})},
+        ["T1", "T2"],
+    )
+
+    assert set(staging_parents) == {ref_dir, stock_dir}
+    assert pd.read_csv(stock_dir / "AAA.csv").iloc[0]["Close"] == 10.5
+    assert pd.read_csv(stock_dir / "BBB.csv").iloc[0]["Close"] == 10.5
+    assert pd.ExcelFile(const_file, engine="openpyxl").sheet_names == ["2026"]
 
 
 def test_g7_halts_on_closure_listed_in_the_gap():

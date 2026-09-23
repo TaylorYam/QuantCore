@@ -112,3 +112,7 @@ state backup/restore, and any required backtest A/B.
 
 Validation on this branch: `python -m pytest automation/tests/ -v` — 655 passed,
 20 skipped.
+
+The [cold-cache follow-up (#96)](data-storage-cold-cache.md) later measured
+explicitly purged and immediately warm reads for all three workflows. Its
+exactness checks passed and its no-go recommendation remained unchanged.

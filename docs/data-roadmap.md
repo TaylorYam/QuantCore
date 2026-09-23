@@ -95,29 +95,31 @@ silently alter research inputs.
 3. **Complete:** account snapshots and trade/fill logs use the authoritative
    SQLite store with idempotency, transaction boundaries, backup/restore,
    reconciliation and Excel projections. Runtime state remains separate.
-4. **Active benchmark (#93):** an initial three-run SP500 CSV-vs-Parquet test
-   found a 10.6% end-to-end improvement with exact per-file and backtest outputs.
-   Broader strategy and update-path measurements are still required before any
-   price-history format decision. Constituents stays authoritative in Excel;
-   its existing warm NPZ cache loads in 0.146 seconds, so SQL conversion is not
-   justified by this measurement.
+4. **Complete, no-go for migration (#93):** the full three-strategy CSV/Parquet
+   benchmark found exact frames and outputs and 45.0% less disk use, but only
+   Skew LS cleared the 15% end-to-end speed hurdle. CSV remains the market
+   archive source of truth; see the [full benchmark report](data-storage-benchmark.md).
+   DuckDB was unavailable in the tested Python environment. Constituents stays
+   authoritative in Excel with its derived NPZ cache; this work found no reason
+   to migrate it to SQL.
 
-### Priority order (2026-09-23, after the initial Issue #93 benchmark)
+### Priority order (2026-09-23, after the Issue #93 benchmark)
 
 0. **Release sync:** the live checkout `C:\QuantCore-master` is synchronized
    with `origin/main`. Issues #82 and #83 are closed; Issue #82's source-verified
    repairs are published and its post-publication audit found no remaining
    findings.
-1. **Benchmark follow-up (#93):** compare CSV, Parquet and, where available,
-   DuckDB across representative strategy reads and the daily update/publication
-   path. No production format change is scheduled before the go/no-go evidence.
+1. **No active market-history format migration:** keep the current CSV archive.
+   Retest only if the representative workload or archive size grows enough to
+   make I/O a material end-to-end bottleneck, or when DuckDB can be measured in
+   the target environment.
 
 ### Tracked follow-ups
 
 There are no open data-quality implementation follow-ups for Issues #82 or #83.
-Issue #93 tracks the conditional market-history format benchmark; it does not
-approve a migration. Constituents remains Excel-backed with its derived NPZ
-cache until evidence supports a different decision.
+Issue #93 is complete with a no-go decision; it does not authorize a format
+migration. Constituents remains Excel-backed with its derived NPZ cache until
+new evidence supports a different decision.
 
 Storage/loader refactors still require OLD/NEW characterization for 3 Accounts ×
 5 scenarios, byte comparison of signals and state, and isolated state

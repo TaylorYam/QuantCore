@@ -1,6 +1,6 @@
-"""Offline checks for the Task Scheduler SQLite backend wrapper."""
+"""Offline checks for process-scoped SQLite backend launchers."""
 
-import sys
+from pathlib import Path
 
 from run_with_sqlite_backend import run
 
@@ -32,3 +32,15 @@ def test_launcher_does_not_require_parent_backend_environment(monkeypatch, tmp_p
 
     assert run(child, []) == 0
     assert marker.read_text(encoding="utf-8") == "sqlite"
+
+
+def test_panel_vbs_routes_gui_through_sqlite_backend_wrapper():
+    panel_launcher = Path(__file__).resolve().parents[1] / "QuantCore_Panel.vbs"
+    launch_command = next(
+        line for line in panel_launcher.read_text(encoding="utf-8").splitlines()
+        if "WshShell.Run" in line
+    )
+
+    assert "run_with_sqlite_backend.py" in launch_command
+    assert "--script" in launch_command
+    assert "control_panel.py" in launch_command

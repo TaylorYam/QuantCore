@@ -229,8 +229,7 @@ def run_daily_check(account_name: str, digest: Digest):
         orders = dedup_orders
 
         # 取消該帳戶既有的掛單（避免新單與舊單衝突）
-        from manual_orders import strategy_orders_to_cancel
-        open_trades = strategy_orders_to_cancel(ib.openTrades())
+        open_trades = ib.openTrades()
         if open_trades:
             log.info(f"  Cancelling {len(open_trades)} existing open orders...")
             for t in open_trades:

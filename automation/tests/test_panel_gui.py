@@ -642,6 +642,9 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
         def list_orders(self):
             return [dict(order_row)] if self.submitted else []
 
+        def has_active_orders(self):
+            return bool(self.store.list_active())
+
         def refresh_status(self):
             return {"orders": self.list_orders(), "errors": []}
 

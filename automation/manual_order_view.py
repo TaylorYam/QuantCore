@@ -4,7 +4,16 @@ from __future__ import annotations
 
 import threading
 import tkinter as tk
+from dataclasses import dataclass
 from tkinter import messagebox, ttk
+
+
+@dataclass(frozen=True)
+class ManualOrderRequest:
+    account_name: str
+    symbol: str
+    quantity: int
+    limit_price: float
 
 
 class ManualOrderWindow:
@@ -45,7 +54,7 @@ class ManualOrderWindow:
 
         self._build(account_names)
         self._render_orders(self.service.list_orders())
-        if self.service.store.list_active():
+        if self.service.has_active_orders():
             self._refresh_status()
         self._schedule_poll()
 
@@ -195,7 +204,12 @@ class ManualOrderWindow:
             raise ValueError("請輸入自填限價。") from exc
         if price <= 0:
             raise ValueError("限價必須大於零。")
-        return account, self.symbol_var.get().strip(), quantity, price
+        return ManualOrderRequest(
+            account_name=account,
+            symbol=self.symbol_var.get().strip(),
+            quantity=quantity,
+            limit_price=price,
+        )
 
     def _preview_order(self):
         if self._busy:
@@ -213,7 +227,10 @@ class ManualOrderWindow:
 
     def _preview_worker(self, request):
         try:
-            result = self.service.preview(*request)
+            result = self.service.preview(
+                request.account_name, request.symbol,
+                request.quantity, request.limit_price,
+            )
             self._post(lambda: self._preview_complete(request, result, None))
         except Exception as exc:
             self._post(lambda error=str(exc): self._preview_complete(request, None, error))
@@ -364,7 +381,7 @@ class ManualOrderWindow:
         self._poll_id = None
         if self._closed:
             return
-        if self.service.store.list_active() and not self._refreshing:
+        if self.service.has_active_orders() and not self._refreshing:
             self._refresh_status()
         self._schedule_poll()
 

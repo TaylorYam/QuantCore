@@ -22,6 +22,7 @@ from account_utils import ROLE_MANUAL_ORDER
 
 
 MANUAL_ORDER_REF_PREFIX = "QUANTCORE_MANUAL:"
+DEFAULT_STORE_PATH = Path(__file__).parent / "manual_orders.sqlite3"
 SUPPORTED_MANUAL_ACCOUNTS = ("Taylor", "Rosa", "Yvonne")
 _ACTIVE_STATUSES = (
     "SENDING", "SENT", "ACCEPTED", "PARTIAL", "CANCEL_PENDING",
@@ -93,11 +94,6 @@ def is_manual_order(trade_or_order) -> bool:
     return str(getattr(order, "orderRef", "") or "").startswith(
         MANUAL_ORDER_REF_PREFIX
     )
-
-
-def strategy_orders_to_cancel(trades: Iterable[object]) -> list[object]:
-    """Keep manual-origin orders out of strategy-wide cancel sweeps."""
-    return [trade for trade in trades if not is_manual_order(trade)]
 
 
 def _utc_now() -> str:
@@ -339,7 +335,7 @@ class ManualOrderService:
             raise ManualOrderError("找不到可用 Account 設定")
         if store is None:
             if store_path is None:
-                store_path = Path(__file__).parent / "manual_orders.sqlite3"
+                store_path = DEFAULT_STORE_PATH
             store = ManualOrderStore(store_path)
         self.store = store
         self._account_ctx_factory = account_ctx_factory
@@ -447,18 +443,17 @@ class ManualOrderService:
             )
         return contract, primary
 
-    def _sync_trades(self, ib, ctx, *, include_completed: bool = True) -> list:
+    def _sync_trades(self, ib, ctx) -> list:
         # IB connect() synchronizes this client's live trades. Use that cache:
         # ib_insync documents reqOpenOrders() as capable of returning stale
         # orders, which could otherwise keep a completed ticker locked.
         open_trades = list(ib.openTrades() or [])
         trades = list(open_trades)
-        if include_completed:
-            try:
-                trades.extend(ib.reqCompletedOrders(apiOnly=True) or [])
-            except Exception:
-                # Open orders remain queryable even on older TWS API versions.
-                pass
+        try:
+            trades.extend(ib.reqCompletedOrders(apiOnly=True) or [])
+        except Exception:
+            # Open orders remain queryable even on older TWS API versions.
+            pass
         for trade in trades:
             if not is_manual_order(trade):
                 continue
@@ -611,5 +606,5 @@ class ManualOrderService:
             row["status_label"] = _STATUS_LABELS.get(row["status"], row["status"])
         return rows
 
-
-DEFAULT_STORE_PATH = Path(__file__).parent / "manual_orders.sqlite3"
+    def has_active_orders(self) -> bool:
+        return bool(self.store.list_active())

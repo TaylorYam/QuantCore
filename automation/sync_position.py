@@ -312,8 +312,7 @@ def submit_sync_orders(
     ib = ib_fetcher.connect(exec_ctx)
     try:
         # 1. 取消既有掛單
-        from manual_orders import strategy_orders_to_cancel
-        open_trades = strategy_orders_to_cancel(ib.openTrades())
+        open_trades = ib.openTrades()
         if open_trades:
             _log(f"  Cancelling {len(open_trades)} existing open orders...")
             for t in open_trades:

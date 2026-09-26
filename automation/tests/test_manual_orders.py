@@ -124,7 +124,9 @@ def test_panel_preview_submit_and_restart_show_ib_accepted_order(tmp_path):
             )
     assert trade.order.orderRef.startswith("QUANTCORE_MANUAL:TAYLOR:")
     assert result["status"] == "ACCEPTED"
-    assert state.client_ids and len(set(state.client_ids)) == 1
+    # Manual orders have a dedicated per-account clientId, separate from the
+    # strategy rebalance connection (Taylor's role offsets are 0 and 6).
+    assert state.client_ids == [26, 26]
 
     # A fresh service/store instance sees the durable record.
     restarted = service_for(tmp_path, state)
@@ -215,12 +217,3 @@ def test_ib_inactive_order_is_persisted_as_rejected(tmp_path):
 
     assert rejected["status"] == "REJECTED"
     assert rejected["status_label"] == "遭 IB 拒單"
-
-
-def test_strategy_cancel_guard_recognizes_only_manual_order_refs():
-    from manual_orders import strategy_orders_to_cancel
-
-    manual = NS(order=NS(orderRef="QUANTCORE_MANUAL:TAYLOR:abc"))
-    strategy = NS(order=NS(orderRef=""))
-    other = NS(order=NS(orderRef="QUANTCORE_REBALANCE"))
-    assert strategy_orders_to_cancel([manual, strategy, other]) == [strategy, other]

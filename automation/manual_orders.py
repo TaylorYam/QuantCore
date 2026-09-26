@@ -11,6 +11,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from functools import wraps
 import logging
 import math
@@ -69,6 +70,36 @@ class DuplicateManualOrder(ManualOrderError):
     """An Account already has an unresolved manual order for the symbol."""
 
 
+def whole_share_quantity(*, shares: int | None = None,
+                         amount_usd: Decimal | str | None = None,
+                         limit_price: float | Decimal | str) -> int:
+    """Resolve exactly one input mode to a positive whole-share quantity."""
+    if (shares is None) == (amount_usd is None):
+        raise ManualOrderError("請在整股股數與美元金額之間擇一輸入")
+    try:
+        price = Decimal(str(limit_price))
+    except (InvalidOperation, ValueError) as exc:
+        raise ManualOrderError("請輸入有效的限價") from exc
+    if not price.is_finite() or price <= 0:
+        raise ManualOrderError("限價必須是大於零的有效數字")
+    if amount_usd is None:
+        if isinstance(shares, bool) or not isinstance(shares, int) or shares <= 0:
+            raise ManualOrderError("股數必須是大於零的整數")
+        return shares
+    try:
+        amount = Decimal(str(amount_usd))
+    except (InvalidOperation, ValueError) as exc:
+        raise ManualOrderError("請輸入有效的美元金額") from exc
+    if not amount.is_finite() or amount <= 0:
+        raise ManualOrderError("美元金額必須大於零")
+    amount_num, amount_den = amount.as_integer_ratio()
+    price_num, price_den = price.as_integer_ratio()
+    quantity = (amount_num * price_den) // (amount_den * price_num)
+    if quantity < 1:
+        raise ManualOrderError("美元金額依自填限價換算後不足一股")
+    return quantity
+
+
 @dataclass(frozen=True)
 class ManualOrderPreview:
     account_name: str
@@ -83,6 +114,7 @@ class ManualOrderPreview:
     allow_short: bool = False
     current_position: float = 0.0
     projected_position: float = 0.0
+    amount_usd: Decimal | None = None
 
     @property
     def intent_action(self) -> str:
@@ -104,11 +136,21 @@ class ManualOrderPreview:
             if self.projected_position < 0 else
             f"預計持倉：{self.projected_position:g} 股"
         )
+        amount_details = ""
+        if self.amount_usd is not None:
+            estimated = Decimal(self.quantity) * Decimal(str(self.limit_price))
+            amount_details = (
+                f"輸入美元金額：${self.amount_usd:f}（預估交易目標）\n"
+                f"預估委託金額：${estimated:f}\n"
+                "美元金額只用於換算股數，非成交金額上限；實際金額可能超出輸入金額。\n"
+            )
+        quantity_label = "換算整股股數" if self.amount_usd is not None else "整股股數"
         return (
             f"Account：{self.account_name}\n"
             f"標的：{self.symbol}\n"
             f"方向：{direction}\n"
-            f"整股股數：{self.quantity:,}\n"
+            f"{quantity_label}：{self.quantity:,}\n"
+            f"{amount_details}"
             f"目前持倉：{self.current_position:g} 股\n"
             f"{expected}\n"
             + "限價：$" + price + "\n"
@@ -695,17 +737,21 @@ class ManualOrderService:
 
     @staticmethod
     def _check_request(account_name: str, symbol: str,
-                       quantity: int, limit_price: float) -> tuple[str, int, float]:
+                       quantity: int | None, limit_price: float,
+                       amount_usd: Decimal | str | None = None,
+                       ) -> tuple[str, int, float, Decimal | None]:
         normalized_symbol = _canonical_symbol(symbol)
-        if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
-            raise ManualOrderError("股數必須是大於零的整數")
         try:
             price = float(limit_price)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise ManualOrderError("請輸入有效的限價") from exc
         if not math.isfinite(price) or price <= 0:
             raise ManualOrderError("限價必須是大於零的有效數字")
-        return normalized_symbol, quantity, price
+        resolved = whole_share_quantity(
+            shares=quantity, amount_usd=amount_usd, limit_price=price,
+        )
+        amount = Decimal(str(amount_usd)) if amount_usd is not None else None
+        return normalized_symbol, resolved, price, amount
 
     @staticmethod
     def _qualify_contract(ib, symbol: str):
@@ -945,7 +991,8 @@ class ManualOrderService:
 
     def _build_preview(self, account: str, symbol: str, quantity: int,
                        price: float, action: str, allow_short: bool,
-                       ctx, ib) -> tuple[ManualOrderPreview, object]:
+                       ctx, ib, amount_usd: Decimal | None = None,
+                       ) -> tuple[ManualOrderPreview, object]:
         if symbol in self._universe():
             raise ManualOrderError(
                 f"{symbol} 屬於 SR、Skew LS 或 SP500 歷史策略 Universe，不能手動下單"
@@ -961,22 +1008,25 @@ class ManualOrderService:
             contract_id=int(contract.conId), primary_exchange=primary_exchange,
             action=action, allow_short=allow_short,
             current_position=current, projected_position=projected,
+            amount_usd=amount_usd,
         )
         return preview, contract
 
     @_serialize_service_operation
     def preview(self, account_name: str, symbol: str,
-                quantity: int, limit_price: float, *, action: str = "BUY",
-                allow_short: bool = False) -> ManualOrderPreview:
+                quantity: int | None, limit_price: float, *, action: str = "BUY",
+                allow_short: bool = False,
+                amount_usd: Decimal | str | None = None) -> ManualOrderPreview:
         account = self._account_name(account_name)
-        symbol, quantity, price = self._check_request(
-            account, symbol, quantity, limit_price
+        symbol, quantity, price, amount = self._check_request(
+            account, symbol, quantity, limit_price, amount_usd,
         )
         if action not in {"BUY", "SELL", "COVER"} or not isinstance(allow_short, bool):
             raise ManualOrderError("請選擇有效方向與放空設定")
         with self._connected(account) as (ctx, ib):
             preview, _contract = self._build_preview(
                 account, symbol, quantity, price, action, allow_short, ctx, ib,
+                amount,
             )
             return preview
 
@@ -984,9 +1034,10 @@ class ManualOrderService:
     def validate_preview(self, preview: ManualOrderPreview) -> ManualOrderPreview:
         """Recheck an existing preview immediately before asking for consent."""
         fresh = self.preview(
-            preview.account_name, preview.symbol, preview.quantity,
+            preview.account_name, preview.symbol,
+            None if preview.amount_usd is not None else preview.quantity,
             preview.limit_price, action=preview.action,
-            allow_short=preview.allow_short,
+            allow_short=preview.allow_short, amount_usd=preview.amount_usd,
         )
         if fresh != preview:
             raise ManualOrderError("Account、合約或持倉在預覽後變更，請重新預覽")
@@ -995,18 +1046,21 @@ class ManualOrderService:
     @_serialize_service_operation
     def submit(self, preview: ManualOrderPreview) -> dict:
         account = self._account_name(preview.account_name)
-        symbol, quantity, price = self._check_request(
-            account, preview.symbol, preview.quantity, preview.limit_price
+        symbol, quantity, price, amount = self._check_request(
+            account, preview.symbol,
+            None if preview.amount_usd is not None else preview.quantity,
+            preview.limit_price, preview.amount_usd,
         )
         if (account != preview.account_name or preview.tif != "DAY"
                 or preview.account_id == ""
+                or quantity != preview.quantity
                 or preview.action not in {"BUY", "SELL", "COVER"}
                 or not isinstance(preview.allow_short, bool)):
             raise ManualOrderError("委託預覽已變更，請重新預覽")
         with self._connected(account) as (ctx, ib):
             fresh, contract = self._build_preview(
                 account, symbol, quantity, price, preview.action,
-                preview.allow_short, ctx, ib,
+                preview.allow_short, ctx, ib, amount,
             )
             if fresh != preview:
                 raise ManualOrderError("Account、合約或持倉在預覽後變更，請重新預覽")

@@ -372,6 +372,12 @@ class ControlPanel(tk.Tk):
         if query_loop is not None:
             query_loop.stop()
         try:
+            manual_service = getattr(self, "_manual_order_service", None)
+            if manual_service is not None:
+                manual_service.stop_monitor()
+        except Exception:
+            pass
+        try:
             eng = getattr(self, "_mon_engine", None)
             if eng is not None:
                 eng.stop_all()
@@ -949,6 +955,17 @@ class ControlPanel(tk.Tk):
             daemon=True,
         ).start()
 
+    @staticmethod
+    def _manual_order_notify(account_name: str, msg: str) -> bool:
+        """Send a manual-order result through the Panel's account TG boundary."""
+        from account_utils import telegram_dest
+        from notify import tg_send
+
+        destination = telegram_dest(account_name)
+        if not destination.get("token") or not destination.get("chat_id"):
+            return False
+        return bool(tg_send(msg, **destination))
+
     # ── Check Now 按鈕：對 dead monitor thread 重新 spawn + 探測 ──
 
     def _refresh_gateway_status(self):
@@ -986,6 +1003,27 @@ class ControlPanel(tk.Tk):
 
     # ── Sync Position ─────────────────────────────────────
 
+    def start_manual_order_tracking(self):
+        """Start durable manual-order reconciliation for the app lifetime."""
+        service = getattr(self, "_manual_order_service", None)
+        if service is None:
+            from manual_orders import ManualOrderService, SUPPORTED_MANUAL_ACCOUNTS
+
+            accounts = [
+                item["name"] for item in self._accounts_meta
+                if item["name"].casefold() in {
+                    name.casefold() for name in SUPPORTED_MANUAL_ACCOUNTS
+                }
+            ]
+            service = ManualOrderService(
+                account_names=accounts, notifier=self._manual_order_notify,
+            )
+            self._manual_order_service = service
+        start_monitor = getattr(service, "start_monitor", None)
+        if callable(start_monitor):
+            self._manual_order_monitor = start_monitor()
+        return service
+
     def _open_manual_order(self):
         """Open the per-order preview and confirmation flow."""
         existing = getattr(self, "_manual_order_window", None)
@@ -1008,7 +1046,12 @@ class ControlPanel(tk.Tk):
                 name.casefold() for name in SUPPORTED_MANUAL_ACCOUNTS
             }
         ]
-        service = ManualOrderService(account_names=accounts)
+        service = getattr(self, "_manual_order_service", None)
+        if service is None:
+            service = ManualOrderService(
+                account_names=accounts, notifier=self._manual_order_notify,
+            )
+            self._manual_order_service = service
         self._manual_order_window = ManualOrderWindow(
             parent=self,
             account_names=accounts,
@@ -1316,4 +1359,8 @@ if __name__ == "__main__":
     app = ControlPanel()
     # Stash so _quit_app can release_lock on shutdown.
     app._lockfile_path = _LOCKFILE
+    try:
+        app.start_manual_order_tracking()
+    except Exception as exc:
+        app._log(f"[!] Manual order tracking could not start: {exc}")
     app.mainloop()

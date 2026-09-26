@@ -11,10 +11,13 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import wraps
+import logging
 import math
 import re
 import sqlite3
 from pathlib import Path
+import threading
 import uuid
 from typing import Callable, Iterable, Iterator
 
@@ -26,7 +29,7 @@ DEFAULT_STORE_PATH = Path(__file__).parent / "manual_orders.sqlite3"
 SUPPORTED_MANUAL_ACCOUNTS = ("Taylor", "Rosa", "Yvonne")
 _ACTIVE_STATUSES = (
     "SENDING", "SENT", "ACCEPTED", "PARTIAL", "CANCEL_PENDING",
-    "SUBMISSION_UNKNOWN",
+    "CANCEL_UNKNOWN", "IB_UNKNOWN", "SUBMISSION_UNKNOWN",
 )
 _TERMINAL_STATUSES = frozenset({"FILLED", "REJECTED", "CANCELLED", "EXPIRED"})
 _STATUS_LABELS = {
@@ -37,6 +40,8 @@ _STATUS_LABELS = {
     "FILLED": "已成交",
     "REJECTED": "遭 IB 拒單",
     "CANCEL_PENDING": "取消確認中",
+    "CANCEL_UNKNOWN": "取消結果待確認",
+    "IB_UNKNOWN": "IB 狀態待確認",
     "CANCELLED": "已取消",
     "EXPIRED": "已失效",
     "SUBMISSION_UNKNOWN": "送單結果待確認",
@@ -52,6 +57,8 @@ _US_PRIMARY_EXCHANGES = frozenset({
     "NYSE MKT", "NYSEAMERICAN", "NYSEARCA", "NYSEMKT", "PSX",
 })
 _SYMBOL_RE = re.compile(r"^[A-Z]{1,5}(?:\.[A-Z])?$")
+log = logging.getLogger(__name__)
+_IB_EVENT_LOOP_LOCAL = threading.local()
 
 
 class ManualOrderError(ValueError):
@@ -100,6 +107,23 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _ensure_ib_event_loop() -> None:
+    """Install a reusable ib_insync loop for the current worker thread."""
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError("Manual order IB calls must run outside an active asyncio loop")
+    loop = getattr(_IB_EVENT_LOOP_LOCAL, "loop", None)
+    if loop is None or loop.is_closed():
+        loop = asyncio.new_event_loop()
+        _IB_EVENT_LOOP_LOCAL.loop = loop
+    asyncio.set_event_loop(loop)
+
+
 def _canonical_symbol(symbol: str) -> str:
     from symbol_contract import canonical_symbol
 
@@ -134,9 +158,9 @@ class ManualOrderStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS manual_orders (
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS manual_orders (
                     order_ref TEXT PRIMARY KEY,
                     account_name TEXT NOT NULL,
                     account_id TEXT NOT NULL,
@@ -155,17 +179,91 @@ class ManualOrderStore:
                     avg_fill_price REAL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_manual_orders_account_created
-                    ON manual_orders(account_name, created_at DESC);
-                CREATE UNIQUE INDEX IF NOT EXISTS uq_manual_active_account_symbol
-                    ON manual_orders(account_name, symbol)
-                    WHERE status IN (
-                        'SENDING', 'SENT', 'ACCEPTED', 'PARTIAL',
-                        'CANCEL_PENDING', 'SUBMISSION_UNKNOWN'
-                    );
-                """
+                )"""
             )
+            conn.execute(
+                """CREATE INDEX IF NOT EXISTS idx_manual_orders_account_created
+                   ON manual_orders(account_name, created_at DESC)"""
+            )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS manual_order_notifications (
+                    order_ref TEXT PRIMARY KEY,
+                    terminal_status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    delivered_at TEXT
+                )"""
+            )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS manual_order_alerts (
+                    event_key TEXT PRIMARY KEY,
+                    order_ref TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    delivered_at TEXT,
+                    resolved_at TEXT
+                )"""
+            )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS manual_order_schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                )"""
+            )
+
+            migrations = {
+                int(row["version"])
+                for row in conn.execute(
+                    "SELECT version FROM manual_order_schema_migrations"
+                ).fetchall()
+            }
+            if 1 not in migrations:
+                # Add the new unknown states to the Account/symbol lock as a
+                # one-time, serialized migration. BEGIN IMMEDIATE keeps the
+                # old invariant in place until the replacement is committed.
+                conn.execute("DROP INDEX IF EXISTS uq_manual_active_account_symbol")
+                conn.execute(
+                    """CREATE UNIQUE INDEX uq_manual_active_account_symbol
+                       ON manual_orders(account_name, symbol)
+                       WHERE status IN (
+                           'SENDING', 'SENT', 'ACCEPTED', 'PARTIAL',
+                           'CANCEL_PENDING', 'CANCEL_UNKNOWN', 'IB_UNKNOWN',
+                           'SUBMISSION_UNKNOWN'
+                       )"""
+                )
+                conn.execute(
+                    "INSERT INTO manual_order_schema_migrations VALUES (1, ?)",
+                    (_utc_now(),),
+                )
+            if 2 not in migrations:
+                # Earlier development builds used UNIQUE(order_ref, status),
+                # which suppressed a new alert if the same unknown state
+                # recurred after successful reconciliation. Rebuild without
+                # that constraint so each unresolved episode can be recorded.
+                conn.execute(
+                    "ALTER TABLE manual_order_alerts RENAME TO manual_order_alerts_v1"
+                )
+                conn.execute(
+                    """CREATE TABLE manual_order_alerts (
+                        event_key TEXT PRIMARY KEY,
+                        order_ref TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        delivered_at TEXT,
+                        resolved_at TEXT
+                    )"""
+                )
+                conn.execute(
+                    """INSERT INTO manual_order_alerts
+                       SELECT event_key, order_ref, status, created_at,
+                              delivered_at, resolved_at
+                       FROM manual_order_alerts_v1"""
+                )
+                conn.execute("DROP TABLE manual_order_alerts_v1")
+                conn.execute(
+                    "INSERT INTO manual_order_schema_migrations VALUES (2, ?)",
+                    (_utc_now(),),
+                )
+            conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=5.0)
@@ -216,14 +314,22 @@ class ManualOrderStore:
         if not updates:
             return self.get(order_ref)
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             current = conn.execute(
                 "SELECT * FROM manual_orders WHERE order_ref=?", (order_ref,)
             ).fetchone()
             if current is None:
+                conn.rollback()
                 return None
             # An old open-order snapshot must not reopen a terminal order.
             if current["status"] in _TERMINAL_STATUSES and updates.get("status") in _ACTIVE_STATUSES:
+                conn.rollback()
                 return dict(current)
+            if "filled_quantity" in updates:
+                updates["filled_quantity"] = max(
+                    int(current["filled_quantity"] or 0),
+                    int(updates["filled_quantity"] or 0),
+                )
             assignments = [f"{name}=?" for name in updates]
             values = list(updates.values())
             assignments.append("updated_at=?")
@@ -235,6 +341,40 @@ class ManualOrderStore:
             row = conn.execute(
                 "SELECT * FROM manual_orders WHERE order_ref=?", (order_ref,)
             ).fetchone()
+            if row["status"] in _TERMINAL_STATUSES:
+                conn.execute(
+                    """INSERT INTO manual_order_notifications (
+                           order_ref, terminal_status, created_at
+                       ) VALUES (?, ?, ?)
+                       ON CONFLICT(order_ref) DO UPDATE SET
+                           terminal_status=excluded.terminal_status
+                       WHERE manual_order_notifications.delivered_at IS NULL""",
+                    (order_ref, row["status"], _utc_now()),
+                )
+            elif row["status"] in {
+                "CANCEL_UNKNOWN", "IB_UNKNOWN", "SUBMISSION_UNKNOWN",
+            }:
+                conn.execute(
+                    """INSERT INTO manual_order_alerts (
+                           event_key, order_ref, status, created_at
+                       ) SELECT ?, ?, ?, ?
+                       WHERE NOT EXISTS (
+                           SELECT 1 FROM manual_order_alerts
+                           WHERE order_ref=? AND status=? AND resolved_at IS NULL
+                       )""",
+                    (f"{order_ref}:{row['status']}:{uuid.uuid4().hex}",
+                     order_ref, row["status"], _utc_now(),
+                     order_ref, row["status"]),
+                )
+            else:
+                # Close this unknown-state episode even after its alert was
+                # delivered, so the same status can alert if it recurs later.
+                conn.execute(
+                    """UPDATE manual_order_alerts SET resolved_at=?
+                       WHERE order_ref=? AND resolved_at IS NULL""",
+                    (_utc_now(), order_ref),
+                )
+            conn.commit()
         return dict(row) if row else None
 
     def get(self, order_ref: str) -> dict | None:
@@ -269,6 +409,114 @@ class ManualOrderStore:
             rows = conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
 
+    def list_pending_notifications(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT n.order_ref, n.terminal_status, o.*
+                   FROM manual_order_notifications AS n
+                   JOIN manual_orders AS o USING (order_ref)
+                   WHERE n.delivered_at IS NULL
+                   ORDER BY n.created_at"""
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_notification_delivered(self, order_ref: str,
+                                    terminal_status: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """UPDATE manual_order_notifications
+                   SET delivered_at=?
+                   WHERE order_ref=? AND terminal_status=? AND delivered_at IS NULL""",
+                (_utc_now(), order_ref, terminal_status),
+            )
+        return cursor.rowcount == 1
+
+    def list_pending_alerts(self) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT a.event_key, a.status AS alert_status, o.*
+                   FROM manual_order_alerts AS a
+                   JOIN manual_orders AS o USING (order_ref)
+                   WHERE a.delivered_at IS NULL AND a.resolved_at IS NULL
+                     AND a.status=o.status
+                   ORDER BY a.created_at"""
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_alert_delivered(self, event_key: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """UPDATE manual_order_alerts SET delivered_at=?
+                   WHERE event_key=? AND delivered_at IS NULL AND resolved_at IS NULL""",
+                (_utc_now(), event_key),
+            )
+        return cursor.rowcount == 1
+
+
+def _manual_order_fill_totals(fills, *, row: dict, order, trade, ctx
+                              ) -> tuple[int, float | None]:
+    """Aggregate only executions that can be tied to this durable manual order."""
+    stored_perm_id = int(row.get("perm_id") or 0)
+    order_perm_id = int(getattr(order, "permId", 0) or 0)
+    perm_id = stored_perm_id or order_perm_id
+    order_id = int(row.get("broker_order_id") or
+                   getattr(order, "orderId", 0) or 0)
+    order_ref = str(row.get("order_ref") or "")
+    contract = getattr(trade, "contract", None)
+    contract_id = int(row.get("contract_id") or
+                       getattr(contract, "conId", 0) or 0)
+
+    seen: set[str] = set()
+    shares_total = 0.0
+    notional_total = 0.0
+    for fill in fills:
+        execution = getattr(fill, "execution", None)
+        if execution is None:
+            continue
+        account = str(getattr(execution, "acctNumber", "") or "")
+        if account != str(ctx.account):
+            continue
+
+        fill_contract = getattr(fill, "contract", None)
+        fill_contract_id = int(getattr(fill_contract, "conId", 0) or 0)
+        exec_ref = str(getattr(execution, "orderRef", "") or "")
+        exec_perm_id = int(getattr(execution, "permId", 0) or 0)
+        exec_order_id = int(getattr(execution, "orderId", 0) or 0)
+        exec_client_id = int(getattr(execution, "clientId", 0) or 0)
+
+        exact_ref_match = bool(order_ref and exec_ref == order_ref)
+        perm_match = bool(perm_id and exec_perm_id == perm_id)
+        client_order_match = bool(
+            order_id and exec_order_id == order_id
+            and exec_client_id == int(ctx.client_id)
+            and contract_id and fill_contract_id == contract_id
+        )
+        if not (exact_ref_match or perm_match or client_order_match):
+            continue
+        if contract_id and fill_contract_id and fill_contract_id != contract_id:
+            continue
+
+        exec_id = str(getattr(execution, "execId", "") or "")
+        if exec_id and exec_id in seen:
+            continue
+        if exec_id:
+            seen.add(exec_id)
+        try:
+            shares = float(getattr(execution, "shares", 0) or 0)
+            price = float(getattr(execution, "price", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(shares) or not math.isfinite(price) or shares <= 0 or price <= 0:
+            continue
+        shares_total += shares
+        notional_total += shares * price
+
+    if shares_total <= 0:
+        return 0, None
+    filled = max(0, int(round(shares_total)))
+    avg_price = notional_total / shares_total
+    return filled, avg_price if math.isfinite(avg_price) and avg_price > 0 else None
+
 
 def _status_from_trade(trade) -> tuple[str | None, str, int, float | None]:
     order_status = getattr(trade, "orderStatus", None)
@@ -292,13 +540,16 @@ def _status_from_trade(trade) -> tuple[str | None, str, int, float | None]:
         "Submitted": "ACCEPTED",
         "PartiallyFilled": "PARTIAL",
         "PendingCancel": "CANCEL_PENDING",
-        "ApiCancelled": "CANCELLED",
+        # ApiCancelled means the API cancellation was requested before IB
+        # acknowledged the order; only Cancelled confirms the balance is gone.
+        "ApiCancelled": "CANCEL_PENDING",
         "Cancelled": "CANCELLED",
         "Filled": "FILLED",
         "Inactive": "REJECTED",
         "Expired": "EXPIRED",
     }.get(raw_status)
-    if filled > 0 and quantity > filled and mapped not in {"CANCELLED", "EXPIRED", "REJECTED"}:
+    if filled > 0 and quantity > filled and mapped not in {
+            "CANCEL_PENDING", "CANCEL_UNKNOWN", "CANCELLED", "EXPIRED", "REJECTED"}:
         mapped = "PARTIAL"
     elif quantity > 0 and filled >= quantity:
         mapped = "FILLED"
@@ -312,6 +563,14 @@ def _status_from_trade(trade) -> tuple[str | None, str, int, float | None]:
     return mapped, message, filled, avg_fill_price
 
 
+def _serialize_service_operation(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._operation_lock:
+            return method(self, *args, **kwargs)
+    return wrapped
+
+
 class ManualOrderService:
     """Validate, submit, and reconcile one-account manual BUY LMT orders."""
 
@@ -321,6 +580,7 @@ class ManualOrderService:
                  ib_factory: Callable | None = None,
                  universe_loader: Callable[[], set[str]] | None = None,
                  order_factory: Callable | None = None,
+                 notifier: Callable[[str, str], bool],
                  store_path: str | Path | None = None):
         if account_names is None:
             from account_utils import load_accounts
@@ -342,6 +602,11 @@ class ManualOrderService:
         self._ib_factory = ib_factory
         self._universe_loader = universe_loader or _default_universe_loader
         self._order_factory = order_factory
+        if not callable(notifier):
+            raise TypeError("ManualOrderService requires an injected notifier")
+        self._notifier = notifier
+        self._operation_lock = threading.RLock()
+        self._monitor: ManualOrderMonitor | None = None
 
     def _account_name(self, requested: str) -> str:
         value = str(requested or "").strip()
@@ -388,6 +653,11 @@ class ManualOrderService:
         ctx = self._context(account_name)
         ib = self._ib()
         try:
+            # ib_insync's synchronous API runs coroutines on the calling
+            # thread's event loop. Panel workers and the lifecycle monitor
+            # are new threads on modern Python, where no loop is installed by
+            # default.
+            _ensure_ib_event_loop()
             ib.connect(ctx.host, ctx.port, clientId=ctx.client_id, timeout=10)
             managed = {str(item).strip() for item in (ib.managedAccounts() or [])}
             if ctx.account not in managed:
@@ -454,6 +724,34 @@ class ManualOrderService:
         except Exception:
             # Open orders remain queryable even on older TWS API versions.
             pass
+        fills = []
+        try:
+            fills.extend(ib.fills() or [])
+        except Exception:
+            pass
+        try:
+            # A reconnect does not necessarily replay executions into fills().
+            # Request today's execution records so completed orders whose
+            # orderStatus has zeroed fill fields can still be reported.
+            fills.extend(ib.reqExecutions() or [])
+        except Exception:
+            log.debug("Manual order execution query unavailable", exc_info=True)
+        unique_fills = {}
+        for fill in fills:
+            execution = getattr(fill, "execution", None)
+            if execution is None:
+                continue
+            exec_id = str(getattr(execution, "execId", "") or "")
+            key = exec_id or (
+                getattr(execution, "permId", 0),
+                getattr(execution, "orderId", 0),
+                getattr(execution, "clientId", 0),
+                getattr(execution, "shares", 0),
+                getattr(execution, "price", 0),
+            )
+            unique_fills[key] = fill
+        fills = tuple(unique_fills.values())
+        observed_refs = set()
         for trade in trades:
             if not is_manual_order(trade):
                 continue
@@ -461,16 +759,98 @@ class ManualOrderService:
             if str(getattr(order, "account", "") or "") != ctx.account:
                 continue
             order_ref = str(getattr(order, "orderRef", "") or "")
-            if not self.store.get(order_ref):
+            current = self.store.get(order_ref)
+            if not current:
                 continue
+            observed_refs.add(order_ref)
             status, message, filled, avg_price = _status_from_trade(trade)
-            if status:
+            fill_records = list(fills)
+            fill_records.extend(getattr(trade, "fills", ()) or ())
+            execution_filled, execution_avg = _manual_order_fill_totals(
+                fill_records, row=current, order=order, trade=trade, ctx=ctx,
+            )
+            persisted_filled = int(current.get("filled_quantity") or 0)
+            if execution_filled >= max(filled, persisted_filled):
+                filled = execution_filled
+                if execution_avg is not None:
+                    avg_price = execution_avg
+            elif filled >= persisted_filled:
+                # The status snapshot is at least as complete as our durable
+                # record, so its average remains the best available value.
+                pass
+            else:
+                # A reconnect may expose only a subset of today's executions;
+                # keep both the monotonic quantity and its prior average.
+                filled = persisted_filled
+                avg_price = None
+            quantity = int(current["quantity"])
+            if quantity > 0 and filled >= quantity:
+                status = "FILLED"
+                message = _STATUS_LABELS[status]
+            elif (filled > 0 and status not in {
+                    "CANCEL_PENDING", "CANCEL_UNKNOWN", "CANCELLED",
+                    "EXPIRED", "REJECTED",
+            }):
+                status = "PARTIAL"
+                message = _STATUS_LABELS[status]
+            if current["status"] == "CANCEL_PENDING" and status in {
+                "SENT", "ACCEPTED", "PARTIAL",
+            }:
+                # The open-order snapshot can arrive after the cancel request
+                # but before IB's terminal confirmation.
+                status = "CANCEL_PENDING"
+                message = current["status_message"] or _STATUS_LABELS[status]
+            elif current["status"] == "CANCEL_UNKNOWN" and status in {
+                "SENT", "ACCEPTED", "PARTIAL",
+            }:
+                # Reconciliation found the order still working after a timeout.
+                status = "ACCEPTED" if status != "PARTIAL" else "PARTIAL"
+            if status is None:
+                current = self.store.get(order_ref)
+                status = ("CANCEL_UNKNOWN" if current and current["status"] in {
+                    "CANCEL_PENDING", "CANCEL_UNKNOWN",
+                } else "SUBMISSION_UNKNOWN")
+                raw_status = str(getattr(
+                    getattr(trade, "orderStatus", None), "status", ""
+                ) or "未知")
+                message = f"未知 IB 狀態，保持未結案：{raw_status}"
+            self.store.update(
+                order_ref, status=status, status_message=message,
+                broker_order_id=getattr(order, "orderId", None),
+                perm_id=getattr(order, "permId", None),
+                filled_quantity=filled, avg_fill_price=avg_price,
+            )
+        for row in self.store.list_active(ctx.name):
+            if row["order_ref"] in observed_refs:
+                continue
+            execution_filled, execution_avg = _manual_order_fill_totals(
+                fills, row=row, order=None, trade=None, ctx=ctx,
+            )
+            if execution_filled >= int(row["quantity"]) > 0:
                 self.store.update(
-                    order_ref, status=status, status_message=message,
-                    broker_order_id=getattr(order, "orderId", None),
-                    perm_id=getattr(order, "permId", None),
-                    filled_quantity=filled, avg_fill_price=avg_price,
+                    row["order_ref"], status="FILLED",
+                    status_message=_STATUS_LABELS["FILLED"],
+                    filled_quantity=execution_filled,
+                    avg_fill_price=execution_avg,
                 )
+                continue
+            unknown_status = (
+                "CANCEL_UNKNOWN" if row["status"] in {
+                    "CANCEL_PENDING", "CANCEL_UNKNOWN",
+                } else "IB_UNKNOWN"
+            )
+            self.store.update(
+                row["order_ref"], status=unknown_status,
+                status_message=(
+                "IB 清單未找到此手動委託；保持未結案，請再次對帳"
+                ),
+                filled_quantity=execution_filled,
+                avg_fill_price=(
+                    execution_avg
+                    if execution_filled >= int(row.get("filled_quantity") or 0)
+                    else None
+                ),
+            )
         return open_trades
 
     def _assert_no_duplicate(self, account_name: str, ctx, symbol: str,
@@ -493,6 +873,7 @@ class ManualOrderService:
                     f"{account_name} 的 {symbol} 已有未結案手動單"
                 )
 
+    @_serialize_service_operation
     def preview(self, account_name: str, symbol: str,
                 quantity: int, limit_price: float) -> ManualOrderPreview:
         account = self._account_name(account_name)
@@ -518,6 +899,7 @@ class ManualOrderService:
                 primary_exchange=primary_exchange,
             )
 
+    @_serialize_service_operation
     def submit(self, preview: ManualOrderPreview) -> dict:
         account = self._account_name(preview.account_name)
         symbol, quantity, price = self._check_request(
@@ -580,31 +962,234 @@ class ManualOrderService:
                     order_ref, status="SUBMISSION_UNKNOWN",
                     status_message=f"送單結果待確認：{exc}",
                 )
-            result = self.store.get(order_ref)
-            assert result is not None
-            result["status_label"] = _STATUS_LABELS.get(
-                result["status"], result["status"]
-            )
-            return result
+        result = self.store.get(order_ref)
+        assert result is not None
+        result["status_label"] = _STATUS_LABELS.get(
+            result["status"], result["status"]
+        )
+        self._dispatch_terminal_notifications()
+        return result
 
-    def refresh_status(self) -> dict:
-        """Reconnect with each owning clientId and reconcile active orders."""
-        active = self.store.list_active()
-        accounts = list(dict.fromkeys(row["account_name"] for row in active))
-        errors = []
-        for account in accounts:
+    @_serialize_service_operation
+    def cancel(self, order_ref: str) -> dict:
+        """Request cancellation of one persisted manual order and reconcile it.
+
+        Request acceptance is deliberately kept separate from the terminal
+        cancellation state. Until IB reports Cancelled (or another terminal
+        result such as Filled), the order keeps its Account/symbol lock.
+        """
+        with self._operation_lock:
+            row = self.store.get(str(order_ref or ""))
+            if (row is None or not str(order_ref or "").startswith(
+                    MANUAL_ORDER_REF_PREFIX)):
+                raise ManualOrderError("找不到這筆手動委託；未送出取消要求")
+            if row["status"] in _TERMINAL_STATUSES:
+                return self._with_status_label(row)
+            if row["status"] in {"CANCEL_PENDING", "CANCEL_UNKNOWN"}:
+                return self._with_status_label(row)
+
+            account = self._account_name(row["account_name"])
+            row = self.store.update(
+                order_ref, status="CANCEL_PENDING",
+                status_message=_STATUS_LABELS["CANCEL_PENDING"],
+            ) or row
             try:
                 with self._connected(account) as (ctx, ib):
-                    self._sync_trades(ib, ctx)
+                    if row["account_id"] != ctx.account:
+                        raise ManualOrderError(
+                            "委託所屬 Account 與目前設定不符；已阻擋取消"
+                        )
+                    open_trades = self._sync_trades(ib, ctx)
+                    row = self.store.get(order_ref) or row
+                    if row["status"] in _TERMINAL_STATUSES:
+                        result = row
+                    else:
+                        trade = next((item for item in open_trades
+                                      if is_manual_order(item)
+                                      and str(getattr(getattr(item, "order", None),
+                                                      "orderRef", "") or "") == order_ref
+                                      and str(getattr(getattr(item, "order", None),
+                                                      "account", "") or "") == ctx.account),
+                                     None)
+                        if trade is None:
+                            result = self.store.update(
+                                order_ref, status="CANCEL_UNKNOWN",
+                                status_message=(
+                                    "IB 尚未提供可驗證的手動委託；保持未結案，請刷新確認"
+                                ),
+                            ) or row
+                        else:
+                            pending = self.store.update(
+                                order_ref,
+                                broker_order_id=getattr(trade.order, "orderId", None),
+                                perm_id=getattr(trade.order, "permId", None),
+                            ) or row
+                            try:
+                                ib.cancelOrder(trade.order)
+                                ib.sleep(1.0)
+                                self._sync_trades(ib, ctx)
+                            except Exception as exc:
+                                pending = self.store.update(
+                                    order_ref, status="CANCEL_UNKNOWN",
+                                    status_message=f"取消結果待確認：{exc}",
+                                ) or pending
+                            result = self.store.get(order_ref) or pending
             except Exception as exc:
-                errors.append(f"{account}：{exc}")
-        return {"orders": self.list_orders(), "errors": errors}
+                row = self.store.get(order_ref) or row
+                if row["status"] not in _TERMINAL_STATUSES:
+                    row = self.store.update(
+                        order_ref, status="CANCEL_UNKNOWN",
+                        status_message=f"取消結果待確認：{exc}",
+                    ) or row
+                result = row
+            self._dispatch_terminal_notifications()
+            return self._with_status_label(result)
 
-    def list_orders(self, limit: int = 100) -> list[dict]:
-        rows = self.store.list_orders(limit=limit)
-        for row in rows:
-            row["status_label"] = _STATUS_LABELS.get(row["status"], row["status"])
-        return rows
+    @_serialize_service_operation
+    def refresh_status(self) -> dict:
+        """Reconnect with each owning clientId and reconcile active orders."""
+        with self._operation_lock:
+            active = self.store.list_active()
+            accounts = list(dict.fromkeys(row["account_name"] for row in active))
+            errors = []
+            for account in accounts:
+                try:
+                    with self._connected(account) as (ctx, ib):
+                        self._sync_trades(ib, ctx)
+                except Exception as exc:
+                    errors.append(f"{account}：{exc}")
+                    for row in self.store.list_active(account):
+                        unknown_status = (
+                            "CANCEL_UNKNOWN" if row["status"] in {
+                                "CANCEL_PENDING", "CANCEL_UNKNOWN",
+                            } else "IB_UNKNOWN"
+                        )
+                        self.store.update(
+                            row["order_ref"], status=unknown_status,
+                            status_message=f"IB 對帳失敗；保持未結案：{exc}",
+                        )
+            self._dispatch_terminal_notifications()
+            return {"orders": self.list_orders(active_only=True), "errors": errors}
+
+    def list_orders(self, limit: int = 100, *, active_only: bool = False) -> list[dict]:
+        rows = (self.store.list_active() if active_only
+                else self.store.list_orders(limit=limit))
+        return [self._with_status_label(row) for row in rows]
+
+    @staticmethod
+    def _with_status_label(row: dict) -> dict:
+        result = dict(row)
+        result["status_label"] = _STATUS_LABELS.get(
+            result["status"], result["status"]
+        )
+        return result
+
+    def _notification_message(self, row: dict) -> str:
+        status = _STATUS_LABELS.get(row["status"], row["status"])
+        notification_ref = str(row["order_ref"]).rsplit(":", 1)[-1][:12].upper()
+        filled = int(row.get("filled_quantity") or 0)
+        quantity = int(row["quantity"])
+        fill_detail = f"成交：{filled}/{quantity} 股"
+        avg_price = row.get("avg_fill_price")
+        if avg_price:
+            fill_detail += f"，均價 ${float(avg_price):.2f}"
+        return (
+            f"手動委託結果｜{row['account_name']}\n"
+            f"委託編號：{notification_ref}\n"
+            f"{row['action']} {quantity} 股 {row['symbol']}｜"
+            f"LMT ${float(row['limit_price']):.2f}｜一般時段 DAY\n"
+            f"結果：{status}\n{fill_detail}"
+        )
+
+    def _reconciliation_alert_message(self, row: dict) -> str:
+        status = _STATUS_LABELS.get(row["alert_status"], row["alert_status"])
+        notification_ref = str(row["order_ref"]).rsplit(":", 1)[-1][:12].upper()
+        return (
+            f"手動委託需要確認｜{row['account_name']}\n"
+            f"委託編號：{notification_ref}\n"
+            f"{row['action']} {row['quantity']} 股 {row['symbol']}｜{status}\n"
+            "IB 尚未確認最終狀態；系統保留同 Account／標的未結案鎖，"
+            "請在 Panel 刷新委託狀態。"
+        )
+
+    def _send_terminal_notification(self, account_name: str, message: str) -> bool:
+        return bool(self._notifier(account_name, message))
+
+    def _dispatch_terminal_notifications(self) -> None:
+        for row in self.store.list_pending_alerts():
+            try:
+                delivered = self._send_terminal_notification(
+                    row["account_name"], self._reconciliation_alert_message(row)
+                )
+            except Exception:
+                log.exception("Manual order reconciliation alert failed")
+                continue
+            if delivered:
+                self.store.mark_alert_delivered(row["event_key"])
+        for row in self.store.list_pending_notifications():
+            try:
+                delivered = self._send_terminal_notification(
+                    row["account_name"], self._notification_message(row)
+                )
+            except Exception:
+                log.exception("Manual order terminal notification failed")
+                continue
+            if delivered:
+                self.store.mark_notification_delivered(
+                    row["order_ref"], row["terminal_status"]
+                )
 
     def has_active_orders(self) -> bool:
         return bool(self.store.list_active())
+
+    def has_pending_notifications(self) -> bool:
+        return bool(
+            self.store.list_pending_notifications()
+            or self.store.list_pending_alerts()
+        )
+
+    def start_monitor(self, interval_seconds: float = 10.0) -> "ManualOrderMonitor":
+        with self._operation_lock:
+            if self._monitor is None:
+                self._monitor = ManualOrderMonitor(self, interval_seconds)
+            self._monitor.start()
+            return self._monitor
+
+    def stop_monitor(self) -> None:
+        monitor = self._monitor
+        if monitor is not None:
+            monitor.stop()
+
+
+class ManualOrderMonitor:
+    """Reconcile orders and retry durable notifications outside the UI window."""
+
+    def __init__(self, service: ManualOrderService, interval_seconds: float = 10.0):
+        self.service = service
+        self.interval_seconds = max(0.1, float(interval_seconds))
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> "ManualOrderMonitor":
+        if self._thread is None or not self._thread.is_alive():
+            self._stop_event.clear()
+            self._thread = threading.Thread(
+                target=self._run, name="manual-order-monitor", daemon=True,
+            )
+            self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                if self.service.has_active_orders() or self.service.has_pending_notifications():
+                    self.service.refresh_status()
+            except Exception:
+                log.exception("Manual order reconciliation failed")
+            self._stop_event.wait(self.interval_seconds)
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=min(2.0, self.interval_seconds + 0.1))

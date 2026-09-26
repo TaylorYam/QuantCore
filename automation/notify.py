@@ -38,7 +38,7 @@ TG_MAX_CHARS = 4000
 
 
 def tg_send(msg: str, *, token: str, chat_id: str,
-            parse_mode: str = 'HTML', timeout: float = 10.0) -> None:
+            parse_mode: str = 'HTML', timeout: float = 10.0) -> bool:
     """
     發送文字訊息到 Telegram。
 
@@ -47,7 +47,7 @@ def tg_send(msg: str, *, token: str, chat_id: str,
     避免 Telegram 失敗影響主要交易流程。
     """
     if not token or not chat_id:
-        return
+        return False
     try:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         data = urllib.parse.urlencode({
@@ -59,8 +59,11 @@ def tg_send(msg: str, *, token: str, chat_id: str,
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             if resp.status != 200:
                 log.warning(f"Telegram HTTP {resp.status}")
+                return False
+        return True
     except Exception as e:
         log.warning(f"Telegram notify failed: {e}")
+        return False
 
 
 def tg_send_photo(photo_path: str, *, token: str, chat_id: str,

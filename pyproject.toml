@@ -17,6 +17,7 @@ dependencies = [
     "Pillow>=10.0",
     "pystray>=0.19",
     "openpyxl>=3.1",
+    "tzdata>=2025.3",
 ]
 
 [project.optional-dependencies]

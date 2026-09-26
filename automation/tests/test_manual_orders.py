@@ -41,7 +41,7 @@ class FakeIB:
         contract.primaryExchange = self.state.primary_exchange
         return [contract]
 
-    def reqOpenOrders(self):
+    def openTrades(self):
         return list(self.state.open_trades)
 
     def reqCompletedOrders(self, apiOnly=True):

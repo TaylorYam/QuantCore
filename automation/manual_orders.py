@@ -448,7 +448,10 @@ class ManualOrderService:
         return contract, primary
 
     def _sync_trades(self, ib, ctx, *, include_completed: bool = True) -> list:
-        open_trades = list(ib.reqOpenOrders() or [])
+        # IB connect() synchronizes this client's live trades. Use that cache:
+        # ib_insync documents reqOpenOrders() as capable of returning stale
+        # orders, which could otherwise keep a completed ticker locked.
+        open_trades = list(ib.openTrades() or [])
         trades = list(open_trades)
         if include_completed:
             try:

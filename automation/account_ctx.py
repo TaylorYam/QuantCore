@@ -86,7 +86,8 @@ class AccountCtx:
 
         Args:
             name: 帳戶名稱（Taylor / Rosa / Yvonne）
-            role: ROLE_REBALANCE / ROLE_REPORT / ROLE_MOO_CHECK / ROLE_PANEL / ROLE_MONITOR
+            role: ROLE_REBALANCE / ROLE_REPORT / ROLE_MOO_CHECK / ROLE_PANEL /
+                  ROLE_MANUAL_ORDER / ROLE_MONITOR
                   用於計算唯一的 client_id，避免多行程間衝突
 
         Returns:

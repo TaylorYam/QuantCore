@@ -503,6 +503,9 @@ class ControlPanel(tk.Tk):
         btn_bar = tk.Frame(self, bg=BG3, pady=4, padx=10)
         btn_bar.pack(fill="x")
 
+        self._btn(btn_bar, "手動下單", self._open_manual_order,
+                  GREEN, padx=6, pady=3, font=self.font_small).pack(side="left", padx=(0, 2))
+
         self._btn(btn_bar, "Sync Pos",
                   self._sync_position,
                   MAGENTA, padx=6, pady=3, font=self.font_small).pack(side="left", padx=(0, 2))
@@ -982,6 +985,38 @@ class ControlPanel(tk.Tk):
                       f"(state callback will update colour shortly)")
 
     # ── Sync Position ─────────────────────────────────────
+
+    def _open_manual_order(self):
+        """Open the per-order preview and confirmation flow."""
+        existing = getattr(self, "_manual_order_window", None)
+        if existing is not None:
+            try:
+                if existing.win.winfo_exists():
+                    existing.win.deiconify()
+                    existing.win.lift()
+                    existing.win.focus_force()
+                    return
+            except Exception:
+                pass
+
+        from manual_orders import ManualOrderService, SUPPORTED_MANUAL_ACCOUNTS
+        from manual_order_view import ManualOrderWindow
+
+        accounts = [
+            item["name"] for item in self._accounts_meta
+            if item["name"].casefold() in {
+                name.casefold() for name in SUPPORTED_MANUAL_ACCOUNTS
+            }
+        ]
+        service = ManualOrderService(account_names=accounts)
+        self._manual_order_window = ManualOrderWindow(
+            parent=self,
+            account_names=accounts,
+            service=service,
+            theme=self._theme,
+            fonts=self._fonts,
+            log=self._log,
+        )
 
     def _sync_position(self):
         """Sync Pos 按鈕：先選帳戶（#35），選好才開始計算"""

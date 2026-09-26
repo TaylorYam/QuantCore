@@ -108,3 +108,13 @@ Scope: `sp500`, `sr`, `skewls`, `automation`, `backtest`, `data`, `robustness`, 
 2. 更新 `docs/adr/README.md` 索引
 3. 合回 main 時若撞號，以 main 為準重編
 4. 被否決的提案也要記錄（`rejected`），附上否決的數據依據
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live in this repository's GitHub Issues; use the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+This is a single-context repo. Read root `CONTEXT.md` and relevant ADRs under `docs/adr/`. See `docs/agents/domain.md`.

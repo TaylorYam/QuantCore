@@ -592,6 +592,7 @@ def test_sync_window_shows_failure_and_drops_a_plan_nobody_is_waiting_for(fake_c
 def test_panel_manual_order_requires_account_preview_and_second_confirmation(fake_config, monkeypatch):
     """Panel form stays unselected, shows the exact order, and submits only after confirmation."""
     import tkinter as tk
+    from decimal import Decimal
     import manual_orders
     from manual_orders import ManualOrderPreview
 
@@ -631,18 +632,22 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
         def __init__(self):
             self.store = FakeStore()
             self.preview_requests = []
+            self.cash_preview_amounts = []
             self.validated = []
             self.submitted = []
             self.cancelled = []
 
-        def preview(self, *request, action="BUY", allow_short=False):
+        def preview(self, *request, action="BUY", allow_short=False, amount_usd=None):
             self.preview_requests.append(request)
+            self.cash_preview_amounts.append(amount_usd)
+            quantity = 3 if amount_usd is not None else request[2]
             return ManualOrderPreview(
                 account_name=request[0], account_id="U12770188",
-                symbol=request[1], quantity=request[2], limit_price=request[3],
+                symbol=request[1], quantity=quantity, limit_price=request[3],
                 tif="DAY", contract_id=2345, primary_exchange="NASDAQ",
                 action=action, allow_short=allow_short,
-                projected_position=(-request[2] if action == "SELL" else request[2]),
+                projected_position=(-quantity if action == "SELL" else quantity),
+                amount_usd=Decimal(str(amount_usd)) if amount_usd is not None else None,
             )
 
         def validate_preview(self, preview):
@@ -701,20 +706,54 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
 
     window.account_var.set("Rosa")
     window.symbol_var.set("ZZZZ")
-    window.quantity_var.set("3")
-    window.price_var.set("12.5")
-    window.action_var.set("賣出")
-    window.allow_short_var.set(True)
+    window.input_mode_var.set("美元金額")
+    assert str(window.quantity_entry.cget("state")) == "disabled"
+    assert str(window.amount_entry.cget("state")) == "normal"
+    assert window.price_var.get() == ""  # switching modes never supplies a quote/limit
+    window.amount_var.set("100.00")
+    window.price_var.set("30")
     window.preview_button.invoke()
 
-    step = ["short_preview"]
+    step = ["cash_preview"]
     deadline = time.monotonic() + GUI_DEADLINE_SEC
 
     def check():
         try:
             assert not exceptions, exceptions
             assert time.monotonic() < deadline, f"GUI stalled at {step[0]}"
-            if step[0] == "short_preview" and window._preview is not None:
+            if step[0] == "cash_preview" and window._preview is not None:
+                assert fake_service.preview_requests[-1] == ("Rosa", "ZZZZ", None, 30.0)
+                assert fake_service.cash_preview_amounts[-1] == Decimal("100.00")
+                assert "預估交易目標" in window.preview_text.cget("text")
+                assert "換算整股股數：3" in window.preview_text.cget("text")
+                assert "預估委託金額：$90.0" in window.preview_text.cget("text")
+                window.amount_var.set("101")
+                assert window._preview is None
+                assert str(window.confirm_button.cget("state")) == "disabled"
+                window.preview_button.invoke()
+                step[0] = "cash_repreview"
+            elif step[0] == "cash_repreview" and window._preview is not None:
+                assert fake_service.cash_preview_amounts[-1] == Decimal("101")
+                assert "輸入美元金額：$101" in window.preview_text.cget("text")
+                window.price_var.set("31")
+                assert window._preview is None
+                assert str(window.confirm_button.cget("state")) == "disabled"
+                window.preview_button.invoke()
+                step[0] = "cash_price_repreview"
+            elif step[0] == "cash_price_repreview" and window._preview is not None:
+                assert window._preview.limit_price == 31.0
+                assert "限價：$31.0" in window.preview_text.cget("text")
+                window.input_mode_var.set("整股股數")
+                assert window.amount_var.get() == ""
+                assert window._preview is None
+                assert str(window.confirm_button.cget("state")) == "disabled"
+                window.quantity_var.set("3")
+                window.price_var.set("12.5")
+                window.action_var.set("賣出")
+                window.allow_short_var.set(True)
+                window.preview_button.invoke()
+                step[0] = "short_preview"
+            elif step[0] == "short_preview" and window._preview is not None:
                 assert window._preview.action == "SELL"
                 assert window._preview.allow_short is True
                 assert "方向：放空" in window.preview_text.cget("text")
@@ -757,6 +796,8 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
                     window._order_selected()
                     assert str(window.cancel_button.cget("state")) == "normal"
                     assert str(window.modify_button.cget("state")) == "normal"
+                    window.input_mode_var.set("美元金額")
+                    window.amount_var.set("100")
                     window.price_var.set("13.0")
                     window.modify_button.invoke()
                     step[0] = "cancel"
@@ -765,14 +806,16 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
                   and "IB 已確認取消" in window.form_status.cget("text")):
                 assert fake_service.cancelled == [order_row["order_ref"]]
                 assert len(fake_service.submitted) == 1
-                assert window.quantity_var.get() == "3"
+                assert window.input_mode_var.get() == "整股股數"
+                assert window.quantity_var.get() == "7"
+                assert window.amount_var.get() == ""
                 assert window.price_var.get() == "13.0"
                 assert str(window.confirm_button.cget("state")) == "disabled"
                 window.preview_button.invoke()
                 step[0] = "replacement_preview"
             elif step[0] == "replacement_preview" and window._preview is not None:
                 assert fake_service.preview_requests[-1] == (
-                    "Rosa", "ZZZZ", 3, 13.0,
+                    "Rosa", "ZZZZ", 7, 13.0,
                 )
                 assert str(window.confirm_button.cget("state")) == "normal"
                 window.confirm_button.invoke()

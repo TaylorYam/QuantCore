@@ -6,11 +6,16 @@ it represents the Panel confirmation boundary and receives a fake IB adapter.
 
 from __future__ import annotations
 
+from dataclasses import replace
+from decimal import Decimal
 from types import SimpleNamespace as NS
 
 import pytest
 
-from manual_orders import ManualOrderMonitor, ManualOrderService, ManualOrderStore
+from manual_orders import (
+    ManualOrderMonitor, ManualOrderService, ManualOrderStore,
+    whole_share_quantity,
+)
 
 
 class FakeIBState:
@@ -136,11 +141,138 @@ def service_for(tmp_path, state, *, universe=None, notifier=None):
             orderRef="",
             orderId=0,
             permId=0,
+            cashQty="UNSET",
         ),
         notifier=notifier or (lambda account_name, message: (
             state.notifications.append((account_name, message)) or True
         )),
     )
+
+
+def test_cash_target_uses_exact_decimal_floor_and_rejects_less_than_one_share():
+    assert whole_share_quantity(amount_usd="100", limit_price="30") == 3
+    assert whole_share_quantity(amount_usd="0.30", limit_price="0.10") == 3
+    assert whole_share_quantity(amount_usd="0.299999999999999999", limit_price="0.10") == 2
+    with pytest.raises(ValueError, match="不足一股"):
+        whole_share_quantity(amount_usd="29.999999999999999999", limit_price="30")
+
+
+def test_cash_preview_shows_target_conversion_and_sends_shares_only(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state)
+
+    preview = service.preview(
+        "Taylor", "ZZZZ", None, 30.0, amount_usd="100.00",
+    )
+    assert preview.quantity == 3
+    assert str(preview.amount_usd) == "100.00"
+    assert "輸入美元金額：$100.00（預估交易目標）" in preview.confirmation_text
+    assert "換算整股股數：3" in preview.confirmation_text
+    assert "預估委託金額：$90.0" in preview.confirmation_text
+    assert "非成交金額上限" in preview.confirmation_text
+    assert "方向：買進" in preview.confirmation_text
+    assert "限價：$30.0" in preview.confirmation_text
+
+    service.validate_preview(preview)
+    service.submit(preview)
+    order = state.placed[0].order
+    assert (order.action, order.account, order.totalQuantity, order.lmtPrice) == (
+        "BUY", "U001", 3, 30.0,
+    )
+    assert isinstance(order.totalQuantity, int)
+    assert order.cashQty == "UNSET"
+
+
+def test_cash_mode_rejects_ambiguous_inputs_and_invalid_amounts(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state)
+    for quantity, amount in ((3, "100"), (None, None)):
+        with pytest.raises(ValueError, match="擇一"):
+            service.preview("Taylor", "ZZZZ", quantity, 30.0, amount_usd=amount)
+    for amount in ("0", "-1", "NaN", "Infinity", "bad"):
+        with pytest.raises(ValueError, match="美元金額"):
+            service.preview("Taylor", "ZZZZ", None, 30.0, amount_usd=amount)
+    assert state.placed == []
+
+
+@pytest.mark.parametrize(
+    "action,allow_short,position,expected_action,expected_position,direction",
+    [
+        ("BUY", False, 0, "BUY", 2, "買進"),
+        ("SELL", False, 3, "SELL", 1, "賣出"),
+        ("SELL", True, 1, "SELL", -1, "放空"),
+        ("COVER", False, -3, "BUY", -1, "回補空單"),
+    ],
+)
+def test_cash_amount_uses_same_position_rules_for_every_direction(
+    tmp_path, action, allow_short, position, expected_action, expected_position,
+    direction,
+):
+    state = FakeIBState()
+    state.positions_by_account["U001"]["ZZZZ"] = position
+    service = service_for(tmp_path, state)
+    preview = service.preview(
+        "Taylor", "ZZZZ", None, 20.0, amount_usd="45",
+        action=action, allow_short=allow_short,
+    )
+    assert (preview.quantity, preview.projected_position) == (2, expected_position)
+    assert f"方向：{direction}" in preview.confirmation_text
+    service.submit(preview)
+    order = state.placed[0].order
+    assert (order.action, order.account, order.totalQuantity, order.lmtPrice) == (
+        expected_action, "U001", 2, 20.0,
+    )
+    assert order.cashQty == "UNSET"
+
+
+def test_cash_sell_and_cover_reject_account_specific_position_overages(tmp_path):
+    state = FakeIBState()
+    state.positions_by_account["U001"]["ZZZZ"] = 3
+    state.positions_by_account["U002"]["ZZZZ"] = 1
+    state.positions_by_account["U003"]["ZZZZ"] = -2
+    service = service_for(tmp_path, state)
+    taylor = service.preview(
+        "Taylor", "ZZZZ", None, 20.0, amount_usd="60", action="SELL",
+    )
+    with pytest.raises(ValueError, match="可賣持倉"):
+        service.preview("Rosa", "ZZZZ", None, 20.0, amount_usd="60", action="SELL")
+    with pytest.raises(ValueError, match="空單"):
+        service.preview("Yvonne", "ZZZZ", None, 20.0, amount_usd="60", action="COVER")
+    rosa = service.preview(
+        "Rosa", "ZZZZ", None, 20.0, amount_usd="20", action="SELL",
+    )
+    cover = service.preview(
+        "Yvonne", "ZZZZ", None, 20.0, amount_usd="40", action="COVER",
+    )
+    service.submit(taylor)
+    service.submit(rosa)
+    service.submit(cover)
+    assert [(trade.order.action, trade.order.account, trade.order.totalQuantity)
+            for trade in state.placed] == [
+                ("SELL", "U001", 3), ("SELL", "U002", 1), ("BUY", "U003", 2),
+            ]
+
+
+def test_cash_preview_rechecks_amount_price_position_and_open_order(tmp_path):
+    state = FakeIBState()
+    state.positions_by_account["U001"]["ZZZZ"] = 4
+    service = service_for(tmp_path, state)
+    preview = service.preview(
+        "Taylor", "ZZZZ", None, 20.0, amount_usd="60",
+        action="SELL",
+    )
+    with pytest.raises(ValueError, match="預覽已變更"):
+        service.submit(replace(preview, amount_usd=Decimal("39")))
+    with pytest.raises(ValueError, match="預覽已變更"):
+        service.submit(replace(preview, limit_price=31.0))
+    state.positions_by_account["U001"]["ZZZZ"] = 3
+    with pytest.raises(ValueError, match="預覽後變更"):
+        service.validate_preview(preview)
+    state.positions_by_account["U001"]["ZZZZ"] = 4
+    service.store.create(preview, "QUANTCORE_MANUAL:TAYLOR:cash-other")
+    with pytest.raises(ValueError, match="未結案手動單"):
+        service.submit(preview)
+    assert state.placed == []
 
 
 def test_panel_preview_submit_and_restart_show_ib_accepted_order(tmp_path):

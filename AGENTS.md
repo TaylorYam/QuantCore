@@ -115,6 +115,10 @@ Scope: `sp500`, `sr`, `skewls`, `automation`, `backtest`, `data`, `robustness`, 
 
 Issues and specs live in this repository's GitHub Issues; use the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
+### Triage labels
+
+Use the five default triage labels. See `docs/agents/triage-labels.md`.
+
 ### Domain docs
 
 This is a single-context repo. Read root `CONTEXT.md` and relevant ADRs under `docs/adr/`. See `docs/agents/domain.md`.

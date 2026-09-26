@@ -616,6 +616,12 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
         "filled_quantity": 0,
         "avg_fill_price": None,
     }
+    closed_order_row = {
+        **order_row,
+        "order_ref": "QUANTCORE_MANUAL:ROSA:closed",
+        "status": "CANCELLED",
+        "status_label": "已取消",
+    }
 
     class FakeStore:
         def list_active(self):
@@ -626,6 +632,7 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
             self.store = FakeStore()
             self.preview_requests = []
             self.submitted = []
+            self.cancelled = []
 
         def preview(self, *request):
             self.preview_requests.append(request)
@@ -637,10 +644,19 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
 
         def submit(self, preview):
             self.submitted.append(preview)
+            order_row["status"] = "ACCEPTED"
+            order_row["status_label"] = "IB accepted"
+            return dict(order_row)
+
+        def cancel(self, order_ref):
+            self.cancelled.append(order_ref)
+            order_row["status"] = "CANCELLED"
+            order_row["status_label"] = "已取消"
             return dict(order_row)
 
         def list_orders(self):
-            return [dict(order_row)] if self.submitted else []
+            return ([dict(order_row), dict(closed_order_row)]
+                    if self.submitted else [])
 
         def has_active_orders(self):
             return bool(self.store.list_active())
@@ -698,9 +714,47 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
                 assert "ZZZZ" in body and "12.5" in body and "DAY" in body
                 rows = window.orders.get_children()
                 if rows and "IB accepted" in window.orders.item(rows[0], "values"):
-                    panel._quit_app()
-                    step[0] = "done"
-                    return
+                    assert tuple(window.orders["columns"]) == (
+                        "account", "symbol", "action", "quantity",
+                        "price_condition", "session", "status", "filled",
+                    )
+                    assert len(rows) == 1  # terminal history is not in the unresolved list
+                    values = window.orders.item(rows[0], "values")
+                    assert values[0:6] == (
+                        "Rosa", "ZZZZ", "買進", "3", "LMT $12.50",
+                        "一般時段 RTH / DAY",
+                    )
+                    window.orders.selection_set(rows[0])
+                    window._order_selected()
+                    assert str(window.cancel_button.cget("state")) == "normal"
+                    assert str(window.modify_button.cget("state")) == "normal"
+                    window.price_var.set("13.0")
+                    window.modify_button.invoke()
+                    step[0] = "cancel"
+            elif (step[0] == "cancel" and fake_service.cancelled
+                  and not window._busy
+                  and "IB 已確認取消" in window.form_status.cget("text")):
+                assert fake_service.cancelled == [order_row["order_ref"]]
+                assert len(fake_service.submitted) == 1
+                assert window.quantity_var.get() == "3"
+                assert window.price_var.get() == "13.0"
+                assert str(window.confirm_button.cget("state")) == "disabled"
+                window.preview_button.invoke()
+                step[0] = "replacement_preview"
+            elif step[0] == "replacement_preview" and window._preview is not None:
+                assert fake_service.preview_requests[-1] == (
+                    "Rosa", "ZZZZ", 3, 13.0,
+                )
+                assert str(window.confirm_button.cget("state")) == "normal"
+                window.confirm_button.invoke()
+                step[0] = "replacement_submit"
+            elif step[0] == "replacement_submit" and len(fake_service.submitted) == 2:
+                assert len(confirmation_prompts) >= 3
+                assert confirmation_prompts[-1][0] == "再次核對委託"
+                assert "13.0" in confirmation_prompts[-1][1]
+                panel._quit_app()
+                step[0] = "done"
+                return
             panel.after(20, check)
         except BaseException as exc:
             exceptions.append(exc)
@@ -717,7 +771,7 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
                 pass
     assert not exceptions, exceptions
     assert step[0] == "done"
-    assert len(fake_service.submitted) == 1
+    assert len(fake_service.submitted) == 2
 
 
 def test_monitor_alert_uses_shared_telegram_settings(fake_config, monkeypatch):

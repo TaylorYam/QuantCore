@@ -33,12 +33,15 @@ class ManualOrderWindow:
         self._refreshing = False
         self._closed = False
         self._poll_id = None
+        self._order_rows = {}
+        self._replacement_order_ref = None
+        self._replacement_request = None
 
         self.win = tk.Toplevel(parent)
         self.win.title("手動下單 — 整股限價買進")
         self.win.configure(bg=theme["bg"])
-        self.win.geometry("700x600")
-        self.win.minsize(650, 520)
+        self.win.geometry("1030x600")
+        self.win.minsize(960, 520)
         self.win.transient(parent)
         self.win.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -53,7 +56,7 @@ class ManualOrderWindow:
             variable.trace_add("write", self._form_changed)
 
         self._build(account_names)
-        self._render_orders(self.service.list_orders())
+        self._render_orders(self._active_orders())
         if self.service.has_active_orders():
             self._refresh_status()
         self._schedule_poll()
@@ -150,21 +153,38 @@ class ManualOrderWindow:
         )
         self.refresh_button.pack(side="right")
 
-        columns = ("account", "symbol", "quantity", "limit", "status", "filled")
+        self.modify_button = ttk.Button(
+            order_header, text="修改價格／股數", command=self._modify_selected,
+            state="disabled",
+        )
+        self.modify_button.pack(side="right", padx=(0, 8))
+        self.cancel_button = ttk.Button(
+            order_header, text="取消選定委託", command=self._cancel_selected,
+            state="disabled",
+        )
+        self.cancel_button.pack(side="right", padx=(0, 8))
+
+        columns = (
+            "account", "symbol", "action", "quantity", "price_condition",
+            "session", "status", "filled",
+        )
         self.orders = ttk.Treeview(
             orders_frame, columns=columns, show="headings", height=8,
         )
         headings = {
             "account": ("Account", 100),
             "symbol": ("標的", 80),
-            "quantity": ("股數", 65),
-            "limit": ("限價", 85),
+            "action": ("方向", 55),
+            "quantity": ("數量", 65),
+            "price_condition": ("價格條件", 105),
+            "session": ("時段", 95),
             "status": ("IB 狀態", 135),
             "filled": ("成交", 120),
         }
         for column, (title, width) in headings.items():
             self.orders.heading(column, text=title)
             self.orders.column(column, width=width, minwidth=55, anchor="center")
+        self.orders.bind("<<TreeviewSelect>>", self._order_selected)
         self.orders.pack(fill="both", expand=True)
 
         self.order_status = tk.Label(
@@ -303,7 +323,7 @@ class ManualOrderWindow:
             f"BUY {result['quantity']}sh {result['symbol']} "
             f"LMT {result['limit_price']} USD — {result['status']}"
         )
-        self._render_orders(self.service.list_orders())
+        self._render_orders(self._active_orders())
         self._refresh_status()
 
     def _set_busy(self, value):
@@ -317,6 +337,191 @@ class ManualOrderWindow:
         self.price_entry.configure(state=state)
         self.confirm_button.configure(
             state="disabled" if value or self._preview is None else "normal",
+        )
+        self._update_selection_actions()
+
+    def _active_orders(self):
+        try:
+            return self.service.list_orders(active_only=True)
+        except TypeError:
+            return [row for row in self.service.list_orders()
+                    if row.get("status") not in {
+                        "FILLED", "REJECTED", "CANCELLED", "EXPIRED",
+                    }]
+
+    def _selected_order(self):
+        selected = self.orders.selection()
+        return self._order_rows.get(selected[0]) if selected else None
+
+    def _update_selection_actions(self, *_args):
+        row = self._selected_order()
+        selectable = (
+            not self._busy and row is not None
+            and row.get("status") not in {
+                "CANCEL_PENDING", "CANCEL_UNKNOWN", "IB_UNKNOWN",
+                "SUBMISSION_UNKNOWN",
+            }
+        )
+        state = "normal" if selectable else "disabled"
+        if hasattr(self, "cancel_button"):
+            self.cancel_button.configure(state=state)
+        if hasattr(self, "modify_button"):
+            self.modify_button.configure(state=state)
+
+    def _order_selected(self, *_args):
+        self._update_selection_actions()
+
+    def _cancel_selected(self):
+        row = self._selected_order()
+        if row is None or self._busy:
+            return
+        if not messagebox.askyesno(
+            "取消手動委託",
+            f"向 IB 要求取消 {row['account_name']} 的 {row['symbol']} "
+            f"{row['quantity']} 股委託？\n\n取消完成前仍可能成交。",
+            parent=self.win,
+        ):
+            return
+        self._request_cancel(row["order_ref"], None)
+
+    def _modify_selected(self):
+        row = self._selected_order()
+        if row is None or self._busy:
+            return
+        if (self.account_var.get().strip() != row["account_name"]
+                or self.symbol_var.get().strip().upper() != row["symbol"]):
+            self.account_var.set(row["account_name"])
+            self.symbol_var.set(row["symbol"])
+            self.quantity_var.set(str(row["quantity"]))
+            self.price_var.set(str(row["limit_price"]))
+            self.form_status.configure(text="已載入選定委託；調整價格或股數後再次按修改。")
+            self.preview_text.configure(
+                text="修改流程會先等待 IB 確認取消，再提供新委託預覽。",
+                fg=self.theme["text"],
+            )
+            return
+        try:
+            request = self._read_request()
+        except ValueError as exc:
+            messagebox.showwarning("修改手動委託", str(exc), parent=self.win)
+            return
+        if (request.account_name != row["account_name"]
+                or request.symbol != row["symbol"]):
+            messagebox.showwarning(
+                "修改手動委託", "修改只允許變更原委託的價格或股數。", parent=self.win,
+            )
+            return
+        if (request.quantity == int(row["quantity"])
+                and request.limit_price == float(row["limit_price"])):
+            messagebox.showwarning(
+                "修改手動委託", "請先變更價格或股數。", parent=self.win,
+            )
+            return
+        if not messagebox.askyesno(
+            "取消後修改手動委託",
+            f"先取消目前的 {row['quantity']} 股 {row['symbol']} 委託，"
+            f"等 IB 確認後再預覽新條件：\n"
+            f"{request.quantity} 股，LMT ${request.limit_price:.2f}\n\n"
+            "原委託取消前仍可能成交；不會自動送出新委託。",
+            parent=self.win,
+        ):
+            return
+        self._request_cancel(row["order_ref"], request)
+
+    def _request_cancel(self, order_ref, replacement_request):
+        row = self._order_rows.get(order_ref)
+        if row is not None:
+            pending_row = dict(
+                row, status="CANCEL_PENDING", status_label="取消確認中",
+                status_message="已記錄取消要求，等待 IB 確認",
+            )
+            self._order_rows[order_ref] = pending_row
+            try:
+                values = list(self.orders.item(order_ref, "values"))
+                values[6] = pending_row["status_label"]
+                self.orders.item(order_ref, values=values)
+            except tk.TclError:
+                pass
+        self._set_busy(True)
+        self.order_status.configure(text="已記錄取消要求，等待 IB 確認…")
+        threading.Thread(
+            target=self._cancel_worker,
+            args=(order_ref, replacement_request), daemon=True,
+        ).start()
+
+    def _cancel_worker(self, order_ref, replacement_request):
+        try:
+            result = self.service.cancel(order_ref)
+            self._post(lambda: self._cancel_complete(
+                order_ref, replacement_request, result, None,
+            ))
+        except Exception as exc:
+            self._post(lambda error=str(exc): self._cancel_complete(
+                order_ref, replacement_request, None, error,
+            ))
+
+    def _cancel_complete(self, order_ref, replacement_request, result, error):
+        self._set_busy(False)
+        if self._closed:
+            return
+        if error:
+            self.order_status.configure(
+                text=f"取消結果待確認：{error}", fg=self.theme["red"],
+            )
+            self._render_orders(self._active_orders())
+            return
+        status = result["status"]
+        if replacement_request is not None:
+            self._replacement_order_ref = order_ref
+            self._replacement_request = replacement_request
+        if status in {"CANCEL_PENDING", "CANCEL_UNKNOWN", "SUBMISSION_UNKNOWN"}:
+            self.order_status.configure(
+                text=result.get("status_message") or "取消結果待確認；委託仍保持未結案",
+                fg=self.theme["red"],
+            )
+            self._refresh_status()
+        else:
+            self.order_status.configure(
+                text=result.get("status_label", status),
+                fg=self.theme["text_dim"],
+            )
+            self._finish_replacement_if_ready(result)
+            self._render_orders(self._active_orders())
+
+    def _finish_replacement_if_ready(self, row):
+        if (self._replacement_order_ref is None
+                or row.get("order_ref") != self._replacement_order_ref):
+            return
+        request = self._replacement_request
+        self._replacement_order_ref = None
+        self._replacement_request = None
+        if row.get("status") != "CANCELLED":
+            self.preview_text.configure(
+                text=(f"IB 已回報原委託：{row.get('status_label', row.get('status'))}；"
+                      "不會送出修改後委託。"),
+                fg=self.theme["text"],
+            )
+            return
+        filled = int(row.get("filled_quantity") or 0)
+        remaining = max(0, int(request.quantity) - filled)
+        if remaining <= 0:
+            self.preview_text.configure(
+                text="取消確認前的成交已達修改後股數；沒有可重下的數量。",
+                fg=self.theme["text"],
+            )
+            return
+        self.account_var.set(request.account_name)
+        self.symbol_var.set(request.symbol)
+        self.quantity_var.set(str(remaining))
+        self.price_var.set(str(request.limit_price))
+        self._preview = None
+        self._preview_request = None
+        self.confirm_button.configure(state="disabled")
+        self.form_status.configure(text="IB 已確認取消；請預覽並再次確認新委託。")
+        self.preview_text.configure(
+            text=(f"原委託已取消，期間成交 {filled} 股。"
+                  f"新委託數量已調整為 {remaining} 股；按「預覽委託」後再確認送出。"),
+            fg=self.theme["text"],
         )
 
     def _refresh_status(self):
@@ -343,9 +548,17 @@ class ManualOrderWindow:
             self.order_status.configure(
                 text=f"IB 狀態查詢失敗：{error}", fg=self.theme["red"],
             )
-            self._render_orders(self.service.list_orders())
+            self._render_orders(self._active_orders())
             return
         self._render_orders(result["orders"])
+        if self._replacement_order_ref is not None:
+            previous = next((row for row in self.service.list_orders()
+                             if row.get("order_ref") == self._replacement_order_ref), None)
+            if previous and previous.get("status") not in {
+                "SENDING", "SENT", "ACCEPTED", "PARTIAL", "CANCEL_PENDING",
+                "CANCEL_UNKNOWN", "IB_UNKNOWN", "SUBMISSION_UNKNOWN",
+            }:
+                self._finish_replacement_if_ready(previous)
         errors = result.get("errors", [])
         self.order_status.configure(
             text=("狀態已刷新" if not errors else "；".join(errors)),
@@ -357,20 +570,28 @@ class ManualOrderWindow:
             return
         for item in self.orders.get_children():
             self.orders.delete(item)
+        self._order_rows = {}
         for row in rows:
+            if row.get("status") in {"FILLED", "REJECTED", "CANCELLED", "EXPIRED"}:
+                continue
             filled = int(row.get("filled_quantity") or 0)
             avg_price = row.get("avg_fill_price")
             fill_text = f"{filled}/{row['quantity']}"
             if avg_price:
                 fill_text += " @ $" + f"{float(avg_price):.2f}"
-            limit_text = "$" + str(row["limit_price"])
+            price_condition = f"LMT ${float(row['limit_price']):.2f}"
+            order_ref = row["order_ref"]
+            self._order_rows[order_ref] = row
             self.orders.insert(
-                "", "end",
+                "", "end", iid=order_ref,
                 values=(
-                    row["account_name"], row["symbol"], row["quantity"],
-                    limit_text, row.get("status_label", row["status"]), fill_text,
+                    row["account_name"], row["symbol"],
+                    "買進" if row["action"] == "BUY" else row["action"],
+                    row["quantity"], price_condition, "一般時段 RTH / DAY",
+                    row.get("status_label", row["status"]), fill_text,
                 ),
             )
+        self._update_selection_actions()
 
     def _schedule_poll(self):
         if self._closed:

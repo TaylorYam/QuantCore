@@ -22,14 +22,14 @@ def test_tg_send_empty_token_is_noop():
     """Empty token should return immediately without any network call."""
     import notify
     with patch("urllib.request.urlopen") as mock_urlopen:
-        notify.tg_send("hello", token="", chat_id="123")
+        assert not notify.tg_send("hello", token="", chat_id="123")
         assert not mock_urlopen.called, "urlopen should not be called with empty token"
 
 
 def test_tg_send_empty_chat_id_is_noop():
     import notify
     with patch("urllib.request.urlopen") as mock_urlopen:
-        notify.tg_send("hello", token="abc", chat_id="")
+        assert not notify.tg_send("hello", token="abc", chat_id="")
         assert not mock_urlopen.called
 
 
@@ -40,14 +40,14 @@ def test_tg_send_network_error_is_swallowed():
     with patch("urllib.request.urlopen",
                side_effect=urllib.error.URLError("network down")):
         # Should NOT raise
-        notify.tg_send("hello", token="abc", chat_id="123")
+        assert not notify.tg_send("hello", token="abc", chat_id="123")
 
 
 def test_tg_send_timeout_is_swallowed():
     import notify
     with patch("urllib.request.urlopen",
                side_effect=TimeoutError("timed out")):
-        notify.tg_send("hello", token="abc", chat_id="123")
+        assert not notify.tg_send("hello", token="abc", chat_id="123")
 
 
 def test_tg_send_calls_telegram_api():
@@ -59,7 +59,7 @@ def test_tg_send_calls_telegram_api():
     mock_resp.__exit__ = MagicMock(return_value=False)
 
     with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
-        notify.tg_send("hello", token="TOKEN", chat_id="CHAT")
+        assert notify.tg_send("hello", token="TOKEN", chat_id="CHAT")
 
         assert mock_urlopen.called
         req = mock_urlopen.call_args[0][0]

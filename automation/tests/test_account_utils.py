@@ -125,13 +125,15 @@ def test_get_client_id_role_offset(fake_config):
     Taylor REBALANCE=20, REPORT=21, MOO=22, PANEL=25, MONITOR=27"""
     from account_utils import (
         get_client_id,
-        ROLE_REBALANCE, ROLE_REPORT, ROLE_MOO_CHECK, ROLE_PANEL, ROLE_MONITOR,
+        ROLE_REBALANCE, ROLE_REPORT, ROLE_MOO_CHECK, ROLE_PANEL,
+        ROLE_MANUAL_ORDER, ROLE_MONITOR,
     )
 
     assert get_client_id("Taylor", ROLE_REBALANCE) == 20
     assert get_client_id("Taylor", ROLE_REPORT) == 21
     assert get_client_id("Taylor", ROLE_MOO_CHECK) == 22
     assert get_client_id("Taylor", ROLE_PANEL) == 25
+    assert get_client_id("Taylor", ROLE_MANUAL_ORDER) == 26
     assert get_client_id("Taylor", ROLE_MONITOR) == 27
 
 

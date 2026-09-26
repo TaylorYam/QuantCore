@@ -588,6 +588,138 @@ def test_sync_window_shows_failure_and_drops_a_plan_nobody_is_waiting_for(fake_c
     assert step[0] == "done"
 
 
+@own_process
+def test_panel_manual_order_requires_account_preview_and_second_confirmation(fake_config, monkeypatch):
+    """Panel form stays unselected, shows the exact order, and submits only after confirmation."""
+    import tkinter as tk
+    import manual_orders
+    from manual_orders import ManualOrderPreview
+
+    warm_matplotlib()
+    module = load_panel_module(monkeypatch)
+    panel_type = offline_panel_type(monkeypatch, module)
+    monkeypatch.setattr(module, "fetch_ib_portfolio", lambda _name: {
+        "available": False, "error": "offline GUI test",
+    })
+
+    order_row = {
+        "order_ref": "QUANTCORE_MANUAL:ROSA:test",
+        "account_name": "Rosa",
+        "account_id": "U12770188",
+        "symbol": "ZZZZ",
+        "action": "BUY",
+        "quantity": 3,
+        "limit_price": 12.5,
+        "tif": "DAY",
+        "status": "ACCEPTED",
+        "status_label": "IB accepted",
+        "filled_quantity": 0,
+        "avg_fill_price": None,
+    }
+
+    class FakeStore:
+        def list_active(self):
+            return []
+
+    class FakeService:
+        def __init__(self):
+            self.store = FakeStore()
+            self.preview_requests = []
+            self.submitted = []
+
+        def preview(self, *request):
+            self.preview_requests.append(request)
+            return ManualOrderPreview(
+                account_name=request[0], account_id="U12770188",
+                symbol=request[1], quantity=request[2], limit_price=request[3],
+                tif="DAY", contract_id=2345, primary_exchange="NASDAQ",
+            )
+
+        def submit(self, preview):
+            self.submitted.append(preview)
+            return dict(order_row)
+
+        def list_orders(self):
+            return [dict(order_row)] if self.submitted else []
+
+        def has_active_orders(self):
+            return bool(self.store.list_active())
+
+        def refresh_status(self):
+            return {"orders": self.list_orders(), "errors": []}
+
+    fake_service = FakeService()
+    monkeypatch.setattr(
+        manual_orders, "ManualOrderService",
+        lambda **_kwargs: fake_service,
+    )
+    confirmation_prompts = []
+    monkeypatch.setattr(
+        module.messagebox, "askyesno",
+        lambda title, body, **_kwargs: (
+            confirmation_prompts.append((title, body)) or True
+        ),
+    )
+
+    panel = panel_type()
+    panel.report_callback_exception = lambda *args: exceptions.append(args[1])
+    exceptions = []
+    panel._open_manual_order()
+    window = panel._manual_order_window
+    assert window.account_var.get() == ""
+    assert str(window.account_box.cget("state")) == "readonly"
+
+    window.account_var.set("Rosa")
+    window.symbol_var.set("ZZZZ")
+    window.quantity_var.set("3")
+    window.price_var.set("12.5")
+    window.preview_button.invoke()
+
+    step = ["preview"]
+    deadline = time.monotonic() + GUI_DEADLINE_SEC
+
+    def check():
+        try:
+            assert not exceptions, exceptions
+            assert time.monotonic() < deadline, f"GUI stalled at {step[0]}"
+            if step[0] == "preview" and window._preview is not None:
+                assert fake_service.preview_requests == [("Rosa", "ZZZZ", 3, 12.5)]
+                assert window._preview.account_name == "Rosa"
+                assert window._preview.symbol == "ZZZZ"
+                assert window._preview.quantity == 3
+                assert window._preview.limit_price == 12.5
+                assert str(window.confirm_button.cget("state")) == "normal"
+                window.confirm_button.invoke()
+                step[0] = "submit"
+            elif step[0] == "submit" and fake_service.submitted:
+                assert confirmation_prompts
+                title, body = confirmation_prompts[0]
+                assert title == "再次核對委託"
+                assert "ZZZZ" in body and "12.5" in body and "DAY" in body
+                rows = window.orders.get_children()
+                if rows and "IB accepted" in window.orders.item(rows[0], "values"):
+                    panel._quit_app()
+                    step[0] = "done"
+                    return
+            panel.after(20, check)
+        except BaseException as exc:
+            exceptions.append(exc)
+            panel._quit_app()
+
+    try:
+        panel.after(20, check)
+        panel.mainloop()
+    finally:
+        if step[0] != "done":
+            try:
+                panel._quit_app()
+            except tk.TclError:
+                pass
+    assert not exceptions, exceptions
+    assert step[0] == "done"
+    assert len(fake_service.submitted) == 1
+
+
 def test_monitor_alert_uses_shared_telegram_settings(fake_config, monkeypatch):
     """#35: the Panel has no selected account. Monitor alerts use the shared
     config.json Telegram settings even when the first account overrides them."""

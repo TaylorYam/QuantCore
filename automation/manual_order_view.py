@@ -25,6 +25,8 @@ class ManualOrderWindow:
     """Panel adapter; all account, contract, and order decisions live in service."""
 
     POLL_INTERVAL_MS = 10_000
+    SHARES_MODE = "整股股數"
+    CASH_MODE = "美元金額"
     ACTION_LABELS = {"買進": "BUY", "賣出": "SELL", "回補空單": "COVER"}
     STORED_ACTION_LABELS = {
         "BUY": "買進", "SELL": "賣出", "SELL_SHORT": "放空", "COVER": "回補空單",
@@ -59,7 +61,7 @@ class ManualOrderWindow:
         self.symbol_var = tk.StringVar(self.win, value="")
         self.quantity_var = tk.StringVar(self.win, value="")
         self.amount_var = tk.StringVar(self.win, value="")
-        self.input_mode_var = tk.StringVar(self.win, value="整股股數")
+        self.input_mode_var = tk.StringVar(self.win, value=self.SHARES_MODE)
         self.price_var = tk.StringVar(self.win, value="")
         self.action_var = tk.StringVar(self.win, value="買進")
         self.allow_short_var = tk.BooleanVar(self.win, value=False)
@@ -108,7 +110,7 @@ class ManualOrderWindow:
         self.symbol_entry = ttk.Entry(form, textvariable=self.symbol_var, width=18)
         self.symbol_entry.grid(row=0, column=3, sticky="ew", pady=5)
 
-        self._field_label(form, "整股股數", 1, 0)
+        self._field_label(form, self.SHARES_MODE, 1, 0)
         self.quantity_entry = ttk.Entry(
             form, textvariable=self.quantity_var, width=18,
         )
@@ -121,7 +123,7 @@ class ManualOrderWindow:
         self._field_label(form, "輸入方式", 2, 0)
         self.input_mode_box = ttk.Combobox(
             form, textvariable=self.input_mode_var,
-            values=("整股股數", "美元金額"), state="readonly", width=18,
+            values=(self.SHARES_MODE, self.CASH_MODE), state="readonly", width=18,
         )
         self.input_mode_box.grid(row=2, column=1, sticky="ew", padx=(0, 14), pady=5)
 
@@ -260,7 +262,7 @@ class ManualOrderWindow:
         )
 
     def _input_mode_changed(self, *_args):
-        is_cash = self.input_mode_var.get() == "美元金額"
+        is_cash = self.input_mode_var.get() == self.CASH_MODE
         if is_cash:
             self.quantity_var.set("")
         else:
@@ -278,14 +280,14 @@ class ManualOrderWindow:
             raise ValueError("請先選擇這筆委託要送往的 Account。")
         quantity = None
         amount = None
-        if self.input_mode_var.get() == "整股股數":
+        if self.input_mode_var.get() == self.SHARES_MODE:
             raw_quantity = self.quantity_var.get().strip()
             if not raw_quantity.isdecimal():
                 raise ValueError("整股股數必須是正整數。")
             quantity = int(raw_quantity)
             if quantity <= 0:
                 raise ValueError("整股股數必須大於零。")
-        elif self.input_mode_var.get() == "美元金額":
+        elif self.input_mode_var.get() == self.CASH_MODE:
             try:
                 amount = Decimal(self.amount_var.get().strip())
             except InvalidOperation as exc:
@@ -457,10 +459,10 @@ class ManualOrderWindow:
         self.symbol_entry.configure(state=state)
         self.input_mode_box.configure(state="disabled" if value else "readonly")
         self.quantity_entry.configure(
-            state=state if self.input_mode_var.get() == "整股股數" else "disabled",
+            state=state if self.input_mode_var.get() == self.SHARES_MODE else "disabled",
         )
         self.amount_entry.configure(
-            state=state if self.input_mode_var.get() == "美元金額" else "disabled",
+            state=state if self.input_mode_var.get() == self.CASH_MODE else "disabled",
         )
         self.price_entry.configure(state=state)
         self.action_box.configure(state="disabled" if value else "readonly")
@@ -528,7 +530,7 @@ class ManualOrderWindow:
             self.symbol_var.set(row["symbol"])
             self.action_var.set(self.FORM_ACTION_LABELS[row["action"]])
             self.allow_short_var.set(row["action"] == "SELL_SHORT")
-            self.input_mode_var.set("整股股數")
+            self.input_mode_var.set(self.SHARES_MODE)
             self.quantity_var.set(str(row["quantity"]))
             self.price_var.set(str(row["limit_price"]))
             self.form_status.configure(text="已載入選定委託；調整價格或股數後再次按修改。")
@@ -557,14 +559,18 @@ class ManualOrderWindow:
                 "修改手動委託", "請先變更價格或股數。", parent=self.win,
             )
             return
-        if not messagebox.askyesno(
-            "取消後修改手動委託",
+        cash_target = (
+            f"預估交易目標 ${request.amount_usd:f} → "
+            if request.amount_usd is not None else ""
+        )
+        prompt = (
             f"先取消目前的 {row['quantity']} 股 {row['symbol']} 委託，"
             f"等 IB 確認後再預覽新條件：\n"
-            + (f"預估交易目標 ${request.amount_usd:f} → "
-               if request.amount_usd is not None else "")
-            + f"{requested_quantity} 股，LMT ${request.limit_price:.2f}\n\n"
-            "原委託取消前仍可能成交；不會自動送出新委託。",
+            f"{cash_target}{requested_quantity} 股，LMT ${request.limit_price:.2f}\n\n"
+            "原委託取消前仍可能成交；不會自動送出新委託。"
+        )
+        if not messagebox.askyesno(
+            "取消後修改手動委託", prompt,
             parent=self.win,
         ):
             return
@@ -656,7 +662,7 @@ class ManualOrderWindow:
         self.symbol_var.set(request.symbol)
         # After any partial fill, prefill the remaining shares explicitly so a
         # cash target cannot recalculate to the original total on re-preview.
-        self.input_mode_var.set("整股股數")
+        self.input_mode_var.set(self.SHARES_MODE)
         self.quantity_var.set(str(remaining))
         self.price_var.set(str(request.limit_price))
         self.action_var.set(self.FORM_ACTION_LABELS[request.action])

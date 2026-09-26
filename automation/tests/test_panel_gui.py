@@ -631,16 +631,23 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
         def __init__(self):
             self.store = FakeStore()
             self.preview_requests = []
+            self.validated = []
             self.submitted = []
             self.cancelled = []
 
-        def preview(self, *request):
+        def preview(self, *request, action="BUY", allow_short=False):
             self.preview_requests.append(request)
             return ManualOrderPreview(
                 account_name=request[0], account_id="U12770188",
                 symbol=request[1], quantity=request[2], limit_price=request[3],
                 tif="DAY", contract_id=2345, primary_exchange="NASDAQ",
+                action=action, allow_short=allow_short,
+                projected_position=(-request[2] if action == "SELL" else request[2]),
             )
+
+        def validate_preview(self, preview):
+            self.validated.append(preview)
+            return preview
 
         def submit(self, preview):
             self.submitted.append(preview)
@@ -684,30 +691,52 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
     window = panel._manual_order_window
     assert window.account_var.get() == ""
     assert str(window.account_box.cget("state")) == "readonly"
+    window.action_var.set("賣出")
+    assert str(window.allow_short_check.cget("state")) == "normal"
+    window.allow_short_var.set(True)
+    window.action_var.set("回補空單")
+    assert window.allow_short_var.get() is False
+    assert str(window.allow_short_check.cget("state")) == "disabled"
+    window.action_var.set("買進")
 
     window.account_var.set("Rosa")
     window.symbol_var.set("ZZZZ")
     window.quantity_var.set("3")
     window.price_var.set("12.5")
+    window.action_var.set("賣出")
+    window.allow_short_var.set(True)
     window.preview_button.invoke()
 
-    step = ["preview"]
+    step = ["short_preview"]
     deadline = time.monotonic() + GUI_DEADLINE_SEC
 
     def check():
         try:
             assert not exceptions, exceptions
             assert time.monotonic() < deadline, f"GUI stalled at {step[0]}"
-            if step[0] == "preview" and window._preview is not None:
-                assert fake_service.preview_requests == [("Rosa", "ZZZZ", 3, 12.5)]
+            if step[0] == "short_preview" and window._preview is not None:
+                assert window._preview.action == "SELL"
+                assert window._preview.allow_short is True
+                assert "方向：放空" in window.preview_text.cget("text")
+                assert "預計空單：3" in window.preview_text.cget("text")
+                window.action_var.set("買進")
+                assert window._preview is None
+                assert str(window.confirm_button.cget("state")) == "disabled"
+                window.preview_button.invoke()
+                step[0] = "preview"
+            elif step[0] == "preview" and window._preview is not None:
+                assert fake_service.preview_requests[-1] == ("Rosa", "ZZZZ", 3, 12.5)
                 assert window._preview.account_name == "Rosa"
                 assert window._preview.symbol == "ZZZZ"
                 assert window._preview.quantity == 3
                 assert window._preview.limit_price == 12.5
+                assert "方向：買進" in window.preview_text.cget("text")
+                assert "預計持倉：3" in window.preview_text.cget("text")
                 assert str(window.confirm_button.cget("state")) == "normal"
                 window.confirm_button.invoke()
                 step[0] = "submit"
             elif step[0] == "submit" and fake_service.submitted:
+                assert fake_service.validated == fake_service.submitted
                 assert confirmation_prompts
                 title, body = confirmation_prompts[0]
                 assert title == "再次核對委託"

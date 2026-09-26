@@ -27,6 +27,7 @@ class FakeIBState:
         self.next_status = "Submitted"
         self.cancel_status = "PendingCancel"
         self.cancel_error = None
+        self.positions_by_account = {account: {} for account in self.managed}
 
 
 class FakeIB:
@@ -43,6 +44,14 @@ class FakeIB:
 
     def managedAccounts(self):
         return self.state.managed
+
+    def positions(self, account=""):
+        return [
+            NS(account=account, contract=NS(
+                symbol=symbol, secType="STK", currency="USD", conId=123456,
+            ), position=quantity)
+            for symbol, quantity in self.state.positions_by_account[account].items()
+        ]
 
     def qualifyContracts(self, contract):
         contract.conId = 123456
@@ -162,6 +171,115 @@ def test_panel_preview_submit_and_restart_show_ib_accepted_order(tmp_path):
     assert len(rows) == 1
     assert rows[0]["order_ref"] == trade.order.orderRef
     assert rows[0]["status"] == "ACCEPTED"
+
+
+def test_sell_requires_whole_share_long_position_and_short_opt_in(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state)
+    with pytest.raises(ValueError, match="可賣持倉"):
+        service.preview("Taylor", "ZZZZ", 1, 10.0, action="SELL")
+    state.positions_by_account["U001"]["ZZZZ"] = 3.5
+    with pytest.raises(ValueError, match="可賣持倉"):
+        service.preview("Taylor", "ZZZZ", 4, 10.0, action="SELL")
+    sell = service.preview("Taylor", "ZZZZ", 2, 10.0, action="SELL")
+    assert (sell.current_position, sell.projected_position) == (3.5, 1.5)
+    assert "方向：賣出" in sell.confirmation_text
+    assert "預計持倉：1.5" in sell.confirmation_text
+    result = service.submit(sell)
+    assert result["action"] == "SELL"
+    assert (state.placed[0].order.action, state.placed[0].order.account,
+            state.placed[0].order.totalQuantity) == ("SELL", "U001", 2)
+
+
+def test_short_sale_requires_checkbox_and_previews_negative_position(tmp_path):
+    state = FakeIBState()
+    state.positions_by_account["U001"]["ZZZZ"] = 2
+    service = service_for(tmp_path, state)
+    with pytest.raises(ValueError, match="允許放空"):
+        service.preview("Taylor", "ZZZZ", 3, 10.0, action="SELL")
+    short = service.preview(
+        "Taylor", "ZZZZ", 3, 10.0, action="SELL", allow_short=True,
+    )
+    assert (short.current_position, short.projected_position) == (2, -1)
+    assert "方向：放空" in short.confirmation_text
+    assert "預計空單：1" in short.confirmation_text
+    result = service.submit(short)
+    assert result["action"] == "SELL_SHORT"
+    assert state.placed[0].order.action == "SELL"
+
+
+def test_cover_is_separate_buy_capped_at_whole_short_position(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state)
+    with pytest.raises(ValueError, match="空單"):
+        service.preview("Taylor", "ZZZZ", 1, 10.0, action="COVER")
+    state.positions_by_account["U001"]["ZZZZ"] = -2.5
+    with pytest.raises(ValueError, match="空單"):
+        service.preview("Taylor", "ZZZZ", 3, 10.0, action="COVER")
+    cover = service.preview("Taylor", "ZZZZ", 2, 10.0, action="COVER")
+    assert (cover.current_position, cover.projected_position) == (-2.5, -0.5)
+    assert "方向：回補空單" in cover.confirmation_text
+    result = service.submit(cover)
+    assert result["action"] == "COVER"
+    assert (state.placed[0].order.action, state.placed[0].order.account,
+            state.placed[0].order.totalQuantity) == ("BUY", "U001", 2)
+
+
+def test_position_revalidated_before_confirmation_and_submission(tmp_path):
+    state = FakeIBState()
+    state.positions_by_account["U001"]["ZZZZ"] = 4
+    service = service_for(tmp_path, state)
+    preview = service.preview("Taylor", "ZZZZ", 2, 10.0, action="SELL")
+    state.positions_by_account["U001"]["ZZZZ"] = 3
+    with pytest.raises(ValueError, match="預覽後變更"):
+        service.validate_preview(preview)
+    with pytest.raises(ValueError, match="預覽後變更"):
+        service.submit(preview)
+    assert state.placed == []
+
+
+def test_confirmation_rechecks_universe_and_manual_order_lock(tmp_path):
+    state = FakeIBState()
+    universe = {"SPY"}
+    service = service_for(tmp_path, state, universe=universe)
+    preview = service.preview("Taylor", "ZZZZ", 1, 10.0)
+    universe.add("ZZZZ")
+    with pytest.raises(ValueError, match="策略 Universe"):
+        service.validate_preview(preview)
+    universe.remove("ZZZZ")
+    service.store.create(preview, "QUANTCORE_MANUAL:TAYLOR:external")
+    with pytest.raises(ValueError, match="未結案手動單"):
+        service.validate_preview(preview)
+    assert state.placed == []
+
+
+def test_sell_rechecks_reduced_position_at_submission(tmp_path):
+    state = FakeIBState()
+    state.positions_by_account["U001"]["ZZZZ"] = 5
+    service = service_for(tmp_path, state)
+    preview = service.preview("Taylor", "ZZZZ", 4, 10.0, action="SELL")
+    state.positions_by_account["U001"]["ZZZZ"] = 2
+    with pytest.raises(ValueError, match="允許放空"):
+        service.submit(preview)
+    assert state.placed == []
+
+
+def test_three_accounts_use_only_their_own_positions_for_sell_and_cover(tmp_path):
+    state = FakeIBState()
+    state.positions_by_account["U001"]["ZZZZ"] = 3
+    state.positions_by_account["U002"]["ZZZZ"] = -2
+    service = service_for(tmp_path, state)
+    taylor = service.preview("Taylor", "ZZZZ", 3, 10.0, action="SELL")
+    rosa = service.preview("Rosa", "ZZZZ", 2, 10.0, action="COVER")
+    with pytest.raises(ValueError, match="可賣持倉"):
+        service.preview("Yvonne", "ZZZZ", 1, 10.0, action="SELL")
+    with pytest.raises(ValueError, match="空單"):
+        service.preview("Taylor", "ZZZZ", 1, 10.0, action="COVER")
+    service.submit(taylor)
+    service.submit(rosa)
+    assert [(t.order.action, t.order.account) for t in state.placed] == [
+        ("SELL", "U001"), ("BUY", "U002"),
+    ]
 
 
 def test_preview_rejects_strategy_universe_and_non_us_contract(tmp_path):

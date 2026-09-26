@@ -1,7 +1,7 @@
-"""Safe, persistent Panel workflow for regular-hours manual limit buys.
+"""Safe, persistent Panel workflow for regular-hours manual limit orders.
 
 The service is deliberately small in scope: one configured Account, a US
-USD-denominated stock/ETF contract, whole shares, BUY LMT, regular session,
+USD-denominated stock/ETF contract, whole shares, LMT, regular session,
 and DAY time-in-force. UI callers must show the returned preview and require
 an explicit confirmation before calling submit().
 """
@@ -79,16 +79,38 @@ class ManualOrderPreview:
     tif: str
     contract_id: int
     primary_exchange: str
+    action: str = "BUY"
+    allow_short: bool = False
+    current_position: float = 0.0
+    projected_position: float = 0.0
+
+    @property
+    def intent_action(self) -> str:
+        return "SELL_SHORT" if self.action == "SELL" and self.projected_position < 0 else self.action
+
+    @property
+    def broker_action(self) -> str:
+        return "SELL" if self.action == "SELL" else "BUY"
 
     @property
     def confirmation_text(self) -> str:
         # Preserve the exact user-entered numeric value in the confirmation.
         price = str(self.limit_price)
+        direction = {
+            "BUY": "買進", "SELL": "賣出", "SELL_SHORT": "放空", "COVER": "回補空單",
+        }[self.intent_action]
+        expected = (
+            f"預計空單：{abs(self.projected_position):g} 股"
+            if self.projected_position < 0 else
+            f"預計持倉：{self.projected_position:g} 股"
+        )
         return (
             f"Account：{self.account_name}\n"
             f"標的：{self.symbol}\n"
-            f"方向：買進\n"
+            f"方向：{direction}\n"
             f"整股股數：{self.quantity:,}\n"
+            f"目前持倉：{self.current_position:g} 股\n"
+            f"{expected}\n"
             + "限價：$" + price + "\n"
             + f"交易時段：一般時段\n"
             + f"效期：{self.tif}（當日有效）"
@@ -281,10 +303,10 @@ class ManualOrderStore:
                         order_ref, account_name, account_id, symbol, action,
                         quantity, limit_price, tif, outside_rth, contract_id,
                         status, status_message, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, 'BUY', ?, ?, ?, 0, ?,
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?,
                               'SENDING', '正在送往 IB', ?, ?)""",
                     (order_ref, preview.account_name, preview.account_id,
-                     preview.symbol, preview.quantity, preview.limit_price,
+                     preview.symbol, preview.intent_action, preview.quantity, preview.limit_price,
                      preview.tif, preview.contract_id, now, now),
                 )
                 row = conn.execute(
@@ -572,7 +594,7 @@ def _serialize_service_operation(method):
 
 
 class ManualOrderService:
-    """Validate, submit, and reconcile one-account manual BUY LMT orders."""
+    """Validate, submit, and reconcile one-account manual LMT orders."""
 
     def __init__(self, *, account_names: Iterable[str] | None = None,
                  store: ManualOrderStore | None = None,
@@ -873,31 +895,102 @@ class ManualOrderService:
                     f"{account_name} 的 {symbol} 已有未結案手動單"
                 )
 
-    @_serialize_service_operation
-    def preview(self, account_name: str, symbol: str,
-                quantity: int, limit_price: float) -> ManualOrderPreview:
-        account = self._account_name(account_name)
-        symbol, quantity, price = self._check_request(
-            account, symbol, quantity, limit_price
-        )
+    @staticmethod
+    def _position(ib, ctx, contract) -> float:
+        """Read this Account's synchronized IB position for the qualified contract."""
+        total = 0.0
+        try:
+            positions = ib.positions(ctx.account)
+        except Exception as exc:
+            raise ManualOrderError(f"無法取得 {ctx.name} 最新持倉，已阻擋委託：{exc}") from exc
+        for position in positions:
+            held = position.contract
+            if (str(getattr(position, "account", "") or "") != ctx.account
+                    or str(getattr(held, "secType", "") or "").upper() != "STK"
+                    or str(getattr(held, "currency", "") or "").upper() != "USD"
+                    or int(getattr(held, "conId", 0) or 0) != int(contract.conId)):
+                continue
+            quantity = float(position.position)
+            if not math.isfinite(quantity):
+                raise ManualOrderError("IB 持倉數量無效，已阻擋委託")
+            total += quantity
+        if not math.isfinite(total):
+            raise ManualOrderError("IB 持倉數量無效，已阻擋委託")
+        return total
+
+    @staticmethod
+    def _project_position(action: str, quantity: int, current: float,
+                          allow_short: bool) -> float:
+        if action == "BUY":
+            if allow_short:
+                raise ManualOrderError("允許放空只適用於賣出")
+            return current + quantity
+        if action == "SELL":
+            sellable = math.floor(max(0.0, current))
+            if quantity > sellable and not allow_short:
+                raise ManualOrderError(
+                    f"可賣持倉只有 {sellable} 股；若要形成空單，須勾選「允許放空」"
+                )
+            return current - quantity
+        if action == "COVER":
+            if allow_short:
+                raise ManualOrderError("允許放空只適用於賣出")
+            coverable = math.floor(max(0.0, -current))
+            if quantity > coverable:
+                raise ManualOrderError(
+                    f"可回補空單只有 {coverable} 股；由空翻多請另下買單"
+                )
+            return current + quantity
+        raise ManualOrderError("請選擇買進、賣出或回補空單")
+
+    def _build_preview(self, account: str, symbol: str, quantity: int,
+                       price: float, action: str, allow_short: bool,
+                       ctx, ib) -> tuple[ManualOrderPreview, object]:
         if symbol in self._universe():
             raise ManualOrderError(
                 f"{symbol} 屬於 SR、Skew LS 或 SP500 歷史策略 Universe，不能手動下單"
             )
+        contract, primary_exchange = self._qualify_contract(ib, symbol)
+        open_trades = self._sync_trades(ib, ctx)
+        self._assert_no_duplicate(account, ctx, symbol, open_trades)
+        current = self._position(ib, ctx, contract)
+        projected = self._project_position(action, quantity, current, allow_short)
+        preview = ManualOrderPreview(
+            account_name=account, account_id=ctx.account, symbol=symbol,
+            quantity=quantity, limit_price=price, tif="DAY",
+            contract_id=int(contract.conId), primary_exchange=primary_exchange,
+            action=action, allow_short=allow_short,
+            current_position=current, projected_position=projected,
+        )
+        return preview, contract
+
+    @_serialize_service_operation
+    def preview(self, account_name: str, symbol: str,
+                quantity: int, limit_price: float, *, action: str = "BUY",
+                allow_short: bool = False) -> ManualOrderPreview:
+        account = self._account_name(account_name)
+        symbol, quantity, price = self._check_request(
+            account, symbol, quantity, limit_price
+        )
+        if action not in {"BUY", "SELL", "COVER"} or not isinstance(allow_short, bool):
+            raise ManualOrderError("請選擇有效方向與放空設定")
         with self._connected(account) as (ctx, ib):
-            contract, primary_exchange = self._qualify_contract(ib, symbol)
-            open_trades = self._sync_trades(ib, ctx)
-            self._assert_no_duplicate(account, ctx, symbol, open_trades)
-            return ManualOrderPreview(
-                account_name=account,
-                account_id=ctx.account,
-                symbol=symbol,
-                quantity=quantity,
-                limit_price=price,
-                tif="DAY",
-                contract_id=int(contract.conId),
-                primary_exchange=primary_exchange,
+            preview, _contract = self._build_preview(
+                account, symbol, quantity, price, action, allow_short, ctx, ib,
             )
+            return preview
+
+    @_serialize_service_operation
+    def validate_preview(self, preview: ManualOrderPreview) -> ManualOrderPreview:
+        """Recheck an existing preview immediately before asking for consent."""
+        fresh = self.preview(
+            preview.account_name, preview.symbol, preview.quantity,
+            preview.limit_price, action=preview.action,
+            allow_short=preview.allow_short,
+        )
+        if fresh != preview:
+            raise ManualOrderError("Account、合約或持倉在預覽後變更，請重新預覽")
+        return fresh
 
     @_serialize_service_operation
     def submit(self, preview: ManualOrderPreview) -> dict:
@@ -906,20 +999,17 @@ class ManualOrderService:
             account, preview.symbol, preview.quantity, preview.limit_price
         )
         if (account != preview.account_name or preview.tif != "DAY"
-                or preview.account_id == ""):
+                or preview.account_id == ""
+                or preview.action not in {"BUY", "SELL", "COVER"}
+                or not isinstance(preview.allow_short, bool)):
             raise ManualOrderError("委託預覽已變更，請重新預覽")
-        if symbol in self._universe():
-            raise ManualOrderError(
-                f"{symbol} 屬於 SR、Skew LS 或 SP500 歷史策略 Universe，不能手動下單"
-            )
         with self._connected(account) as (ctx, ib):
-            if ctx.account != preview.account_id:
-                raise ManualOrderError("Account 設定已變更，請重新預覽")
-            contract, _primary_exchange = self._qualify_contract(ib, symbol)
-            if int(contract.conId) != preview.contract_id:
-                raise ManualOrderError("IB 合約在預覽後變更，請重新預覽")
-            open_trades = self._sync_trades(ib, ctx)
-            self._assert_no_duplicate(account, ctx, symbol, open_trades)
+            fresh, contract = self._build_preview(
+                account, symbol, quantity, price, preview.action,
+                preview.allow_short, ctx, ib,
+            )
+            if fresh != preview:
+                raise ManualOrderError("Account、合約或持倉在預覽後變更，請重新預覽")
 
             order_ref = (
                 MANUAL_ORDER_REF_PREFIX
@@ -928,8 +1018,8 @@ class ManualOrderService:
                 + uuid.uuid4().hex
             )
             self.store.create(preview, order_ref)
-            order = self._make_order("BUY", quantity, price)
-            order.action = "BUY"
+            order = self._make_order(preview.broker_action, quantity, price)
+            order.action = preview.broker_action
             order.totalQuantity = quantity
             order.lmtPrice = price
             order.orderType = "LMT"

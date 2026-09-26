@@ -1,4 +1,4 @@
-"""Panel window for previewing, confirming, and tracking manual limit buys."""
+"""Panel window for previewing, confirming, and tracking manual limit orders."""
 
 from __future__ import annotations
 
@@ -14,12 +14,19 @@ class ManualOrderRequest:
     symbol: str
     quantity: int
     limit_price: float
+    action: str = "BUY"
+    allow_short: bool = False
 
 
 class ManualOrderWindow:
     """Panel adapter; all account, contract, and order decisions live in service."""
 
     POLL_INTERVAL_MS = 10_000
+    ACTION_LABELS = {"買進": "BUY", "賣出": "SELL", "回補空單": "COVER"}
+    STORED_ACTION_LABELS = {
+        "BUY": "買進", "SELL": "賣出", "SELL_SHORT": "放空", "COVER": "回補空單",
+    }
+    FORM_ACTION_LABELS = {**STORED_ACTION_LABELS, "SELL_SHORT": "賣出"}
 
     def __init__(self, parent, account_names, service, theme, fonts, log=None):
         self.parent = parent
@@ -38,7 +45,7 @@ class ManualOrderWindow:
         self._replacement_request = None
 
         self.win = tk.Toplevel(parent)
-        self.win.title("手動下單 — 整股限價買進")
+        self.win.title("手動下單 — 整股限價委託")
         self.win.configure(bg=theme["bg"])
         self.win.geometry("1030x600")
         self.win.minsize(960, 520)
@@ -49,11 +56,15 @@ class ManualOrderWindow:
         self.symbol_var = tk.StringVar(self.win, value="")
         self.quantity_var = tk.StringVar(self.win, value="")
         self.price_var = tk.StringVar(self.win, value="")
+        self.action_var = tk.StringVar(self.win, value="買進")
+        self.allow_short_var = tk.BooleanVar(self.win, value=False)
         for variable in (
             self.account_var, self.symbol_var,
             self.quantity_var, self.price_var,
+            self.action_var, self.allow_short_var,
         ):
             variable.trace_add("write", self._form_changed)
+        self.action_var.trace_add("write", self._action_changed)
 
         self._build(account_names)
         self._render_orders(self._active_orders())
@@ -70,7 +81,7 @@ class ManualOrderWindow:
             bg=t["accent"], fg=t["accent_hl"],
         ).pack(side="left")
         tk.Label(
-            header, text="一般時段 · BUY LMT · DAY",
+            header, text="一般時段 · 整股 LMT · DAY",
             font=self.fonts["small"], bg=t["accent"], fg=t["text"],
         ).pack(side="right")
 
@@ -100,16 +111,28 @@ class ManualOrderWindow:
         self.price_entry = ttk.Entry(form, textvariable=self.price_var, width=18)
         self.price_entry.grid(row=1, column=3, sticky="ew", pady=5)
 
+        self._field_label(form, "方向", 2, 0)
+        self.action_box = ttk.Combobox(
+            form, textvariable=self.action_var,
+            values=tuple(self.ACTION_LABELS), state="readonly", width=18,
+        )
+        self.action_box.grid(row=2, column=1, sticky="ew", padx=(0, 14), pady=5)
+        self.allow_short_check = ttk.Checkbutton(
+            form, text="允許放空", variable=self.allow_short_var,
+            state="disabled",
+        )
+        self.allow_short_check.grid(row=2, column=2, columnspan=2, sticky="w", pady=5)
+
         helper = tk.Label(
             form,
             text="只接受美國市場的美元個股或 ETF；策略 Universe 標的會被阻擋。",
             font=self.fonts["small"], bg=t["bg2"], fg=t["text_dim"],
             anchor="w",
         )
-        helper.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(7, 2))
+        helper.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(7, 2))
 
         actions = tk.Frame(form, bg=t["bg2"])
-        actions.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(9, 0))
+        actions.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(9, 0))
         self.preview_button = ttk.Button(
             actions, text="預覽委託", command=self._preview_order,
         )
@@ -208,6 +231,14 @@ class ManualOrderWindow:
                 text="欄位已變更，請重新預覽委託。",
             )
 
+    def _action_changed(self, *_args):
+        is_sell = self.action_var.get() == "賣出"
+        if not is_sell:
+            self.allow_short_var.set(False)
+        self.allow_short_check.configure(
+            state="normal" if is_sell and not self._busy else "disabled",
+        )
+
     def _read_request(self):
         account = self.account_var.get().strip()
         if not account:
@@ -229,6 +260,8 @@ class ManualOrderWindow:
             symbol=self.symbol_var.get().strip(),
             quantity=quantity,
             limit_price=price,
+            action=self.ACTION_LABELS[self.action_var.get()],
+            allow_short=bool(self.allow_short_var.get()),
         )
 
     def _preview_order(self):
@@ -250,6 +283,7 @@ class ManualOrderWindow:
             result = self.service.preview(
                 request.account_name, request.symbol,
                 request.quantity, request.limit_price,
+                action=request.action, allow_short=request.allow_short,
             )
             self._post(lambda: self._preview_complete(request, result, None))
         except Exception as exc:
@@ -284,13 +318,45 @@ class ManualOrderWindow:
         if current != self._preview_request:
             self._form_changed()
             return
+        preview = self._preview
+        self._set_busy(True)
+        self.form_status.configure(text="正在重新檢查持倉與委託…")
+        threading.Thread(
+            target=self._validate_worker, args=(preview, current), daemon=True,
+        ).start()
+
+    def _validate_worker(self, preview, request):
+        try:
+            fresh = self.service.validate_preview(preview)
+            self._post(lambda: self._validated_complete(preview, request, fresh, None))
+        except Exception as exc:
+            self._post(lambda error=str(exc): self._validated_complete(
+                preview, request, None, error,
+            ))
+
+    def _validated_complete(self, preview, request, fresh, error):
+        self._set_busy(False)
+        if self._closed:
+            return
+        if error or fresh != preview:
+            self._preview = None
+            self._preview_request = None
+            self.confirm_button.configure(state="disabled")
+            self.form_status.configure(text="預覽已失效，請重新預覽")
+            self.preview_text.configure(
+                text=error or "資料在預覽後變更，請重新預覽",
+                fg=self.theme["red"],
+            )
+            return
+        if self._preview != preview or self._read_request() != request:
+            self._form_changed()
+            return
         if not messagebox.askyesno(
             "再次核對委託",
-            self._preview.confirmation_text + "\n\n確認送出這筆委託？",
+            fresh.confirmation_text + "\n\n確認送出這筆委託？",
             parent=self.win,
         ):
             return
-        preview = self._preview
         self._set_busy(True)
         self.form_status.configure(text="送單中…")
         threading.Thread(
@@ -320,7 +386,7 @@ class ManualOrderWindow:
         )
         self.log(
             f"[>] Manual order [{result['account_name']}] "
-            f"BUY {result['quantity']}sh {result['symbol']} "
+            f"{result['action']} {result['quantity']}sh {result['symbol']} "
             f"LMT {result['limit_price']} USD — {result['status']}"
         )
         self._render_orders(self._active_orders())
@@ -335,6 +401,10 @@ class ManualOrderWindow:
         self.symbol_entry.configure(state=state)
         self.quantity_entry.configure(state=state)
         self.price_entry.configure(state=state)
+        self.action_box.configure(state="disabled" if value else "readonly")
+        self.allow_short_check.configure(
+            state="normal" if not value and self.action_var.get() == "賣出" else "disabled",
+        )
         self.confirm_button.configure(
             state="disabled" if value or self._preview is None else "normal",
         )
@@ -389,9 +459,13 @@ class ManualOrderWindow:
         if row is None or self._busy:
             return
         if (self.account_var.get().strip() != row["account_name"]
-                or self.symbol_var.get().strip().upper() != row["symbol"]):
+                or self.symbol_var.get().strip().upper() != row["symbol"]
+                or self.action_var.get() != self.FORM_ACTION_LABELS[row["action"]]
+                or bool(self.allow_short_var.get()) != (row["action"] == "SELL_SHORT")):
             self.account_var.set(row["account_name"])
             self.symbol_var.set(row["symbol"])
+            self.action_var.set(self.FORM_ACTION_LABELS[row["action"]])
+            self.allow_short_var.set(row["action"] == "SELL_SHORT")
             self.quantity_var.set(str(row["quantity"]))
             self.price_var.set(str(row["limit_price"]))
             self.form_status.configure(text="已載入選定委託；調整價格或股數後再次按修改。")
@@ -406,7 +480,9 @@ class ManualOrderWindow:
             messagebox.showwarning("修改手動委託", str(exc), parent=self.win)
             return
         if (request.account_name != row["account_name"]
-                or request.symbol != row["symbol"]):
+                or request.symbol != row["symbol"]
+                or request.action != ("SELL" if row["action"] == "SELL_SHORT" else row["action"])
+                or request.allow_short != (row["action"] == "SELL_SHORT")):
             messagebox.showwarning(
                 "修改手動委託", "修改只允許變更原委託的價格或股數。", parent=self.win,
             )
@@ -514,6 +590,8 @@ class ManualOrderWindow:
         self.symbol_var.set(request.symbol)
         self.quantity_var.set(str(remaining))
         self.price_var.set(str(request.limit_price))
+        self.action_var.set(self.FORM_ACTION_LABELS[request.action])
+        self.allow_short_var.set(request.allow_short)
         self._preview = None
         self._preview_request = None
         self.confirm_button.configure(state="disabled")
@@ -586,7 +664,7 @@ class ManualOrderWindow:
                 "", "end", iid=order_ref,
                 values=(
                     row["account_name"], row["symbol"],
-                    "買進" if row["action"] == "BUY" else row["action"],
+                    self.STORED_ACTION_LABELS.get(row["action"], row["action"]),
                     row["quantity"], price_condition, "一般時段 RTH / DAY",
                     row.get("status_label", row["status"]), fill_text,
                 ),

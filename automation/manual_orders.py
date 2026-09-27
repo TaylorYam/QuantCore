@@ -66,11 +66,17 @@ _IB_OUTSIDE_RTH_IGNORED = 2109
 _OUTSIDE_RTH_IGNORED_REASON = "IB 回報忽略盤前盤後設定（2109）"
 _IB_ACK_TIMEOUT_SECONDS = 10.0
 _IB_ACK_POLL_SECONDS = 0.5
+# TWS sends 2109 only to the connection that placed the order, so that
+# connection keeps listening this long after IB's first status. Only a quiet
+# window marks outsideRth as confirmed; anything else is cancelled.
+_OUTSIDE_RTH_CONFIRM_SECONDS = 5.0
 _UNACKNOWLEDGED_REASON = (
     f"IB 未在 {_IB_ACK_TIMEOUT_SECONDS:g} 秒內回覆委託，無法確認盤前盤後設定"
 )
+_UNCONFIRMED_REASON = "送單連線在確認盤前盤後設定前中斷，可能漏收 IB 2109"
 _IB_AWAITING_ACK = frozenset({"", "ApiPending", "PendingSubmit"})
 _IB_WORKING_STATUSES = frozenset({"ApiPending", "PendingSubmit", "PreSubmitted", "Submitted"})
+_IB_DONE_STATUSES = frozenset({"Filled", "Cancelled", "ApiCancelled", "Inactive"})
 
 # SMART-routed US listings returned by IB contract qualification. Unknown
 # primary exchanges fail closed so a USD-denominated foreign listing cannot
@@ -403,6 +409,7 @@ class ManualOrderStore:
                     outside_rth INTEGER NOT NULL,
                     session TEXT NOT NULL DEFAULT 'REGULAR',
                     forced_cancel_reason TEXT,
+                    outside_rth_confirmed_at TEXT,
                     contract_id INTEGER NOT NULL,
                     broker_order_id INTEGER,
                     perm_id INTEGER,
@@ -529,6 +536,17 @@ class ManualOrderStore:
                     "INSERT INTO manual_order_schema_migrations VALUES (5, ?)",
                     (_utc_now(),),
                 )
+            if 6 not in migrations:
+                if "outside_rth_confirmed_at" not in {
+                    row["name"] for row in conn.execute("PRAGMA table_info(manual_orders)")
+                }:
+                    conn.execute(
+                        "ALTER TABLE manual_orders ADD COLUMN outside_rth_confirmed_at TEXT"
+                    )
+                conn.execute(
+                    "INSERT INTO manual_order_schema_migrations VALUES (6, ?)",
+                    (_utc_now(),),
+                )
             conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -574,7 +592,8 @@ class ManualOrderStore:
                broker_order_id: int | None = None, perm_id: int | None = None,
                filled_quantity: int | None = None,
                avg_fill_price: float | None = None,
-               forced_cancel_reason: str | None = None) -> dict | None:
+               forced_cancel_reason: str | None = None,
+               outside_rth_confirmed_at: str | None = None) -> dict | None:
         updates = {
             "status": status,
             "status_message": status_message,
@@ -583,6 +602,7 @@ class ManualOrderStore:
             "filled_quantity": filled_quantity,
             "avg_fill_price": avg_fill_price,
             "forced_cancel_reason": forced_cancel_reason,
+            "outside_rth_confirmed_at": outside_rth_confirmed_at,
         }
         updates = {key: value for key, value in updates.items() if value is not None}
         if not updates:
@@ -837,22 +857,34 @@ def _status_from_trade(trade) -> tuple[str | None, str, int, float | None]:
     return mapped, message, filled, avg_fill_price
 
 
-def _await_ib_acknowledgement(ib, trade) -> bool:
-    """Pump IB events until IB answers placeOrder; False if it never does.
+def _ib_order_status(trade) -> str:
+    return str(getattr(getattr(trade, "orderStatus", None), "status", "") or "")
 
-    TWS raises warning 2109 while it processes placeOrder ("PlaceOrder is now
-    being processed"), ahead of the order's first status on the same socket.
-    One more pump covers a warning delivered alongside that status.
-    """
+
+def _await_ib_acknowledgement(ib, trade) -> bool:
+    """Pump IB events until IB answers placeOrder; False if it never does."""
     waited = 0.0
     while waited < _IB_ACK_TIMEOUT_SECONDS:
         ib.sleep(_IB_ACK_POLL_SECONDS)
         waited += _IB_ACK_POLL_SECONDS
-        status = str(getattr(getattr(trade, "orderStatus", None), "status", "") or "")
-        if status not in _IB_AWAITING_ACK:
-            ib.sleep(_IB_ACK_POLL_SECONDS)
+        if _ib_order_status(trade) not in _IB_AWAITING_ACK:
             return True
     return False
+
+
+def _outside_rth_confirmation_window(ib, trade, warnings: list) -> bool:
+    """Keep the placing connection listening after IB's first status.
+
+    True only if the whole window passes without warning 2109 (or the order
+    finishes first). Exceptions, such as a dropped connection, propagate so
+    the caller can treat the order as unconfirmed.
+    """
+    waited = 0.0
+    while (waited < _OUTSIDE_RTH_CONFIRM_SECONDS and not warnings
+           and _ib_order_status(trade) not in _IB_DONE_STATUSES):
+        ib.sleep(_IB_ACK_POLL_SECONDS)
+        waited += _IB_ACK_POLL_SECONDS
+    return not warnings
 
 
 def _find_manual_trade(trades: Iterable[object], order_ref: str, account: str):
@@ -1487,7 +1519,7 @@ class ManualOrderService:
             if error_event is not None:
                 error_event += on_ib_error
             trade = None
-            acknowledged = False
+            acknowledged = confirmed = False
             try:
                 trade = ib.placeOrder(contract, order)
                 self.store.update(
@@ -1496,8 +1528,13 @@ class ManualOrderService:
                     perm_id=getattr(order, "permId", None),
                 )
                 if preview.outside_rth:
-                    # Keep listening for 2109 until IB answers this placeOrder.
+                    # Listen for 2109 until IB answers, then through the
+                    # confirmation window on this same connection.
                     acknowledged = _await_ib_acknowledgement(ib, trade)
+                    if acknowledged and not outside_rth_ignored:
+                        confirmed = _outside_rth_confirmation_window(
+                            ib, trade, outside_rth_ignored,
+                        )
                 else:
                     # Allow immediate IB status/error callbacks to reach ib_insync.
                     ib.sleep(1.0)
@@ -1527,6 +1564,10 @@ class ManualOrderService:
                     self._force_cancel(ib, trade, order_ref, _OUTSIDE_RTH_IGNORED_REASON)
                 elif not acknowledged:
                     self._force_cancel(ib, trade, order_ref, _UNACKNOWLEDGED_REASON)
+                elif not confirmed:
+                    self._force_cancel(ib, trade, order_ref, _UNCONFIRMED_REASON)
+                else:
+                    self.store.update(order_ref, outside_rth_confirmed_at=_utc_now())
         result = self.store.get(order_ref)
         assert result is not None
         result["status_label"] = _STATUS_LABELS.get(
@@ -1571,9 +1612,18 @@ class ManualOrderService:
             )
 
     def _retry_forced_cancels(self, ib, ctx, open_trades) -> None:
-        """Re-send forced cancels that IB has not yet started processing."""
+        """Re-send forced cancels that IB has not yet started processing.
+
+        An extended-hours order still unconfirmed here lost its submitting
+        connection (crash or disconnect) before the confirmation window
+        ended; a 2109 sent to that connection can no longer be received, so
+        it is force-cancelled as well.
+        """
         for row in self.store.list_active(ctx.name):
             reason = row.get("forced_cancel_reason")
+            if not reason and row.get("outside_rth") and not row.get("outside_rth_confirmed_at"):
+                reason = _UNCONFIRMED_REASON
+                self.store.update(row["order_ref"], forced_cancel_reason=reason)
             if not reason:
                 continue
             trade = _find_manual_trade(open_trades, row["order_ref"], ctx.account)

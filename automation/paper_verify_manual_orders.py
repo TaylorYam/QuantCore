@@ -164,6 +164,9 @@ def print_row(row: dict) -> None:
         f"{row['action']} {row['quantity']} {row['symbol']} {price}  成交 {fill}"
     )
     print(f"      訊息：{row.get('status_message', '')}")
+    if row.get("outside_rth"):
+        confirmed = row.get("outside_rth_confirmed_at")
+        print(f"      盤前盤後設定：{'已確認 ' + confirmed if confirmed else '未確認'}")
     if row.get("forced_cancel_reason"):
         print(f"      強制取消原因：{row['forced_cancel_reason']}")
 
@@ -269,12 +272,13 @@ def cmd_probe_2109(args, timeline: Timeline) -> None:
         elif first_status is None or warning.elapsed <= first_status.elapsed:
             print(f"    PASS：2109（+{warning.elapsed:.3f}s）先於第一個狀態回報"
                   + (f"（+{first_status.elapsed:.3f}s）" if first_status else "（未收到狀態）"))
-        elif warning.elapsed <= first_status.elapsed + mo._IB_ACK_POLL_SECONDS:
-            print(f"    PASS（邊界）：2109 晚於狀態 {warning.elapsed - first_status.elapsed:.3f}s，"
-                  "仍在服務多等的 0.5 秒內")
+        elif warning.elapsed <= first_status.elapsed + mo._OUTSIDE_RTH_CONFIRM_SECONDS:
+            print(f"    PASS（確認窗內）：2109 晚於狀態 {warning.elapsed - first_status.elapsed:.3f}s，"
+                  f"仍在服務的 {mo._OUTSIDE_RTH_CONFIRM_SECONDS:g} 秒確認窗內，會被取消")
         else:
             print(f"    FAIL：2109（+{warning.elapsed:.3f}s）晚於第一個狀態回報"
-                  f"（+{first_status.elapsed:.3f}s）超過 0.5 秒，服務會漏掉")
+                  f"（+{first_status.elapsed:.3f}s）超過 {mo._OUTSIDE_RTH_CONFIRM_SECONDS:g} 秒，"
+                  "服務會漏掉")
         if not trade.isDone():
             timeline.mark("取消 probe 委託")
             ib.cancelOrder(order)
@@ -302,7 +306,7 @@ def cmd_submit(args, timeline: Timeline) -> None:
         print("未送出")
         return
     service.validate_preview(preview)
-    timeline.mark("送出委託（服務會監聽 2109 直到 IB 回報狀態）")
+    timeline.mark("送出委託（服務監聽 2109：IB 回報狀態前，以及回報後的確認窗）")
     print_row(service.submit(preview))
 
 

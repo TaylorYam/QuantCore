@@ -681,6 +681,95 @@ def test_unconfirmed_forced_cancel_keeps_lock_alerts_and_is_retried(tmp_path):
     assert "自動取消原因" in terminal and "2109" in terminal
 
 
+@pytest.mark.parametrize("warning_sleep", [3, 11])
+def test_2109_after_submitted_status_within_confirmation_window_still_cancels(
+    tmp_path, warning_sleep,
+):
+    # IB answers Submitted on the first pump; 2109 arrives later than the old
+    # 0.5 s grace (sleep 3) and at the end of the 5 s confirmation window.
+    state = FakeIBState()
+    state.sleep_actions = {warning_sleep: _emit_2109}
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+
+    result = service.submit(
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+
+    assert state.cancelled_orders == [state.placed[0].order]
+    assert result["status"] == "CANCEL_PENDING"
+    assert "2109" in result["status_message"]
+    assert "2109" in result["forced_cancel_reason"]
+    assert result["outside_rth_confirmed_at"] is None
+
+
+def test_extended_order_is_confirmed_only_after_a_quiet_confirmation_window(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+    result = service.submit(
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+    assert result["status"] == "ACCEPTED"
+    assert result["outside_rth_confirmed_at"]
+    assert result["forced_cancel_reason"] is None
+    assert state.cancelled_orders == []
+
+    regular = service.submit(service.preview("Rosa", "ZZZZ", 5, 10.0))
+    assert regular["outside_rth_confirmed_at"] is None
+
+
+def test_connection_lost_before_confirmation_keeps_cancel_state_across_reconnect(tmp_path):
+    state = FakeIBState()
+
+    def drop_connection(_ib, _trade):
+        raise ConnectionError("socket closed")
+
+    state.sleep_actions = {4: drop_connection}
+    state.cancel_error = "not connected"
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+
+    result = service.submit(
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+
+    trade = state.placed[0]
+    assert result["status"] == "CANCEL_UNKNOWN"
+    assert "確認盤前盤後設定前中斷" in result["forced_cancel_reason"]
+    assert any("需要確認" in message for _account, message in state.notifications)
+
+    state.cancel_error = None
+    restarted = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+    restarted.refresh_status()
+    assert state.cancelled_orders == [trade.order, trade.order]
+    assert restarted.list_orders()[0]["status"] == "CANCEL_PENDING"
+
+
+def test_reconcile_cancels_extended_order_left_unconfirmed_by_a_crash(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+    regular = service.submit(service.preview("Rosa", "ZZZZ", 1, 10.0))
+    # The Panel died after IB accepted this order but before confirmation.
+    crashed = service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS")
+    order_ref = "QUANTCORE_MANUAL:TAYLOR:crashed"
+    service.store.create(crashed, order_ref)
+    service.store.update(order_ref, status="ACCEPTED", status_message="IB 已接受")
+    trade = NS(
+        contract=NS(symbol="ZZZZ", secType="STK", currency="USD", conId=123456),
+        order=NS(account="U001", orderRef=order_ref, orderId=55, permId=9055,
+                 totalQuantity=5),
+        orderStatus=NS(status="Submitted", filled=0, avgFillPrice=0.0),
+        log=[],
+    )
+    state.open_trades.append(trade)
+
+    service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW).refresh_status()
+
+    assert state.cancelled_orders == [trade.order]
+    row = service.store.get(order_ref)
+    assert row["status"] == "CANCEL_PENDING"
+    assert "確認盤前盤後設定前中斷" in row["forced_cancel_reason"]
+    assert service.store.get(regular["order_ref"])["status"] == "ACCEPTED"
+
+
 def test_user_cancel_timeout_is_not_auto_retried(tmp_path):
     state = FakeIBState()
     service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
@@ -896,18 +985,18 @@ def test_existing_manual_order_store_migrates_to_extended_hours_columns(tmp_path
     with sqlite3.connect(path) as conn:
         conn.execute("ALTER TABLE manual_orders DROP COLUMN session")
         conn.execute("ALTER TABLE manual_orders DROP COLUMN forced_cancel_reason")
-        conn.execute("DELETE FROM manual_order_schema_migrations WHERE version IN (4, 5)")
+        conn.execute("ALTER TABLE manual_orders DROP COLUMN outside_rth_confirmed_at")
+        conn.execute("DELETE FROM manual_order_schema_migrations WHERE version IN (4, 5, 6)")
     store = ManualOrderStore(path)
     with store._connect() as conn:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(manual_orders)")}
-        assert {"session", "forced_cancel_reason"} <= columns
+        assert {"session", "forced_cancel_reason", "outside_rth_confirmed_at"} <= columns
         assert conn.execute(
-            "SELECT COUNT(*) FROM manual_order_schema_migrations WHERE version IN (4, 5)"
-        ).fetchone()[0] == 2
+            "SELECT COUNT(*) FROM manual_order_schema_migrations WHERE version IN (4, 5, 6)"
+        ).fetchone()[0] == 3
     legacy = store.get("QUANTCORE_MANUAL:TAYLOR:legacy")
-    assert (legacy["session"], legacy["outside_rth"], legacy["forced_cancel_reason"]) == (
-        "REGULAR", 0, None,
-    )
+    assert (legacy["session"], legacy["outside_rth"], legacy["forced_cancel_reason"],
+            legacy["outside_rth_confirmed_at"]) == ("REGULAR", 0, None, None)
 
 
 def test_cash_target_uses_exact_decimal_floor_and_rejects_less_than_one_share():

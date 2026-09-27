@@ -51,13 +51,30 @@ class FakeIBState:
         self.pending_errors = []
 
 
+class FakeEvent:
+    """The part of ib_insync's errorEvent used by the service: +=, -=, emit."""
+
+    def __init__(self):
+        self.handlers = []
+
+    def __iadd__(self, handler):
+        self.handlers.append(handler)
+        return self
+
+    def __isub__(self, handler):
+        self.handlers.remove(handler)
+        return self
+
+    def emit(self, *args):
+        for handler in list(self.handlers):
+            handler(*args)
+
+
 class FakeIB:
     def __init__(self, state):
-        from eventkit import Event
-
         self.state = state
         self.connected = False
-        self.errorEvent = Event("errorEvent")
+        self.errorEvent = FakeEvent()
 
     def connect(self, host, port, *, clientId, timeout):
         import asyncio

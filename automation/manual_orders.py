@@ -91,22 +91,11 @@ class BrokerQuote:
     source: str = "IB 即時買賣報價"
 
 
-def is_regular_session(now: datetime) -> bool:
-    """NYSE regular session, including official early closes; fail closed beyond registry."""
-    if now.tzinfo is None:
-        return False
-    eastern = now.astimezone(ZoneInfo("America/New_York"))
-    try:
-        if not official_sessions(eastern.date(), eastern.date()):
-            return False
-    except ValueError:
-        return False
-    close = time(13) if eastern.date() in NYSE_EARLY_CLOSES else time(16)
-    return time(9, 30) <= eastern.time().replace(tzinfo=None) < close
+def _nyse_day_clock(now: datetime) -> tuple[time, time, time] | None:
+    """(Eastern wall clock, regular close, after-hours end) on an NYSE session day.
 
-
-def extended_session_at(now: datetime) -> str | None:
-    """PRE_MARKET or AFTER_HOURS on an NYSE session day; fail closed beyond registry."""
+    None for naive times, non-session days, and dates beyond the registry.
+    """
     if now.tzinfo is None:
         return None
     eastern = now.astimezone(ZoneInfo("America/New_York"))
@@ -115,9 +104,27 @@ def extended_session_at(now: datetime) -> str | None:
             return None
     except ValueError:
         return None
-    early = eastern.date() in NYSE_EARLY_CLOSES
-    close, after_hours_end = (time(13), time(17)) if early else (time(16), time(20))
     clock = eastern.time().replace(tzinfo=None)
+    if eastern.date() in NYSE_EARLY_CLOSES:
+        return clock, time(13), time(17)
+    return clock, time(16), time(20)
+
+
+def is_regular_session(now: datetime) -> bool:
+    """NYSE regular session, including official early closes; fail closed beyond registry."""
+    day_clock = _nyse_day_clock(now)
+    if day_clock is None:
+        return False
+    clock, close, _after_hours_end = day_clock
+    return time(9, 30) <= clock < close
+
+
+def extended_session_at(now: datetime) -> str | None:
+    """PRE_MARKET or AFTER_HOURS on an NYSE session day; fail closed beyond registry."""
+    day_clock = _nyse_day_clock(now)
+    if day_clock is None:
+        return None
+    clock, close, after_hours_end = day_clock
     if time(4) <= clock < time(9, 30):
         return "PRE_MARKET"
     if close <= clock < after_hours_end:
@@ -985,14 +992,13 @@ class ManualOrderService:
         return quote
 
     @staticmethod
-    def _check_session(session: str, order_type: str) -> str:
+    def _check_session(session: str, order_type: str) -> None:
         if session not in SESSION_LABELS:
             raise ManualOrderError("請選擇有效交易時段")
         if session in _EXTENDED_SESSIONS and order_type != "LMT":
             raise ManualOrderError(
                 "盤前／盤後只接受 LMT 限價單；不會改用一般時段或市價送出"
             )
-        return session
 
     def _require_extended_session(self, session: str) -> datetime:
         now = self._clock()
@@ -1392,7 +1398,7 @@ class ManualOrderService:
             # Resolve the event before creating the durable row, so a missing
             # IB hook cannot leave an unsent order locked as SENDING.
             error_event = ib.errorEvent if preview.outside_rth else None
-            ignored_outside_rth = []
+            outside_rth_ignored = []
 
             order_ref = (
                 MANUAL_ORDER_REF_PREFIX
@@ -1420,7 +1426,7 @@ class ManualOrderService:
             def on_ib_error(req_id, error_code, _error_string, _contract=None):
                 if (error_code == _IB_OUTSIDE_RTH_IGNORED
                         and req_id == getattr(order, "orderId", None)):
-                    ignored_outside_rth.append(error_code)
+                    outside_rth_ignored.append(error_code)
 
             if error_event is not None:
                 error_event += on_ib_error
@@ -1453,8 +1459,8 @@ class ManualOrderService:
             finally:
                 if error_event is not None:
                     error_event -= on_ib_error
-            if ignored_outside_rth and trade is not None:
-                self._cancel_regularized_order(ib, trade, order_ref)
+            if outside_rth_ignored and trade is not None:
+                self._cancel_outside_rth_ignored(ib, trade, order_ref)
         result = self.store.get(order_ref)
         assert result is not None
         result["status_label"] = _STATUS_LABELS.get(
@@ -1463,7 +1469,7 @@ class ManualOrderService:
         self._dispatch_terminal_notifications()
         return result
 
-    def _cancel_regularized_order(self, ib, trade, order_ref: str) -> None:
+    def _cancel_outside_rth_ignored(self, ib, trade, order_ref: str) -> None:
         """Cancel an extended-hours order IB accepted with outsideRth ignored.
 
         Leaving it working would silently turn the trader's pre-market or
@@ -1622,7 +1628,7 @@ class ManualOrderService:
             "MKT（未指定成交價格）" if row.get("order_type") == "MKT"
             else f"LMT ${float(row['limit_price']):.2f}"
         )
-        session = SESSION_LABELS.get(row.get("session") or "REGULAR", row.get("session"))
+        session = SESSION_LABELS[row["session"]]
         return (
             f"手動委託結果｜{row['account_name']}\n"
             f"委託編號：{notification_ref}\n"
@@ -1634,7 +1640,7 @@ class ManualOrderService:
     def _reconciliation_alert_message(self, row: dict) -> str:
         status = _STATUS_LABELS.get(row["alert_status"], row["alert_status"])
         notification_ref = str(row["order_ref"]).rsplit(":", 1)[-1][:12].upper()
-        session = SESSION_LABELS.get(row.get("session") or "REGULAR", row.get("session"))
+        session = SESSION_LABELS[row["session"]]
         return (
             f"手動委託需要確認｜{row['account_name']}\n"
             f"委託編號：{notification_ref}\n"

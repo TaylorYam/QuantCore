@@ -498,12 +498,12 @@ class ManualOrderWindow:
             self.form_status.configure(text="送單前重新檢查未通過")
             self.preview_text.configure(text=error, fg=self.theme["red"])
             return
-        working = result["status"] in {"SENT", "ACCEPTED", "PARTIAL", "FILLED"}
+        needs_attention = result["status"] not in {"SENT", "ACCEPTED", "PARTIAL", "FILLED"}
         # The message carries IB's reason for rejections and forced cancels.
         self.form_status.configure(
             text=f"{result['account_name']} {result['symbol']}："
                  f"{result.get('status_message') or result.get('status_label', result['status'])}",
-            fg=self.theme["green"] if working else self.theme["red"],
+            fg=self.theme["red"] if needs_attention else self.theme["green"],
         )
         price_condition = (
             "MKT" if result.get("order_type") == "MKT"
@@ -514,7 +514,7 @@ class ManualOrderWindow:
             f"[>] Manual order [{result['account_name']}] "
             f"{result['action']} {result['quantity']}sh {result['symbol']} "
             f"{price_condition} {session} — {result['status']}"
-            + ("" if working else f" ({result.get('status_message', '')})")
+            + (f" ({result.get('status_message', '')})" if needs_attention else "")
         )
         self._render_orders(self._active_orders())
         self._refresh_status()

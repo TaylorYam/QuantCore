@@ -49,6 +49,9 @@ class FakeIBState:
         self.next_log = []
         self.place_errors = []
         self.pending_errors = []
+        # {n: action(ib, trade)} run on the n-th ib.sleep() after placeOrder.
+        self.sleep_actions = {}
+        self.sleeps_since_place = 0
 
 
 class FakeEvent:
@@ -138,6 +141,7 @@ class FakeIB:
             (order.orderId, code, message) for code, message in self.state.place_errors
         )
         self.state.place_errors = []
+        self.state.sleeps_since_place = 0
         self.state.placed.append(trade)
         self.state.open_trades.append(trade)
         return trade
@@ -154,9 +158,13 @@ class FakeIB:
         return trade
 
     def sleep(self, seconds):
+        self.state.sleeps_since_place += 1
         pending, self.state.pending_errors = self.state.pending_errors, []
         for req_id, code, message in pending:
             self.errorEvent.emit(req_id, code, message, None)
+        action = self.state.sleep_actions.get(self.state.sleeps_since_place)
+        if action is not None and self.state.placed:
+            action(self, self.state.placed[-1])
 
     def disconnect(self):
         self.connected = False
@@ -525,6 +533,7 @@ def test_submit_rejects_extended_mkt_preview_without_regular_fallback(tmp_path):
     ("PRE_MARKET", datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc)),    # Labor Day
     ("PRE_MARKET", datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)),   # Saturday
     ("AFTER_HOURS", datetime(2026, 9, 15, 0, 30, tzinfo=timezone.utc)),  # 20:30 ET
+    ("PRE_MARKET", datetime(2026, 9, 14, 13, 29, 30, tzinfo=timezone.utc)),  # 09:29:30 ET
 ])
 def test_extended_session_outside_its_window_is_rejected_not_regularized(
     tmp_path, session, now,
@@ -563,16 +572,126 @@ def test_extended_session_windows_follow_nyse_calendar_and_early_close():
 
 def test_submit_rechecks_extended_window_and_does_not_send_in_regular_session(tmp_path):
     state = FakeIBState()
-    now = [datetime(2026, 9, 14, 13, 29, tzinfo=timezone.utc)]  # 09:29 ET
+    now = [datetime(2026, 9, 14, 13, 28, tzinfo=timezone.utc)]  # 09:28 ET
     service = service_for(tmp_path, state, clock=lambda: now[0])
     preview = service.preview("Taylor", "ZZZZ", 5, 10.0, session="PRE_MARKET")
-    now[0] += timedelta(minutes=1)                               # 09:30 ET
-    with pytest.raises(ValueError, match="不會改用一般時段"):
-        service.validate_preview(preview)
-    with pytest.raises(ValueError, match="不會改用一般時段"):
-        service.submit(preview)
+    # The last minute is reserved so a forced cancel can finish before the
+    # opening auction if IB drops outsideRth.
+    for later in (timedelta(minutes=1), timedelta(minutes=2)):  # 09:29, 09:30 ET
+        now[0] = datetime(2026, 9, 14, 13, 28, tzinfo=timezone.utc) + later
+        with pytest.raises(ValueError, match="不會改用一般時段"):
+            service.validate_preview(preview)
+        with pytest.raises(ValueError, match="不到 1 分鐘"):
+            service.submit(preview)
     assert state.placed == []
     assert service.list_orders() == []
+
+
+def test_after_hours_stops_accepting_in_its_last_minute(tmp_path):
+    state = FakeIBState()
+    last_minute = datetime(2026, 9, 14, 23, 59, 30, tzinfo=timezone.utc)  # 19:59:30 ET
+    service = service_for(tmp_path, state, clock=lambda: last_minute)
+    with pytest.raises(ValueError, match="不到 1 分鐘"):
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS")
+    assert state.placed == []
+
+
+def _emit_2109(ib, trade):
+    ib.errorEvent.emit(trade.order.orderId, *IB_IGNORED_OUTSIDE_RTH, None)
+
+
+def _acknowledge(_ib, trade):
+    trade.orderStatus.status = "Submitted"
+
+
+def test_delayed_2109_before_ib_acknowledgement_still_cancels(tmp_path):
+    state = FakeIBState()
+    state.next_status = "PendingSubmit"
+    state.sleep_actions = {3: _emit_2109, 4: _acknowledge}
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+
+    result = service.submit(
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+
+    assert state.cancelled_orders == [state.placed[0].order]
+    assert result["status"] == "CANCEL_PENDING"
+    assert "2109" in result["status_message"]
+
+
+def test_2109_delivered_with_the_acknowledgement_is_still_seen(tmp_path):
+    state = FakeIBState()
+    state.next_status = "PendingSubmit"
+    state.sleep_actions = {1: _acknowledge, 2: _emit_2109}
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+
+    result = service.submit(
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+
+    assert state.cancelled_orders == [state.placed[0].order]
+    assert "2109" in result["status_message"]
+
+
+def test_unacknowledged_extended_order_is_cancelled_fail_closed(tmp_path):
+    state = FakeIBState()
+    state.next_status = "PendingSubmit"  # IB never answers placeOrder
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+
+    result = service.submit(
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+
+    assert state.cancelled_orders == [state.placed[0].order]
+    assert len(state.placed) == 1
+    assert result["status"] == "CANCEL_PENDING"
+    assert "無法確認盤前盤後設定" in result["status_message"]
+
+
+def test_unconfirmed_forced_cancel_keeps_lock_alerts_and_is_retried(tmp_path):
+    state = FakeIBState()
+    state.place_errors = [IB_IGNORED_OUTSIDE_RTH]
+    state.cancel_error = "socket timeout"
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+
+    result = service.submit(
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+
+    trade = state.placed[0]
+    assert result["status"] == "CANCEL_UNKNOWN"
+    assert "取消結果待確認" in result["status_message"]
+    assert any("需要確認" in message for _account, message in state.notifications)
+    with pytest.raises(ValueError, match="未結案手動單"):
+        service.preview("Taylor", "ZZZZ", 1, 10.0, session="AFTER_HOURS")
+
+    state.cancel_error = None
+    service.refresh_status()      # IB still shows it working: cancel again
+    assert state.cancelled_orders == [trade.order, trade.order]
+    assert service.list_orders()[0]["status"] == "CANCEL_PENDING"
+    service.refresh_status()      # IB now reports PendingCancel: no duplicate
+    assert len(state.cancelled_orders) == 2
+
+    trade.orderStatus.status = "Cancelled"
+    service.refresh_status()
+    assert service.list_orders()[0]["status"] == "CANCELLED"
+    assert not service.has_active_orders()
+    terminal = state.notifications[-1][1]
+    assert "結果：已取消" in terminal
+    assert "自動取消原因" in terminal and "2109" in terminal
+
+
+def test_user_cancel_timeout_is_not_auto_retried(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+    submitted = service.submit(
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+    state.cancel_error = "socket timeout"
+    assert service.cancel(submitted["order_ref"])["status"] == "CANCEL_UNKNOWN"
+    state.cancel_error = None
+    service.refresh_status()
+    assert len(state.cancelled_orders) == 1
 
 
 @pytest.mark.parametrize("trading_hours,time_zone", [
@@ -769,23 +888,26 @@ def test_unknown_state_alert_names_extended_session(tmp_path):
     assert "盤後" in state.notifications[0][1]
 
 
-def test_existing_manual_order_store_migrates_to_session(tmp_path):
+def test_existing_manual_order_store_migrates_to_extended_hours_columns(tmp_path):
     path = tmp_path / "manual.sqlite3"
     store = ManualOrderStore(path)
     preview = service_for(tmp_path, FakeIBState()).preview("Taylor", "ZZZZ", 1, 10.0)
     store.create(preview, "QUANTCORE_MANUAL:TAYLOR:legacy")
     with sqlite3.connect(path) as conn:
         conn.execute("ALTER TABLE manual_orders DROP COLUMN session")
-        conn.execute("DELETE FROM manual_order_schema_migrations WHERE version=4")
+        conn.execute("ALTER TABLE manual_orders DROP COLUMN forced_cancel_reason")
+        conn.execute("DELETE FROM manual_order_schema_migrations WHERE version IN (4, 5)")
     store = ManualOrderStore(path)
     with store._connect() as conn:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(manual_orders)")}
-        assert "session" in columns
+        assert {"session", "forced_cancel_reason"} <= columns
         assert conn.execute(
-            "SELECT COUNT(*) FROM manual_order_schema_migrations WHERE version=4"
-        ).fetchone()[0] == 1
+            "SELECT COUNT(*) FROM manual_order_schema_migrations WHERE version IN (4, 5)"
+        ).fetchone()[0] == 2
     legacy = store.get("QUANTCORE_MANUAL:TAYLOR:legacy")
-    assert (legacy["session"], legacy["outside_rth"]) == ("REGULAR", 0)
+    assert (legacy["session"], legacy["outside_rth"], legacy["forced_cancel_reason"]) == (
+        "REGULAR", 0, None,
+    )
 
 
 def test_cash_target_uses_exact_decimal_floor_and_rejects_less_than_one_share():

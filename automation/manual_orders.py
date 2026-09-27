@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from functools import wraps
 import logging
@@ -56,9 +56,21 @@ _SESSION_WINDOWS = {
     "PRE_MARKET": "美東 04:00–09:30",
     "AFTER_HOURS": "美東 16:00–20:00，提早收盤日 13:00–17:00",
 }
+# Extended-hours orders are not accepted in a window's last minute, leaving
+# time to confirm outsideRth and, if IB dropped it, to cancel before the
+# regular session (pre-market) or the window's end (after-hours).
+_EXTENDED_SUBMIT_MARGIN = timedelta(minutes=1)
 # TWS warning: "Attribute 'Outside Regular Trading Hours' is ignored based on
 # the order type and destination. PlaceOrder is now being processed."
 _IB_OUTSIDE_RTH_IGNORED = 2109
+_OUTSIDE_RTH_IGNORED_REASON = "IB 回報忽略盤前盤後設定（2109）"
+_IB_ACK_TIMEOUT_SECONDS = 10.0
+_IB_ACK_POLL_SECONDS = 0.5
+_UNACKNOWLEDGED_REASON = (
+    f"IB 未在 {_IB_ACK_TIMEOUT_SECONDS:g} 秒內回覆委託，無法確認盤前盤後設定"
+)
+_IB_AWAITING_ACK = frozenset({"", "ApiPending", "PendingSubmit"})
+_IB_WORKING_STATUSES = frozenset({"ApiPending", "PendingSubmit", "PreSubmitted", "Submitted"})
 
 # SMART-routed US listings returned by IB contract qualification. Unknown
 # primary exchanges fail closed so a USD-denominated foreign listing cannot
@@ -390,6 +402,7 @@ class ManualOrderStore:
                     tif TEXT NOT NULL,
                     outside_rth INTEGER NOT NULL,
                     session TEXT NOT NULL DEFAULT 'REGULAR',
+                    forced_cancel_reason TEXT,
                     contract_id INTEGER NOT NULL,
                     broker_order_id INTEGER,
                     perm_id INTEGER,
@@ -505,6 +518,17 @@ class ManualOrderStore:
                     "INSERT INTO manual_order_schema_migrations VALUES (4, ?)",
                     (_utc_now(),),
                 )
+            if 5 not in migrations:
+                if "forced_cancel_reason" not in {
+                    row["name"] for row in conn.execute("PRAGMA table_info(manual_orders)")
+                }:
+                    conn.execute(
+                        "ALTER TABLE manual_orders ADD COLUMN forced_cancel_reason TEXT"
+                    )
+                conn.execute(
+                    "INSERT INTO manual_order_schema_migrations VALUES (5, ?)",
+                    (_utc_now(),),
+                )
             conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -549,7 +573,8 @@ class ManualOrderStore:
                status_message: str | None = None,
                broker_order_id: int | None = None, perm_id: int | None = None,
                filled_quantity: int | None = None,
-               avg_fill_price: float | None = None) -> dict | None:
+               avg_fill_price: float | None = None,
+               forced_cancel_reason: str | None = None) -> dict | None:
         updates = {
             "status": status,
             "status_message": status_message,
@@ -557,6 +582,7 @@ class ManualOrderStore:
             "perm_id": perm_id,
             "filled_quantity": filled_quantity,
             "avg_fill_price": avg_fill_price,
+            "forced_cancel_reason": forced_cancel_reason,
         }
         updates = {key: value for key, value in updates.items() if value is not None}
         if not updates:
@@ -811,6 +837,35 @@ def _status_from_trade(trade) -> tuple[str | None, str, int, float | None]:
     return mapped, message, filled, avg_fill_price
 
 
+def _await_ib_acknowledgement(ib, trade) -> bool:
+    """Pump IB events until IB answers placeOrder; False if it never does.
+
+    TWS raises warning 2109 while it processes placeOrder ("PlaceOrder is now
+    being processed"), ahead of the order's first status on the same socket.
+    One more pump covers a warning delivered alongside that status.
+    """
+    waited = 0.0
+    while waited < _IB_ACK_TIMEOUT_SECONDS:
+        ib.sleep(_IB_ACK_POLL_SECONDS)
+        waited += _IB_ACK_POLL_SECONDS
+        status = str(getattr(getattr(trade, "orderStatus", None), "status", "") or "")
+        if status not in _IB_AWAITING_ACK:
+            ib.sleep(_IB_ACK_POLL_SECONDS)
+            return True
+    return False
+
+
+def _find_manual_trade(trades: Iterable[object], order_ref: str, account: str):
+    """This tool's IB trade for order_ref in account, or None."""
+    return next((item for item in trades
+                 if is_manual_order(item)
+                 and str(getattr(getattr(item, "order", None),
+                                 "orderRef", "") or "") == order_ref
+                 and str(getattr(getattr(item, "order", None),
+                                 "account", "") or "") == account),
+                None)
+
+
 def _serialize_service_operation(method):
     @wraps(method)
     def wrapped(self, *args, **kwargs):
@@ -1002,10 +1057,11 @@ class ManualOrderService:
 
     def _require_extended_session(self, session: str) -> datetime:
         now = self._clock()
-        if extended_session_at(now) != session:
+        if (extended_session_at(now) != session
+                or extended_session_at(now + _EXTENDED_SUBMIT_MARGIN) != session):
             raise ManualOrderError(
-                f"目前不在{SESSION_LABELS[session]}時段（{_SESSION_WINDOWS[session]}）；"
-                "不會改用一般時段送出"
+                f"目前不在{SESSION_LABELS[session]}時段，或距離時段結束不到 1 分鐘"
+                f"（{_SESSION_WINDOWS[session]}）；不會改用一般時段送出"
             )
         return now
 
@@ -1431,6 +1487,7 @@ class ManualOrderService:
             if error_event is not None:
                 error_event += on_ib_error
             trade = None
+            acknowledged = False
             try:
                 trade = ib.placeOrder(contract, order)
                 self.store.update(
@@ -1438,8 +1495,12 @@ class ManualOrderService:
                     broker_order_id=getattr(order, "orderId", None),
                     perm_id=getattr(order, "permId", None),
                 )
-                # Allow immediate IB status/error callbacks to reach ib_insync.
-                ib.sleep(1.0)
+                if preview.outside_rth:
+                    # Keep listening for 2109 until IB answers this placeOrder.
+                    acknowledged = _await_ib_acknowledgement(ib, trade)
+                else:
+                    # Allow immediate IB status/error callbacks to reach ib_insync.
+                    ib.sleep(1.0)
                 status, message, filled, avg_price = _status_from_trade(trade)
                 if status:
                     self.store.update(
@@ -1459,8 +1520,13 @@ class ManualOrderService:
             finally:
                 if error_event is not None:
                     error_event -= on_ib_error
-            if outside_rth_ignored and trade is not None:
-                self._cancel_outside_rth_ignored(ib, trade, order_ref)
+            if preview.outside_rth and trade is not None:
+                # Fail closed: an extended-hours order IB may be running as a
+                # regular-session order is cancelled, never left working.
+                if outside_rth_ignored:
+                    self._force_cancel(ib, trade, order_ref, _OUTSIDE_RTH_IGNORED_REASON)
+                elif not acknowledged:
+                    self._force_cancel(ib, trade, order_ref, _UNACKNOWLEDGED_REASON)
         result = self.store.get(order_ref)
         assert result is not None
         result["status_label"] = _STATUS_LABELS.get(
@@ -1469,17 +1535,20 @@ class ManualOrderService:
         self._dispatch_terminal_notifications()
         return result
 
-    def _cancel_outside_rth_ignored(self, ib, trade, order_ref: str) -> None:
-        """Cancel an extended-hours order IB accepted with outsideRth ignored.
+    def _force_cancel(self, ib, trade, order_ref: str, reason: str) -> None:
+        """Cancel an extended-hours order IB may run as a regular-session order.
 
-        Leaving it working would silently turn the trader's pre-market or
-        after-hours order into a regular-session order.
+        The reason is persisted so reconciliation keeps re-sending the cancel
+        while IB still reports the order working (see _retry_forced_cancels).
         """
-        reason = "IB 回報忽略盤前盤後設定（2109）；已要求取消，不會改以一般時段成交"
         row = self.store.get(order_ref)
         if row is None or row["status"] in _TERMINAL_STATUSES:
             return
-        self.store.update(order_ref, status="CANCEL_PENDING", status_message=reason)
+        requested = f"{reason}；已要求取消，不會改以一般時段成交"
+        self.store.update(
+            order_ref, status="CANCEL_PENDING", status_message=requested,
+            forced_cancel_reason=reason,
+        )
         try:
             ib.cancelOrder(trade.order)
             ib.sleep(1.0)
@@ -1492,14 +1561,25 @@ class ManualOrderService:
         status, message, filled, avg_price = _status_from_trade(trade)
         if status in _TERMINAL_STATUSES:
             self.store.update(
-                order_ref, status=status, status_message=f"{message}；{reason}",
+                order_ref, status=status, status_message=f"{message}；{requested}",
                 filled_quantity=filled, avg_fill_price=avg_price,
             )
         else:
             self.store.update(
-                order_ref, status="CANCEL_PENDING", status_message=reason,
+                order_ref, status="CANCEL_PENDING", status_message=requested,
                 filled_quantity=filled, avg_fill_price=avg_price,
             )
+
+    def _retry_forced_cancels(self, ib, ctx, open_trades) -> None:
+        """Re-send forced cancels that IB has not yet started processing."""
+        for row in self.store.list_active(ctx.name):
+            reason = row.get("forced_cancel_reason")
+            if not reason:
+                continue
+            trade = _find_manual_trade(open_trades, row["order_ref"], ctx.account)
+            status = str(getattr(getattr(trade, "orderStatus", None), "status", "") or "")
+            if trade is not None and status in _IB_WORKING_STATUSES:
+                self._force_cancel(ib, trade, row["order_ref"], reason)
 
     @_serialize_service_operation
     def cancel(self, order_ref: str) -> dict:
@@ -1535,13 +1615,7 @@ class ManualOrderService:
                     if row["status"] in _TERMINAL_STATUSES:
                         result = row
                     else:
-                        trade = next((item for item in open_trades
-                                      if is_manual_order(item)
-                                      and str(getattr(getattr(item, "order", None),
-                                                      "orderRef", "") or "") == order_ref
-                                      and str(getattr(getattr(item, "order", None),
-                                                      "account", "") or "") == ctx.account),
-                                     None)
+                        trade = _find_manual_trade(open_trades, order_ref, ctx.account)
                         if trade is None:
                             result = self.store.update(
                                 order_ref, status="CANCEL_UNKNOWN",
@@ -1586,7 +1660,8 @@ class ManualOrderService:
             for account in accounts:
                 try:
                     with self._connected(account) as (ctx, ib):
-                        self._sync_trades(ib, ctx)
+                        open_trades = self._sync_trades(ib, ctx)
+                        self._retry_forced_cancels(ib, ctx, open_trades)
                 except Exception as exc:
                     errors.append(f"{account}：{exc}")
                     for row in self.store.list_active(account):
@@ -1629,12 +1704,14 @@ class ManualOrderService:
             else f"LMT ${float(row['limit_price']):.2f}"
         )
         session = SESSION_LABELS[row["session"]]
+        forced = row.get("forced_cancel_reason")
         return (
             f"手動委託結果｜{row['account_name']}\n"
             f"委託編號：{notification_ref}\n"
             f"{row['action']} {quantity} 股 {row['symbol']}｜"
             f"{price_condition}｜{session} DAY\n"
             f"結果：{status}\n{fill_detail}"
+            + (f"\n自動取消原因：{forced}" if forced else "")
         )
 
     def _reconciliation_alert_message(self, row: dict) -> str:

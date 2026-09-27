@@ -594,7 +594,8 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
     import tkinter as tk
     from decimal import Decimal
     import manual_orders
-    from manual_orders import ManualOrderPreview
+    from manual_orders import BrokerQuote, ManualOrderPreview
+    from datetime import datetime, timezone
 
     warm_matplotlib()
     module = load_panel_module(monkeypatch)
@@ -637,10 +638,13 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
             self.submitted = []
             self.cancelled = []
 
-        def preview(self, *request, action="BUY", allow_short=False, amount_usd=None):
+        def preview(self, *request, action="BUY", allow_short=False, amount_usd=None,
+                    order_type="LMT"):
             self.preview_requests.append(request)
             self.cash_preview_amounts.append(amount_usd)
             quantity = 3 if amount_usd is not None else request[2]
+            quote = (BrokerQuote(30, datetime.now(timezone.utc), "ask")
+                     if order_type == "MKT" and amount_usd is not None else None)
             return ManualOrderPreview(
                 account_name=request[0], account_id="U12770188",
                 symbol=request[1], quantity=quantity, limit_price=request[3],
@@ -648,6 +652,8 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
                 action=action, allow_short=allow_short,
                 projected_position=(-quantity if action == "SELL" else quantity),
                 amount_usd=Decimal(str(amount_usd)) if amount_usd is not None else None,
+                order_type=order_type, quote=quote,
+                conversion_price=quote.price if quote else None,
             )
 
         def validate_preview(self, preview):
@@ -656,6 +662,8 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
 
         def submit(self, preview):
             self.submitted.append(preview)
+            order_row["order_type"] = preview.order_type
+            order_row["limit_price"] = preview.limit_price or 0
             order_row["status"] = "ACCEPTED"
             order_row["status_label"] = "IB accepted"
             return dict(order_row)
@@ -820,10 +828,37 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
                 assert str(window.confirm_button.cget("state")) == "normal"
                 window.confirm_button.invoke()
                 step[0] = "replacement_submit"
-            elif step[0] == "replacement_submit" and len(fake_service.submitted) == 2:
+            elif (step[0] == "replacement_submit" and len(fake_service.submitted) == 2
+                  and not window._busy):
                 assert len(confirmation_prompts) >= 3
                 assert confirmation_prompts[-1][0] == "再次核對委託"
                 assert "13.0" in confirmation_prompts[-1][1]
+                assert window.order_type_var.get() == "LMT"
+                window.input_mode_var.set("美元金額")
+                window.amount_var.set("100")
+                window.order_type_var.set("MKT")
+                assert window.price_var.get() == ""
+                assert str(window.price_entry.cget("state")) == "disabled"
+                window.preview_button.invoke()
+                step[0] = "market_preview"
+            elif step[0] == "market_preview" and window._preview is not None:
+                assert fake_service.preview_requests[-1] == ("Rosa", "ZZZZ", None, None)
+                body = window.preview_text.cget("text")
+                assert "未指定成交價格" in body
+                assert "預估交易目標" in body
+                assert "可能超出輸入金額" in body
+                assert "報價來源" in body
+                window.confirm_button.invoke()
+                step[0] = "market_submit"
+            elif (step[0] == "market_submit" and len(fake_service.submitted) == 3
+                  and not window._busy):
+                assert "未指定成交價格" in confirmation_prompts[-1][1]
+                rows = window.orders.get_children()
+                if rows:
+                    assert window.orders.item(rows[0], "values")[4] == "MKT"
+                    window.orders.selection_set(rows[0])
+                    window._order_selected()
+                    assert str(window.modify_button.cget("state")) == "disabled"
                 panel._quit_app()
                 step[0] = "done"
                 return
@@ -843,7 +878,7 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
                 pass
     assert not exceptions, exceptions
     assert step[0] == "done"
-    assert len(fake_service.submitted) == 2
+    assert len(fake_service.submitted) == 3
 
 
 def test_monitor_alert_uses_shared_telegram_settings(fake_config, monkeypatch):

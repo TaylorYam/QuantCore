@@ -1,7 +1,7 @@
-"""Safe, persistent Panel workflow for regular-hours manual limit orders.
+"""Safe, persistent Panel workflow for regular-hours manual orders.
 
 The service is deliberately small in scope: one configured Account, a US
-USD-denominated stock/ETF contract, whole shares, LMT, regular session,
+USD-denominated stock/ETF contract, whole shares, LMT or MKT, regular session,
 and DAY time-in-force. UI callers must show the returned preview and require
 an explicit confirmation before calling submit().
 """
@@ -9,8 +9,8 @@ an explicit confirmation before calling submit().
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, time, timezone
 from decimal import Decimal, InvalidOperation
 from functools import wraps
 import logging
@@ -21,8 +21,10 @@ from pathlib import Path
 import threading
 import uuid
 from typing import Callable, Iterable, Iterator
+from zoneinfo import ZoneInfo
 
 from account_utils import ROLE_MANUAL_ORDER
+from market_calendar import NYSE_EARLY_CLOSES, official_sessions
 
 
 MANUAL_ORDER_REF_PREFIX = "QUANTCORE_MANUAL:"
@@ -70,6 +72,59 @@ class DuplicateManualOrder(ManualOrderError):
     """An Account already has an unresolved manual order for the symbol."""
 
 
+@dataclass(frozen=True)
+class BrokerQuote:
+    price: float
+    asof: datetime = field(compare=False)
+    side: str
+    market_data_type: int = 1
+    source: str = "IB 即時買賣報價"
+
+
+def is_regular_session(now: datetime) -> bool:
+    """NYSE regular session, including official early closes; fail closed beyond registry."""
+    if now.tzinfo is None:
+        return False
+    eastern = now.astimezone(ZoneInfo("America/New_York"))
+    try:
+        if not official_sessions(eastern.date(), eastern.date()):
+            return False
+    except ValueError:
+        return False
+    close = time(13) if eastern.date() in NYSE_EARLY_CLOSES else time(16)
+    return time(9, 30) <= eastern.time().replace(tzinfo=None) < close
+
+
+def read_ib_quote(ib, contract, side: str) -> BrokerQuote:
+    """Wait for a fresh, selected-side tick on a real-time IB subscription."""
+    if side not in {"bid", "ask"}:
+        raise ValueError(side)
+    ib.reqMarketDataType(1)
+    ticker = ib.reqMktData(contract, "", False, False)
+    seen = None
+
+    def on_update(updated):
+        nonlocal seen
+        for tick in updated.ticks:
+            if tick.tickType == (1 if side == "bid" else 2):
+                seen = BrokerQuote(tick.price, tick.time, side,
+                                   updated.marketDataType)
+
+    ticker.updateEvent += on_update
+    try:
+        for _ in range(25):
+            ib.sleep(0.2)
+            if seen is not None and ticker.marketDataType == 1:
+                current = ticker.bid if side == "bid" else ticker.ask
+                size = ticker.bidSize if side == "bid" else ticker.askSize
+                if current == seen.price and math.isfinite(size) and size > 0:
+                    return seen
+        raise ManualOrderError("沒有有效的 IB 即時報價；請改用明確股數")
+    finally:
+        ticker.updateEvent -= on_update
+        ib.cancelMktData(contract)
+
+
 def whole_share_quantity(*, shares: int | None = None,
                          amount_usd: Decimal | str | None = None,
                          limit_price: float | Decimal | str) -> int:
@@ -106,7 +161,7 @@ class ManualOrderPreview:
     account_id: str
     symbol: str
     quantity: int
-    limit_price: float
+    limit_price: float | None
     tif: str
     contract_id: int
     primary_exchange: str
@@ -115,6 +170,9 @@ class ManualOrderPreview:
     current_position: float = 0.0
     projected_position: float = 0.0
     amount_usd: Decimal | None = None
+    order_type: str = "LMT"
+    quote: BrokerQuote | None = None
+    conversion_price: float | None = None
 
     @property
     def intent_action(self) -> str:
@@ -138,12 +196,18 @@ class ManualOrderPreview:
         )
         amount_details = ""
         if self.amount_usd is not None:
-            estimated = Decimal(self.quantity) * Decimal(str(self.limit_price))
+            estimated = Decimal(self.quantity) * Decimal(str(self.conversion_price or self.limit_price))
             amount_details = (
                 f"輸入美元金額：${self.amount_usd:f}（預估交易目標）\n"
                 f"預估委託金額：${estimated:f}\n"
-                "美元金額只用於換算股數，非成交金額上限；實際金額可能超出輸入金額。\n"
+                "美元金額只用於換算股數，非成交金額上限；實際成交金額可能超出輸入金額。\n"
             )
+            if self.order_type == "MKT" and self.quote is not None:
+                amount_details += (
+                    f"報價來源：{self.quote.source}\n"
+                    f"報價時點（本機收到，UTC）：{self.quote.asof.astimezone(timezone.utc).isoformat()}\n"
+                    f"換算價：{self.quote.side.upper()} ${self.quote.price:g}\n"
+                )
         quantity_label = "換算整股股數" if self.amount_usd is not None else "整股股數"
         return (
             f"Account：{self.account_name}\n"
@@ -153,7 +217,8 @@ class ManualOrderPreview:
             f"{amount_details}"
             f"目前持倉：{self.current_position:g} 股\n"
             f"{expected}\n"
-            + "限價：$" + price + "\n"
+            + ("市價 MKT：未指定成交價格；成交價與金額不保證。\n"
+               if self.order_type == "MKT" else "限價：$" + price + "\n")
             + f"交易時段：一般時段\n"
             + f"效期：{self.tif}（當日有效）"
         )
@@ -232,6 +297,7 @@ class ManualOrderStore:
                     action TEXT NOT NULL,
                     quantity INTEGER NOT NULL,
                     limit_price REAL NOT NULL,
+                    order_type TEXT NOT NULL DEFAULT 'LMT',
                     tif TEXT NOT NULL,
                     outside_rth INTEGER NOT NULL,
                     contract_id INTEGER NOT NULL,
@@ -327,6 +393,15 @@ class ManualOrderStore:
                     "INSERT INTO manual_order_schema_migrations VALUES (2, ?)",
                     (_utc_now(),),
                 )
+            if 3 not in migrations:
+                if "order_type" not in {
+                    row["name"] for row in conn.execute("PRAGMA table_info(manual_orders)")
+                }:
+                    conn.execute("ALTER TABLE manual_orders ADD COLUMN order_type TEXT NOT NULL DEFAULT 'LMT'")
+                conn.execute(
+                    "INSERT INTO manual_order_schema_migrations VALUES (3, ?)",
+                    (_utc_now(),),
+                )
             conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -343,12 +418,16 @@ class ManualOrderStore:
                 conn.execute(
                     """INSERT INTO manual_orders (
                         order_ref, account_name, account_id, symbol, action,
-                        quantity, limit_price, tif, outside_rth, contract_id,
+                        quantity, limit_price, order_type, tif, outside_rth, contract_id,
                         status, status_message, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?,
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?,
                               'SENDING', '正在送往 IB', ?, ?)""",
                     (order_ref, preview.account_name, preview.account_id,
-                     preview.symbol, preview.intent_action, preview.quantity, preview.limit_price,
+                     preview.symbol, preview.intent_action, preview.quantity,
+                     # Legacy schema requires a number; order_type makes zero
+                     # an internal placeholder, never a displayed MKT price.
+                     preview.limit_price if preview.limit_price is not None else 0,
+                     preview.order_type,
                      preview.tif, preview.contract_id, now, now),
                 )
                 row = conn.execute(
@@ -636,7 +715,7 @@ def _serialize_service_operation(method):
 
 
 class ManualOrderService:
-    """Validate, submit, and reconcile one-account manual LMT orders."""
+    """Validate, submit, and reconcile one-account manual orders."""
 
     def __init__(self, *, account_names: Iterable[str] | None = None,
                  store: ManualOrderStore | None = None,
@@ -644,6 +723,8 @@ class ManualOrderService:
                  ib_factory: Callable | None = None,
                  universe_loader: Callable[[], set[str]] | None = None,
                  order_factory: Callable | None = None,
+                 quote_reader: Callable | None = None,
+                 clock: Callable[[], datetime] | None = None,
                  notifier: Callable[[str, str], bool],
                  store_path: str | Path | None = None):
         if account_names is None:
@@ -666,6 +747,8 @@ class ManualOrderService:
         self._ib_factory = ib_factory
         self._universe_loader = universe_loader or _default_universe_loader
         self._order_factory = order_factory
+        self._quote_reader = quote_reader or read_ib_quote
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
         if not callable(notifier):
             raise TypeError("ManualOrderService requires an injected notifier")
         self._notifier = notifier
@@ -694,11 +777,15 @@ class ManualOrderService:
 
         return IB()
 
-    def _make_order(self, action: str, quantity: int, price: float):
+    def _make_order(self, action: str, quantity: int, price: float | None,
+                    order_type: str):
         if self._order_factory:
             return self._order_factory(action, quantity, price)
-        from ib_insync import LimitOrder
+        from ib_insync import LimitOrder, MarketOrder
 
+        if order_type == "MKT":
+            return MarketOrder(action, quantity)
+        assert price is not None
         return LimitOrder(action, quantity, price)
 
     def _universe(self) -> set[str]:
@@ -752,6 +839,52 @@ class ManualOrderService:
         )
         amount = Decimal(str(amount_usd)) if amount_usd is not None else None
         return normalized_symbol, resolved, price, amount
+
+    @staticmethod
+    def _check_market_request(symbol: str, quantity: int | None,
+                              amount_usd: Decimal | str | None,
+                              ) -> tuple[str, int | None, Decimal | None]:
+        normalized_symbol = _canonical_symbol(symbol)
+        if (quantity is None) == (amount_usd is None):
+            raise ManualOrderError("請在整股股數與美元金額之間擇一輸入")
+        if quantity is not None:
+            if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
+                raise ManualOrderError("股數必須是大於零的整數")
+            return normalized_symbol, quantity, None
+        try:
+            amount = Decimal(str(amount_usd))
+        except (InvalidOperation, ValueError) as exc:
+            raise ManualOrderError("請輸入有效的美元金額") from exc
+        if not amount.is_finite() or amount <= 0:
+            raise ManualOrderError("美元金額必須大於零")
+        return normalized_symbol, None, amount
+
+    def _require_regular_session(self) -> datetime:
+        now = self._clock()
+        if not is_regular_session(now):
+            raise ManualOrderError("MKT 只能在 NYSE 一般交易時段送出")
+        return now
+
+    def _market_quote(self, ib, contract, action: str) -> BrokerQuote:
+        now = self._require_regular_session()
+        side = "ask" if action in {"BUY", "COVER"} else "bid"
+        try:
+            quote = self._quote_reader(ib, contract, side)
+        except Exception as exc:
+            raise ManualOrderError(
+                "沒有有效的 IB 即時報價；請改用明確股數"
+            ) from exc
+        if (not isinstance(quote, BrokerQuote)
+                or quote.side != side or quote.market_data_type != 1
+                or not isinstance(quote.asof, datetime) or quote.asof.tzinfo is None
+                or not isinstance(quote.price, (int, float))
+                or not math.isfinite(quote.price) or quote.price <= 0
+                or not 0 <= (self._clock() - quote.asof).total_seconds() <= 15
+                or not is_regular_session(quote.asof)
+                or quote.asof.astimezone(ZoneInfo("America/New_York")).date()
+                   != now.astimezone(ZoneInfo("America/New_York")).date()):
+            raise ManualOrderError("沒有有效的 IB 即時報價；請改用明確股數")
+        return quote
 
     @staticmethod
     def _qualify_contract(ib, symbol: str):
@@ -989,15 +1122,32 @@ class ManualOrderService:
             return current + quantity
         raise ManualOrderError("請選擇買進、賣出或回補空單")
 
-    def _build_preview(self, account: str, symbol: str, quantity: int,
-                       price: float, action: str, allow_short: bool,
+    def _build_preview(self, account: str, symbol: str, quantity: int | None,
+                       price: float | None, action: str, allow_short: bool,
                        ctx, ib, amount_usd: Decimal | None = None,
+                       order_type: str = "LMT",
                        ) -> tuple[ManualOrderPreview, object]:
         if symbol in self._universe():
             raise ManualOrderError(
                 f"{symbol} 屬於 SR、Skew LS 或 SP500 歷史策略 Universe，不能手動下單"
             )
         contract, primary_exchange = self._qualify_contract(ib, symbol)
+        quote = None
+        conversion_price = None
+        if order_type == "MKT":
+            self._require_regular_session()
+            if amount_usd is not None:
+                quote = self._market_quote(ib, contract, action)
+                conversion_price = quote.price
+                try:
+                    quantity = whole_share_quantity(
+                        amount_usd=amount_usd, limit_price=quote.price,
+                    )
+                except ManualOrderError as exc:
+                    raise ManualOrderError(
+                        "美元金額依 IB 即時報價換算後不足一股；請改用明確股數"
+                    ) from exc
+        assert quantity is not None
         open_trades = self._sync_trades(ib, ctx)
         self._assert_no_duplicate(account, ctx, symbol, open_trades)
         current = self._position(ib, ctx, contract)
@@ -1008,25 +1158,35 @@ class ManualOrderService:
             contract_id=int(contract.conId), primary_exchange=primary_exchange,
             action=action, allow_short=allow_short,
             current_position=current, projected_position=projected,
-            amount_usd=amount_usd,
+            amount_usd=amount_usd, order_type=order_type,
+            quote=quote, conversion_price=conversion_price,
         )
         return preview, contract
 
     @_serialize_service_operation
     def preview(self, account_name: str, symbol: str,
-                quantity: int | None, limit_price: float, *, action: str = "BUY",
+                quantity: int | None, limit_price: float | None, *, action: str = "BUY",
                 allow_short: bool = False,
-                amount_usd: Decimal | str | None = None) -> ManualOrderPreview:
+                amount_usd: Decimal | str | None = None,
+                order_type: str = "LMT") -> ManualOrderPreview:
         account = self._account_name(account_name)
-        symbol, quantity, price, amount = self._check_request(
-            account, symbol, quantity, limit_price, amount_usd,
-        )
+        if order_type == "LMT":
+            symbol, quantity, price, amount = self._check_request(
+                account, symbol, quantity, limit_price, amount_usd,
+            )
+        elif order_type == "MKT" and limit_price is None:
+            symbol, quantity, amount = self._check_market_request(
+                symbol, quantity, amount_usd,
+            )
+            price = None
+        else:
+            raise ManualOrderError("請選擇有效委託類型與價格")
         if action not in {"BUY", "SELL", "COVER"} or not isinstance(allow_short, bool):
             raise ManualOrderError("請選擇有效方向與放空設定")
         with self._connected(account) as (ctx, ib):
             preview, _contract = self._build_preview(
                 account, symbol, quantity, price, action, allow_short, ctx, ib,
-                amount,
+                amount, order_type,
             )
             return preview
 
@@ -1038,32 +1198,46 @@ class ManualOrderService:
             None if preview.amount_usd is not None else preview.quantity,
             preview.limit_price, action=preview.action,
             allow_short=preview.allow_short, amount_usd=preview.amount_usd,
+            order_type=preview.order_type,
         )
         if fresh != preview:
-            raise ManualOrderError("Account、合約或持倉在預覽後變更，請重新預覽")
+            raise ManualOrderError("Account、報價、股數、合約或持倉在預覽後變更，請重新預覽")
         return fresh
 
     @_serialize_service_operation
     def submit(self, preview: ManualOrderPreview) -> dict:
         account = self._account_name(preview.account_name)
-        symbol, quantity, price, amount = self._check_request(
-            account, preview.symbol,
-            None if preview.amount_usd is not None else preview.quantity,
-            preview.limit_price, preview.amount_usd,
-        )
+        if preview.order_type == "LMT":
+            symbol, quantity, price, amount = self._check_request(
+                account, preview.symbol,
+                None if preview.amount_usd is not None else preview.quantity,
+                preview.limit_price, preview.amount_usd,
+            )
+        elif preview.order_type == "MKT" and preview.limit_price is None:
+            symbol, quantity, amount = self._check_market_request(
+                preview.symbol,
+                None if preview.amount_usd is not None else preview.quantity,
+                preview.amount_usd,
+            )
+            price = None
+        else:
+            raise ManualOrderError("委託預覽已變更，請重新預覽")
         if (account != preview.account_name or preview.tif != "DAY"
                 or preview.account_id == ""
-                or quantity != preview.quantity
+                or (quantity is not None and quantity != preview.quantity)
                 or preview.action not in {"BUY", "SELL", "COVER"}
                 or not isinstance(preview.allow_short, bool)):
             raise ManualOrderError("委託預覽已變更，請重新預覽")
         with self._connected(account) as (ctx, ib):
             fresh, contract = self._build_preview(
                 account, symbol, quantity, price, preview.action,
-                preview.allow_short, ctx, ib, amount,
+                preview.allow_short, ctx, ib, amount, preview.order_type,
             )
             if fresh != preview:
-                raise ManualOrderError("Account、合約或持倉在預覽後變更，請重新預覽")
+                raise ManualOrderError("Account、報價、股數、合約或持倉在預覽後變更，請重新預覽")
+
+            if preview.order_type == "MKT":
+                self._require_regular_session()
 
             order_ref = (
                 MANUAL_ORDER_REF_PREFIX
@@ -1072,11 +1246,17 @@ class ManualOrderService:
                 + uuid.uuid4().hex
             )
             self.store.create(preview, order_ref)
-            order = self._make_order(preview.broker_action, quantity, price)
+            order = self._make_order(
+                preview.broker_action, fresh.quantity, price, preview.order_type,
+            )
             order.action = preview.broker_action
-            order.totalQuantity = quantity
-            order.lmtPrice = price
-            order.orderType = "LMT"
+            order.totalQuantity = fresh.quantity
+            if preview.order_type == "MKT":
+                from ib_insync.order import UNSET_DOUBLE
+                order.lmtPrice = UNSET_DOUBLE
+            else:
+                order.lmtPrice = price
+            order.orderType = preview.order_type
             order.tif = "DAY"
             order.outsideRth = False
             order.account = ctx.account
@@ -1237,11 +1417,15 @@ class ManualOrderService:
         avg_price = row.get("avg_fill_price")
         if avg_price:
             fill_detail += f"，均價 ${float(avg_price):.2f}"
+        price_condition = (
+            "MKT（未指定成交價格）" if row.get("order_type") == "MKT"
+            else f"LMT ${float(row['limit_price']):.2f}"
+        )
         return (
             f"手動委託結果｜{row['account_name']}\n"
             f"委託編號：{notification_ref}\n"
             f"{row['action']} {quantity} 股 {row['symbol']}｜"
-            f"LMT ${float(row['limit_price']):.2f}｜一般時段 DAY\n"
+            f"{price_condition}｜一般時段 DAY\n"
             f"結果：{status}\n{fill_detail}"
         )
 

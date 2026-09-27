@@ -1,4 +1,4 @@
-"""Panel window for previewing, confirming, and tracking manual limit orders."""
+"""Panel window for previewing, confirming, and tracking manual orders."""
 
 from __future__ import annotations
 
@@ -15,10 +15,11 @@ class ManualOrderRequest:
     account_name: str
     symbol: str
     quantity: int | None
-    limit_price: float
+    limit_price: float | None
     action: str = "BUY"
     allow_short: bool = False
     amount_usd: Decimal | None = None
+    order_type: str = "LMT"
 
 
 class ManualOrderWindow:
@@ -63,17 +64,20 @@ class ManualOrderWindow:
         self.amount_var = tk.StringVar(self.win, value="")
         self.input_mode_var = tk.StringVar(self.win, value=self.SHARES_MODE)
         self.price_var = tk.StringVar(self.win, value="")
+        self.order_type_var = tk.StringVar(self.win, value="LMT")
         self.action_var = tk.StringVar(self.win, value="買進")
         self.allow_short_var = tk.BooleanVar(self.win, value=False)
         for variable in (
             self.account_var, self.symbol_var,
             self.quantity_var, self.amount_var, self.input_mode_var,
             self.price_var,
+            self.order_type_var,
             self.action_var, self.allow_short_var,
         ):
             variable.trace_add("write", self._form_changed)
         self.action_var.trace_add("write", self._action_changed)
         self.input_mode_var.trace_add("write", self._input_mode_changed)
+        self.order_type_var.trace_add("write", self._order_type_changed)
 
         self._build(account_names)
         self._render_orders(self._active_orders())
@@ -90,7 +94,7 @@ class ManualOrderWindow:
             bg=t["accent"], fg=t["accent_hl"],
         ).pack(side="left")
         tk.Label(
-            header, text="一般時段 · 整股 LMT · DAY",
+            header, text="一般時段 · 整股 LMT / MKT · DAY",
             font=self.fonts["small"], bg=t["accent"], fg=t["text"],
         ).pack(side="right")
 
@@ -132,6 +136,13 @@ class ManualOrderWindow:
             form, textvariable=self.amount_var, width=18, state="disabled",
         )
         self.amount_entry.grid(row=2, column=3, sticky="ew", pady=5)
+
+        self._field_label(form, "委託類型", 3, 2)
+        self.order_type_box = ttk.Combobox(
+            form, textvariable=self.order_type_var,
+            values=("LMT", "MKT"), state="readonly", width=18,
+        )
+        self.order_type_box.grid(row=3, column=3, sticky="ew", pady=5)
 
         self._field_label(form, "方向", 3, 0)
         self.action_box = ttk.Combobox(
@@ -274,6 +285,14 @@ class ManualOrderWindow:
             state="normal" if is_cash and not self._busy else "disabled",
         )
 
+    def _order_type_changed(self, *_args):
+        if self.order_type_var.get() == "MKT":
+            self.price_var.set("")
+        self.price_entry.configure(
+            state="normal" if self.order_type_var.get() == "LMT" and not self._busy
+            else "disabled",
+        )
+
     def _read_request(self):
         account = self.account_var.get().strip()
         if not account:
@@ -296,12 +315,18 @@ class ManualOrderWindow:
                 raise ValueError("美元金額必須大於零。")
         else:
             raise ValueError("請選擇整股股數或美元金額。")
-        try:
-            price = float(self.price_var.get().strip())
-        except ValueError as exc:
-            raise ValueError("請輸入自填限價。") from exc
-        if not math.isfinite(price) or price <= 0:
-            raise ValueError("限價必須大於零。")
+        order_type = self.order_type_var.get()
+        if order_type == "LMT":
+            try:
+                price = float(self.price_var.get().strip())
+            except ValueError as exc:
+                raise ValueError("請輸入自填限價。") from exc
+            if not math.isfinite(price) or price <= 0:
+                raise ValueError("限價必須大於零。")
+        elif order_type == "MKT":
+            price = None
+        else:
+            raise ValueError("請選擇有效委託類型。")
         return ManualOrderRequest(
             account_name=account,
             symbol=self.symbol_var.get().strip(),
@@ -310,12 +335,17 @@ class ManualOrderWindow:
             action=self.ACTION_LABELS[self.action_var.get()],
             allow_short=bool(self.allow_short_var.get()),
             amount_usd=amount,
+            order_type=order_type,
         )
 
     @staticmethod
     def _requested_quantity(request):
         from manual_orders import whole_share_quantity
 
+        if request.order_type == "MKT":
+            if request.quantity is None:
+                raise ValueError("修改時請輸入明確股數。")
+            return request.quantity
         return whole_share_quantity(
             shares=request.quantity, amount_usd=request.amount_usd,
             limit_price=request.limit_price,
@@ -337,11 +367,16 @@ class ManualOrderWindow:
 
     def _preview_worker(self, request):
         try:
+            kwargs = dict(
+                action=request.action, allow_short=request.allow_short,
+                amount_usd=request.amount_usd,
+            )
+            if request.order_type == "MKT":
+                kwargs["order_type"] = "MKT"
             result = self.service.preview(
                 request.account_name, request.symbol,
                 request.quantity, request.limit_price,
-                action=request.action, allow_short=request.allow_short,
-                amount_usd=request.amount_usd,
+                **kwargs,
             )
             self._post(lambda: self._preview_complete(request, result, None))
         except Exception as exc:
@@ -442,10 +477,14 @@ class ManualOrderWindow:
                  f"{result.get('status_label', result['status'])}",
             fg=self.theme["green"],
         )
+        price_condition = (
+            "MKT" if result.get("order_type") == "MKT"
+            else f"LMT {result['limit_price']} USD"
+        )
         self.log(
             f"[>] Manual order [{result['account_name']}] "
             f"{result['action']} {result['quantity']}sh {result['symbol']} "
-            f"LMT {result['limit_price']} USD — {result['status']}"
+            f"{price_condition} — {result['status']}"
         )
         self._render_orders(self._active_orders())
         self._refresh_status()
@@ -464,7 +503,10 @@ class ManualOrderWindow:
         self.amount_entry.configure(
             state=state if self.input_mode_var.get() == self.CASH_MODE else "disabled",
         )
-        self.price_entry.configure(state=state)
+        self.price_entry.configure(
+            state=state if self.order_type_var.get() == "LMT" else "disabled",
+        )
+        self.order_type_box.configure(state="disabled" if value else "readonly")
         self.action_box.configure(state="disabled" if value else "readonly")
         self.allow_short_check.configure(
             state="normal" if not value and self.action_var.get() == "賣出" else "disabled",
@@ -500,7 +542,10 @@ class ManualOrderWindow:
         if hasattr(self, "cancel_button"):
             self.cancel_button.configure(state=state)
         if hasattr(self, "modify_button"):
-            self.modify_button.configure(state=state)
+            self.modify_button.configure(
+                state=state if row is not None and row.get("order_type", "LMT") == "LMT"
+                else "disabled",
+            )
 
     def _order_selected(self, *_args):
         self._update_selection_actions()
@@ -522,6 +567,8 @@ class ManualOrderWindow:
         row = self._selected_order()
         if row is None or self._busy:
             return
+        if row.get("order_type", "LMT") == "MKT":
+            return
         if (self.account_var.get().strip() != row["account_name"]
                 or self.symbol_var.get().strip().upper() != row["symbol"]
                 or self.action_var.get() != self.FORM_ACTION_LABELS[row["action"]]
@@ -531,6 +578,7 @@ class ManualOrderWindow:
             self.action_var.set(self.FORM_ACTION_LABELS[row["action"]])
             self.allow_short_var.set(row["action"] == "SELL_SHORT")
             self.input_mode_var.set(self.SHARES_MODE)
+            self.order_type_var.set("LMT")
             self.quantity_var.set(str(row["quantity"]))
             self.price_var.set(str(row["limit_price"]))
             self.form_status.configure(text="已載入選定委託；調整價格或股數後再次按修改。")
@@ -541,6 +589,8 @@ class ManualOrderWindow:
             return
         try:
             request = self._read_request()
+            if request.order_type != "LMT":
+                raise ValueError("修改限價單時請選擇 LMT。")
             requested_quantity = self._requested_quantity(request)
         except ValueError as exc:
             messagebox.showwarning("修改手動委託", str(exc), parent=self.win)
@@ -732,7 +782,10 @@ class ManualOrderWindow:
             fill_text = f"{filled}/{row['quantity']}"
             if avg_price:
                 fill_text += " @ $" + f"{float(avg_price):.2f}"
-            price_condition = f"LMT ${float(row['limit_price']):.2f}"
+            price_condition = (
+                "MKT" if row.get("order_type") == "MKT"
+                else f"LMT ${float(row['limit_price']):.2f}"
+            )
             order_ref = row["order_ref"]
             self._order_rows[order_ref] = row
             self.orders.insert(

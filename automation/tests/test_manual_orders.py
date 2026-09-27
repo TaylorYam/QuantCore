@@ -7,6 +7,9 @@ it represents the Panel confirmation boundary and receives a fake IB adapter.
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+import sqlite3
 from decimal import Decimal
 from types import SimpleNamespace as NS
 
@@ -14,7 +17,7 @@ import pytest
 
 from manual_orders import (
     ManualOrderMonitor, ManualOrderService, ManualOrderStore,
-    whole_share_quantity,
+    BrokerQuote, whole_share_quantity,
 )
 
 
@@ -108,7 +111,8 @@ class FakeIB:
         self.connected = False
 
 
-def service_for(tmp_path, state, *, universe=None, notifier=None):
+def service_for(tmp_path, state, *, universe=None, notifier=None,
+                quote_reader=None, clock=None):
     accounts = {
         "Taylor": "U001",
         "Rosa": "U002",
@@ -146,7 +150,233 @@ def service_for(tmp_path, state, *, universe=None, notifier=None):
         notifier=notifier or (lambda account_name, message: (
             state.notifications.append((account_name, message)) or True
         )),
+        quote_reader=quote_reader,
+        clock=clock,
     )
+
+
+MKT_NOW = datetime(2026, 9, 14, 18, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize("action,allow_short,position,side", [
+    ("BUY", False, 0, "ask"),
+    ("COVER", False, -10, "ask"),
+    ("SELL", False, 10, "bid"),
+    ("SELL", True, 0, "bid"),
+])
+def test_market_cash_uses_correct_live_side_and_sends_whole_share_mkt(
+    tmp_path, action, allow_short, position, side,
+):
+    state = FakeIBState()
+    state.positions_by_account["U001"]["ZZZZ"] = position
+    seen_sides = []
+
+    def quote(_ib, _contract, requested_side):
+        seen_sides.append(requested_side)
+        return BrokerQuote(30 if requested_side == "ask" else 25,
+                           MKT_NOW, requested_side)
+
+    service = service_for(tmp_path, state, quote_reader=quote, clock=lambda: MKT_NOW)
+    preview = service.preview("Taylor", "ZZZZ", None, None, action=action,
+                              allow_short=allow_short, amount_usd="100",
+                              order_type="MKT")
+    assert preview.quantity == (3 if side == "ask" else 4)
+    assert preview.conversion_price == (30 if side == "ask" else 25)
+    assert "IB 即時買賣報價" in preview.confirmation_text
+    assert "報價時點" in preview.confirmation_text
+    assert "換算價" in preview.confirmation_text
+    assert "預估委託金額" in preview.confirmation_text
+    assert "未指定成交價格" in preview.confirmation_text
+    assert "實際成交金額可能超出輸入金額" in preview.confirmation_text
+    service.validate_preview(preview)
+    result = service.submit(preview)
+    assert seen_sides == [side, side, side]
+    order = state.placed[0].order
+    assert order.orderType == "MKT"
+    assert order.totalQuantity == preview.quantity
+    assert order.outsideRth is False
+    assert order.tif == "DAY"
+    assert order.cashQty == "UNSET"
+    assert order.lmtPrice > 1e300
+    assert result["order_type"] == "MKT"
+
+
+def test_market_explicit_shares_need_no_quote_but_still_require_session(tmp_path):
+    state = FakeIBState()
+    service = service_for(
+        tmp_path, state,
+        quote_reader=lambda *_args: pytest.fail("share MKT must not read quote"),
+        clock=lambda: MKT_NOW,
+    )
+    preview = service.preview("Taylor", "ZZZZ", 7, None, order_type="MKT")
+    assert preview.quantity == 7
+    assert preview.quote is None
+    assert "未指定成交價格" in preview.confirmation_text
+    service.submit(preview)
+    assert state.placed[0].order.totalQuantity == 7
+
+    closed = service_for(tmp_path / "closed", state, clock=lambda: MKT_NOW + timedelta(hours=3))
+    with pytest.raises(ValueError, match="一般交易時段"):
+        closed.preview("Taylor", "ZZZZ", 7, None, order_type="MKT")
+
+
+@pytest.mark.parametrize("quote", [
+    None,
+    BrokerQuote(30, MKT_NOW, "ask", market_data_type=3),
+    BrokerQuote(30, MKT_NOW - timedelta(seconds=16), "ask"),
+    BrokerQuote(float("nan"), MKT_NOW, "ask"),
+    BrokerQuote(30, MKT_NOW, "bid"),
+])
+def test_market_cash_rejects_missing_delayed_stale_or_wrong_quote(tmp_path, quote):
+    state = FakeIBState()
+    service = service_for(tmp_path, state, quote_reader=lambda *_args: quote,
+                          clock=lambda: MKT_NOW)
+    with pytest.raises(ValueError, match="明確股數"):
+        service.preview("Taylor", "ZZZZ", None, None,
+                        amount_usd="100", order_type="MKT")
+    assert not state.placed
+
+
+def test_market_cash_rejects_changed_quote_even_when_quantity_same(tmp_path):
+    state = FakeIBState()
+    prices = iter((30, 31, 30, 31))
+    service = service_for(
+        tmp_path, state,
+        quote_reader=lambda _ib, _contract, side: BrokerQuote(next(prices), MKT_NOW, side),
+        clock=lambda: MKT_NOW,
+    )
+    first = service.preview("Taylor", "ZZZZ", None, None,
+                            amount_usd="100", order_type="MKT")
+    with pytest.raises(ValueError, match="報價"):
+        service.validate_preview(first)
+    second = service.preview("Taylor", "ZZZZ", None, None,
+                             amount_usd="100", order_type="MKT")
+    with pytest.raises(ValueError, match="報價"):
+        service.submit(second)
+    assert not state.placed
+
+
+def test_market_cash_below_one_share_stops_without_order(tmp_path):
+    state = FakeIBState()
+    service = service_for(
+        tmp_path, state,
+        quote_reader=lambda _ib, _contract, side: BrokerQuote(101, MKT_NOW, side),
+        clock=lambda: MKT_NOW,
+    )
+    with pytest.raises(ValueError, match="不足一股"):
+        service.preview("Taylor", "ZZZZ", None, None,
+                        amount_usd="100", order_type="MKT")
+    assert not state.placed
+
+
+def test_market_submit_rechecks_account_position_and_open_order(tmp_path):
+    state = FakeIBState()
+    state.positions_by_account["U001"]["ZZZZ"] = 5
+    service = service_for(
+        tmp_path, state,
+        quote_reader=lambda _ib, _contract, side: BrokerQuote(20, MKT_NOW, side),
+        clock=lambda: MKT_NOW,
+    )
+    preview = service.preview("Taylor", "ZZZZ", None, None, action="SELL",
+                              amount_usd="60", order_type="MKT")
+    state.positions_by_account["U001"]["ZZZZ"] = 4
+    with pytest.raises(ValueError, match="持倉"):
+        service.submit(preview)
+    state.positions_by_account["U001"]["ZZZZ"] = 5
+    service.store.create(preview, "QUANTCORE_MANUAL:TAYLOR:other")
+    with pytest.raises(ValueError, match="未結案手動單"):
+        service.submit(preview)
+    assert not state.placed
+
+
+def test_market_cash_quote_failure_at_submit_blocks_order(tmp_path):
+    state = FakeIBState()
+    quotes = iter((BrokerQuote(20, MKT_NOW, "ask"), None))
+    service = service_for(
+        tmp_path, state,
+        quote_reader=lambda *_args: next(quotes), clock=lambda: MKT_NOW,
+    )
+    preview = service.preview("Taylor", "ZZZZ", None, None,
+                              amount_usd="60", order_type="MKT")
+    with pytest.raises(ValueError, match="明確股數"):
+        service.submit(preview)
+    assert not state.placed
+
+
+def test_market_session_uses_nyse_timezone_holiday_and_early_close():
+    from manual_orders import is_regular_session
+
+    eastern = ZoneInfo("America/New_York")
+    assert is_regular_session(datetime(2026, 9, 14, 9, 30, tzinfo=eastern))
+    assert not is_regular_session(datetime(2026, 9, 14, 9, 29, tzinfo=eastern))
+    assert not is_regular_session(datetime(2026, 9, 14, 16, 0, tzinfo=eastern))
+    assert not is_regular_session(datetime(2026, 9, 7, 10, 0, tzinfo=eastern))
+    assert is_regular_session(datetime(2026, 11, 27, 12, 59, tzinfo=eastern))
+    assert not is_regular_session(datetime(2026, 11, 27, 13, 0, tzinfo=eastern))
+
+
+@pytest.mark.parametrize("market_type,tick_type,accepted", [
+    (1, 2, True),
+    (3, 67, False),
+    (2, 2, False),
+])
+def test_ib_quote_adapter_requires_realtime_selected_side_tick(
+    market_type, tick_type, accepted,
+):
+    from ib_insync import Ticker
+    from ib_insync.objects import TickData
+    from manual_orders import read_ib_quote
+
+    class FakeQuoteIB:
+        def __init__(self):
+            self.ticker = Ticker()
+            self.ticker.marketDataType = market_type
+            self.cancelled = False
+            self.requested_type = None
+
+        def reqMarketDataType(self, value):
+            self.requested_type = value
+
+        def reqMktData(self, contract, generic, snapshot, regulatory):
+            assert (generic, snapshot, regulatory) == ("", False, False)
+            return self.ticker
+
+        def sleep(self, _seconds):
+            self.ticker.ask = 30
+            self.ticker.askSize = 10
+            self.ticker.ticks = [TickData(MKT_NOW, tick_type, 30, 10)]
+            self.ticker.updateEvent.emit(self.ticker)
+
+        def cancelMktData(self, _contract):
+            self.cancelled = True
+
+    ib = FakeQuoteIB()
+    if accepted:
+        result = read_ib_quote(ib, NS(symbol="ZZZZ"), "ask")
+        assert (result.price, result.side, result.market_data_type) == (30, "ask", 1)
+    else:
+        with pytest.raises(ValueError, match="明確股數"):
+            read_ib_quote(ib, NS(symbol="ZZZZ"), "ask")
+    assert ib.requested_type == 1
+    assert ib.cancelled
+
+
+def test_existing_manual_order_store_migrates_to_order_type(tmp_path):
+    path = tmp_path / "manual.sqlite3"
+    store = ManualOrderStore(path)
+    preview = service_for(tmp_path, FakeIBState()).preview("Taylor", "ZZZZ", 1, 10.0)
+    store.create(preview, "QUANTCORE_MANUAL:TAYLOR:legacy")
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE manual_orders DROP COLUMN order_type")
+        conn.execute("DELETE FROM manual_order_schema_migrations WHERE version=3")
+    store = ManualOrderStore(path)
+    with store._connect() as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(manual_orders)")}
+        assert "order_type" in columns
+        assert conn.execute(
+            "SELECT COUNT(*) FROM manual_order_schema_migrations WHERE version=3"
+        ).fetchone()[0] == 1
+    assert store.get("QUANTCORE_MANUAL:TAYLOR:legacy")["order_type"] == "LMT"
 
 
 def test_cash_target_uses_exact_decimal_floor_and_rejects_less_than_one_share():

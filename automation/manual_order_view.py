@@ -20,6 +20,7 @@ class ManualOrderRequest:
     allow_short: bool = False
     amount_usd: Decimal | None = None
     order_type: str = "LMT"
+    session: str = "REGULAR"
 
 
 class ManualOrderWindow:
@@ -33,6 +34,13 @@ class ManualOrderWindow:
         "BUY": "買進", "SELL": "賣出", "SELL_SHORT": "放空", "COVER": "回補空單",
     }
     FORM_ACTION_LABELS = {**STORED_ACTION_LABELS, "SELL_SHORT": "賣出"}
+    SESSION_CHOICES = {"一般時段": "REGULAR", "盤前": "PRE_MARKET", "盤後": "AFTER_HOURS"}
+    FORM_SESSION_LABELS = {code: label for label, code in SESSION_CHOICES.items()}
+    STORED_SESSION_LABELS = {
+        "REGULAR": "一般時段 RTH / DAY",
+        "PRE_MARKET": "盤前 outsideRTH / DAY",
+        "AFTER_HOURS": "盤後 outsideRTH / DAY",
+    }
 
     def __init__(self, parent, account_names, service, theme, fonts, log=None):
         self.parent = parent
@@ -53,8 +61,8 @@ class ManualOrderWindow:
         self.win = tk.Toplevel(parent)
         self.win.title("手動下單 — 整股限價委託")
         self.win.configure(bg=theme["bg"])
-        self.win.geometry("1030x600")
-        self.win.minsize(960, 520)
+        self.win.geometry("1030x640")
+        self.win.minsize(960, 560)
         self.win.transient(parent)
         self.win.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -65,13 +73,14 @@ class ManualOrderWindow:
         self.input_mode_var = tk.StringVar(self.win, value=self.SHARES_MODE)
         self.price_var = tk.StringVar(self.win, value="")
         self.order_type_var = tk.StringVar(self.win, value="LMT")
+        self.session_var = tk.StringVar(self.win, value="一般時段")
         self.action_var = tk.StringVar(self.win, value="買進")
         self.allow_short_var = tk.BooleanVar(self.win, value=False)
         for variable in (
             self.account_var, self.symbol_var,
             self.quantity_var, self.amount_var, self.input_mode_var,
             self.price_var,
-            self.order_type_var,
+            self.order_type_var, self.session_var,
             self.action_var, self.allow_short_var,
         ):
             variable.trace_add("write", self._form_changed)
@@ -94,7 +103,7 @@ class ManualOrderWindow:
             bg=t["accent"], fg=t["accent_hl"],
         ).pack(side="left")
         tk.Label(
-            header, text="一般時段 · 整股 LMT / MKT · DAY",
+            header, text="一般時段 LMT / MKT · 盤前／盤後 LMT · 整股 · DAY",
             font=self.fonts["small"], bg=t["accent"], fg=t["text"],
         ).pack(side="right")
 
@@ -150,22 +159,30 @@ class ManualOrderWindow:
             values=tuple(self.ACTION_LABELS), state="readonly", width=18,
         )
         self.action_box.grid(row=3, column=1, sticky="ew", padx=(0, 14), pady=5)
+
+        self._field_label(form, "交易時段", 4, 0)
+        self.session_box = ttk.Combobox(
+            form, textvariable=self.session_var,
+            values=tuple(self.SESSION_CHOICES), state="readonly", width=18,
+        )
+        self.session_box.grid(row=4, column=1, sticky="ew", padx=(0, 14), pady=5)
         self.allow_short_check = ttk.Checkbutton(
             form, text="允許放空", variable=self.allow_short_var,
             state="disabled",
         )
-        self.allow_short_check.grid(row=3, column=2, columnspan=2, sticky="w", pady=5)
+        self.allow_short_check.grid(row=4, column=2, columnspan=2, sticky="w", pady=5)
 
         helper = tk.Label(
             form,
-            text="只接受美國市場的美元個股或 ETF；策略 Universe 標的會被阻擋。",
+            text=("只接受美國市場的美元個股或 ETF；策略 Universe 標的會被阻擋。"
+                  "盤前／盤後只收 LMT，且只在該時段開放時送出。"),
             font=self.fonts["small"], bg=t["bg2"], fg=t["text_dim"],
             anchor="w",
         )
-        helper.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(7, 2))
+        helper.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(7, 2))
 
         actions = tk.Frame(form, bg=t["bg2"])
-        actions.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(9, 0))
+        actions.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(9, 0))
         self.preview_button = ttk.Button(
             actions, text="預覽委託", command=self._preview_order,
         )
@@ -327,6 +344,12 @@ class ManualOrderWindow:
             price = None
         else:
             raise ValueError("請選擇有效委託類型。")
+        session = self.SESSION_CHOICES.get(self.session_var.get())
+        if session is None:
+            raise ValueError("請選擇交易時段。")
+        if session != "REGULAR" and order_type != "LMT":
+            # Never switch the trader's MKT to LMT or regular hours on their behalf.
+            raise ValueError("盤前／盤後只接受 LMT 限價單；請改選 LMT，或改用一般時段。")
         return ManualOrderRequest(
             account_name=account,
             symbol=self.symbol_var.get().strip(),
@@ -336,6 +359,7 @@ class ManualOrderWindow:
             allow_short=bool(self.allow_short_var.get()),
             amount_usd=amount,
             order_type=order_type,
+            session=session,
         )
 
     @staticmethod
@@ -373,6 +397,8 @@ class ManualOrderWindow:
             )
             if request.order_type == "MKT":
                 kwargs["order_type"] = "MKT"
+            if request.session != "REGULAR":
+                kwargs["session"] = request.session
             result = self.service.preview(
                 request.account_name, request.symbol,
                 request.quantity, request.limit_price,
@@ -472,19 +498,23 @@ class ManualOrderWindow:
             self.form_status.configure(text="送單前重新檢查未通過")
             self.preview_text.configure(text=error, fg=self.theme["red"])
             return
+        working = result["status"] in {"SENT", "ACCEPTED", "PARTIAL", "FILLED"}
+        # The message carries IB's reason for rejections and forced cancels.
         self.form_status.configure(
             text=f"{result['account_name']} {result['symbol']}："
-                 f"{result.get('status_label', result['status'])}",
-            fg=self.theme["green"],
+                 f"{result.get('status_message') or result.get('status_label', result['status'])}",
+            fg=self.theme["green"] if working else self.theme["red"],
         )
         price_condition = (
             "MKT" if result.get("order_type") == "MKT"
             else f"LMT {result['limit_price']} USD"
         )
+        session = result.get("session") or "REGULAR"
         self.log(
             f"[>] Manual order [{result['account_name']}] "
             f"{result['action']} {result['quantity']}sh {result['symbol']} "
-            f"{price_condition} — {result['status']}"
+            f"{price_condition} {session} — {result['status']}"
+            + ("" if working else f" ({result.get('status_message', '')})")
         )
         self._render_orders(self._active_orders())
         self._refresh_status()
@@ -507,6 +537,7 @@ class ManualOrderWindow:
             state=state if self.order_type_var.get() == "LMT" else "disabled",
         )
         self.order_type_box.configure(state="disabled" if value else "readonly")
+        self.session_box.configure(state="disabled" if value else "readonly")
         self.action_box.configure(state="disabled" if value else "readonly")
         self.allow_short_check.configure(
             state="normal" if not value and self.action_var.get() == "賣出" else "disabled",
@@ -569,16 +600,19 @@ class ManualOrderWindow:
             return
         if row.get("order_type", "LMT") == "MKT":
             return
+        row_session = row.get("session") or "REGULAR"
         if (self.account_var.get().strip() != row["account_name"]
                 or self.symbol_var.get().strip().upper() != row["symbol"]
                 or self.action_var.get() != self.FORM_ACTION_LABELS[row["action"]]
-                or bool(self.allow_short_var.get()) != (row["action"] == "SELL_SHORT")):
+                or bool(self.allow_short_var.get()) != (row["action"] == "SELL_SHORT")
+                or self.SESSION_CHOICES.get(self.session_var.get()) != row_session):
             self.account_var.set(row["account_name"])
             self.symbol_var.set(row["symbol"])
             self.action_var.set(self.FORM_ACTION_LABELS[row["action"]])
             self.allow_short_var.set(row["action"] == "SELL_SHORT")
             self.input_mode_var.set(self.SHARES_MODE)
             self.order_type_var.set("LMT")
+            self.session_var.set(self.FORM_SESSION_LABELS[row_session])
             self.quantity_var.set(str(row["quantity"]))
             self.price_var.set(str(row["limit_price"]))
             self.form_status.configure(text="已載入選定委託；調整價格或股數後再次按修改。")
@@ -598,7 +632,8 @@ class ManualOrderWindow:
         if (request.account_name != row["account_name"]
                 or request.symbol != row["symbol"]
                 or request.action != ("SELL" if row["action"] == "SELL_SHORT" else row["action"])
-                or request.allow_short != (row["action"] == "SELL_SHORT")):
+                or request.allow_short != (row["action"] == "SELL_SHORT")
+                or request.session != row_session):
             messagebox.showwarning(
                 "修改手動委託", "修改只允許變更原委託的價格或股數。", parent=self.win,
             )
@@ -616,7 +651,8 @@ class ManualOrderWindow:
         prompt = (
             f"先取消目前的 {row['quantity']} 股 {row['symbol']} 委託，"
             f"等 IB 確認後再預覽新條件：\n"
-            f"{cash_target}{requested_quantity} 股，LMT ${request.limit_price:.2f}\n\n"
+            f"{cash_target}{requested_quantity} 股，LMT ${request.limit_price:.2f}"
+            f"（{self.FORM_SESSION_LABELS[request.session]}）\n\n"
             "原委託取消前仍可能成交；不會自動送出新委託。"
         )
         if not messagebox.askyesno(
@@ -717,6 +753,7 @@ class ManualOrderWindow:
         self.price_var.set(str(request.limit_price))
         self.action_var.set(self.FORM_ACTION_LABELS[request.action])
         self.allow_short_var.set(request.allow_short)
+        self.session_var.set(self.FORM_SESSION_LABELS[request.session])
         self._preview = None
         self._preview_request = None
         self.confirm_button.configure(state="disabled")
@@ -793,7 +830,10 @@ class ManualOrderWindow:
                 values=(
                     row["account_name"], row["symbol"],
                     self.STORED_ACTION_LABELS.get(row["action"], row["action"]),
-                    row["quantity"], price_condition, "一般時段 RTH / DAY",
+                    row["quantity"], price_condition,
+                    self.STORED_SESSION_LABELS.get(
+                        row.get("session") or "REGULAR", row.get("session"),
+                    ),
                     row.get("status_label", row["status"]), fill_text,
                 ),
             )

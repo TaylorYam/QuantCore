@@ -76,6 +76,9 @@ from ib_fetcher import (
 import rebalance_plan as plan
 from rebalance_plan import combine_targets  # re-export：tests 與舊 callers 沿用此路徑
 
+# ── 手動持倉歸屬與策略送單暫停（#106）
+import manual_attribution
+
 
 def make_order(action: str, qty: int, lmt_price: float,
                ctx: AccountCtx) -> Order:
@@ -101,7 +104,12 @@ def make_order(action: str, qty: int, lmt_price: float,
 
 
 def place_orders(ib: IB, order_list: list, ctx: AccountCtx) -> tuple:
-    """先 SELL 再 BUY。回傳 (placed_list, trades_list)"""
+    """先 SELL 再 BUY。回傳 (placed_list, trades_list)
+
+    策略送單的最終閘門（#106）：手動持倉暫停中的標的不送；讀不到暫停
+    紀錄時拋 ManualAttributionError，一張都不送。
+    """
+    order_list, _held = manual_attribution.gate_orders(ctx.name, order_list)
     sells = [o for o in order_list if o['action'] == 'SELL']
     buys  = [o for o in order_list if o['action'] == 'BUY']
     placed, trades = [], []
@@ -211,18 +219,20 @@ def rebalance_tg_section(placed: list[dict], fill_results: list[dict], *,
                          order_type: str, dry_run: bool,
                          drift_alarms: list[str] = (),
                          drift_advisories: list[str] = (),
+                         pause_notices: list[str] = (),
                          error_msg: str | None = None
                          ) -> tuple[str, list[str], str] | None:
     """單一帳戶的 21:00 調倉段落 → (headline, body, level)；不需要發回 None。
 
     只列送出的單（BUY / SELL 各一行）。發送條件：有送單、對帳警報（🔴 該動
-    卻沒送單 / ⚠️ 無報價 / 對帳段失敗）、或錯誤。🟠 合計偏離只附在已經要發
-    的段落。MOO 送出時還沒成交，成交由 21:31 moo_fill_check 回報；非 MOO
-    （手動 --order-type MKT/LMT）則把沒成交完的單列出來。
+    卻沒送單 / ⚠️ 無報價 / 對帳段失敗）、新的手動持倉暫停（#106，同一次
+    暫停只通知一次）、或錯誤。🟠 合計偏離只附在已經要發的段落。MOO 送出時
+    還沒成交，成交由 21:31 moo_fill_check 回報；非 MOO（手動 --order-type
+    MKT/LMT）則把沒成交完的單列出來。
     """
     unfilled = ([f for f in fill_results if f.get('status') != 'Filled']
                 if order_type != 'MOO' else [])
-    if not placed and not drift_alarms and not error_msg:
+    if not placed and not drift_alarms and not pause_notices and not error_msg:
         return None
 
     dry = " [DRY RUN]" if dry_run else ""
@@ -236,6 +246,7 @@ def rebalance_tg_section(placed: list[dict], fill_results: list[dict], *,
     body = order_group_lines(placed)
     body += [f"⚠️ {f['symbol']} 成交 {f['filled']}/{f['qty']} [{f['status']}]"
              for f in unfilled]
+    body += [html_mod.escape(ln) for ln in pause_notices]
     body += [html_mod.escape(ln) for ln in drift_alarms]
     body += [html_mod.escape(ln) for ln in drift_advisories]
     if error_msg:
@@ -243,21 +254,26 @@ def rebalance_tg_section(placed: list[dict], fill_results: list[dict], *,
 
     if error_msg:
         level = "error"
-    elif drift_alarms or unfilled:
+    elif drift_alarms or unfilled or pause_notices:
         level = "warn"
     else:
         level = "ok"
     return headline, body, level
 
 
-def _add_rebalance_section(digest: Digest, ctx: AccountCtx, **kwargs) -> None:
-    """組段落加進 digest。在 finally 內呼叫 — 自身絕不拋例外，避免蓋掉原錯誤。"""
+def _add_rebalance_section(digest: Digest, ctx: AccountCtx,
+                           on_delivered=None, **kwargs) -> None:
+    """組段落加進 digest。在 finally 內呼叫 — 自身絕不拋例外，避免蓋掉原錯誤。
+
+    on_delivered：訊息確定送達後呼叫（手動持倉暫停記已通知，#106）。
+    """
     try:
         section = rebalance_tg_section(order_type=ctx.order_type,
                                        dry_run=ctx.dry_run, **kwargs)
         if section is not None:
             digest.add(ctx.name, *section,
-                       token=ctx.tg_token, chat_id=ctx.tg_chat_id)
+                       token=ctx.tg_token, chat_id=ctx.tg_chat_id,
+                       on_delivered=on_delivered)
     except Exception as e:
         log.warning(f"Telegram section build failed: {e}")
 
@@ -266,7 +282,9 @@ def _log_trades_and_report(digest: Digest, ctx: AccountCtx, *,
                            placed: list[dict], fill_results: list[dict],
                            signal_str: str, drift_alarms: list[str],
                            drift_advisories: list[str],
-                           error_msg: str | None) -> Exception | None:
+                           error_msg: str | None,
+                           pause_notices: list[str] = (),
+                           on_delivered=None) -> Exception | None:
     """main() 收尾：寫 Excel 交易紀錄，再加 Telegram 段落。回傳 Excel 寫入例外。
 
     Excel 寫入失敗（例如 trade_log.xlsx 被 Excel 開著鎖住）時，單已經送出了 —
@@ -294,7 +312,9 @@ def _log_trades_and_report(digest: Digest, ctx: AccountCtx, *,
         fill_results=fill_results,
         drift_alarms=drift_alarms,
         drift_advisories=drift_advisories,
+        pause_notices=pause_notices,
         error_msg=error_msg,
+        on_delivered=on_delivered,
     )
     return excel_error
 
@@ -406,6 +426,7 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
     skewls_signal_date = "N/A"
     drift_alarms: list[str] = []      # Step 9b 對帳警報（TG 必發）
     drift_advisories: list[str] = []  # Step 9b 🟠 合計偏離（TG 附帶）
+    attribution = None                # Step 3 手動持倉歸屬（#106）
 
     log.info(f"{'='*60}")
     log.info(f"  QuantCore Rebalance  {date.today()}  [{mode_label}]")
@@ -460,6 +481,11 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
             other_val = sum(abs(current_pos[s]) * 1 for s in current_other_holdings)
             log.info(f"  OTHER holdings: {current_other_holdings} (excluded from strategy)")
             log.info(f"    -> These are manual/discretionary trades, NOT rebalanced")
+
+        # 手動持倉歸屬（#106）：更新紀錄、找出暫停標的。讀寫失敗拋例外 =
+        # 本帳戶這輪策略單全部不送（在 Step 4 算訊號寫 state 之前）
+        attribution = manual_attribution.evaluate(acct_name, current_pos,
+                                                  _sp500_universe)
 
         # ── 4. 計算 SP500 目標權重（基於 IB 實際持倉 + rank buffer）────────
         if run_sp500:
@@ -535,12 +561,18 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
         } for o in planned]
 
         # ── 7. 下單（先取消既有掛單，避免重複）─────────────────────────
+        # 手動持倉暫停（#106）的標的不送，其他照常
+        order_list, held_orders = attribution.split_orders(order_list)
+        for o in held_orders:
+            log.warning(f"  ⏸ {o['symbol']} {o['action']} {o['qty']} 不送出："
+                        f"{attribution.paused[o['symbol']]}")
         if not order_list:
             log.info("Step 7: No changes needed.")
         else:
-            # 取消該帳戶既有掛單
+            # 取消該帳戶既有掛單（Panel 手動單除外，#106）
             if not dry_run:
-                open_trades = ib.openTrades()
+                open_trades = manual_attribution.strategy_open_trades(
+                    ib.openTrades())
                 if open_trades:
                     log.info(f"  Cancelling {len(open_trades)} existing open orders...")
                     for t in open_trades:
@@ -565,10 +597,13 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
         log.info("Step 9b: Drift verification (theory vs actual)...")
         try:
             fresh_pos = get_positions(ib, ctx=ctx)
-            drift_rows = plan.verify_execution(
-                plan.evaluate_deltas(targets, fresh_pos,
-                                     current_other_holdings, prices, nav),
-                placed,
+            drift_rows = plan.mark_paused(
+                plan.verify_execution(
+                    plan.evaluate_deltas(targets, fresh_pos,
+                                         current_other_holdings, prices, nav),
+                    placed,
+                ),
+                attribution.paused,
             )
             drift_lines = plan.drift_report_lines(drift_rows)
             for ln in drift_lines:
@@ -614,6 +649,8 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
         signal_parts = [f"SR:{sr_signal_date}", f"SP500:{sp500_signal_date}"]
         if alloc_skewls > 0:
             signal_parts.append(f"SkewLS:{skewls_signal_date}")
+        new_pauses = attribution.new_notices if attribution else []
+        paused_syms = [s for s, _ in new_pauses]
         excel_error = _log_trades_and_report(
             digest, ctx,
             placed=placed,
@@ -622,6 +659,10 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
             drift_alarms=drift_alarms,
             drift_advisories=drift_advisories,
             error_msg=error_msg,
+            pause_notices=manual_attribution.pause_notice_lines(new_pauses),
+            # 暫停只通知一次：訊息確定送達才記；沒送到下一輪再附上
+            on_delivered=((lambda: manual_attribution.mark_notified(
+                acct_name, paused_syms)) if paused_syms else None),
         )
 
         elapsed = (datetime.now() - start_ts).seconds

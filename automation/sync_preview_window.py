@@ -182,6 +182,8 @@ class SyncPreviewWindow:
                       f"[{o.strategy}]")
         if not plan.orders:
             self._log(f"    Already on target")
+        for sym, reason in sorted(plan.paused.items()):
+            self._log(f"  ⏸ {sym} 策略單暫停：{reason}")
         self._log(f"{'─' * 40}")
 
     # ── Window building ────────────────────────────────────────
@@ -257,6 +259,8 @@ class SyncPreviewWindow:
         # Build sections
         self._build_section_targets(main_frame)
         self._build_section_current(main_frame)
+        if plan.paused:
+            self._build_section_paused(main_frame)
 
         # Trade list + buttons
         if not plan.orders:
@@ -419,6 +423,31 @@ class SyncPreviewWindow:
                     text=f"  {sym:<6s}  {shares:4d}sh  @ ${px:.2f}  = ${val:,.0f}",
                     font=("Consolas", 9), bg=t["bg2"], fg=t["text_dim"],
                 ).pack(anchor="w")
+
+    # ── Section 2b: 手動持倉暫停（#106）──────────────────────────
+
+    def _build_section_paused(self, parent: tk.Frame) -> None:
+        """暫停標的與原因；這些單不在下方交易清單、不會送出。"""
+        plan = self.plan
+        t = self.t
+        held = {o.symbol: o for o in plan.paused_orders}
+
+        sec = tk.Frame(parent, bg=t["bg"], padx=12, pady=6)
+        sec.pack(fill="x")
+        tk.Label(sec, text="⏸ 手動持倉暫停（這些標的的策略單不會送出）",
+                 font=("Segoe UI", 10, "bold"),
+                 bg=t["bg"], fg=t.get("yellow", t["accent_hl"])).pack(anchor="w")
+        frame = tk.Frame(sec, bg=t["bg2"], padx=8, pady=4)
+        frame.pack(fill="x", pady=(4, 2))
+        for sym, reason in sorted(plan.paused.items()):
+            o = held.get(sym)
+            order_text = (f"  原本要 {o.action} {o.qty}sh ({o.current}→{o.target})"
+                          if o else "  本次沒有對應的策略單")
+            tk.Label(frame, text=f"  {sym:<6s}{order_text}",
+                     font=("Consolas", 9), bg=t["bg2"], fg=t["text"]).pack(anchor="w")
+            tk.Label(frame, text=f"    {reason}", font=("Consolas", 9),
+                     justify="left", wraplength=680,
+                     bg=t["bg2"], fg=t["text_dim"]).pack(anchor="w")
 
     # ── Section 3: Trade table ─────────────────────────────────
 

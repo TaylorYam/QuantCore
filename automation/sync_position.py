@@ -32,6 +32,7 @@ import numpy as np
 
 from account_ctx import AccountCtx
 import ib_fetcher
+import manual_attribution
 import rebalance_plan as plan
 import signals
 
@@ -64,6 +65,10 @@ class SyncPlan:
     # SkewLS 欄位（S19）— 沒啟用時為 {} / 'N/A'
     skewls_wgt:  dict[str, float] = field(default_factory=dict)
     skewls_date: str = "N/A"
+    # 手動持倉暫停（#106）— 不在 orders 裡、預覽另列原因
+    paused: dict[str, str] = field(default_factory=dict)        # 標的 → 原因
+    paused_orders: list[SyncOrder] = field(default_factory=list)
+    pause_notices: list[tuple[str, str]] = field(default_factory=list)  # 尚未通知
 
 
 # ── Compute phase ─────────────────────────────────────────────────────
@@ -132,6 +137,11 @@ def compute_sync_plan(
         current_sp500_holdings = split.sp500
         current_other_holdings = split.other
 
+        # 3b. 手動持倉歸屬（#106）— 讀寫失敗拋例外：本帳戶這次不 Sync
+        #     （在 4. 算 SP500 訊號寫 state 之前）
+        attribution = manual_attribution.evaluate(ctx.name, current_pos,
+                                                  sp500_universe)
+
         # 4. SP500 目標權重
         _log("  Computing SP500 weights...")
         sp500_wgt, sp500_date = signals.get_sp500_weights(
@@ -171,6 +181,9 @@ def compute_sync_plan(
         nav=nav,
         ignore_threshold=True,
     )
+    # 手動持倉暫停（#106）的標的不列入可送的單，預覽另列原因
+    orders, paused_orders = attribution.split_orders(orders,
+                                                     key=lambda o: o.symbol)
 
     return SyncPlan(
         ctx=ctx,
@@ -186,7 +199,36 @@ def compute_sync_plan(
         current_other_holdings=current_other_holdings,
         skewls_wgt=skewls_wgt,
         skewls_date=skewls_date,
+        paused=dict(attribution.paused),
+        paused_orders=paused_orders,
+        pause_notices=list(attribution.new_notices),
     )
+
+
+def notify_new_pauses(plan: SyncPlan,
+                      send: Optional[Callable[[str], bool]] = None) -> bool:
+    """Sync Pos 計算時新出現的手動持倉暫停 → 該 Account Telegram 一則（#106）。
+
+    送成功才記「已通知」，同一次暫停只通知一次。send 預設走該帳戶的
+    Telegram 設定；回傳是否有送出。
+    """
+    if not plan.pause_notices:
+        return False
+    if send is None:
+        from notify import tg_send
+
+        def send(msg: str) -> bool:
+            return bool(tg_send(msg, token=plan.ctx.tg_token,
+                                chat_id=plan.ctx.tg_chat_id))
+    import html
+    lines = [f"<b>[{html.escape(plan.ctx.name)}] 手動持倉暫停</b>"]
+    lines += [html.escape(ln) for ln in
+              manual_attribution.pause_notice_lines(plan.pause_notices)]
+    if not send("\n".join(lines)):
+        return False
+    manual_attribution.mark_notified(plan.ctx.name,
+                                     [s for s, _ in plan.pause_notices])
+    return True
 
 
 # ── Drift check（理論 vs 實際對帳，唯讀）──────────────────────────────
@@ -311,8 +353,8 @@ def submit_sync_orders(
 
     ib = ib_fetcher.connect(exec_ctx)
     try:
-        # 1. 取消既有掛單
-        open_trades = ib.openTrades()
+        # 1. 取消既有掛單（Panel 手動單除外，#106）
+        open_trades = manual_attribution.strategy_open_trades(ib.openTrades())
         if open_trades:
             _log(f"  Cancelling {len(open_trades)} existing open orders...")
             for t in open_trades:

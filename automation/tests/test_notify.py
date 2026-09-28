@@ -290,3 +290,24 @@ def test_order_group_lines_groups_buy_and_sell():
         "🟢 BUY 55 ERY @ 12.30",
     ]
     assert notify.order_group_lines([]) == []
+
+
+def test_digest_on_delivered_only_after_every_chunk_is_sent(monkeypatch):
+    """#106：「只通知一次」的 caller 靠 on_delivered 記已通知 — 沒送到不能算。"""
+    import notify
+    results = iter([True, False])
+    monkeypatch.setattr(notify, "tg_send", lambda msg, *, token, chat_id: next(results))
+    monkeypatch.setattr(notify, "split_message", lambda msg: [msg[:5], msg[5:]])
+    calls = []
+    d = notify.Digest("調倉 2026-09-28", icon="📤")
+    d.add("Rosa", "沒有送單", ["⏸ XYZ"], "warn", **DEST,
+          on_delivered=lambda: calls.append("Rosa"))
+    d.send()
+    assert calls == []
+
+    monkeypatch.setattr(notify, "tg_send", lambda msg, *, token, chat_id: True)
+    d.add("Taylor", "送出 1 筆 MOO", ["🟢 BUY 1 XLK"], **{"token": "T2", "chat_id": "C2"},
+          on_delivered=lambda: calls.append("Taylor"))
+    d.send()
+    assert calls == ["Rosa", "Taylor"]
+

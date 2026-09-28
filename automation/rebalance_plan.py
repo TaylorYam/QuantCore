@@ -70,6 +70,8 @@ class DeltaRow:
       manual             — 手動持倉，不參與策略
       excluded_conflict  — 被歸手動卻有策略目標 = 分類異常（凍結類 bug 指紋）
       no_price           — 無報價，本輪跳過
+      paused             — 手動持倉進入策略 Universe，策略單暫停（#106，
+                           mark_paused 標記；不是凍結類警報）
     """
     symbol: str
     category: str
@@ -448,6 +450,21 @@ def verify_execution(rows: list[DeltaRow],
     return out
 
 
+def mark_paused(rows: list[DeltaRow],
+                paused: dict[str, str]) -> list[DeltaRow]:
+    """手動持倉暫停（#106）的標的改標 paused，reason = 暫停原因。
+
+    暫停是刻意不送單；照原分類 verify_execution 會標成「該動卻沒送單」🔴，
+    每輪都發 Telegram。暫停原因只在開始時通知一次（manual_attribution）。
+    paused 為空時原樣回傳。
+    """
+    if not paused:
+        return rows
+    return [_replace(r, category="paused", reason=paused[r.symbol])
+            if r.symbol in paused and r.category != "manual" else r
+            for r in rows]
+
+
 # 同策略合計偏離的升級門檻 = per-ticker REBALANCE_THRESHOLD 的 2 倍。
 # 抓「單檔皆 < 3% 但同策略多檔同向累積」的隱形偏離（凍結遺留的形狀）—
 # 這種偏離 scheduled rebalance 永遠不會自動修（每檔都過不了門檻）。
@@ -522,6 +539,7 @@ def drift_report_lines(rows: list[DeltaRow]) -> list[str]:
     yellow    = [r for r in rows if r.category == "within_threshold"]
     manual    = [r for r in rows if r.category == "manual"]
     no_price  = [r for r in rows if r.category == "no_price"]
+    paused    = [r for r in rows if r.category == "paused"]
     aligned_n = sum(1 for r in rows if r.category == "aligned")
 
     lines = ["", "—— 理論 vs 實際 對帳 ——"]
@@ -532,6 +550,10 @@ def drift_report_lines(rows: list[DeltaRow]) -> list[str]:
     agg_lines = _aggregate_warn_lines(rows, totals)
     agg_warn = bool(agg_lines)
     lines.extend(agg_lines)
+
+    if paused:
+        lines.append(f"⏸ 手動持倉暫停 {len(paused)} 檔: "
+                     + ", ".join(f"{r.symbol}{r.delta:+d}" for r in paused))
 
     if submitted:
         lines.append(f"🕐 已送單待成交 {len(submitted)} 檔: "
@@ -550,5 +572,5 @@ def drift_report_lines(rows: list[DeltaRow]) -> list[str]:
     if manual:
         lines.append("⚪ 手動排除: " + ", ".join(r.symbol for r in manual))
     lines.append(f"✅ 對齊 {aligned_n} 檔"
-                 + ("" if (red or agg_warn) else "，無異常"))
+                 + ("" if (red or agg_warn or paused) else "，無異常"))
     return lines

@@ -634,14 +634,16 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
             self.store = FakeStore()
             self.preview_requests = []
             self.cash_preview_amounts = []
+            self.preview_sessions = []
             self.validated = []
             self.submitted = []
             self.cancelled = []
 
         def preview(self, *request, action="BUY", allow_short=False, amount_usd=None,
-                    order_type="LMT"):
+                    order_type="LMT", session="REGULAR"):
             self.preview_requests.append(request)
             self.cash_preview_amounts.append(amount_usd)
+            self.preview_sessions.append(session)
             quantity = 3 if amount_usd is not None else request[2]
             quote = (BrokerQuote(30, datetime.now(timezone.utc), "ask")
                      if order_type == "MKT" and amount_usd is not None else None)
@@ -654,6 +656,7 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
                 amount_usd=Decimal(str(amount_usd)) if amount_usd is not None else None,
                 order_type=order_type, quote=quote,
                 conversion_price=quote.price if quote else None,
+                session=session,
             )
 
         def validate_preview(self, preview):
@@ -664,6 +667,7 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
             self.submitted.append(preview)
             order_row["order_type"] = preview.order_type
             order_row["limit_price"] = preview.limit_price or 0
+            order_row["session"] = preview.session
             order_row["status"] = "ACCEPTED"
             order_row["status_label"] = "IB accepted"
             return dict(order_row)
@@ -695,6 +699,11 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
         lambda title, body, **_kwargs: (
             confirmation_prompts.append((title, body)) or True
         ),
+    )
+    warnings = []
+    monkeypatch.setattr(
+        module.messagebox, "showwarning",
+        lambda title, body, **_kwargs: warnings.append((title, body)),
     )
 
     panel = panel_type()
@@ -859,6 +868,31 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
                     window.orders.selection_set(rows[0])
                     window._order_selected()
                     assert str(window.modify_button.cget("state")) == "disabled"
+                assert window.session_var.get() == "一般時段"
+                window.session_var.set("盤後")
+                assert window._preview is None
+                window.preview_button.invoke()  # MKT + 盤後 is refused, not rewritten
+                assert warnings and "只接受 LMT" in warnings[-1][1]
+                assert window.order_type_var.get() == "MKT"
+                assert window.session_var.get() == "盤後"
+                window.order_type_var.set("LMT")
+                window.price_var.set("12.5")
+                window.preview_button.invoke()
+                step[0] = "extended_preview"
+            elif step[0] == "extended_preview" and window._preview is not None:
+                assert fake_service.preview_requests[-1] == ("Rosa", "ZZZZ", None, 12.5)
+                assert fake_service.preview_sessions[-1] == "AFTER_HOURS"
+                assert "交易時段：盤後" in window.preview_text.cget("text")
+                window.confirm_button.invoke()
+                step[0] = "extended_submit"
+            elif (step[0] == "extended_submit" and len(fake_service.submitted) == 4
+                  and not window._busy):
+                assert fake_service.submitted[-1].session == "AFTER_HOURS"
+                assert "交易時段：盤後" in confirmation_prompts[-1][1]
+                rows = window.orders.get_children()
+                if rows:
+                    values = window.orders.item(rows[0], "values")
+                    assert values[4:6] == ("LMT $12.50", "盤後 outsideRTH / DAY")
                 panel._quit_app()
                 step[0] = "done"
                 return
@@ -878,7 +912,7 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
                 pass
     assert not exceptions, exceptions
     assert step[0] == "done"
-    assert len(fake_service.submitted) == 3
+    assert len(fake_service.submitted) == 4
 
 
 def test_monitor_alert_uses_shared_telegram_settings(fake_config, monkeypatch):

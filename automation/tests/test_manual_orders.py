@@ -21,6 +21,14 @@ from manual_orders import (
 )
 
 
+# IB ContractDetails.tradingHours for a SMART-routed US stock (US/Eastern):
+# 04:00-20:00 on regular days and 04:00-17:00 on the 2026-11-27 early close.
+EXTENDED_TRADING_HOURS = (
+    "20260914:0400-20260914:2000;20260915:0400-20260915:2000;"
+    "20261127:0400-20261127:1700"
+)
+
+
 class FakeIBState:
     def __init__(self):
         self.managed = ["U001", "U002", "U003"]
@@ -36,12 +44,40 @@ class FakeIBState:
         self.cancel_status = "PendingCancel"
         self.cancel_error = None
         self.positions_by_account = {account: {} for account in self.managed}
+        self.trading_hours = EXTENDED_TRADING_HOURS
+        self.contract_time_zone = "US/Eastern"
+        self.next_log = []
+        self.place_errors = []
+        self.pending_errors = []
+        # {n: action(ib, trade)} run on the n-th ib.sleep() after placeOrder.
+        self.sleep_actions = {}
+        self.sleeps_since_place = 0
+
+
+class FakeEvent:
+    """The part of ib_insync's errorEvent used by the service: +=, -=, emit."""
+
+    def __init__(self):
+        self.handlers = []
+
+    def __iadd__(self, handler):
+        self.handlers.append(handler)
+        return self
+
+    def __isub__(self, handler):
+        self.handlers.remove(handler)
+        return self
+
+    def emit(self, *args):
+        for handler in list(self.handlers):
+            handler(*args)
 
 
 class FakeIB:
     def __init__(self, state):
         self.state = state
         self.connected = False
+        self.errorEvent = FakeEvent()
 
     def connect(self, host, port, *, clientId, timeout):
         import asyncio
@@ -66,6 +102,15 @@ class FakeIB:
         contract.primaryExchange = self.state.primary_exchange
         return [contract]
 
+    def reqContractDetails(self, contract):
+        if self.state.trading_hours is None:
+            return []
+        return [NS(
+            contract=contract, tradingHours=self.state.trading_hours,
+            liquidHours="20260914:0930-20260914:1600",
+            timeZoneId=self.state.contract_time_zone,
+        )]
+
     def openTrades(self):
         return list(self.state.open_trades)
 
@@ -86,9 +131,17 @@ class FakeIB:
             contract=contract,
             order=order,
             orderStatus=NS(status=self.state.next_status, filled=0, avgFillPrice=0.0),
-            log=[],
+            log=list(self.state.next_log),
         )
         self.state.next_status = "Submitted"
+        self.state.next_log = []
+        # IB delivers order warnings asynchronously; they reach errorEvent
+        # while the caller waits in ib.sleep().
+        self.state.pending_errors.extend(
+            (order.orderId, code, message) for code, message in self.state.place_errors
+        )
+        self.state.place_errors = []
+        self.state.sleeps_since_place = 0
         self.state.placed.append(trade)
         self.state.open_trades.append(trade)
         return trade
@@ -105,7 +158,13 @@ class FakeIB:
         return trade
 
     def sleep(self, seconds):
-        pass
+        self.state.sleeps_since_place += 1
+        pending, self.state.pending_errors = self.state.pending_errors, []
+        for req_id, code, message in pending:
+            self.errorEvent.emit(req_id, code, message, None)
+        action = self.state.sleep_actions.get(self.state.sleeps_since_place)
+        if action is not None and self.state.placed:
+            action(self, self.state.placed[-1])
 
     def disconnect(self):
         self.connected = False
@@ -377,6 +436,596 @@ def test_existing_manual_order_store_migrates_to_order_type(tmp_path):
             "SELECT COUNT(*) FROM manual_order_schema_migrations WHERE version=3"
         ).fetchone()[0] == 1
     assert store.get("QUANTCORE_MANUAL:TAYLOR:legacy")["order_type"] == "LMT"
+
+
+PRE_MARKET_NOW = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)   # 08:00 ET
+AFTER_HOURS_NOW = datetime(2026, 9, 14, 21, 0, tzinfo=timezone.utc)  # 17:00 ET
+IB_IGNORED_OUTSIDE_RTH = (
+    2109,
+    "Order Event Warning: Attribute 'Outside Regular Trading Hours' is ignored "
+    "based on the order type and destination. PlaceOrder is now being processed.",
+)
+
+
+@pytest.mark.parametrize("session,now,label", [
+    ("PRE_MARKET", PRE_MARKET_NOW, "盤前"),
+    ("AFTER_HOURS", AFTER_HOURS_NOW, "盤後"),
+])
+def test_extended_session_lmt_is_confirmed_and_sent_outside_rth_day(
+    tmp_path, session, now, label,
+):
+    state = FakeIBState()
+    service = service_for(tmp_path, state, clock=lambda: now)
+
+    preview = service.preview("Taylor", "ZZZZ", 5, 10.25, session=session)
+
+    assert preview.session == session
+    text = preview.confirmation_text
+    assert f"交易時段：{label}" in text
+    assert "限價：$10.25" in text
+    assert "效期：DAY" in text
+    assert "不跨日" in text
+    service.validate_preview(preview)
+    result = service.submit(preview)
+
+    order = state.placed[0].order
+    assert (order.orderType, order.lmtPrice, order.tif, order.outsideRth,
+            order.account, order.totalQuantity) == (
+                "LMT", 10.25, "DAY", True, "U001", 5,
+            )
+    assert (result["session"], result["outside_rth"], result["status"]) == (
+        session, 1, "ACCEPTED",
+    )
+
+
+def test_pre_market_order_states_it_can_continue_into_same_day_sessions(tmp_path):
+    service = service_for(tmp_path, FakeIBState(), clock=lambda: PRE_MARKET_NOW)
+    text = service.preview(
+        "Taylor", "ZZZZ", 1, 10.0, session="PRE_MARKET",
+    ).confirmation_text
+    assert "一般時段與盤後" in text
+    assert "美東 20:00" in text
+
+
+def test_regular_session_lmt_keeps_regular_hours_order_settings(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+    preview = service.preview("Taylor", "ZZZZ", 1, 10.0)
+    assert preview.session == "REGULAR"
+    assert "交易時段：一般時段" in preview.confirmation_text
+    result = service.submit(preview)
+    assert state.placed[0].order.outsideRth is False
+    assert (result["session"], result["outside_rth"]) == ("REGULAR", 0)
+
+
+@pytest.mark.parametrize("amount", [None, "100"])
+def test_extended_session_rejects_mkt_before_contacting_ib(tmp_path, amount):
+    state = FakeIBState()
+    service = service_for(
+        tmp_path, state, clock=lambda: AFTER_HOURS_NOW,
+        quote_reader=lambda *_args: pytest.fail("extended MKT must not read quotes"),
+    )
+    with pytest.raises(ValueError, match="只接受 LMT"):
+        service.preview(
+            "Taylor", "ZZZZ", None if amount else 5, None,
+            amount_usd=amount, order_type="MKT", session="AFTER_HOURS",
+        )
+    assert state.client_ids == []
+    assert state.placed == []
+
+
+def test_submit_rejects_extended_mkt_preview_without_regular_fallback(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state, clock=lambda: MKT_NOW)
+    regular_mkt = service.preview("Taylor", "ZZZZ", 5, None, order_type="MKT")
+    with pytest.raises(ValueError, match="只接受 LMT"):
+        service.submit(replace(regular_mkt, session="PRE_MARKET"))
+    with pytest.raises(ValueError, match="交易時段"):
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="OVERNIGHT")
+    assert state.placed == []
+
+
+@pytest.mark.parametrize("session,now", [
+    ("PRE_MARKET", MKT_NOW),                     # regular session is open
+    ("AFTER_HOURS", MKT_NOW),
+    ("PRE_MARKET", AFTER_HOURS_NOW),             # wrong extended window
+    ("AFTER_HOURS", PRE_MARKET_NOW),
+    ("PRE_MARKET", datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc)),    # Labor Day
+    ("PRE_MARKET", datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)),   # Saturday
+    ("AFTER_HOURS", datetime(2026, 9, 15, 0, 30, tzinfo=timezone.utc)),  # 20:30 ET
+    ("PRE_MARKET", datetime(2026, 9, 14, 13, 29, 30, tzinfo=timezone.utc)),  # 09:29:30 ET
+])
+def test_extended_session_outside_its_window_is_rejected_not_regularized(
+    tmp_path, session, now,
+):
+    state = FakeIBState()
+    service = service_for(tmp_path, state, clock=lambda: now)
+    with pytest.raises(ValueError, match="不會改用一般時段"):
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session=session)
+    assert state.placed == []
+
+
+def test_extended_session_windows_follow_nyse_calendar_and_early_close():
+    from manual_orders import extended_session_at
+
+    eastern = ZoneInfo("America/New_York")
+
+    def at(day, hour, minute=0):
+        return extended_session_at(datetime(2026, *day, hour, minute, tzinfo=eastern))
+
+    assert at((9, 14), 3, 59) is None
+    assert at((9, 14), 4) == "PRE_MARKET"
+    assert at((9, 14), 9, 29) == "PRE_MARKET"
+    assert at((9, 14), 9, 30) is None
+    assert at((9, 14), 15, 59) is None
+    assert at((9, 14), 16) == "AFTER_HOURS"
+    assert at((9, 14), 19, 59) == "AFTER_HOURS"
+    assert at((9, 14), 20) is None
+    assert at((9, 7), 8) is None                  # Labor Day
+    assert at((11, 27), 12, 59) is None           # early close regular session
+    assert at((11, 27), 13) == "AFTER_HOURS"
+    assert at((11, 27), 16, 59) == "AFTER_HOURS"
+    assert at((11, 27), 17) is None
+    assert extended_session_at(datetime(2026, 9, 14, 8, 0)) is None  # naive
+    assert extended_session_at(datetime(2031, 9, 15, 12, 0, tzinfo=timezone.utc)) is None
+
+
+def test_submit_rechecks_extended_window_and_does_not_send_in_regular_session(tmp_path):
+    state = FakeIBState()
+    now = [datetime(2026, 9, 14, 13, 28, tzinfo=timezone.utc)]  # 09:28 ET
+    service = service_for(tmp_path, state, clock=lambda: now[0])
+    preview = service.preview("Taylor", "ZZZZ", 5, 10.0, session="PRE_MARKET")
+    # The last minute is reserved so a forced cancel can finish before the
+    # opening auction if IB drops outsideRth.
+    for later in (timedelta(minutes=1), timedelta(minutes=2)):  # 09:29, 09:30 ET
+        now[0] = datetime(2026, 9, 14, 13, 28, tzinfo=timezone.utc) + later
+        with pytest.raises(ValueError, match="不會改用一般時段"):
+            service.validate_preview(preview)
+        with pytest.raises(ValueError, match="不到 1 分鐘"):
+            service.submit(preview)
+    assert state.placed == []
+    assert service.list_orders() == []
+
+
+def test_after_hours_stops_accepting_in_its_last_minute(tmp_path):
+    state = FakeIBState()
+    last_minute = datetime(2026, 9, 14, 23, 59, 30, tzinfo=timezone.utc)  # 19:59:30 ET
+    service = service_for(tmp_path, state, clock=lambda: last_minute)
+    with pytest.raises(ValueError, match="不到 1 分鐘"):
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS")
+    assert state.placed == []
+
+
+def _emit_2109(ib, trade):
+    ib.errorEvent.emit(trade.order.orderId, *IB_IGNORED_OUTSIDE_RTH, None)
+
+
+def _acknowledge(_ib, trade):
+    trade.orderStatus.status = "Submitted"
+
+
+def test_delayed_2109_before_ib_acknowledgement_still_cancels(tmp_path):
+    state = FakeIBState()
+    state.next_status = "PendingSubmit"
+    state.sleep_actions = {3: _emit_2109, 4: _acknowledge}
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+
+    result = service.submit(
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+
+    assert state.cancelled_orders == [state.placed[0].order]
+    assert result["status"] == "CANCEL_PENDING"
+    assert "2109" in result["status_message"]
+
+
+def test_2109_delivered_with_the_acknowledgement_is_still_seen(tmp_path):
+    state = FakeIBState()
+    state.next_status = "PendingSubmit"
+    state.sleep_actions = {1: _acknowledge, 2: _emit_2109}
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+
+    result = service.submit(
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+
+    assert state.cancelled_orders == [state.placed[0].order]
+    assert "2109" in result["status_message"]
+
+
+def test_unacknowledged_extended_order_is_cancelled_fail_closed(tmp_path):
+    state = FakeIBState()
+    state.next_status = "PendingSubmit"  # IB never answers placeOrder
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+
+    result = service.submit(
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+
+    assert state.cancelled_orders == [state.placed[0].order]
+    assert len(state.placed) == 1
+    assert result["status"] == "CANCEL_PENDING"
+    assert "無法確認盤前盤後設定" in result["status_message"]
+
+
+def test_unconfirmed_forced_cancel_keeps_lock_alerts_and_is_retried(tmp_path):
+    state = FakeIBState()
+    state.place_errors = [IB_IGNORED_OUTSIDE_RTH]
+    state.cancel_error = "socket timeout"
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+
+    result = service.submit(
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+
+    trade = state.placed[0]
+    assert result["status"] == "CANCEL_UNKNOWN"
+    assert "取消結果待確認" in result["status_message"]
+    assert any("需要確認" in message for _account, message in state.notifications)
+    with pytest.raises(ValueError, match="未結案手動單"):
+        service.preview("Taylor", "ZZZZ", 1, 10.0, session="AFTER_HOURS")
+
+    state.cancel_error = None
+    service.refresh_status()      # IB still shows it working: cancel again
+    assert state.cancelled_orders == [trade.order, trade.order]
+    assert service.list_orders()[0]["status"] == "CANCEL_PENDING"
+    service.refresh_status()      # IB now reports PendingCancel: no duplicate
+    assert len(state.cancelled_orders) == 2
+
+    trade.orderStatus.status = "Cancelled"
+    service.refresh_status()
+    assert service.list_orders()[0]["status"] == "CANCELLED"
+    assert not service.has_active_orders()
+    terminal = state.notifications[-1][1]
+    assert "結果：已取消" in terminal
+    assert "自動取消原因" in terminal and "2109" in terminal
+
+
+@pytest.mark.parametrize("warning_sleep", [3, 11])
+def test_2109_after_submitted_status_within_confirmation_window_still_cancels(
+    tmp_path, warning_sleep,
+):
+    # IB answers Submitted on the first pump; 2109 arrives later than the old
+    # 0.5 s grace (sleep 3) and at the end of the 5 s confirmation window.
+    state = FakeIBState()
+    state.sleep_actions = {warning_sleep: _emit_2109}
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+
+    result = service.submit(
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+
+    assert state.cancelled_orders == [state.placed[0].order]
+    assert result["status"] == "CANCEL_PENDING"
+    assert "2109" in result["status_message"]
+    assert "2109" in result["forced_cancel_reason"]
+    assert result["outside_rth_confirmed_at"] is None
+
+
+def test_extended_order_is_confirmed_only_after_a_quiet_confirmation_window(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+    result = service.submit(
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+    assert result["status"] == "ACCEPTED"
+    assert result["outside_rth_confirmed_at"]
+    assert result["forced_cancel_reason"] is None
+    assert state.cancelled_orders == []
+
+    regular = service.submit(service.preview("Rosa", "ZZZZ", 5, 10.0))
+    assert regular["outside_rth_confirmed_at"] is None
+
+
+def test_connection_lost_before_confirmation_keeps_cancel_state_across_reconnect(tmp_path):
+    state = FakeIBState()
+
+    def drop_connection(_ib, _trade):
+        raise ConnectionError("socket closed")
+
+    state.sleep_actions = {4: drop_connection}
+    state.cancel_error = "not connected"
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+
+    result = service.submit(
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+
+    trade = state.placed[0]
+    assert result["status"] == "CANCEL_UNKNOWN"
+    assert "確認盤前盤後設定前中斷" in result["forced_cancel_reason"]
+    assert any("需要確認" in message for _account, message in state.notifications)
+
+    state.cancel_error = None
+    restarted = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+    restarted.refresh_status()
+    assert state.cancelled_orders == [trade.order, trade.order]
+    assert restarted.list_orders()[0]["status"] == "CANCEL_PENDING"
+
+
+def test_reconcile_cancels_extended_order_left_unconfirmed_by_a_crash(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+    regular = service.submit(service.preview("Rosa", "ZZZZ", 1, 10.0))
+    # The Panel died after IB accepted this order but before confirmation.
+    crashed = service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS")
+    order_ref = "QUANTCORE_MANUAL:TAYLOR:crashed"
+    service.store.create(crashed, order_ref)
+    service.store.update(order_ref, status="ACCEPTED", status_message="IB 已接受")
+    trade = NS(
+        contract=NS(symbol="ZZZZ", secType="STK", currency="USD", conId=123456),
+        order=NS(account="U001", orderRef=order_ref, orderId=55, permId=9055,
+                 totalQuantity=5),
+        orderStatus=NS(status="Submitted", filled=0, avgFillPrice=0.0),
+        log=[],
+    )
+    state.open_trades.append(trade)
+
+    service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW).refresh_status()
+
+    assert state.cancelled_orders == [trade.order]
+    row = service.store.get(order_ref)
+    assert row["status"] == "CANCEL_PENDING"
+    assert "確認盤前盤後設定前中斷" in row["forced_cancel_reason"]
+    assert service.store.get(regular["order_ref"])["status"] == "ACCEPTED"
+
+
+def test_reconcile_cancels_confirmed_order_that_ib_records_without_outside_rth(tmp_path):
+    # Paper, 2026-09-28: orders IB answered with 2109 were later read back on
+    # a fresh connection with outsideRth=False, while honoured extended-hours
+    # orders read back True. That record needs no 2109 timing to be seen.
+    state = FakeIBState()
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+    submitted = service.submit(
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+    regular = service.submit(service.preview("Rosa", "ZZZZ", 1, 10.0))
+    assert submitted["outside_rth_confirmed_at"]
+    extended_trade, regular_trade = state.placed
+    assert regular_trade.order.outsideRth is False
+
+    extended_trade.order.outsideRth = False  # IB's record on the next connection
+    service.refresh_status()
+
+    assert state.cancelled_orders == [extended_trade.order]
+    row = service.store.get(submitted["order_ref"])
+    assert row["status"] == "CANCEL_PENDING"
+    assert "outsideRth=False" in row["forced_cancel_reason"]
+    assert service.store.get(regular["order_ref"])["status"] == "ACCEPTED"
+
+    extended_trade.orderStatus.status = "Cancelled"
+    service.refresh_status()
+    assert "自動取消原因" in state.notifications[-1][1]
+    assert "outsideRth=False" in state.notifications[-1][1]
+
+
+def test_user_cancel_timeout_is_not_auto_retried(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+    submitted = service.submit(
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+    state.cancel_error = "socket timeout"
+    assert service.cancel(submitted["order_ref"])["status"] == "CANCEL_UNKNOWN"
+    state.cancel_error = None
+    service.refresh_status()
+    assert len(state.cancelled_orders) == 1
+
+
+@pytest.mark.parametrize("trading_hours,time_zone", [
+    ("20260914:0930-20260914:1600", "US/Eastern"),    # RTH-only contract
+    ("20260914:CLOSED;20260915:0400-20260915:2000", "US/Eastern"),
+    (None, "US/Eastern"),                             # no contract details
+    ("not-ib-hours", "US/Eastern"),
+    ("20260914:0400-20260914:2000", "Mars/Olympus"),
+])
+def test_extended_session_requires_ib_contract_hours_to_cover_now(
+    tmp_path, trading_hours, time_zone,
+):
+    state = FakeIBState()
+    state.trading_hours = trading_hours
+    state.contract_time_zone = time_zone
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+    with pytest.raises(ValueError, match="合約"):
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS")
+    assert state.placed == []
+
+
+def test_extended_session_accepts_legacy_ib_trading_hours_format(tmp_path):
+    state = FakeIBState()
+    state.trading_hours = "20260914:0400-0930,0930-1600,1600-2000"
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+    service.submit(service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"))
+    assert state.placed[0].order.outsideRth is True
+
+
+@pytest.mark.parametrize(
+    "action,allow_short,position,expected_action,expected_position",
+    [
+        ("BUY", False, 0, "BUY", 3),
+        ("SELL", False, 4, "SELL", 1),
+        ("SELL", True, 1, "SELL", -2),
+        ("COVER", False, -5, "BUY", -2),
+    ],
+)
+def test_extended_cash_amount_floors_by_manual_limit_with_position_rules(
+    tmp_path, action, allow_short, position, expected_action, expected_position,
+):
+    state = FakeIBState()
+    state.positions_by_account["U001"]["ZZZZ"] = position
+    service = service_for(tmp_path, state, clock=lambda: PRE_MARKET_NOW)
+    preview = service.preview(
+        "Taylor", "ZZZZ", None, 30.0, amount_usd="100", action=action,
+        allow_short=allow_short, session="PRE_MARKET",
+    )
+    assert (preview.quantity, preview.projected_position) == (3, expected_position)
+    assert "輸入美元金額：$100（預估交易目標）" in preview.confirmation_text
+    service.submit(preview)
+    order = state.placed[0].order
+    assert (order.action, order.totalQuantity, order.lmtPrice, order.outsideRth) == (
+        expected_action, 3, 30.0, True,
+    )
+    assert order.cashQty == "UNSET"
+
+
+def test_extended_session_keeps_sell_short_cover_limits_and_submit_recheck(tmp_path):
+    state = FakeIBState()
+    state.positions_by_account["U001"]["ZZZZ"] = 2
+    state.positions_by_account["U002"]["ZZZZ"] = -1
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+    with pytest.raises(ValueError, match="允許放空"):
+        service.preview("Taylor", "ZZZZ", 3, 10.0, action="SELL", session="AFTER_HOURS")
+    with pytest.raises(ValueError, match="空單"):
+        service.preview("Rosa", "ZZZZ", 2, 10.0, action="COVER", session="AFTER_HOURS")
+    sell = service.preview("Taylor", "ZZZZ", 2, 10.0, action="SELL", session="AFTER_HOURS")
+    state.positions_by_account["U001"]["ZZZZ"] = 1
+    with pytest.raises(ValueError, match="允許放空"):
+        service.submit(sell)
+    assert state.placed == []
+
+
+def test_ib_ignoring_outside_rth_is_cancelled_instead_of_left_for_regular_session(tmp_path):
+    state = FakeIBState()
+    state.place_errors = [IB_IGNORED_OUTSIDE_RTH]
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+
+    result = service.submit(
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+
+    trade = state.placed[0]
+    assert state.cancelled_orders == [trade.order]
+    assert len(state.placed) == 1
+    assert result["status"] == "CANCEL_PENDING"
+    assert "2109" in result["status_message"]
+    assert "不會改以一般時段成交" in result["status_message"]
+    trade.orderStatus.status = "Cancelled"
+    service.refresh_status()
+    assert service.list_orders()[0]["status"] == "CANCELLED"
+    assert "盤後 DAY" in state.notifications[-1][1]
+
+
+def test_outside_rth_warning_for_another_order_does_not_cancel_this_one(tmp_path):
+    state = FakeIBState()
+    state.pending_errors = [(999, *IB_IGNORED_OUTSIDE_RTH)]
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+    result = service.submit(
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+    assert result["status"] == "ACCEPTED"
+    assert state.cancelled_orders == []
+
+
+def test_ib_rejection_of_extended_order_is_final_and_not_resent_as_regular(tmp_path):
+    state = FakeIBState()
+    state.next_status = "Inactive"
+    state.next_log = [NS(message="Order rejected - outside RTH trading not permitted")]
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+
+    result = service.submit(
+        service.preview("Rosa", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+
+    assert result["status"] == "REJECTED"
+    assert "outside RTH trading not permitted" in result["status_message"]
+    assert [trade.order.outsideRth for trade in state.placed] == [True]
+    assert [account for account, _message in state.notifications] == ["Rosa"]
+    assert "盤後 DAY" in state.notifications[0][1]
+
+
+def test_extended_order_lifecycle_keeps_session_and_other_sources_untouched(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+    submitted = service.submit(
+        service.preview("Taylor", "ZZZZ", 4, 10.0, session="AFTER_HOURS"),
+    )
+    trade = state.placed[0]
+    strategy_trade = NS(
+        contract=NS(symbol="YYYY", secType="STK", currency="USD", conId=654321),
+        order=NS(account="U001", orderRef="STRATEGY:REBALANCE", orderId=77,
+                 permId=7077, outsideRth=True),
+        orderStatus=NS(status="Submitted", filled=0, avgFillPrice=0.0),
+        log=[],
+    )
+    state.open_trades.append(strategy_trade)
+
+    trade.orderStatus.filled = 1
+    trade.orderStatus.avgFillPrice = 9.99
+    service.refresh_status()
+    active = service.list_orders(active_only=True)
+    assert [(row["status"], row["session"], row["filled_quantity"]) for row in active] == [
+        ("PARTIAL", "AFTER_HOURS", 1),
+    ]
+    # Another-source extended-hours order in the same Account is neither
+    # tracked nor treated as this tool's duplicate lock.
+    assert service.preview(
+        "Taylor", "YYYY", 1, 10.0, session="AFTER_HOURS",
+    ).symbol == "YYYY"
+
+    state.open_trades.remove(trade)
+    trade.orderStatus.status = "Expired"
+    state.completed_trades.append(trade)
+    service.refresh_status()
+
+    row = service.list_orders()[0]
+    assert (row["order_ref"], row["status"], row["session"]) == (
+        submitted["order_ref"], "EXPIRED", "AFTER_HOURS",
+    )
+    assert len(service.list_orders()) == 1
+    assert state.cancelled_orders == []
+    assert strategy_trade.orderStatus.status == "Submitted"
+    [(account, message)] = state.notifications
+    assert account == "Taylor"
+    assert "LMT $10.00｜盤後 DAY" in message
+    assert "已失效" in message
+    assert "1/4" in message
+
+
+def test_cancel_extended_order_waits_for_ib_and_reports_session(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state, clock=lambda: PRE_MARKET_NOW)
+    submitted = service.submit(
+        service.preview("Yvonne", "ZZZZ", 2, 10.0, session="PRE_MARKET"),
+    )
+    pending = service.cancel(submitted["order_ref"])
+    assert pending["status"] == "CANCEL_PENDING"
+    assert state.notifications == []
+    state.placed[0].orderStatus.status = "Cancelled"
+    service.refresh_status()
+    assert service.list_orders()[0]["status"] == "CANCELLED"
+    assert "盤前 DAY" in state.notifications[0][1]
+
+
+def test_unknown_state_alert_names_extended_session(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+    service.submit(service.preview("Taylor", "ZZZZ", 1, 10.0, session="AFTER_HOURS"))
+    state.open_trades.clear()
+    service.refresh_status()
+    assert "需要確認" in state.notifications[0][1]
+    assert "盤後" in state.notifications[0][1]
+
+
+def test_existing_manual_order_store_migrates_to_extended_hours_columns(tmp_path):
+    path = tmp_path / "manual.sqlite3"
+    store = ManualOrderStore(path)
+    preview = service_for(tmp_path, FakeIBState()).preview("Taylor", "ZZZZ", 1, 10.0)
+    store.create(preview, "QUANTCORE_MANUAL:TAYLOR:legacy")
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE manual_orders DROP COLUMN session")
+        conn.execute("ALTER TABLE manual_orders DROP COLUMN forced_cancel_reason")
+        conn.execute("ALTER TABLE manual_orders DROP COLUMN outside_rth_confirmed_at")
+        conn.execute("DELETE FROM manual_order_schema_migrations WHERE version IN (4, 5, 6)")
+    store = ManualOrderStore(path)
+    with store._connect() as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(manual_orders)")}
+        assert {"session", "forced_cancel_reason", "outside_rth_confirmed_at"} <= columns
+        assert conn.execute(
+            "SELECT COUNT(*) FROM manual_order_schema_migrations WHERE version IN (4, 5, 6)"
+        ).fetchone()[0] == 3
+    legacy = store.get("QUANTCORE_MANUAL:TAYLOR:legacy")
+    assert (legacy["session"], legacy["outside_rth"], legacy["forced_cancel_reason"],
+            legacy["outside_rth_confirmed_at"]) == ("REGULAR", 0, None, None)
 
 
 def test_cash_target_uses_exact_decimal_floor_and_rejects_less_than_one_share():

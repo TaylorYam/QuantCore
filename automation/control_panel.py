@@ -1109,6 +1109,13 @@ class ControlPanel(tk.Tk):
             ctx = AccountCtx.from_name(account_name, ROLE_REBALANCE)
             plan = sp.compute_sync_plan(ctx, log_fn=progress)
 
+            # 新出現的手動持倉暫停 → 該帳戶 Telegram 通知一次（#106）
+            try:
+                sp.notify_new_pauses(plan)
+            except Exception as e:
+                self.after(0, lambda m=str(e): self._log(
+                    f"[!] 手動持倉暫停通知失敗: {m}"))
+
             # 回主執行緒：同一個視窗換成預覽
             self.after(0, lambda p=plan: window.show_plan(p))
 

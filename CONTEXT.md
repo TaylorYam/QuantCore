@@ -47,6 +47,10 @@ _Avoid_: Merge, Netting（sector-level netting 是被否決的另一提案，見
 單一 [[Account]] 一次調倉的完整決策：持倉分類（[[Universe]] 語意，含 SkewLS inverse 排除）→ mode 權重選擇（非 sp500 mode 的 hold 防護、SkewLS threshold gate）→ [[Combine]] → 差額 + 3% NAV 門檻（清倉/建倉/翻向例外）→ 訂單清單（PlannedOrder）。唯一實作 `automation/rebalance_plan.py`；scheduled rebalance（`rebalance_ib`，Task Scheduler 21:00）與 panel Sync Pos（`sync_position`）皆為 caller。純 plain-data 決策 — IB 連線、訊號計算、state 檔讀寫、LMT 價、下單順序等 execution/I-O 關切全留在 caller。歷史上四件事故（CIEN stale-universe、週二 whipsaw ADR-0004、MU floor 低配、inverse 凍結）皆發生於此層而彼時零測試 — 現以 `automation/tests/test_rebalance_plan.py` regression 考題釘住。
 _Avoid_: Order list（只是最終輸出）、Rebalance（口語泛稱整個流程；指決策層時用本詞）
 
+**手動持倉 (Manual Holding)**:
+[[Account]] 裡不歸任何 [[Strategy]] 管的部位。來源兩種：[[Rebalance Plan]] 分類為策略外（other）的 IB 持倉 — 策略不會買自己 [[Universe]] 以外的標的，所以股數以 IB 為準、每次觀察跟著 IB（IB App／TWS 交易只寫 log）；以及 Panel 手動單的實際成交（送出不算，部分成交照實際股數）。唯一實作 `automation/manual_attribution.py`，紀錄檔 `automation/manual_attribution.sqlite3`（gitignored），第一次觀察即啟用（#106）。手動持倉的標的日後進入策略 Universe（被加入 S&P 500）= 碰撞：只暫停該 Account／該標的的策略單，Sync Pos 預覽顯示原因、該帳戶 Telegram 通知一次；手動股數歸零且手動單都結案才自動解除，其餘等「交給策略接管」（#107）。紀錄讀寫失敗 → 該 Account 這一輪策略單全部不送。不改訊號、[[Allocation]]、state、[[Combine]] 取整 — 碰撞期間 SP500 訊號仍把該檔當持股。
+_Avoid_: 其他持倉（log 的 OTHER 是分類結果，手動持倉另含已碰撞的標的）、Discretionary position
+
 **Inverse Proxy**:
 [[Skew LS]] 把空頭部位轉成反向 ETF 多單的轉換（9 檔 ProShares 2x、SEF/REK 1x）。Long position，IB 端走既有 BUY/SELL 路徑。
 _Avoid_: Hedge, Synthetic short

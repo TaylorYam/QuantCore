@@ -78,6 +78,24 @@ def _run_status_outside_live_logs(tmp_path_factory):
         yield
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _manual_attribution_outside_live(tmp_path_factory):
+    """手動持倉歸屬紀錄（#106）整個測試階段都指到暫存目錄。
+
+    Sync Pos / rebalance 的測試會跑到歸屬更新與送單閘門：若用預設路徑，
+    live 工作目錄會被寫出 automation/manual_attribution.sqlite3，或讀到真的
+    Panel 手動單。與 run_status 一樣只在階段開始設定一次。
+    """
+    import manual_attribution
+    base = tmp_path_factory.mktemp("manual_attribution")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(manual_attribution, "DEFAULT_LEDGER_PATH",
+                   base / "manual_attribution.sqlite3")
+        mp.setattr(manual_attribution, "DEFAULT_MANUAL_ORDERS_PATH",
+                   base / "manual_orders.sqlite3")
+        yield
+
+
 @pytest.fixture
 def run_status_dir(tmp_path, monkeypatch):
     """需要乾淨紀錄目錄的測試用（每個測試各自一份，還沒建立）。"""

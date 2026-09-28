@@ -62,6 +62,7 @@ def run_daily_check(account_name: str, digest: Digest):
     """
     import rebalance_ib as reb     # 仍需要：place_orders, check_fills
     import ib_fetcher               # S8：IB 連線/查詢 helpers
+    import manual_attribution       # #106：手動持倉暫停閘門
     from symbol_contract import canonical_symbol
     from account_ctx import AccountCtx
     from account_utils import ROLE_MOO_CHECK
@@ -210,6 +211,10 @@ def run_daily_check(account_name: str, digest: Digest):
                         })
 
         state["last_check_date"] = str(date.today())
+        # 手動持倉暫停（#106）：存 state 前先過送單閘門。讀不到暫停紀錄時
+        # 拋例外 = 本帳戶不送單、dip 觸發不消耗（state 不存），隔天重試
+        if orders:
+            orders, _held = manual_attribution.gate_orders(account_name, orders)
         save_state(account_name, state)
 
         # ── Step 4: 執行訂單（LMT + outsideRth）───────────────────────
@@ -228,8 +233,8 @@ def run_daily_check(account_name: str, digest: Digest):
             dedup_orders.append(o)
         orders = dedup_orders
 
-        # 取消該帳戶既有的掛單（避免新單與舊單衝突）
-        open_trades = ib.openTrades()
+        # 取消該帳戶既有的掛單（避免新單與舊單衝突；Panel 手動單除外，#106）
+        open_trades = manual_attribution.strategy_open_trades(ib.openTrades())
         if open_trades:
             log.info(f"  Cancelling {len(open_trades)} existing open orders...")
             for t in open_trades:

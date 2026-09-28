@@ -61,6 +61,7 @@ automation/*.xlsx.bak
 automation/*.bak_*
 automation/quantcore_logs.sqlite3*
 automation/manual_orders.sqlite3*
+automation/manual_attribution.sqlite3*
 
 # IB / IBC config
 jts.ini

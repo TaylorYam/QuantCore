@@ -68,7 +68,7 @@ class SyncPlan:
     # 手動持倉暫停（#106）— 不在 orders 裡、預覽另列原因
     paused: dict[str, str] = field(default_factory=dict)        # 標的 → 原因
     paused_orders: list[SyncOrder] = field(default_factory=list)
-    pause_notices: list[tuple[str, str]] = field(default_factory=list)  # 尚未通知
+    pause_notices: list[manual_attribution.Notice] = field(default_factory=list)  # 尚未通知
 
 
 # ── Compute phase ─────────────────────────────────────────────────────
@@ -212,23 +212,7 @@ def notify_new_pauses(plan: SyncPlan,
     送成功才記「已通知」，同一次暫停只通知一次。send 預設走該帳戶的
     Telegram 設定；回傳是否有送出。
     """
-    if not plan.pause_notices:
-        return False
-    if send is None:
-        from notify import tg_send
-
-        def send(msg: str) -> bool:
-            return bool(tg_send(msg, token=plan.ctx.tg_token,
-                                chat_id=plan.ctx.tg_chat_id))
-    import html
-    lines = [f"<b>[{html.escape(plan.ctx.name)}] 手動持倉暫停</b>"]
-    lines += [html.escape(ln) for ln in
-              manual_attribution.pause_notice_lines(plan.pause_notices)]
-    if not send("\n".join(lines)):
-        return False
-    manual_attribution.mark_notified(plan.ctx.name,
-                                     [s for s, _ in plan.pause_notices])
-    return True
+    return manual_attribution.deliver_notices(plan.ctx, plan.pause_notices, send)
 
 
 # ── Drift check（理論 vs 實際對帳，唯讀）──────────────────────────────
@@ -304,6 +288,39 @@ def compute_drift_rows(
 
 # ── Submit phase ──────────────────────────────────────────────────────
 
+def read_quotes(ib, symbols: list[str]) -> dict[str, dict]:
+    """本連線的 bid/ask/mid/last/close（無效值為 None），key = constituents 寫法。"""
+    from symbol_contract import canonical_symbol, ib_stock
+    contracts = [ib_stock(s) for s in symbols]
+    ib.qualifyContracts(*contracts)
+    tickers = ib.reqTickers(*contracts)
+    quotes = {}
+    for t in tickers:
+        sym = canonical_symbol(t.contract.symbol)
+        bid = t.bid if (t.bid and t.bid > 0 and np.isfinite(t.bid)) else None
+        ask = t.ask if (t.ask and t.ask > 0 and np.isfinite(t.ask)) else None
+        mid = t.midpoint() if (t.midpoint() and np.isfinite(t.midpoint())) else None
+        last = t.last if (t.last and t.last > 0 and np.isfinite(t.last)) else None
+        close = t.close if (t.close and t.close > 0 and np.isfinite(t.close)) else None
+        quotes[sym] = {
+            'bid': bid, 'ask': ask, 'mid': mid,
+            'last': last, 'close': close,
+        }
+    return quotes
+
+
+def sync_lmt_price(action: str, quote: dict, ref: float) -> float:
+    """Sync Pos 的 LMT 價：BUY ask×1.003、SELL bid×0.997（缺價依序用
+    mid/last/close/ref 後備）。交給策略接管（#107）用同一規則。"""
+    if action == 'BUY':
+        base = (quote.get('ask') or quote.get('mid') or quote.get('last')
+                or quote.get('close') or ref)
+        return round(base * 1.003, 2)
+    base = (quote.get('bid') or quote.get('mid') or quote.get('last')
+            or quote.get('close') or ref)
+    return round(base * 0.997, 2)
+
+
 def submit_sync_orders(
     plan: SyncPlan,
     log_fn: Optional[Callable[[str], None]] = None,
@@ -362,37 +379,13 @@ def submit_sync_orders(
             ib.sleep(2)
 
         # 2. 取得 bid/ask 報價以計算 LMT 價格
-        from symbol_contract import canonical_symbol, ib_stock
-        syms = list({o.symbol for o in plan.orders})
-        contracts = [ib_stock(s) for s in syms]
-        ib.qualifyContracts(*contracts)
-        tickers = ib.reqTickers(*contracts)
-        quotes = {}
-        for t in tickers:
-            sym = canonical_symbol(t.contract.symbol)
-            bid = t.bid if (t.bid and t.bid > 0 and np.isfinite(t.bid)) else None
-            ask = t.ask if (t.ask and t.ask > 0 and np.isfinite(t.ask)) else None
-            mid = t.midpoint() if (t.midpoint() and np.isfinite(t.midpoint())) else None
-            last = t.last if (t.last and t.last > 0 and np.isfinite(t.last)) else None
-            close = t.close if (t.close and t.close > 0 and np.isfinite(t.close)) else None
-            quotes[sym] = {
-                'bid': bid, 'ask': ask, 'mid': mid,
-                'last': last, 'close': close,
-            }
+        quotes = read_quotes(ib, list({o.symbol for o in plan.orders}))
 
         # 3. 算 LMT 價並組 order dict（format 沿用 rebalance_ib.place_orders 吃的）
-        #   BUY: ask * 1.003（或 mid/last/close/ref 做後備）
-        #   SELL: bid * 0.997（同上）
         ib_orders = []
         for o in plan.orders:
-            q = quotes.get(o.symbol, {})
-            ref = o.price  # 預覽時的估價
-            if o.action == 'BUY':
-                base = q.get('ask') or q.get('mid') or q.get('last') or q.get('close') or ref
-                lmt = round(base * 1.003, 2)
-            else:
-                base = q.get('bid') or q.get('mid') or q.get('last') or q.get('close') or ref
-                lmt = round(base * 0.997, 2)
+            # o.price = 預覽時的估價（報價都缺時的後備）
+            lmt = sync_lmt_price(o.action, quotes.get(o.symbol, {}), o.price)
             ib_orders.append({
                 'symbol':    o.symbol,
                 'action':    o.action,

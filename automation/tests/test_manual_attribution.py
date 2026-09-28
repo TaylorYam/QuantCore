@@ -93,7 +93,7 @@ def test_collision_pauses_only_that_account_and_symbol(paths):
 
     assert list(rosa.paused) == ["XYZ"]
     assert "手動持倉 10 股已進入 SP500 Universe" in rosa.paused["XYZ"]
-    assert rosa.new_notices == [("XYZ", rosa.paused["XYZ"])]
+    assert rosa.new_notices == [ma.Notice("pause:XYZ", f"⏸ XYZ 策略單暫停：{rosa.paused['XYZ']}")]
     assert taylor.paused == {}
 
     orders = [{"symbol": "XYZ", "action": "SELL"}, {"symbol": "AAPL", "action": "BUY"}]
@@ -104,7 +104,7 @@ def test_collision_pauses_only_that_account_and_symbol(paths):
 def test_pause_survives_restart_and_notifies_once(paths):
     _eval("Rosa", {"XYZ": 10.0})
     first = _eval("Rosa", {"XYZ": 10.0}, JOINED)
-    ma.mark_notified("Rosa", [s for s, _ in first.new_notices])
+    ma.mark_notified("Rosa", [n.key for n in first.new_notices])
     # 重啟 = 新行程只剩檔案
     again = _eval("Rosa", {"XYZ": 10.0}, JOINED)
     assert again.paused == first.paused and again.new_notices == []
@@ -149,7 +149,7 @@ def test_manual_sell_to_zero_releases_and_a_new_episode_notifies_again(paths):
     _manual_order(paths.orders, "M:2", "Rosa", "XYZ", "SELL", 0, "ACCEPTED", 10)
     r = _eval("Rosa", {"XYZ": 10.0}, JOINED)
     assert "未結案" in r.paused["XYZ"]
-    ma.mark_notified("Rosa", ["XYZ"])
+    ma.mark_notified("Rosa", ["pause:XYZ"])
 
     _manual_order(paths.orders, "M:2", "Rosa", "XYZ", "SELL", 10, "FILLED", 10)
     r = _eval("Rosa", {}, JOINED)
@@ -157,7 +157,7 @@ def test_manual_sell_to_zero_releases_and_a_new_episode_notifies_again(paths):
 
     _manual_order(paths.orders, "M:3", "Rosa", "XYZ", "BUY", 0, "SUBMISSION_UNKNOWN", 3)
     r = _eval("Rosa", {}, JOINED)
-    assert r.new_notices == [("XYZ", r.paused["XYZ"])]
+    assert [n.key for n in r.new_notices] == ["pause:XYZ"]
 
 
 def test_ib_differs_from_manual_record_stays_paused_with_both_numbers(paths):

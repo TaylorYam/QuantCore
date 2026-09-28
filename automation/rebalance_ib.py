@@ -649,8 +649,8 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
         signal_parts = [f"SR:{sr_signal_date}", f"SP500:{sp500_signal_date}"]
         if alloc_skewls > 0:
             signal_parts.append(f"SkewLS:{skewls_signal_date}")
-        new_pauses = attribution.new_notices if attribution else []
-        paused_syms = [s for s, _ in new_pauses]
+        new_notices = attribution.new_notices if attribution else []
+        notice_keys = [n.key for n in new_notices]
         excel_error = _log_trades_and_report(
             digest, ctx,
             placed=placed,
@@ -659,10 +659,10 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
             drift_alarms=drift_alarms,
             drift_advisories=drift_advisories,
             error_msg=error_msg,
-            pause_notices=manual_attribution.pause_notice_lines(new_pauses),
-            # 暫停只通知一次：訊息確定送達才記；沒送到下一輪再附上
+            pause_notices=manual_attribution.pause_notice_lines(new_notices),
+            # 暫停／接管結果只通知一次：訊息確定送達才記；沒送到下一輪再附上
             on_delivered=((lambda: manual_attribution.mark_notified(
-                acct_name, paused_syms)) if paused_syms else None),
+                acct_name, notice_keys)) if notice_keys else None),
         )
 
         elapsed = (datetime.now() - start_ts).seconds

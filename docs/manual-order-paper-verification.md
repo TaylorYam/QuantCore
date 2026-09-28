@@ -36,18 +36,19 @@
    ```powershell
    netstat -ano | findstr LISTENING | findstr ":400"
    ```
-   paper 預設用 4002。如果 4002 已經被占用，paper Gateway 改設其他 port（例如 4012），下面的指令也加上 `--port 4012`。
+   **4002 在本機是 Rosa 的 live Gateway**（見 `automation/tests/conftest.py`），paper Gateway 請設一個沒被占用的 port，例如 4012。腳本的 `--port` 是必填，下面的指令以 `$port` 代表。
 2. **另開一個 IB Gateway，登入模式選「Paper Trading」。** API 設定：
    - 勾選 Enable ActiveX and Socket Clients
    - **取消**勾選 Read-Only API
-   - Socket port 設為上一步決定的 port
+   - Socket port 設為上一步決定的 port（登入畫面要選 **Paper Trading**，帳號應是 DU 開頭）
    - Trusted IPs 包含 127.0.0.1
 3. **確認 live 三個 Gateway 仍連線。** 看 Panel 的 Gateway 狀態，或各 Gateway 視窗。如果有任何一個斷線，立刻登出 paper，先把 live 恢復，再決定要不要改天做。
 4. **設定環境並跑合約交易時間檢查：**
    ```powershell
    cd C:\QuantCore-worktrees\manual-ext-hours-104
    $acct = "DU1234567"   # 換成你的 paper 帳號
-   python automation\paper_verify_manual_orders.py --account $acct hours --symbol AAPL
+   $port = 4012          # 換成 paper Gateway 的 port
+   python automation\paper_verify_manual_orders.py --account $acct --port $port hours --symbol AAPL
    ```
    **預期結果：**
    - `tradingHours` 是 `YYYYMMDD:0400-YYYYMMDD:2000` 這類格式，`timeZoneId` 是美東時區。
@@ -68,7 +69,7 @@
 | 1-7 | 再 `submit` 一張遠價單當**保留單 P**，**不要取消** | `ACCEPTED`（留給步驟 2、4） |
 | 1-8（可選） | 台北 21:29:00–21:29:59 送 `submit --session PRE_MARKET …` | 預覽被拒：「…距離時段結束不到 1 分鐘…不會改用一般時段送出」 |
 
-上表中 `...` 代表 `python automation\paper_verify_manual_orders.py --account $acct`。委託編號可以用 `... list` 查，輸入前幾碼即可。
+上表中 `...` 代表 `python automation\paper_verify_manual_orders.py --account $acct --port $port`。委託編號可以用 `... list` 查，輸入前幾碼即可。
 
 ## 2. 一般時段開盤後（台北 21:35 之後）
 

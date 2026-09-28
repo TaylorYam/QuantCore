@@ -354,7 +354,9 @@ def main(argv=None) -> None:
     )
     parser.add_argument("--account", required=True, help="paper 帳號（DU/DF 開頭）")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=4002, help="paper Gateway API port")
+    # No default: on this machine 4002 is a live Gateway (tests/conftest.py).
+    parser.add_argument("--port", type=int, required=True,
+                        help="paper Gateway 的 API port（必填；不可用 live Gateway 的 port）")
     parser.add_argument("--client-id", type=int, default=91,
                         help="每次都用同一個；IB 只允許同 clientId 取消自己的委託")
     parser.add_argument("--store", type=Path, default=DEFAULT_STORE)

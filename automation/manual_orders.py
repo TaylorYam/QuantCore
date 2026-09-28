@@ -74,6 +74,7 @@ _UNACKNOWLEDGED_REASON = (
     f"IB 未在 {_IB_ACK_TIMEOUT_SECONDS:g} 秒內回覆委託，無法確認盤前盤後設定"
 )
 _UNCONFIRMED_REASON = "送單連線在確認盤前盤後設定前中斷，可能漏收 IB 2109"
+_IB_RECORD_WITHOUT_OUTSIDE_RTH_REASON = "IB 委託紀錄顯示未套用盤前盤後設定（outsideRth=False）"
 _IB_AWAITING_ACK = frozenset({"", "ApiPending", "PendingSubmit"})
 _IB_WORKING_STATUSES = frozenset({"ApiPending", "PendingSubmit", "PreSubmitted", "Submitted"})
 _IB_DONE_STATUSES = frozenset({"Filled", "Cancelled", "ApiCancelled", "Inactive"})
@@ -1580,7 +1581,7 @@ class ManualOrderService:
         """Cancel an extended-hours order IB may run as a regular-session order.
 
         The reason is persisted so reconciliation keeps re-sending the cancel
-        while IB still reports the order working (see _retry_forced_cancels).
+        while IB still reports the order working (see _enforce_outside_rth).
         """
         row = self.store.get(order_ref)
         if row is None or row["status"] in _TERMINAL_STATUSES:
@@ -1611,24 +1612,29 @@ class ManualOrderService:
                 filled_quantity=filled, avg_fill_price=avg_price,
             )
 
-    def _retry_forced_cancels(self, ib, ctx, open_trades) -> None:
-        """Re-send forced cancels that IB has not yet started processing.
+    def _enforce_outside_rth(self, ib, ctx, open_trades) -> None:
+        """Force-cancel extended-hours orders IB may run as regular-session ones.
 
-        An extended-hours order still unconfirmed here lost its submitting
-        connection (crash or disconnect) before the confirmation window
-        ended; a 2109 sent to that connection can no longer be received, so
-        it is force-cancelled as well.
+        Runs on a fresh connection, where open_trades carry IB's own record
+        of each order. An extended-hours order is force-cancelled when:
+        - it is still unconfirmed: its submitting connection ended (crash or
+          disconnect) before the confirmation window, so a 2109 sent to that
+          connection can no longer be received; or
+        - IB's record shows outsideRth=False, which is how IB reports an
+          order whose outsideRth it ignored (paper-verified 2026-09-28).
+        Forced cancels are re-sent while IB still reports the order working.
         """
         for row in self.store.list_active(ctx.name):
             reason = row.get("forced_cancel_reason")
-            if not reason and row.get("outside_rth") and not row.get("outside_rth_confirmed_at"):
-                reason = _UNCONFIRMED_REASON
-                self.store.update(row["order_ref"], forced_cancel_reason=reason)
-            if not reason:
-                continue
             trade = _find_manual_trade(open_trades, row["order_ref"], ctx.account)
-            status = str(getattr(getattr(trade, "orderStatus", None), "status", "") or "")
-            if trade is not None and status in _IB_WORKING_STATUSES:
+            if not reason and row.get("outside_rth"):
+                if not row.get("outside_rth_confirmed_at"):
+                    reason = _UNCONFIRMED_REASON
+                elif trade is not None and not getattr(trade.order, "outsideRth", True):
+                    reason = _IB_RECORD_WITHOUT_OUTSIDE_RTH_REASON
+                if reason:
+                    self.store.update(row["order_ref"], forced_cancel_reason=reason)
+            if reason and trade is not None and _ib_order_status(trade) in _IB_WORKING_STATUSES:
                 self._force_cancel(ib, trade, row["order_ref"], reason)
 
     @_serialize_service_operation
@@ -1711,7 +1717,7 @@ class ManualOrderService:
                 try:
                     with self._connected(account) as (ctx, ib):
                         open_trades = self._sync_trades(ib, ctx)
-                        self._retry_forced_cancels(ib, ctx, open_trades)
+                        self._enforce_outside_rth(ib, ctx, open_trades)
                 except Exception as exc:
                     errors.append(f"{account}：{exc}")
                     for row in self.store.list_active(account):

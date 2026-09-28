@@ -770,6 +770,35 @@ def test_reconcile_cancels_extended_order_left_unconfirmed_by_a_crash(tmp_path):
     assert service.store.get(regular["order_ref"])["status"] == "ACCEPTED"
 
 
+def test_reconcile_cancels_confirmed_order_that_ib_records_without_outside_rth(tmp_path):
+    # Paper, 2026-09-28: orders IB answered with 2109 were later read back on
+    # a fresh connection with outsideRth=False, while honoured extended-hours
+    # orders read back True. That record needs no 2109 timing to be seen.
+    state = FakeIBState()
+    service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)
+    submitted = service.submit(
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="AFTER_HOURS"),
+    )
+    regular = service.submit(service.preview("Rosa", "ZZZZ", 1, 10.0))
+    assert submitted["outside_rth_confirmed_at"]
+    extended_trade, regular_trade = state.placed
+    assert regular_trade.order.outsideRth is False
+
+    extended_trade.order.outsideRth = False  # IB's record on the next connection
+    service.refresh_status()
+
+    assert state.cancelled_orders == [extended_trade.order]
+    row = service.store.get(submitted["order_ref"])
+    assert row["status"] == "CANCEL_PENDING"
+    assert "outsideRth=False" in row["forced_cancel_reason"]
+    assert service.store.get(regular["order_ref"])["status"] == "ACCEPTED"
+
+    extended_trade.orderStatus.status = "Cancelled"
+    service.refresh_status()
+    assert "自動取消原因" in state.notifications[-1][1]
+    assert "outsideRth=False" in state.notifications[-1][1]
+
+
 def test_user_cancel_timeout_is_not_auto_retried(tmp_path):
     state = FakeIBState()
     service = service_for(tmp_path, state, clock=lambda: AFTER_HOURS_NOW)

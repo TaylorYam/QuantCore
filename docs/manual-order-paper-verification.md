@@ -63,7 +63,7 @@
 | 1-1 | `... hours --symbol AAPL` | `extended_session_at = PRE_MARKET`；`ib_trading_hours_include = True` |
 | 1-2 | `... probe-2109 --symbol AAPL`，**做 3 次** | 每次印出 `PASS` 或 `PASS（確認窗內）`，並取消 probe 單。出現 `FAIL` 就停，把 log 給我。印出「未出現 2109」代表 paper 沒觸發，記下即可 |
 | 1-3 | `... submit --session PRE_MARKET --symbol AAPL --quantity 1 --limit <現價約 7 折>`，輸入 `YES` | 送出約需 5–10 秒（等 IB 回報再加 5 秒確認窗）；狀態 `ACCEPTED`、「盤前盤後設定：已確認」；時間軸**沒有** `code=2109`；確認畫面寫「交易時段：盤前…延續至當日一般時段與盤後…不跨日」 |
-| 1-4 | `... status` | 「IB 端原始委託」中，這張單是 `outsideRth=True tif=DAY status=Submitted`（若是 `PreSubmitted` 也記下來） |
+| 1-4 | `... status` | 「IB 端原始委託」中，這張單是 `outsideRth=True tif=DAY status=Submitted`（若是 `PreSubmitted` 也記下來）。服務每次對帳都會比對這個值：IB 紀錄若是 `outsideRth=False`，就自動強制取消 |
 | 1-5 | `... cancel <編號前 5 碼>`，接著 `... status` | 先 `CANCEL_PENDING`，再 `CANCELLED`；印出的通知有「盤前 DAY」「結果：已取消」 |
 | 1-6 | 再 `submit` 一張同樣的遠價單，然後 `... force-retry <編號>`，再 `... status` | 時間軸在新連線上看到取消；最後 `CANCELLED`；通知多一行「自動取消原因：paper 驗證…」 |
 | 1-7 | 再 `submit` 一張遠價單當**保留單 P**，**不要取消** | `ACCEPTED`（留給步驟 2、4） |

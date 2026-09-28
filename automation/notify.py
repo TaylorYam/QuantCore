@@ -194,7 +194,9 @@ class Digest:
             self._notes.append(line)
 
     def add(self, name: str, headline: str, body=(), level: str = "ok", *,
-            token: str, chat_id: str) -> None:
+            token: str, chat_id: str, on_delivered=None) -> None:
+        """on_delivered：這一段所在的訊息確定送達（每一段 tg_send 都成功）
+        後才呼叫 — 給「只通知一次」的 caller 記已通知用（#106）。"""
         if level not in LEVEL_RANK:
             raise ValueError(f"unknown digest level: {level!r}")
         self._sections.append({
@@ -203,6 +205,7 @@ class Digest:
             "body": tuple(body),
             "level": level,
             "dest": (token, chat_id),
+            "on_delivered": on_delivered,
         })
 
     def footer(self, line: str, level: str = "ok", *,
@@ -282,5 +285,14 @@ class Digest:
                 continue
             if msg is None:
                 continue
+            delivered = True
             for chunk in split_message(msg):
-                tg_send(chunk, token=token, chat_id=chat_id)
+                delivered = bool(tg_send(chunk, token=token, chat_id=chat_id)) and delivered
+            if not delivered:
+                continue
+            for s in self._sections:
+                if s["dest"] == (token, chat_id) and s["on_delivered"]:
+                    try:
+                        s["on_delivered"]()
+                    except Exception as e:
+                        log.warning(f"Telegram digest on_delivered failed: {e}")

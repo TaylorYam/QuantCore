@@ -261,14 +261,19 @@ def rebalance_tg_section(placed: list[dict], fill_results: list[dict], *,
     return headline, body, level
 
 
-def _add_rebalance_section(digest: Digest, ctx: AccountCtx, **kwargs) -> None:
-    """組段落加進 digest。在 finally 內呼叫 — 自身絕不拋例外，避免蓋掉原錯誤。"""
+def _add_rebalance_section(digest: Digest, ctx: AccountCtx,
+                           on_delivered=None, **kwargs) -> None:
+    """組段落加進 digest。在 finally 內呼叫 — 自身絕不拋例外，避免蓋掉原錯誤。
+
+    on_delivered：訊息確定送達後呼叫（手動持倉暫停記已通知，#106）。
+    """
     try:
         section = rebalance_tg_section(order_type=ctx.order_type,
                                        dry_run=ctx.dry_run, **kwargs)
         if section is not None:
             digest.add(ctx.name, *section,
-                       token=ctx.tg_token, chat_id=ctx.tg_chat_id)
+                       token=ctx.tg_token, chat_id=ctx.tg_chat_id,
+                       on_delivered=on_delivered)
     except Exception as e:
         log.warning(f"Telegram section build failed: {e}")
 
@@ -278,7 +283,8 @@ def _log_trades_and_report(digest: Digest, ctx: AccountCtx, *,
                            signal_str: str, drift_alarms: list[str],
                            drift_advisories: list[str],
                            error_msg: str | None,
-                           pause_notices: list[str] = ()) -> Exception | None:
+                           pause_notices: list[str] = (),
+                           on_delivered=None) -> Exception | None:
     """main() 收尾：寫 Excel 交易紀錄，再加 Telegram 段落。回傳 Excel 寫入例外。
 
     Excel 寫入失敗（例如 trade_log.xlsx 被 Excel 開著鎖住）時，單已經送出了 —
@@ -308,6 +314,7 @@ def _log_trades_and_report(digest: Digest, ctx: AccountCtx, *,
         drift_advisories=drift_advisories,
         pause_notices=pause_notices,
         error_msg=error_msg,
+        on_delivered=on_delivered,
     )
     return excel_error
 
@@ -643,6 +650,7 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
         if alloc_skewls > 0:
             signal_parts.append(f"SkewLS:{skewls_signal_date}")
         new_pauses = attribution.new_notices if attribution else []
+        paused_syms = [s for s, _ in new_pauses]
         excel_error = _log_trades_and_report(
             digest, ctx,
             placed=placed,
@@ -652,9 +660,10 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
             drift_advisories=drift_advisories,
             error_msg=error_msg,
             pause_notices=manual_attribution.pause_notice_lines(new_pauses),
+            # 暫停只通知一次：訊息確定送達才記；沒送到下一輪再附上
+            on_delivered=((lambda: manual_attribution.mark_notified(
+                acct_name, paused_syms)) if paused_syms else None),
         )
-        # 暫停只通知一次：段落已進這一則 digest
-        manual_attribution.mark_notified(acct_name, [s for s, _ in new_pauses])
 
         elapsed = (datetime.now() - start_ts).seconds
         log.info(f"Elapsed: {elapsed}s")

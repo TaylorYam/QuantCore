@@ -317,23 +317,31 @@ MANUAL_OPEN = NS(order=NS(orderId=7, orderRef="QUANTCORE_MANUAL:ROSA:abc"),
 STRATEGY_OPEN = NS(order=NS(orderId=8, orderRef=""), contract=NS(symbol="AAPL"))
 
 
-def _ctx(name="Rosa", dry_run=False):
+def _ctx(name="Rosa", dry_run=False, tg=("", "")):
     from account_ctx import AccountCtx
     return AccountCtx(
         name=name, account="U00000001", host="127.0.0.1", port=4999,
         client_id=99, dry_run=dry_run, order_type="MOO", outside_rth=False,
         wait_fill_sec=0, alloc_sr=0.0, alloc_sp500=0.5, alloc_skewls=0.0,
-        price_feed_port=None, tg_token="", tg_chat_id="",
+        price_feed_port=None, tg_token=tg[0], tg_chat_id=tg[1],
     )
 
 
 @pytest.fixture
 def rebalance_env(paths, monkeypatch):
     """rebalance_ib.main 的真實流程；訊號固定：SP500 想要 AAPL 250 股、XYZ 250 股。"""
+    import notify
     import rebalance_ib
     import signals
 
-    env = NS(sp500_calls=[], ib=None, positions={"AAPL": 100.0, "XYZ": 10.0, "BTC": 1.5})
+    env = NS(sp500_calls=[], ib=None, positions={"AAPL": 100.0, "XYZ": 10.0, "BTC": 1.5},
+             sent=[], tg_ok=True)
+
+    def tg_send(msg, *, token, chat_id):
+        env.sent.append(msg)
+        return env.tg_ok
+
+    monkeypatch.setattr(notify, "tg_send", tg_send)
 
     def connect(ctx):
         env.ib = FakeIB(env.positions, [MANUAL_OPEN, STRATEGY_OPEN])
@@ -355,10 +363,12 @@ def rebalance_env(paths, monkeypatch):
 
 
 def _run_rebalance(name="Rosa", mode="sp500"):
+    """跑一個帳戶並把那一則 Telegram 發出去（tg_send 是假的）。"""
     import rebalance_ib
     from notify import Digest
     digest = Digest("調倉 T", icon="📤")
-    rebalance_ib.main(mode=mode, ctx=_ctx(name), digest=digest)
+    rebalance_ib.main(mode=mode, ctx=_ctx(name, tg=("T", "C")), digest=digest)
+    digest.send()
     return digest
 
 
@@ -376,10 +386,23 @@ def test_rebalance_holds_only_the_paused_symbol(rebalance_env, caplog):
     assert "🔴" not in text
     assert "⏸ 手動持倉暫停 1 檔: XYZ+240" in caplog.text
 
+    assert len(rebalance_env.sent) == 1
+
     # 同一次暫停只通知一次；AAPL 之後已對齊 → 安靜日沒有訊息
     rebalance_env.positions["AAPL"] = 250.0
     assert _run_rebalance().render() is None
-    assert rebalance_env.ib.placed == []
+    assert rebalance_env.ib.placed == [] and len(rebalance_env.sent) == 1
+
+
+def test_rebalance_pause_notice_retried_when_telegram_fails(rebalance_env):
+    """21:00 那則沒送到 → 暫停不算已通知，下一輪再附上；送到後才停。"""
+    ma.evaluate("Rosa", {"AAPL": 100.0, "XYZ": 10.0, "BTC": 1.5}, UNIVERSE)
+    rebalance_env.positions["AAPL"] = 250.0
+    rebalance_env.tg_ok = False
+    assert "⏸ XYZ" in _run_rebalance().render()
+    rebalance_env.tg_ok = True
+    assert "⏸ XYZ" in _run_rebalance().render()
+    assert _run_rebalance().render() is None
 
 
 def test_rebalance_without_manual_record_is_unchanged(rebalance_env):

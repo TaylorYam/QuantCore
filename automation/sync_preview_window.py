@@ -38,7 +38,7 @@ from tkinter import messagebox
 from typing import Callable
 
 from sync_position import SyncPlan
-import sync_preview_rows as rows
+import sync_preview_rows as preview_rows
 
 
 # Expected theme keys (documented for callers)
@@ -100,7 +100,7 @@ class SyncPreviewWindow:
         self.plan = plan
         # Log summary first (goes to parent Panel's Output Log)
         self._log_summary()
-        self._status.config(text=rows.plan_subtitle(self.plan), fg=self.t["text_dim"])
+        self._status.config(text=preview_rows.plan_subtitle(self.plan), fg=self.t["text_dim"])
         self._clear_body()
         self._build_preview_body()
         self.win.grab_set()
@@ -128,7 +128,7 @@ class SyncPreviewWindow:
     # ── Log summary（寫到 parent Panel 的 Output Log）────────────
 
     def _log_summary(self) -> None:
-        for line in rows.log_summary_lines(self.plan):
+        for line in preview_rows.log_summary_lines(self.plan):
             self._log(line)
 
     # ── Window building ────────────────────────────────────────
@@ -218,7 +218,7 @@ class SyncPreviewWindow:
                  font=("Segoe UI", 10, "bold"),
                  bg=t["bg"], fg=t["accent_hl"]).pack(anchor="w")
 
-        sections = rows.target_sections(self.plan)
+        sections = preview_rows.target_sections(self.plan)
         for section in sections:
             frame = tk.Frame(sec, bg=t["bg2"], padx=8, pady=4)
             frame.pack(fill="x", pady=(4 if section.strategy == "SR" else 2, 2))
@@ -247,7 +247,7 @@ class SyncPreviewWindow:
                  bg=t["bg"], fg=t["accent_hl"]).pack(anchor="w")
 
         # 策略相關持倉
-        holdings = rows.current_holding_rows(self.plan)
+        holdings = preview_rows.current_holding_rows(self.plan)
         if holdings:
             cur_frame = tk.Frame(sec, bg=t["bg2"], padx=8, pady=4)
             cur_frame.pack(fill="x", pady=(4, 2))
@@ -269,7 +269,7 @@ class SyncPreviewWindow:
                      bg=t["bg"], fg=t["text_dim"]).pack(anchor="w")
 
         # 手動持倉
-        others = rows.other_holding_lines(self.plan)
+        others = preview_rows.other_holding_lines(self.plan)
         if others:
             oth_frame = tk.Frame(sec, bg=t["bg2"], padx=8, pady=4)
             oth_frame.pack(fill="x", pady=(2, 2))
@@ -295,7 +295,7 @@ class SyncPreviewWindow:
                  bg=t["bg"], fg=t.get("yellow", t["accent_hl"])).pack(anchor="w")
         frame = tk.Frame(sec, bg=t["bg2"], padx=8, pady=4)
         frame.pack(fill="x", pady=(4, 2))
-        for paused in rows.paused_rows(self.plan):
+        for paused in preview_rows.paused_rows(self.plan):
             row = tk.Frame(frame, bg=t["bg2"])
             row.pack(fill="x")
             tk.Label(row, text=paused.text,
@@ -320,22 +320,22 @@ class SyncPreviewWindow:
         sec = tk.Frame(parent, bg=t["bg"], padx=12, pady=4)
         sec.pack(fill="x")
         tk.Label(sec,
-                 text=rows.trades_heading(plan),
+                 text=preview_rows.trades_heading(plan),
                  font=("Segoe UI", 10, "bold"),
                  bg=t["bg"], fg=t["accent_hl"]).pack(anchor="w")
 
         # 表頭
         thdr = tk.Frame(sec, bg=t["bg3"], padx=4, pady=3)
         thdr.pack(fill="x", pady=(4, 0))
-        for c, w in zip(rows.TRADE_COLUMNS, rows.TRADE_COL_WIDTHS):
+        for c, w in zip(preview_rows.TRADE_COLUMNS, preview_rows.TRADE_COL_WIDTHS):
             tk.Label(thdr, text=c, font=("Consolas", 9, "bold"),
                      bg=t["bg3"], fg=t["accent_hl"], width=w, anchor="w").pack(side="left")
 
         # 行：SELL 先，BUY 後
-        for trade in rows.trade_rows(plan):
+        for trade in preview_rows.trade_rows(plan):
             row = tk.Frame(sec, bg=t["bg"], padx=4, pady=1)
             row.pack(fill="x")
-            for v, w in zip(trade.values, rows.TRADE_COL_WIDTHS):
+            for v, w in zip(trade.values, preview_rows.TRADE_COL_WIDTHS):
                 fg = t[trade.color] if v in ('BUY', 'SELL') else t["text"]
                 tk.Label(row, text=v, font=("Consolas", 9),
                          bg=t["bg"], fg=fg, width=w, anchor="w").pack(side="left")
@@ -345,7 +345,7 @@ class SyncPreviewWindow:
         summary.pack(fill="x", padx=12, pady=(6, 0))
         tk.Label(
             summary,
-            text=rows.trade_totals_text(plan),
+            text=preview_rows.trade_totals_text(plan),
             font=("Consolas", 10, "bold"),
             bg=t["bg3"], fg=t["text"],
         ).pack()
@@ -357,7 +357,7 @@ class SyncPreviewWindow:
         t = self.t
         sec = tk.Frame(parent, bg=t["bg"], padx=12, pady=4)
         sec.pack(fill="x")
-        tk.Label(sec, text=rows.trades_heading(self.plan),
+        tk.Label(sec, text=preview_rows.trades_heading(self.plan),
                  font=("Segoe UI", 10, "bold"),
                  bg=t["bg"], fg=t["accent_hl"]).pack(anchor="w")
         tk.Label(sec, text="  Already on target — no trades needed",
@@ -400,9 +400,9 @@ class SyncPreviewWindow:
         """使用者按 Confirm — 跳確認 dialog，然後呼叫 on_confirm(plan)"""
         plan = self.plan
         if not messagebox.askyesno(
-            "Confirm Send Orders", rows.confirm_prompt(plan), parent=self.win,
+            "Confirm Send Orders", preview_rows.confirm_prompt(plan), parent=self.win,
         ):
             return
         self._close()
-        self._log(rows.sending_log_line(plan))
+        self._log(preview_rows.sending_log_line(plan))
         self.on_confirm(plan)

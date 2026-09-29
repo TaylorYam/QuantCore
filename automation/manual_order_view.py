@@ -20,11 +20,7 @@ class ManualOrderWindow:
     PERCENT_MODE = order_form.PERCENT_MODE
     PERCENT_CHOICES = order_form.PERCENT_CHOICES
     ACTION_LABELS = order_form.ACTION_LABELS
-    STORED_ACTION_LABELS = order_form.STORED_ACTION_LABELS
-    FORM_ACTION_LABELS = order_form.FORM_ACTION_LABELS
     SESSION_CHOICES = order_form.SESSION_CHOICES
-    FORM_SESSION_LABELS = order_form.FORM_SESSION_LABELS
-    STORED_SESSION_LABELS = order_form.STORED_SESSION_LABELS
 
     SYMBOL_SUGGESTION_LIMIT = 8
 
@@ -473,10 +469,6 @@ class ManualOrderWindow:
 
     def _read_request(self):
         return order_form.parse_request(self._form())
-
-    @staticmethod
-    def _requested_quantity(request):
-        return order_form.requested_quantity(request)
 
     def _preview_order(self):
         if self._busy:

@@ -139,7 +139,7 @@ def current_holding_rows(plan: SyncPlan) -> list[HoldingRow]:
 
 
 def other_holding_lines(plan: SyncPlan) -> list[str]:
-    """手動持倉 — excluded from sync."""
+    """Other (excluded from sync) — current_other_holdings."""
     lines = []
     for sym in sorted(plan.current_other_holdings):
         shares = int(plan.current_pos[sym])
@@ -185,7 +185,7 @@ def trade_rows(plan: SyncPlan) -> list[TradeRow]:
 def trade_totals_text(plan: SyncPlan) -> str:
     total_sell = 0.0
     total_buy = 0.0
-    for o in _sells_then_buys(plan):
+    for o in plan.orders:
         if o.action == 'SELL':
             total_sell += o.qty * o.price
         else:

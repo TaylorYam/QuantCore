@@ -27,6 +27,12 @@ EXTENDED_TRADING_HOURS = (
     "20260914:0400-20260914:2000;20260915:0400-20260915:2000;"
     "20261127:0400-20261127:1700"
 )
+# IB ContractDetails.tradingHours for the same listing routed to OVERNIGHT
+# (paper, 2026-09-28): 20:00-03:50 ET across midnight, Sunday from 18:00.
+OVERNIGHT_TRADING_HOURS = (
+    "20260913:1800-20260914:0350;20260914:2000-20260915:0350;"
+    "20260915:2000-20260916:0350"
+)
 
 
 class FakeIBState:
@@ -45,7 +51,10 @@ class FakeIBState:
         self.cancel_error = None
         self.positions_by_account = {account: {} for account in self.managed}
         self.trading_hours = EXTENDED_TRADING_HOURS
+        self.overnight_hours = OVERNIGHT_TRADING_HOURS
+        self.valid_exchanges = "SMART,NASDAQ,ARCA,IEX,OVERNIGHT"
         self.contract_time_zone = "US/Eastern"
+        self.sent_tifs = []
         self.next_log = []
         self.place_errors = []
         self.pending_errors = []
@@ -103,12 +112,15 @@ class FakeIB:
         return [contract]
 
     def reqContractDetails(self, contract):
-        if self.state.trading_hours is None:
+        overnight = getattr(contract, "exchange", "") == "OVERNIGHT"
+        hours = self.state.overnight_hours if overnight else self.state.trading_hours
+        if hours is None:
             return []
         return [NS(
-            contract=contract, tradingHours=self.state.trading_hours,
-            liquidHours="20260914:0930-20260914:1600",
+            contract=contract, tradingHours=hours,
+            liquidHours=hours if overnight else "20260914:0930-20260914:1600",
             timeZoneId=self.state.contract_time_zone,
+            validExchanges=self.state.valid_exchanges,
         )]
 
     def openTrades(self):
@@ -125,6 +137,10 @@ class FakeIB:
         return list(self.state.fills)
 
     def placeOrder(self, contract, order):
+        self.state.sent_tifs.append(order.tif)
+        if getattr(contract, "exchange", "") == "OVERNIGHT" and order.tif == "DAY":
+            # IB records an OVERNIGHT-routed DAY order with its Overnight tif.
+            order.tif = "OVERNIGHT"
         order.orderId = len(self.state.placed) + 1
         order.permId = 9000 + order.orderId
         trade = NS(
@@ -1659,3 +1675,163 @@ def test_background_monitor_reconciles_without_an_open_manual_order_window():
         assert refreshed.wait(1)
     finally:
         monitor.stop()
+
+
+# --- #105 IBKR Overnight manual LMT orders -------------------------------
+
+OVERNIGHT_NOW = datetime(2026, 9, 15, 1, 0, tzinfo=timezone.utc)  # Mon 21:00 ET
+
+
+def test_overnight_lmt_is_routed_to_overnight_with_day_tif(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state, clock=lambda: OVERNIGHT_NOW)
+
+    preview = service.preview("Taylor", "ZZZZ", 5, 10.25, session="OVERNIGHT")
+
+    text = preview.confirmation_text
+    assert "交易時段：隔夜" in text
+    assert "限價：$10.25" in text
+    assert "不進入白天時段" in text
+    result = service.submit(preview)
+
+    trade = state.placed[0]
+    assert (trade.contract.exchange, trade.contract.primaryExchange) == ("OVERNIGHT", "NASDAQ")
+    assert state.sent_tifs == ["DAY"]
+    assert (trade.order.orderType, trade.order.lmtPrice, trade.order.outsideRth,
+            trade.order.account, trade.order.totalQuantity) == ("LMT", 10.25, False, "U001", 5)
+    assert (result["session"], result["status"]) == ("OVERNIGHT", "ACCEPTED")
+    assert state.cancelled_orders == []
+
+
+@pytest.mark.parametrize("amount", [None, "100"])
+def test_overnight_rejects_mkt_before_contacting_ib(tmp_path, amount):
+    state = FakeIBState()
+    service = service_for(tmp_path, state, clock=lambda: OVERNIGHT_NOW)
+    with pytest.raises(ValueError, match="只接受 LMT"):
+        service.preview("Taylor", "ZZZZ", None if amount else 5, None,
+                        amount_usd=amount, order_type="MKT", session="OVERNIGHT")
+    assert state.client_ids == []
+
+
+def test_overnight_requires_ib_to_list_the_symbol_on_overnight(tmp_path):
+    state = FakeIBState()
+    state.valid_exchanges = "SMART,NASDAQ,ARCA"
+    service = service_for(tmp_path, state, clock=lambda: OVERNIGHT_NOW)
+    with pytest.raises(ValueError, match="隔夜可交易"):
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="OVERNIGHT")
+    assert state.placed == []
+
+
+@pytest.mark.parametrize("now,hours", [
+    (datetime(2026, 9, 14, 20, 0, tzinfo=timezone.utc), OVERNIGHT_TRADING_HOURS),  # 16:00 ET
+    (datetime(2026, 9, 15, 7, 49, 30, tzinfo=timezone.utc), OVERNIGHT_TRADING_HOURS),  # 03:49:30 ET
+    (OVERNIGHT_NOW, "20260914:CLOSED;20260915:2000-20260916:0350"),
+    (OVERNIGHT_NOW, None),
+    (OVERNIGHT_NOW, "not-ib-hours"),
+])
+def test_overnight_needs_ib_overnight_hours_to_cover_now_and_the_last_minute(
+    tmp_path, now, hours,
+):
+    state = FakeIBState()
+    state.overnight_hours = hours
+    service = service_for(tmp_path, state, clock=lambda: now)
+    with pytest.raises(ValueError, match="不會改用其他時段"):
+        service.preview("Taylor", "ZZZZ", 5, 10.0, session="OVERNIGHT")
+    assert state.placed == []
+
+
+def test_sunday_overnight_session_follows_ib_hours_not_a_fixed_clock(tmp_path):
+    state = FakeIBState()
+    sunday_1900_et = datetime(2026, 9, 13, 23, 0, tzinfo=timezone.utc)
+    service = service_for(tmp_path, state, clock=lambda: sunday_1900_et)
+    service.submit(service.preview("Taylor", "ZZZZ", 1, 10.0, session="OVERNIGHT"))
+    assert state.placed[0].contract.exchange == "OVERNIGHT"
+
+
+def test_overnight_cash_amount_floors_by_manual_limit_with_position_rules(tmp_path):
+    state = FakeIBState()
+    state.positions_by_account["U001"]["ZZZZ"] = 2
+    service = service_for(tmp_path, state, clock=lambda: OVERNIGHT_NOW)
+    with pytest.raises(ValueError, match="允許放空"):
+        service.preview("Taylor", "ZZZZ", None, 20.0, amount_usd="65",
+                        action="SELL", session="OVERNIGHT")
+    preview = service.preview("Taylor", "ZZZZ", None, 20.0, amount_usd="45",
+                              action="SELL", session="OVERNIGHT")
+    assert (preview.quantity, preview.projected_position) == (2, 0)
+    service.submit(preview)
+    assert (state.placed[0].order.action, state.placed[0].order.totalQuantity) == ("SELL", 2)
+
+
+def test_gateway_direct_routing_precaution_rejection_is_explicit_and_final(tmp_path):
+    # Paper, 2026-09-29: with the redirect precaution on, IB answered 10329
+    # then 201 and ib_insync marked the order Cancelled.
+    state = FakeIBState()
+    state.next_status = "Cancelled"
+    state.next_log = [
+        NS(message="Error 10329, reqId 60: This order will be directly routed to OVERNIGHT.",
+           errorCode=10329),
+        NS(message="Error 201, reqId 60: Order rejected - reason:", errorCode=201),
+    ]
+    service = service_for(tmp_path, state, clock=lambda: OVERNIGHT_NOW)
+
+    result = service.submit(service.preview("Rosa", "ZZZZ", 1, 10.0, session="OVERNIGHT"))
+
+    assert result["status"] == "REJECTED"
+    assert "股票API委託單跳過重新傳遞委託單警告" in result["status_message"]
+    assert len(state.placed) == 1
+    assert [account for account, _message in state.notifications] == ["Rosa"]
+
+    # Another active Rosa order makes reconciliation read IB again. A fresh
+    # connection's completed-order record says only Cancelled, without the
+    # rejection log; that must not downgrade the rejection.
+    service.submit(service.preview("Rosa", "YYYY", 1, 10.0, session="OVERNIGHT"))
+    rejected = state.placed[0]
+    rejected.log = []
+    state.open_trades.remove(rejected)
+    state.completed_trades.append(rejected)
+    service.refresh_status()
+    assert service.store.get(result["order_ref"])["status"] == "REJECTED"
+    assert len(state.notifications) == 1
+
+
+def test_reconcile_cancels_overnight_order_ib_records_without_overnight_tif(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state, clock=lambda: OVERNIGHT_NOW)
+    kept = service.submit(service.preview("Taylor", "ZZZZ", 1, 10.0, session="OVERNIGHT"))
+    service.refresh_status()                     # IB record: tif=OVERNIGHT, exch=OVERNIGHT
+    assert state.cancelled_orders == []
+
+    changed = service.submit(service.preview("Rosa", "ZZZZ", 1, 10.0, session="OVERNIGHT"))
+    state.placed[1].order.tif = "DAY"            # IB would keep it past the session
+    service.refresh_status()
+
+    assert state.cancelled_orders == [state.placed[1].order]
+    row = service.store.get(changed["order_ref"])
+    assert row["status"] == "CANCEL_PENDING"
+    assert "tif=DAY" in row["forced_cancel_reason"]
+    assert service.store.get(kept["order_ref"])["status"] == "ACCEPTED"
+
+
+def test_overnight_notification_and_lifecycle_name_the_session(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state, clock=lambda: OVERNIGHT_NOW)
+    submitted = service.submit(
+        service.preview("Yvonne", "ZZZZ", 2, 10.0, session="OVERNIGHT"),
+    )
+    trade = state.placed[0]
+    trade.orderStatus.filled = 1
+    trade.orderStatus.avgFillPrice = 9.98
+    service.refresh_status()
+    assert service.list_orders()[0]["status"] == "PARTIAL"
+
+    trade.orderStatus.status = "Cancelled"   # IB ends an unfilled Overnight order
+    service.refresh_status()
+    row = service.list_orders()[0]
+    assert (row["order_ref"], row["status"], row["session"]) == (
+        submitted["order_ref"], "CANCELLED", "OVERNIGHT",
+    )
+    [(account, message)] = state.notifications
+    assert account == "Yvonne"
+    assert "LMT $10.00｜隔夜\n" in message
+    assert "DAY" not in message
+    assert "1/2" in message

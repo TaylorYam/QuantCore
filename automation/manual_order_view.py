@@ -34,12 +34,16 @@ class ManualOrderWindow:
         "BUY": "買進", "SELL": "賣出", "SELL_SHORT": "放空", "COVER": "回補空單",
     }
     FORM_ACTION_LABELS = {**STORED_ACTION_LABELS, "SELL_SHORT": "賣出"}
-    SESSION_CHOICES = {"一般時段": "REGULAR", "盤前": "PRE_MARKET", "盤後": "AFTER_HOURS"}
+    SESSION_CHOICES = {
+        "一般時段": "REGULAR", "盤前": "PRE_MARKET", "盤後": "AFTER_HOURS",
+        "隔夜（IBKR Overnight）": "OVERNIGHT",
+    }
     FORM_SESSION_LABELS = {code: label for label, code in SESSION_CHOICES.items()}
     STORED_SESSION_LABELS = {
         "REGULAR": "一般時段 RTH / DAY",
         "PRE_MARKET": "盤前 outsideRTH / DAY",
         "AFTER_HOURS": "盤後 outsideRTH / DAY",
+        "OVERNIGHT": "隔夜 OVERNIGHT",
     }
 
     def __init__(self, parent, account_names, service, theme, fonts, log=None):
@@ -103,7 +107,7 @@ class ManualOrderWindow:
             bg=t["accent"], fg=t["accent_hl"],
         ).pack(side="left")
         tk.Label(
-            header, text="一般時段 LMT / MKT · 盤前／盤後 LMT · 整股 · DAY",
+            header, text="一般時段 LMT / MKT · 盤前／盤後／隔夜 LMT · 整股",
             font=self.fonts["small"], bg=t["accent"], fg=t["text"],
         ).pack(side="right")
 
@@ -175,7 +179,8 @@ class ManualOrderWindow:
         helper = tk.Label(
             form,
             text=("只接受美國市場的美元個股或 ETF；策略 Universe 標的會被阻擋。"
-                  "盤前／盤後只收 LMT，且只在該時段開放時送出。"),
+                  "盤前／盤後／隔夜只收 LMT，且只在該時段開放時送出；"
+                  "隔夜單送往 IBKR Overnight 市場。"),
             font=self.fonts["small"], bg=t["bg2"], fg=t["text_dim"],
             anchor="w",
         )
@@ -349,7 +354,7 @@ class ManualOrderWindow:
             raise ValueError("請選擇交易時段。")
         if session != "REGULAR" and order_type != "LMT":
             # Never switch the trader's MKT to LMT or regular hours on their behalf.
-            raise ValueError("盤前／盤後只接受 LMT 限價單；請改選 LMT，或改用一般時段。")
+            raise ValueError("盤前／盤後／隔夜只接受 LMT 限價單；請改選 LMT，或改用一般時段。")
         return ManualOrderRequest(
             account_name=account,
             symbol=self.symbol_var.get().strip(),

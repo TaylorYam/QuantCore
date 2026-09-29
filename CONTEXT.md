@@ -107,8 +107,8 @@ _Avoid_: 斷線自動重連（auto-restart 是每天固定一次的重啟，不�
 每週日 Gateway 的完整重新登入：token 失效，必須重新輸入帳密並用手機 IB Key 確認。當機、電腦重開後的登入也屬同一種情況。是 [[Gateway 啟動]] 的主要使用時機。
 
 **Gateway 啟動**:
-從 Panel 一鍵開啟三個實盤 Gateway（Taylor／Rosa／Yvonne），並把各自帳密填進登入視窗；按「登入」和手機 IB Key 由使用者自己處理。前提是三個實盤 Gateway 都沒有在執行（有登入或只停在登入畫面都算在執行），否則整批拒絕。模擬帳戶（paper）Gateway 不在範圍內，也不影響判斷。
-_Avoid_: 自動登入、auto-login（會被理解成連「登入」都自動按了）
+從 Panel 一鍵開啟三個實盤 Gateway（Taylor／Rosa／Yvonne），把各自帳密填進登入視窗，再依序替每個帳戶按「登入」：一次一個，等它登入完成（API port 開始接受連線，最多 30 秒）才換下一個，讓手機一次只跳一則 IB Key。使用者只負責在手機確認 IB Key。沒登入成功的帳戶不重試，留在它的視窗給使用者手動處理（連續輸錯密碼會鎖帳號）。前提是三個實盤 Gateway 都沒有在執行（有登入或只停在登入畫面都算在執行），否則整批拒絕。模擬帳戶（paper）Gateway 不在範圍內，也不影響判斷。
+_Avoid_: Auto-restart（那是 Gateway 每天自己重啟、免 IB Key，和這個一鍵登入無關）
 
 ## Relationships
 

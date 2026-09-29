@@ -1,12 +1,14 @@
-"""Gateway 啟動（Issue #121）— Panel 一鍵開三個實盤 Gateway 並填入帳密。
+"""Gateway 啟動（Issue #121、#127）— Panel 一鍵開三個實盤 Gateway、填帳密、依序登入。
 
 用詞見 CONTEXT.md「Gateway 啟動」：開三個實盤 Gateway（Taylor／Rosa／Yvonne），
-把各自帳密填進登入視窗後停住；按「登入」和手機 IB Key 由使用者處理。
+把各自帳密填進登入視窗，再一次一個帳戶按「登入」並等它登入完成（最多
+LOGIN_WAIT_SEC 秒），手機一次只跳一則 IB Key。失敗不重試（連續輸錯會鎖帳號）。
 三個之中只要有一個還在執行（含只停在登入畫面）就整批拒絕。paper Gateway
 不在範圍內。
 
 唯一入口 start_live_gateways(ports)；碰外部的地方全部經 ports 注入：
-正在執行的 Gateway、認證管理員、Panel 帳密輸入框、開啟 Gateway、填登入視窗。
+正在執行的 Gateway、認證管理員、Panel 帳密輸入框、開啟 Gateway、填登入視窗、
+送出登入、等登入完成。
 真的實作在 gateway_start_win.py，測試換成假的。
 """
 from __future__ import annotations
@@ -15,6 +17,9 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 LIVE_ACCOUNTS = ("Taylor", "Rosa", "Yvonne")
+
+# 送出登入後，等該帳戶登入完成（含手機 IB Key 確認）的上限；逾時就換下一個帳戶（#127）
+LOGIN_WAIT_SEC = 30
 
 
 class LaunchFailed(Exception):
@@ -59,6 +64,8 @@ class Ports(Protocol):
     def ask_credentials(self, account: str) -> Credentials | None: ...
     def launch(self, account: str) -> None: ...
     def fill_login(self, account: str, creds: Credentials) -> None: ...
+    def submit_login(self, account: str) -> None: ...
+    def wait_logged_in(self, account: str, timeout_sec: float) -> bool: ...
 
 
 def start_live_gateways(ports: Ports):
@@ -97,6 +104,21 @@ def start_live_gateways(ports: Ports):
             outcomes[account], details[account] = "fill_failed", f"{type(e).__name__}: {e}"
         else:
             outcomes[account] = "filled"
+
+    # 一次一個帳戶：手機一次只跳一則 IB Key，使用者知道在確認哪個帳戶
+    for account in LIVE_ACCOUNTS:
+        if outcomes[account] != "filled":
+            continue
+        try:
+            ports.submit_login(account)
+        except Exception as e:  # 送不出去就停在那個視窗，不重試（連續輸錯會鎖帳號）
+            outcomes[account], details[account] = "submit_failed", f"{type(e).__name__}: {e}"
+            continue
+        if ports.wait_logged_in(account, LOGIN_WAIT_SEC):
+            outcomes[account] = "logged_in"
+        else:
+            outcomes[account] = "login_timeout"
+            details[account] = f"已送出，{LOGIN_WAIT_SEC} 秒內沒登入完成"
     return Started(outcomes={a: outcomes[a] for a in LIVE_ACCOUNTS}, details=details)
 
 
@@ -108,11 +130,12 @@ def describe(result) -> str:
         return f"已取消（{result.account} 帳密未輸入），沒有開啟任何 Gateway。"
     lines = []
     for account, outcome in result.outcomes.items():
-        if outcome == "filled":
-            lines.append(f"{account}：已填好帳密")
+        if outcome == "logged_in":
+            lines.append(f"{account}：已登入")
         else:
-            lines.append(f"{account}：未填入 — {result.details.get(account, outcome)}")
-    hint = "請確認每個視窗的帳號，按「登入」後到手機確認 IB Key。"
-    if any(o != "filled" for o in result.outcomes.values()):
-        hint += "未填入的請手動輸入。"
+            lines.append(f"{account}：未登入 — {result.details.get(account, outcome)}")
+    if all(o == "logged_in" for o in result.outcomes.values()):
+        hint = "三個 Gateway 都已登入。"
+    else:
+        hint = "未登入的請到該 Gateway 視窗手動登入；逾時的可能還在等手機 IB Key 確認。"
     return "\n".join(lines) + "\n\n" + hint

@@ -1,7 +1,43 @@
-# AGENTS.md — AI Agent Collaboration Rules
+# AI Development Guide
 
-本文件是所有 AI CLI（Claude Code、Cursor、Copilot 等）在 QuantCore 上工作的共同規則。
-人類開發者同樣適用分支與 PR 規範。
+本文件是 QuantCore 的主要 AI development policy，適用所有 AI CLI（Claude Code、Cursor、Copilot 等）；人類開發者同樣適用分支與 PR 規範。本文件定義何時使用各 workflow；Skills 定義如何執行。使用者明確指定的任務範圍與審核界線優先。
+
+## Work routing
+
+先判斷工作路線，再建立 Issue：
+
+- 新功能，重要需求不明：`/grill-with-docs` → `/to-spec` → 工作過大時才用 `/to-tickets` → `/implement` → `/code-review`。只追問真正影響決策的不確定處。
+- 新功能，需求清楚：檢查相關程式 → 建立 GitHub Issue → `/implement <issue>` → `/code-review`。
+- Bug，原因與正確行為清楚：檢查相關程式 → 建立 GitHub Issue → `/implement <issue>` → `/code-review`；合理時補回歸測試。
+- Bug，原因不明：`/diagnosing-bugs` → 重現問題 → 找出根因 → 確認正確行為 → 建立 GitHub Issue → `/implement <issue>` → `/code-review`。區分假設與已證實的原因。
+- 外部或他人建立的 Issue：既有 Issue → `/triage <issue>` → `ready-for-agent` → `/implement <issue>` → `/code-review`。
+
+`/triage` 主要處理他人建立的 Issue；agent、`/to-spec` 或 `/to-tickets` 建立且已可實作的 Issue 不必重複 triage。只有單一 Issue／PR 過大時才用 `/to-tickets`。AGENTS.md 定義何時使用 workflow；Skills 定義具體做法。
+
+## Before changing files
+
+- 檢查目前分支與 working tree。一般開發工作從最新 `main` 建立任務分支或 worktree，再修改檔案；注意下方 live 部署模型。
+- 若有 Issue，先讀 Issue；再讀 `README.md`、`CONTEXT.md`、相關 ADR、實作與測試。領域名詞以 `CONTEXT.md` 為準。
+- 重大工作先說明預期成果、可能修改的檔案、做法、風險與驗證方式，遵守使用者明確指定的審核界線。
+- Issue 或 spec 若未決定會實質影響策略／交易行為、資料正確性、架構、安全、API、相容性或刪除資料的重要選擇，停在規劃階段，以白話繁體中文請使用者決定。低風險且可逆的實作細節自行處理。
+
+## GitHub-first workflow
+
+一般規劃工作依 `Issue → branch／worktree → plan → implementation → validation → commit and push → PR → review and CI → merge` 進行；使用者指定停在 review、不要 commit／push／開 PR 時，就停在該界線。
+
+- 實作前建立可執行的 GitHub Issue，寫清楚目標、範圍與可觀察的驗收條件。Agent 建立的 Issue 標題與本文各段預設用臺灣用語的繁體中文；正式技術識別字保留英文。既有英文 Issue 不必重寫；與英文使用者直接溝通時可用英文。
+- Issue 與 spec 使用本 repository 的 GitHub Issues；操作方式見 `docs/agents/issue-tracker.md`。Triage 標籤對照見 `docs/agents/triage-labels.md`。
+- 變更聚焦 Issue；PR 連結 Issue，記錄重要設計取捨與未完成事項。執行相關檢查，說明無法執行的檢查；review 與 CI 通過後才合併。
+- 下方 QuantCore 分支、PR、測試與實盤限制是上述共用流程的專案特定要求。
+
+## Communication
+
+- 與使用者日常對話預設使用簡明、具體、白話的繁體中文（臺灣用語），包括 `/grill-with-docs` 的提問；深入問題也用日常語言表達。
+- 必要時使用技術詞，陌生詞第一次出現時簡短解釋。保留函式、類別、API、函式庫、路徑及指令原名。
+
+## Project-specific rules
+
+以下保留 QuantCore 原有的分支、實盤安全、測試、部署、資料與 ADR 規則；與上方共用規則同時適用，較具體的 QuantCore 限制優先。
 
 ## 1. 開始工作前必讀
 
@@ -87,7 +123,7 @@ Worktree 只隔離程式碼。以下**不會被隔離**，需各自處理：
 | `output/` | 回測產出 | .gitignored |
 | `automation/logs/` | 執行日誌 | .gitignored |
 
-**永遠不 commit 機密或個人資料。** 範本見 `accounts.example.json` / `config.example.json`。
+**永遠不 commit 機密或個人資料，也不把機密寫入 logs 或範例。** 範本見 `accounts.example.json` / `config.example.json`。機器專屬設定、產生資料、快取與執行輸出依現有 `.gitignore` 保留在 Git 之外；若在 working tree 或歷史中發現機密，停止處理並回報，不複製其內容。
 
 ## 8. Commit 訊息
 
@@ -108,6 +144,15 @@ Scope: `sp500`, `sr`, `skewls`, `automation`, `backtest`, `data`, `robustness`, 
 2. 更新 `docs/adr/README.md` 索引
 3. 合回 main 時若撞號，以 main 為準重編
 4. 被否決的提案也要記錄（`rejected`），附上否決的數據依據
+
+## Design and implementation
+
+- 遵循既有架構、命名、格式與依賴；以符合驗收條件的最小完整變更實作。行為、環境設定或介面改變時更新相關文件；長期架構決策依下方 ADR 流程記錄。
+- QuantCore 的領域術語以 `CONTEXT.md` 為準，並查閱相關 ADR；若與既有 ADR 衝突，先提出衝突，不自行覆寫。
+
+## Completion
+
+檢查 diff、執行適用驗證，交回時說明變更、測試結果與限制；保留無關的既有修改。Commit、push、PR 與合併仍須遵守使用者指定的審核界線及上方 QuantCore 規則。
 
 ## Agent skills
 

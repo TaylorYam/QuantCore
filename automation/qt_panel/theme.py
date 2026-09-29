@@ -50,4 +50,11 @@ QToolTip {{ background: {SURFACE}; color: {TEXT}; border: 1px solid {BORDER_STRO
 #Faint {{ color: {TEXT_FAINT}; font-size: 9pt; }}
 #MedNum {{ font-size: 12pt; font-weight: 500; }}
 #Placeholder {{ color: {TEXT_DIM}; font-size: 11pt; }}
+
+QPushButton {{
+    background: {SURFACE}; border: 1px solid {BORDER_STRONG}; border-radius: 6px;
+    padding: 5px 14px; color: {TEXT};
+}}
+QPushButton:hover {{ background: {SURFACE_HOVER}; }}
+QPushButton:pressed {{ background: {BORDER}; }}
 """

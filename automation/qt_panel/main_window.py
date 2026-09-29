@@ -100,7 +100,7 @@ class MainWindow(QMainWindow):
         self._stack = QStackedWidget()
         self._nav_group = QButtonGroup(self, exclusive=True)
         self._nav: dict[str, QPushButton] = {}
-        self.dashboard = Dashboard(accounts)
+        self.dashboard = Dashboard(accounts, on_recheck=gateway_source.recheck)
         self._pages: dict[str, QWidget] = {"Dashboard": self.dashboard}
         for name in PAGES[1:]:
             self._pages[name] = _placeholder(PLACEHOLDER[name])

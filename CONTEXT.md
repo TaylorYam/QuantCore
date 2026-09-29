@@ -110,6 +110,10 @@ _Avoid_: 斷線自動重連（auto-restart 是每天固定一次的重啟，不�
 從 Panel 一鍵開啟三個實盤 Gateway（Taylor／Rosa／Yvonne），把各自帳密填進登入視窗，再依序替每個帳戶按「登入」：一次一個，等它登入完成（手機 IB Key 確認後，Gateway 記錄登入完成；最多 30 秒）才換下一個，讓手機一次只跳一則 IB Key。使用者只負責在手機確認 IB Key。沒登入成功的帳戶不重試，留在它的視窗給使用者手動處理（連續輸錯密碼會鎖帳號）。前提是三個實盤 Gateway 都沒有在執行（有登入或只停在登入畫面都算在執行），否則整批拒絕。模擬帳戶（paper）Gateway 不在範圍內，也不影響判斷。
 _Avoid_: Auto-restart（那是 Gateway 每天自己重啟、免 IB Key，和這個一鍵登入無關）
 
+**並行模式 (Parallel Mode)**:
+Panel 從 Tk 換成 PySide6 的過渡期（ADR-0012）：新 Panel 和 Tk Panel 同時存在，新 Panel 只看不下單、不值班，IB 連線用自己的唯讀身分；值班與實盤下單仍由 Tk Panel 負責。相對的是**正式模式**：切換後值班、系統匣、實盤送單都交給新 Panel。由 `config.json` 的 `qt_panel_mode` 決定，預設並行模式。
+_Avoid_: 測試模式、Paper 模式（並行模式照樣讀實盤帳戶，只是不下單；paper 是模擬帳戶）
+
 **Broker（券商連線層）**:
 QuantCore 跟 IB 打交道的那一層：送單、查成交、查持倉與權益。畫面上使用者操作的單（手動單、Sync Pos、交給策略接管）屬於 Panel 的 Trading；真正把單送進 IB、回報成交的是 Broker。
 _Avoid_: Execution（與 [[執行盤 (Execution Session)]] 撞名）、Orders（架構圖上同時指畫面的單與送單層，見下方 Flagged ambiguities）

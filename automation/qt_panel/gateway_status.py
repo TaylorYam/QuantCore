@@ -2,7 +2,9 @@
 
 主視窗只認 `GatewaySource`：start(on_state) 之後，每次狀態變化呼叫
 on_state(name, state, detail)，state ∈ init／connecting／online／offline。
-回呼可能來自背景 thread，主視窗負責轉回 Qt 主執行緒。
+回呼可能來自背景 thread，主視窗負責轉回 Qt 主執行緒。recheck() 對應 Tk 的
+Check Now：心跳斷了不會自己重連（2026-04-15 事故，見 gateway_monitor），要
+重新偵測就得有人按。
 """
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ OnState = Callable[[str, str, str], None]
 class GatewaySource(Protocol):
     def start(self, on_state: OnState) -> None: ...
     def stop(self) -> None: ...
+    def recheck(self) -> None: ...
 
 
 class MonitorGatewaySource:
@@ -45,6 +48,13 @@ class MonitorGatewaySource:
     def stop(self) -> None:
         if self._monitor is not None:
             self._monitor.stop()
+
+    def recheck(self) -> None:
+        """已斷的帳戶各重連一次；還連著或正在連的不動（同 Tk Check Now）。"""
+        if self._monitor is None:
+            return
+        for name in self._names:
+            self._monitor.restart_account_thread(name)
 
 
 def gateway_source_for(mode: PanelMode, account_names: list[str], *,

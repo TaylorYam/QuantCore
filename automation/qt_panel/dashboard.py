@@ -1,7 +1,9 @@
 """Dashboard 畫面（#147：Gateway 狀態；其餘區塊在 #148 補齊）。"""
 from __future__ import annotations
 
-from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
+from typing import Callable
+
+from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 from qt_panel import theme
 from qt_panel.widgets import Card, dot, label, set_dot_color, visible_text
@@ -43,13 +45,20 @@ class GatewayCard(Card):
 
 
 class Dashboard(QWidget):
-    def __init__(self, accounts: list[dict]):
+    def __init__(self, accounts: list[dict], *, on_recheck: Callable[[], None]):
         super().__init__()
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 20, 24, 20)
         root.setSpacing(16)
 
-        root.addWidget(label("GATEWAY", name="SectionTitle"))
+        head = QHBoxLayout()
+        head.addWidget(label("GATEWAY", name="SectionTitle"))
+        head.addStretch(1)
+        self.recheck_button = QPushButton("重新檢查")
+        self.recheck_button.setToolTip("斷線的 Gateway 各重連一次；連著的不動（同 Tk 的 Check Now）")
+        self.recheck_button.clicked.connect(on_recheck)
+        head.addWidget(self.recheck_button)
+        root.addLayout(head)
         row = QHBoxLayout()
         row.setSpacing(12)
         self._cards: dict[str, GatewayCard] = {}

@@ -6,13 +6,20 @@
 """
 from __future__ import annotations
 
+import ast
+import os
 import threading
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
-pytest.importorskip("PySide6")
-pytest.importorskip("pytestqt")
+if os.environ.get("CI"):
+    import PySide6  # noqa: F401  CI 一定要真的跑，不能整檔略過還顯示綠燈
+    import pytestqt  # noqa: F401
+else:
+    pytest.importorskip("PySide6")
+    pytest.importorskip("pytestqt")
 
 from PySide6.QtCore import Qt  # noqa: E402
 
@@ -28,6 +35,7 @@ class FakeGatewaySource:
         self.on_state = None
         self.started = 0
         self.stopped = 0
+        self.rechecks = 0
 
     def start(self, on_state):
         self.on_state = on_state
@@ -35,6 +43,9 @@ class FakeGatewaySource:
 
     def stop(self):
         self.stopped += 1
+
+    def recheck(self):
+        self.rechecks += 1
 
 
 class FakeTray:
@@ -160,15 +171,29 @@ def test_portfolio_and_trading_are_placeholders_that_point_to_tk(make_window):
         assert "Tk Panel" in w.page_text(page)
 
 
-def test_watch_is_not_started(make_window, monkeypatch):
-    import monitor_engine
-
-    def boom(*_a, **_k):
-        raise AssertionError("新 Panel 並行模式不可以啟動值班")
-
-    monkeypatch.setattr(monitor_engine, "MonitorEngine", boom)
+def test_recheck_button_asks_the_source_to_probe_again(make_window, source, qtbot):
     w = make_window()
-    assert "Tk Panel" in w.dashboard.watch_note()
+    qtbot.mouseClick(w.dashboard.recheck_button, Qt.LeftButton)
+    assert source.rechecks == 1
+
+
+def test_dashboard_says_watch_runs_in_the_tk_panel(make_window):
+    assert "Tk Panel" in make_window().dashboard.watch_note()
+
+
+def test_new_panel_has_no_path_to_watch_telegram_or_orders():
+    """並行模式不值班、不發 Telegram、不下單（ADR-0012）：qt_panel 完全不 import 這些模組。"""
+    forbidden = {"monitor_engine", "notify", "manual_orders", "sync_position",
+                 "strategy_takeover", "rebalance_ib"}
+    package = Path(__file__).resolve().parents[1] / "qt_panel"
+    imported = set()
+    for path in package.glob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                imported |= {a.name.split(".")[0] for a in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+    assert not imported & forbidden
 
 
 # ── 關閉與系統匣 ─────────────────────────────────────────────────────
@@ -212,6 +237,7 @@ class FakeMonitor:
         self.role = role
         self.readonly = readonly
         self.started = self.stopped = False
+        self.restarted = []
         FakeMonitor.instances.append(self)
 
     def start(self):
@@ -219,6 +245,10 @@ class FakeMonitor:
 
     def stop(self, timeout=3.0):
         self.stopped = True
+
+    def restart_account_thread(self, name):
+        self.restarted.append(name)
+        return name == "Rosa"
 
 
 def test_parallel_mode_watches_gateways_with_the_readonly_identity():
@@ -240,6 +270,9 @@ def test_parallel_mode_watches_gateways_with_the_readonly_identity():
     mon.on_state_change("Taylor", "online")
     mon.on_disconnected("Rosa", "timeout")
     assert seen == [("Taylor", "online", ""), ("Rosa", "offline", "timeout")]
+
+    src.recheck()
+    assert mon.restarted == ["Taylor", "Rosa"]
 
     src.stop()
     assert mon.stopped

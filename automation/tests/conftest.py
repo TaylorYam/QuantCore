@@ -13,8 +13,12 @@ Run with:
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+
+# PySide6 Panel 測試（#147）一律離屏：CI 沒有桌面，本機也不跳視窗。Tk 不受影響。
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 # Ensure automation/ is importable as flat package, and repo root for strategies
 _AUTOMATION_DIR = Path(__file__).resolve().parent.parent
@@ -23,11 +27,6 @@ for p in (_ROOT_DIR, _AUTOMATION_DIR):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-
-import os
-
-# PySide6 Panel 測試（#147）一律離屏：CI 沒有桌面，本機也不跳視窗。Tk 不受影響。
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 

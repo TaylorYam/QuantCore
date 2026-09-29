@@ -17,5 +17,6 @@
   "sinopac_secret_key": "",
   "sinopac_person_id": "",
   "sinopac_ca_path": "",
-  "sinopac_ca_password": ""
+  "sinopac_ca_password": "",
+  "qt_panel_mode": "parallel"
 }

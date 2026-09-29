@@ -7,7 +7,7 @@ it represents the Panel confirmation boundary and receives a fake IB adapter.
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import sqlite3
 from decimal import Decimal
@@ -62,6 +62,10 @@ class FakeIBState:
         self.sleep_actions = {}
         self.ib_instances = []
         self.sleeps_since_place = 0
+        # (date, close) daily bars returned by reqHistoricalData.
+        self.daily_bars = []
+        self.history_requests = []
+        self.history_error = None
 
 
 class FakeEvent:
@@ -133,6 +137,12 @@ class FakeIB:
             timeZoneId=self.state.contract_time_zone,
             validExchanges=self.state.valid_exchanges,
         )]
+
+    def reqHistoricalData(self, contract, **kwargs):
+        self.state.history_requests.append((getattr(contract, "exchange", ""), kwargs))
+        if self.state.history_error:
+            raise self.state.history_error
+        return [NS(date=day, close=close) for day, close in self.state.daily_bars]
 
     def openTrades(self):
         return list(self.state.open_trades)
@@ -1917,3 +1927,126 @@ def test_reading_completed_orders_leaves_ib_insync_wrapper_unchanged(tmp_path):
     assert state.ib_instances
     for ib in state.ib_instances:
         assert "completedOrder" not in vars(ib.wrapper)
+
+
+# Limit-price deviation warning (#136): compare against the last completed
+# regular-session close; warn above 10%, never block.
+FRI, MON = date(2026, 9, 11), date(2026, 9, 14)
+DAILY_BARS = [(date(2026, 9, 10), 50.0), (FRI, 100.0), (MON, 80.0)]
+
+
+@pytest.mark.parametrize("session,now,expected_day", [
+    ("REGULAR", MKT_NOW, FRI),               # Mon 14:00 ET: Mon's bar is partial
+    ("PRE_MARKET", PRE_MARKET_NOW, FRI),
+    ("AFTER_HOURS", AFTER_HOURS_NOW, MON),   # Mon has closed
+    ("OVERNIGHT", OVERNIGHT_NOW, MON),
+])
+def test_limit_price_is_compared_with_last_completed_close(
+    tmp_path, session, now, expected_day,
+):
+    state = FakeIBState()
+    state.daily_bars = DAILY_BARS
+    service = service_for(tmp_path, state, clock=lambda: now)
+
+    preview = service.preview("Taylor", "ZZZZ", 5, 120, session=session)
+
+    close = dict(DAILY_BARS)[expected_day]
+    assert (preview.prior_close_date, preview.prior_close) == (expected_day, close)
+    percent = abs(120 / close - 1) * 100
+    assert preview.confirmation_text.startswith(
+        f"⚠ 價格警示：限價 $120.0 比 {expected_day:%Y-%m-%d} 收盤 ${close:g} "
+        f"高 {percent:.1f}%\n"
+    )
+    # Closes come from the SMART listing, never the OVERNIGHT route.
+    assert [exchange for exchange, _ in state.history_requests] == ["SMART"]
+    assert state.history_requests[0][1]["useRTH"] is True
+    # A warning never blocks the order.
+    service.validate_preview(preview)
+    service.submit(preview)
+    assert state.placed[0].order.lmtPrice == 120
+
+
+@pytest.mark.parametrize("limit,warned,word", [
+    (110, False, None), (90, False, None),       # exactly 10%: no warning
+    (110.01, True, "高"), (89.99, True, "低"),
+    (105, False, None),
+])
+def test_price_warning_threshold_is_strictly_above_ten_percent(
+    tmp_path, limit, warned, word,
+):
+    state = FakeIBState()
+    state.daily_bars = DAILY_BARS
+    service = service_for(tmp_path, state, clock=lambda: MKT_NOW)
+
+    preview = service.preview("Taylor", "ZZZZ", 5, limit)
+
+    assert bool(preview.price_warning) is warned
+    assert ("價格警示" in preview.confirmation_text) is warned
+    if warned:
+        assert f"收盤 $100 {word} " in preview.price_warning
+
+
+@pytest.mark.parametrize("bars,error", [
+    ([], None),                                  # no data / no permission
+    ([(date(2026, 9, 10), 100.0)], None),        # stale: expected Fri missing
+    ([(FRI, float("nan"))], None),
+    ([(FRI, 0.0)], None),
+    (DAILY_BARS, TimeoutError("historical data timeout")),
+])
+def test_missing_close_says_unchecked_and_still_sends(tmp_path, bars, error):
+    state = FakeIBState()
+    state.daily_bars = bars
+    state.history_error = error
+    service = service_for(tmp_path, state, clock=lambda: MKT_NOW)
+
+    preview = service.preview("Taylor", "ZZZZ", 5, 500)
+
+    assert preview.prior_close is None
+    assert preview.confirmation_text.startswith("⚠ 無法取得前一日收盤價，未檢查價格偏離\n")
+    service.validate_preview(preview)
+    service.submit(preview)
+    assert len(state.placed) == 1
+
+
+def test_cash_limit_order_is_also_price_checked(tmp_path):
+    state = FakeIBState()
+    state.daily_bars = DAILY_BARS
+    service = service_for(tmp_path, state, clock=lambda: MKT_NOW)
+
+    preview = service.preview("Taylor", "ZZZZ", None, 50, amount_usd="500")
+
+    assert preview.quantity == 10
+    assert "比 2026-09-11 收盤 $100 低 50.0%" in preview.confirmation_text
+
+
+def test_market_orders_are_not_price_checked(tmp_path):
+    state = FakeIBState()
+    state.daily_bars = DAILY_BARS
+    service = service_for(
+        tmp_path, state, clock=lambda: MKT_NOW,
+        quote_reader=lambda _ib, _contract, side: BrokerQuote(300, MKT_NOW, side),
+    )
+
+    for amount, quantity in (("900", None), (None, 5)):
+        preview = service.preview("Taylor", "ZZZZ", quantity, None,
+                                  amount_usd=amount, order_type="MKT")
+        assert preview.price_warning == ""
+        assert "收盤" not in preview.confirmation_text
+    assert state.history_requests == []
+
+
+def test_changed_close_does_not_invalidate_preview_or_get_reread_at_submit(tmp_path):
+    state = FakeIBState()
+    state.daily_bars = DAILY_BARS
+    service = service_for(tmp_path, state, clock=lambda: MKT_NOW)
+    preview = service.preview("Taylor", "ZZZZ", 5, 120)
+    assert len(state.history_requests) == 1
+
+    state.daily_bars = [(FRI, 119.0)]
+    fresh = service.validate_preview(preview)
+    assert fresh.price_warning == ""             # confirmation shows the latest close
+    state.history_error = TimeoutError("down")
+    service.submit(preview)
+
+    assert len(state.history_requests) == 2      # preview + validate, not submit
+    assert state.placed[0].order.lmtPrice == 120

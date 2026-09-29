@@ -48,7 +48,10 @@ class ManualOrderWindow:
         "OVERNIGHT": "隔夜 OVERNIGHT",
     }
 
-    def __init__(self, parent, account_names, service, theme, fonts, log=None):
+    SYMBOL_SUGGESTION_LIMIT = 8
+
+    def __init__(self, parent, account_names, service, theme, fonts, log=None,
+                 symbol_loader=None):
         self.parent = parent
         self.service = service
         self.theme = theme
@@ -63,6 +66,10 @@ class ManualOrderWindow:
         self._order_rows = {}
         self._replacement_order_ref = None
         self._replacement_request = None
+        # None = 載入中；False = 取不到清單（只少提示，不影響下單）
+        self._symbols = None
+        self._suggested = []
+        self._accepting_symbol = False
 
         self.win = tk.Toplevel(parent)
         self.win.title("手動下單 — 整股限價委託")
@@ -93,8 +100,10 @@ class ManualOrderWindow:
         self.action_var.trace_add("write", self._action_changed)
         self.input_mode_var.trace_add("write", self._input_mode_changed)
         self.order_type_var.trace_add("write", self._order_type_changed)
+        self.symbol_var.trace_add("write", self._symbol_changed)
 
         self._build(account_names)
+        self._load_symbols(symbol_loader)
         self._render_orders(self._active_orders())
         if self.service.has_active_orders():
             self._refresh_status()
@@ -126,8 +135,16 @@ class ManualOrderWindow:
         self.account_box.grid(row=0, column=1, sticky="ew", padx=(0, 14), pady=5)
 
         self._field_label(form, "美股代碼", 0, 2)
-        self.symbol_entry = ttk.Entry(form, textvariable=self.symbol_var, width=18)
-        self.symbol_entry.grid(row=0, column=3, sticky="ew", pady=5)
+        symbol_cell = tk.Frame(form, bg=t["bg2"])
+        symbol_cell.grid(row=0, column=3, sticky="ew", pady=5)
+        self.symbol_entry = ttk.Entry(symbol_cell, textvariable=self.symbol_var, width=18)
+        self.symbol_entry.pack(fill="x")
+        # width=1：提示長短不影響欄寬，表單不會跟著跳動
+        self.symbol_hint = tk.Label(
+            symbol_cell, text="", font=self.fonts["small"], width=1,
+            bg=t["bg2"], fg=t["text_dim"], anchor="w",
+        )
+        self.symbol_hint.pack(fill="x")
 
         self._field_label(form, self.SHARES_MODE, 1, 0)
         self.quantity_entry = ttk.Entry(
@@ -195,6 +212,23 @@ class ManualOrderWindow:
             anchor="w",
         )
         helper.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(7, 2))
+
+        # 代號建議浮在代碼欄下方（右緣對齊），不另開視窗、不搶焦點。
+        self.symbol_suggestions = tk.Listbox(
+            self.win, activestyle="none", exportselection=False,
+            font=("Consolas", 10), bg=t["bg"], fg=t["text"],
+            selectbackground=t["accent"], selectforeground=t["accent_hl"],
+            highlightthickness=1, relief="flat",
+        )
+        self.symbol_suggestions.bind("<ButtonRelease-1>", self._accept_suggestion)
+        self.symbol_entry.bind("<Down>", lambda _e: self._move_suggestion(1))
+        self.symbol_entry.bind("<Up>", lambda _e: self._move_suggestion(-1))
+        self.symbol_entry.bind("<Return>", self._accept_suggestion)
+        self.symbol_entry.bind("<Escape>", lambda _e: self._hide_suggestions())
+        self.symbol_entry.bind(
+            "<FocusOut>", lambda _e: self.win.after(150, self._hide_if_unfocused),
+            add="+",
+        )
 
         actions = tk.Frame(form, bg=t["bg2"])
         actions.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(9, 0))
@@ -280,6 +314,120 @@ class ManualOrderWindow:
             bg=t["bg"], fg=t["text_dim"], anchor="w",
         )
         self.order_status.pack(fill="x", pady=(4, 3))
+
+    def _load_symbols(self, loader):
+        if loader is None:
+            from us_symbols import load_directory as loader
+
+        result = []
+
+        def worker():
+            try:
+                result.append(loader())
+            except Exception:
+                result.append(None)
+
+        # 下載可能要數秒；結果由主執行緒輪詢取回，背景執行緒不碰 Tk。
+        def collect():
+            if self._closed:
+                return
+            if not result:
+                self.win.after(200, collect)
+                return
+            self._symbols = result[0] if result[0] else False
+            self._update_symbol_hint()
+
+        self._update_symbol_hint()
+        threading.Thread(target=worker, daemon=True).start()
+        self.win.after(200, collect)
+
+    def _symbol_changed(self, *_args):
+        self._update_symbol_hint()
+        if (self._symbols and not self._accepting_symbol
+                and self._focused() is self.symbol_entry):
+            self._show_suggestions(
+                self._symbols.search(self.symbol_var.get(), self.SYMBOL_SUGGESTION_LIMIT),
+            )
+
+    def _update_symbol_hint(self):
+        text = self.symbol_var.get().strip()
+        color = self.theme["text_dim"]
+        if self._symbols is None:
+            hint = "美股代號清單載入中…" if text else ""
+        elif self._symbols is False:
+            hint = "無法取得美股代號清單，請自行確認代號" if text else ""
+        elif not text:
+            hint = ""
+        else:
+            name = self._symbols.name_for(text)
+            if name:
+                hint = name if len(name) <= 60 else name[:59] + "…"
+                color = self.theme["text"]
+            else:
+                hint = "清單內找不到此代號（仍可預覽，以 IB 合約檢查為準）"
+                color = self.theme["yellow"]
+        self.symbol_hint.configure(text=hint, fg=color)
+
+    def _show_suggestions(self, matches):
+        self._suggested = [symbol for symbol, _name in matches]
+        box = self.symbol_suggestions
+        box.delete(0, "end")
+        # 只剩一個且已完全相符時不必再跳清單
+        if not matches or (len(matches) == 1 and matches[0][0]
+                           == self.symbol_var.get().strip().upper()):
+            self._hide_suggestions()
+            return
+        for symbol, name in matches:
+            box.insert("end", f"{symbol:<6}  {name[:60]}")
+        box.configure(height=len(matches))
+        box.selection_set(0)
+        box.place(in_=self.symbol_entry, relx=1.0, rely=1.0, y=2,
+                  anchor="ne", width=520)
+        box.lift()
+
+    def _hide_suggestions(self):
+        self._suggested = []
+        self.symbol_suggestions.place_forget()
+
+    def _focused(self):
+        try:
+            return self.win.focus_get()
+        except (KeyError, tk.TclError):  # Combobox 下拉清單開著時 focus_get 會 KeyError
+            return None
+
+    def _hide_if_unfocused(self):
+        if self._closed:
+            return
+        focus = self._focused()
+        if focus not in (self.symbol_entry, self.symbol_suggestions):
+            self._hide_suggestions()
+
+    def _move_suggestion(self, step):
+        if not self._suggested:
+            return "break"
+        box = self.symbol_suggestions
+        current = box.curselection()
+        index = (current[0] + step) if current else 0
+        index = max(0, min(index, len(self._suggested) - 1))
+        box.selection_clear(0, "end")
+        box.selection_set(index)
+        box.see(index)
+        return "break"
+
+    def _accept_suggestion(self, _event=None):
+        if not self._suggested:
+            return None
+        current = self.symbol_suggestions.curselection()
+        symbol = self._suggested[current[0] if current else 0]
+        self._hide_suggestions()
+        self._accepting_symbol = True
+        try:
+            self.symbol_var.set(symbol)
+        finally:
+            self._accepting_symbol = False
+        self.symbol_entry.icursor("end")
+        self.symbol_entry.focus_set()
+        return "break"
 
     def _field_label(self, parent, text, row, column):
         tk.Label(
@@ -543,6 +691,8 @@ class ManualOrderWindow:
         self.refresh_button.configure(state=state)
         self.account_box.configure(state="disabled" if value else "readonly")
         self.symbol_entry.configure(state=state)
+        if value:
+            self._hide_suggestions()
         self.input_mode_box.configure(state="disabled" if value else "readonly")
         self.quantity_entry.configure(
             state=state if self.input_mode_var.get() == self.SHARES_MODE else "disabled",

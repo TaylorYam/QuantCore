@@ -75,3 +75,7 @@ skills-lock.json
 
 # Generated tray icon assets (rebuilt on first launch from quantcore.ico)
 automation/assets/tray/*.png
+
+# 手動下單美股代號清單快取（#140，Nasdaq Trader 每日下載）
+automation/us_symbols.json
+automation/us_symbols.json.tmp

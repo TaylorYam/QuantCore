@@ -109,15 +109,21 @@ def write_credentials(account: str, creds: Credentials) -> None:
 # ── 執行中的 Gateway ─────────────────────────────────────────────────
 
 def _live_gateway_pids() -> dict[int, str]:
-    """pid → 實盤帳戶名；paper 或認不出來的 Gateway 不列入。"""
+    """pid → 實盤帳戶名。paper 不列入；讀不到 command line（權限不足）的 Gateway
+    認不出是誰，以「無法辨識的 Gateway（pid N）」列入 — 寧可多擋，不可重複開。"""
     found = {}
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         name = (proc.info.get("name") or "").lower()
         if not name.startswith("ibgateway"):
             continue
-        account = live_account_for_cmdline(proc.info.get("cmdline") or [])
+        pid = proc.info["pid"]
+        cmdline = proc.info.get("cmdline")
+        if not cmdline:
+            found[pid] = f"無法辨識的 Gateway（pid {pid}）"
+            continue
+        account = live_account_for_cmdline(cmdline)
         if account:
-            found[proc.info["pid"]] = account
+            found[pid] = account
     return found
 
 
@@ -249,6 +255,9 @@ class WindowsPorts:
 
     def __init__(self, ask_credentials: Callable[[str], Credentials | None]):
         self._ask = ask_credentials
+        # 三個同時開，登入視窗等待共用同一個時限（從第一個開啟起算），
+        # 某個視窗一直不出現時，不會讓後面已經出現的視窗多等一輪
+        self._window_deadline: float | None = None
 
     def running_live_accounts(self) -> set[str]:
         return set(_live_gateway_pids().values())
@@ -263,16 +272,18 @@ class WindowsPorts:
         return self._ask(account)
 
     def launch(self, account: str) -> None:
+        if self._window_deadline is None:
+            self._window_deadline = time.monotonic() + LOGIN_WINDOW_TIMEOUT_SEC
         if start_gateway(account.upper()) is None:
             raise LaunchFailed(f"{account} Gateway 開不起來（安裝資料夾或 ibgateway.exe 不見了，詳見 log）")
 
     def fill_login(self, account: str, creds: Credentials) -> None:
-        deadline = time.monotonic() + LOGIN_WINDOW_TIMEOUT_SEC
+        deadline = self._window_deadline or time.monotonic() + LOGIN_WINDOW_TIMEOUT_SEC
         hwnd = None
-        while time.monotonic() < deadline:
+        while True:
             pids = {pid for pid, a in _live_gateway_pids().items() if a == account}
             hwnd = _login_window_for(pids) if pids else None
-            if hwnd:
+            if hwnd or time.monotonic() >= deadline:
                 break
             time.sleep(_POLL_SEC)
         if not hwnd:
@@ -284,6 +295,7 @@ class WindowsPorts:
         _type_text(creds.username)
         _ensure_front(hwnd, account)
         _press(_VK_TAB)
+        _ensure_front(hwnd, account)
         _select_all()
         _type_text(creds.password)
         log.info(f"Gateway [{account}] 登入視窗已填入帳密（未按登入）")

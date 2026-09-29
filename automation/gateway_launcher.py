@@ -55,16 +55,21 @@ def _same_dir(a: str | Path, b: Path) -> bool:
 def live_account_for_cmdline(cmdline: list[str]) -> str | None:
     r"""執行中 Gateway 的 command line → 實盤帳戶名（Taylor/Rosa/Yvonne），不是就 None。
 
-    以 jtsConfigDir 為準；沒帶（例如從開始選單直接開）就看 exe 所在的安裝資料夾。
+    先看 jtsConfigDir，對不上再看 exe 所在的安裝資料夾：用舊設定夾或從開始選單
+    直接開的實盤 Gateway 也要算到（寧可多擋，不可重複開）。
     paper Gateway（C:\IB-Paper Trade）不屬於任何實盤帳戶。
     """
     if not cmdline:
         return None
     config_dir = next((arg[len(_CONFIG_DIR_FLAG):] for arg in cmdline
                        if arg.startswith(_CONFIG_DIR_FLAG)), None)
-    folder = config_dir if config_dir is not None else str(Path(cmdline[0]).parent)
-    for account, settings_dir in ACCOUNT_SETTINGS_DIR.items():
-        if _same_dir(folder, settings_dir):
+    if config_dir is not None:
+        for account, settings_dir in ACCOUNT_SETTINGS_DIR.items():
+            if _same_dir(config_dir, settings_dir):
+                return account.capitalize()
+    install_dir = Path(cmdline[0]).parent
+    for account, gateway_dir in ACCOUNT_GATEWAY_DIR.items():
+        if _same_dir(install_dir, gateway_dir):
             return account.capitalize()
     return None
 
@@ -81,8 +86,8 @@ def start_gateway(account_name: str) -> subprocess.Popen | None:
     """
     啟動指定帳戶的 IB Gateway。
 
-    第一次啟動會跳登入畫面，需手動輸入帳密 + IBKR Mobile 2FA。
-    之後 Gateway 自己 daily auto-restart，週日 ColdRestart 需要再一次 2FA。
+    啟動後會跳登入畫面，要輸入帳密 + 手機 IB Key（Panel「啟動 Gateway」會代填帳密）。
+    之後 Gateway 每天 Auto-restart 免 IB Key，週日 ColdRestart 需要再登入一次。
 
     回傳 Popen 物件，None 表示失敗。
     """

@@ -51,7 +51,9 @@ class Started:
 
 
 class Ports(Protocol):
-    def running_live_accounts(self) -> set[str]: ...
+    def running_live_accounts(self) -> set[str]:
+        """在跑的實盤帳戶名；認不出是誰的 Gateway 以一段描述代表（也會擋下）。"""
+        ...
     def get_credentials(self, account: str) -> Credentials | None: ...
     def set_credentials(self, account: str, creds: Credentials) -> None: ...
     def ask_credentials(self, account: str) -> Credentials | None: ...
@@ -62,7 +64,9 @@ class Ports(Protocol):
 def start_live_gateways(ports: Ports):
     running = ports.running_live_accounts()
     if running:
-        return Refused(running=[a for a in LIVE_ACCOUNTS if a in running])
+        # 實盤帳戶照固定順序在前；認不出是誰的 Gateway 也算在跑，列在後面
+        return Refused(running=[a for a in LIVE_ACCOUNTS if a in running]
+                       + sorted(running - set(LIVE_ACCOUNTS)))
 
     creds = {}
     for account in LIVE_ACCOUNTS:
@@ -79,6 +83,8 @@ def start_live_gateways(ports: Ports):
             ports.launch(account)
         except LaunchFailed as e:
             outcomes[account], details[account] = "launch_failed", str(e)
+        except Exception as e:  # 一個帳戶開不起來不能擋住另外兩個
+            outcomes[account], details[account] = "launch_failed", f"{type(e).__name__}: {e}"
 
     for account in LIVE_ACCOUNTS:
         if account in outcomes:

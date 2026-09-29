@@ -563,7 +563,7 @@ class ControlPanel(tk.Tk):
 
         self._btn(gw_bar, "Check Now", self._refresh_gateway_status,
                   BTN_BG, padx=6, pady=2, font=self.font_small).pack(side="right")
-        self._btn(gw_bar, "Gateway 帳密", self._update_gateway_credentials,
+        self._btn(gw_bar, "更新 Gateway 帳密", self._update_gateway_credentials,
                   BTN_BG, padx=6, pady=2, font=self.font_small).pack(side="right", padx=(0, 4))
         self.btn_start_gateways = self._btn(gw_bar, "啟動 Gateway", self._start_gateways,
                                             GREEN, padx=6, pady=2, font=self.font_small)
@@ -1059,7 +1059,7 @@ class ControlPanel(tk.Tk):
         ).show()
 
     def _update_gateway_credentials(self):
-        """Gateway 帳密按鈕：選帳戶 → 輸入新帳密 → 存進認證管理員（改密碼後用）。"""
+        """更新 Gateway 帳密按鈕：選帳戶 → 輸入新帳密 → 存進認證管理員（改密碼後用）。"""
         from account_picker import AccountPicker
         from gateway_start import LIVE_ACCOUNTS
         AccountPicker(

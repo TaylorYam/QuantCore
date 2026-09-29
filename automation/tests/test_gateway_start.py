@@ -7,7 +7,8 @@ from __future__ import annotations
 import pytest
 
 from gateway_start import (
-    Cancelled, Credentials, Refused, Started, describe, start_live_gateways,
+    Cancelled, Credentials, LaunchFailed, Refused, Started, WindowNotFound,
+    describe, start_live_gateways,
 )
 
 CREDS = {
@@ -21,13 +22,14 @@ class FakePorts:
     """In-memory stand-ins for the four ports; records what they were asked to do."""
 
     def __init__(self, running=(), stored=None, answers=None,
-                 no_window=(), launch_fails=(), fill_errors=None):
+                 no_window=(), launch_fails=(), fill_errors=None, launch_errors=None):
         self.running = set(running)
         self.stored = dict(CREDS if stored is None else stored)
         self.answers = dict(answers or {})
         self.no_window = set(no_window)
         self.launch_fails = set(launch_fails)
         self.fill_errors = dict(fill_errors or {})
+        self.launch_errors = dict(launch_errors or {})
         self.launched: list[str] = []
         self.typed: list[tuple[str, Credentials]] = []
         self.asked: list[str] = []
@@ -53,14 +55,14 @@ class FakePorts:
     # Launcher
     def launch(self, account):
         if account in self.launch_fails:
-            from gateway_start import LaunchFailed
             raise LaunchFailed(f"找不到 {account} 的 ibgateway.exe")
+        if account in self.launch_errors:
+            raise self.launch_errors[account]
         self.launched.append(account)
 
     # Login filler
     def fill_login(self, account, creds):
         if account in self.no_window:
-            from gateway_start import WindowNotFound
             raise WindowNotFound(f"{account} 登入視窗沒出現")
         if account in self.fill_errors:
             raise self.fill_errors[account]
@@ -198,3 +200,22 @@ def test_all_filled_message_has_no_manual_hint():
     result = Started(outcomes={"Taylor": "filled", "Rosa": "filled", "Yvonne": "filled"})
 
     assert describe(result).endswith("請確認每個視窗的帳號，按「登入」後到手機確認 IB Key。")
+
+
+def test_an_unidentifiable_gateway_also_refuses_and_is_named():
+    ports = FakePorts(running={"無法辨識的 Gateway（pid 4242）", "Rosa"})
+
+    assert start_live_gateways(ports) == Refused(
+        running=["Rosa", "無法辨識的 Gateway（pid 4242）"])
+    assert ports.launched == []
+
+
+def test_an_unexpected_launch_error_only_fails_that_account():
+    ports = FakePorts(launch_errors={"Taylor": PermissionError("ibgateway1.exe 改名被拒")})
+
+    result = start_live_gateways(ports)
+
+    assert result.outcomes == {
+        "Taylor": "launch_failed", "Rosa": "filled", "Yvonne": "filled",
+    }
+    assert "ibgateway1.exe 改名被拒" in result.details["Taylor"]

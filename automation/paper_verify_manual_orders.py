@@ -191,6 +191,7 @@ def print_ib_view(args) -> None:
         print(
             f"    {label:<12} {trade.contract.symbol} {order.action} {order.totalQuantity:g} "
             f"{order.orderType} lmt={order.lmtPrice} tif={order.tif} "
+            f"exch={getattr(trade.contract, 'exchange', '')} "
             f"outsideRth={order.outsideRth} status={trade.orderStatus.status} "
             f"filled={trade.orderStatus.filled:g}"
         )
@@ -217,11 +218,15 @@ def cmd_hours(args, timeline: Timeline) -> None:
         contracts = list(ib.qualifyContracts(ib_stock(args.symbol.upper())) or [])
         if len(contracts) != 1:
             raise SystemExit(f"IB 無法唯一確認 {args.symbol} 合約")
+        if args.exchange != "SMART":
+            contracts = [_routed_contract(ib, contracts[0], args.exchange)]
         details = list(ib.reqContractDetails(contracts[0]) or [])
     finally:
         ib.disconnect()
     now = datetime.now(timezone.utc)
-    print(f"[{_clock_text()}] {args.symbol.upper()} 合約交易時間")
+    print(f"[{_clock_text()}] {args.symbol.upper()} 合約交易時間（exchange={args.exchange}）")
+    for item in details:
+        print(f"  validExchanges 含 OVERNIGHT = {'OVERNIGHT' in str(item.validExchanges).split(',')}")
     for item in details:
         print(f"  timeZoneId   = {item.timeZoneId}")
         print(f"  tradingHours = {item.tradingHours}")
@@ -288,6 +293,63 @@ def cmd_probe_2109(args, timeline: Timeline) -> None:
         print(f"  probe 最終狀態：{trade.orderStatus.status}，成交 {trade.orderStatus.filled:g} 股")
         if trade.orderStatus.filled:
             print("  注意：paper 帳戶因 probe 產生持倉，請記錄並自行處理")
+    finally:
+        ib.disconnect()
+
+
+def _routed_contract(ib, smart_contract, exchange: str):
+    """The same listing routed directly to `exchange` (e.g. OVERNIGHT)."""
+    from ib_insync import Stock
+
+    routed = Stock(smart_contract.symbol, exchange, "USD",
+                   primaryExchange=smart_contract.primaryExchange)
+    qualified = list(ib.qualifyContracts(routed) or [])
+    if len(qualified) != 1:
+        raise SystemExit(f"IB 無法確認 {smart_contract.symbol} 在 {exchange} 的合約")
+    return qualified[0]
+
+
+def cmd_probe_overnight(args, timeline: Timeline) -> None:
+    """Send a far-from-market LMT BUY routed to OVERNIGHT and record IB's answers."""
+    from ib_insync import LimitOrder
+    from symbol_contract import ib_stock
+
+    ib = _connect(args, timeline)
+    try:
+        [smart] = ib.qualifyContracts(ib_stock(args.symbol.upper()))
+        contract = _routed_contract(ib, smart, "OVERNIGHT")
+        [details] = ib.reqContractDetails(contract)
+        now = datetime.now(timezone.utc)
+        in_session = mo.ib_trading_hours_include(details.tradingHours, details.timeZoneId, now)
+        print(f"[{_clock_text()}] OVERNIGHT tradingHours 涵蓋現在 = {in_session}")
+        if not in_session and not args.allow_closed:
+            raise SystemExit("目前不在 OVERNIGHT 交易時間；要測收單行為請加 --allow-closed")
+        order = LimitOrder(
+            "BUY", args.quantity, args.limit, account=args.account, tif=args.tif,
+            orderRef=f"{PROBE_REF}:OVERNIGHT:{args.tif}",
+        )
+        timeline.mark(
+            f"送出 LMT BUY {args.quantity} {contract.symbol} @ {args.limit} "
+            f"exchange=OVERNIGHT tif={args.tif}（不經手動下單服務）"
+        )
+        trade = ib.placeOrder(contract, order)
+        deadline = time.perf_counter() + args.wait
+        while time.perf_counter() < deadline and not trade.isDone():
+            ib.sleep(0.2)
+        print(f"  結果：status={trade.orderStatus.status} filled={trade.orderStatus.filled:g}")
+        for entry in trade.log:
+            if entry.errorCode:
+                print(f"  IB 訊息：code={entry.errorCode} {entry.message}")
+        if args.keep or trade.isDone():
+            if args.keep and not trade.isDone():
+                print("  保留此單（--keep），用 status 觀察到期行為")
+            return
+        timeline.mark("取消 probe 委託")
+        ib.cancelOrder(order)
+        deadline = time.perf_counter() + 5
+        while time.perf_counter() < deadline and not trade.isDone():
+            ib.sleep(0.2)
+        print(f"  取消後狀態：{trade.orderStatus.status}")
     finally:
         ib.disconnect()
 
@@ -366,6 +428,18 @@ def main(argv=None) -> None:
 
     hours = sub.add_parser("hours", help="讀 IB 合約交易時間並顯示程式判定")
     hours.add_argument("--symbol", required=True)
+    hours.add_argument("--exchange", default="SMART", choices=("SMART", "OVERNIGHT"))
+
+    overnight = sub.add_parser("probe-overnight",
+                               help="直接送 OVERNIGHT 遠價限價買單，記錄 IB 回應")
+    overnight.add_argument("--symbol", required=True)
+    overnight.add_argument("--limit", type=float, required=True, help="遠低於市價的限價")
+    overnight.add_argument("--tif", default="OVT", help="效期字串，例如 OVT、DAY、OND")
+    overnight.add_argument("--quantity", type=int, default=1)
+    overnight.add_argument("--wait", type=float, default=10.0)
+    overnight.add_argument("--keep", action="store_true", help="不取消，留著觀察到期")
+    overnight.add_argument("--allow-closed", action="store_true",
+                           help="不在隔夜時段也送出（測試收單行為）")
 
     probe = sub.add_parser("probe-2109", help="刻意觸發 2109，量測它與第一個狀態的先後")
     probe.add_argument("--symbol", required=True)
@@ -395,7 +469,8 @@ def main(argv=None) -> None:
         parser.error("--account 必須是 paper 帳號（DU/DF 開頭）")
     args.account = args.account.upper()
     commands = {
-        "hours": cmd_hours, "probe-2109": cmd_probe_2109, "submit": cmd_submit,
+        "hours": cmd_hours, "probe-2109": cmd_probe_2109,
+        "probe-overnight": cmd_probe_overnight, "submit": cmd_submit,
         "status": cmd_status, "list": cmd_list, "cancel": cmd_cancel,
         "force-retry": cmd_force_retry,
     }

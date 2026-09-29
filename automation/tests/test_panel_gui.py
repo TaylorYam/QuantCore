@@ -1058,6 +1058,20 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
                 if rows:
                     values = window.orders.item(rows[0], "values")
                     assert values[4:6] == ("LMT $12.50", "盤後 outsideRTH / DAY")
+                window.session_var.set("隔夜（IBKR Overnight）")
+                window.preview_button.invoke()
+                step[0] = "overnight_preview"
+            elif step[0] == "overnight_preview" and window._preview is not None:
+                assert fake_service.preview_sessions[-1] == "OVERNIGHT"
+                assert "交易時段：隔夜" in window.preview_text.cget("text")
+                window.confirm_button.invoke()
+                step[0] = "overnight_submit"
+            elif (step[0] == "overnight_submit" and len(fake_service.submitted) == 5
+                  and not window._busy):
+                assert fake_service.submitted[-1].session == "OVERNIGHT"
+                rows = window.orders.get_children()
+                if rows:
+                    assert window.orders.item(rows[0], "values")[5] == "隔夜 OVERNIGHT"
                 panel._quit_app()
                 step[0] = "done"
                 return
@@ -1077,7 +1091,7 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
                 pass
     assert not exceptions, exceptions
     assert step[0] == "done"
-    assert len(fake_service.submitted) == 4
+    assert len(fake_service.submitted) == 5
 
 
 def test_monitor_alert_uses_shared_telegram_settings(fake_config, monkeypatch):

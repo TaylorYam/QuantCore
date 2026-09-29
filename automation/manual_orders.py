@@ -1,10 +1,11 @@
 """Safe, persistent Panel workflow for manual orders.
 
 The service is deliberately small in scope: one configured Account, a US
-USD-denominated stock/ETF contract, whole shares, DAY time-in-force, and
-either the regular session (LMT or MKT) or an explicitly chosen pre-market /
-after-hours session (LMT only). UI callers must show the returned preview and
-require an explicit confirmation before calling submit().
+USD-denominated stock/ETF contract, whole shares, and either the regular
+session (LMT or MKT, DAY), an explicitly chosen pre-market / after-hours
+session (LMT only, DAY + outsideRth), or the IBKR Overnight venue (LMT only,
+routed to OVERNIGHT). UI callers must show the returned preview and require an
+explicit confirmation before calling submit().
 """
 
 from __future__ import annotations
@@ -50,12 +51,25 @@ _STATUS_LABELS = {
     "EXPIRED": "已失效",
     "SUBMISSION_UNKNOWN": "送單結果待確認",
 }
-SESSION_LABELS = {"REGULAR": "一般時段", "PRE_MARKET": "盤前", "AFTER_HOURS": "盤後"}
+SESSION_LABELS = {
+    "REGULAR": "一般時段", "PRE_MARKET": "盤前", "AFTER_HOURS": "盤後",
+    "OVERNIGHT": "隔夜",
+}
 _EXTENDED_SESSIONS = frozenset({"PRE_MARKET", "AFTER_HOURS"})
+_LMT_ONLY_SESSIONS = _EXTENDED_SESSIONS | {"OVERNIGHT"}
 _SESSION_WINDOWS = {
     "PRE_MARKET": "美東 04:00–09:30",
     "AFTER_HOURS": "美東 16:00–20:00，提早收盤日 13:00–17:00",
+    "OVERNIGHT": "IBKR 隔夜市場，美東 20:00–03:50，週日 18:00 起，以 IB 交易時間為準",
 }
+_OVERNIGHT_EXCHANGE = "OVERNIGHT"
+# Paper, 2026-09-29: an OVERNIGHT-routed order is rejected (10329, then 201)
+# unless the Gateway bypasses the redirect precaution for stock API orders.
+_IB_DIRECT_ROUTING_BLOCKED = 10329
+_DIRECT_ROUTING_BLOCKED_MESSAGE = (
+    "遭 IB 拒單：Gateway 的 API 預防設定擋下直接路由；請在該 Gateway 的"
+    "設定 → API → 預防，勾選「股票API委託單跳過重新傳遞委託單警告」"
+)
 # Extended-hours orders are not accepted in a window's last minute, leaving
 # time to confirm outsideRth and, if IB dropped it, to cancel before the
 # regular session (pre-market) or the window's end (after-hours).
@@ -270,6 +284,10 @@ class ManualOrderPreview:
         return self.session in _EXTENDED_SESSIONS
 
     @property
+    def overnight(self) -> bool:
+        return self.session == "OVERNIGHT"
+
+    @property
     def intent_action(self) -> str:
         return "SELL_SHORT" if self.action == "SELL" and self.projected_position < 0 else self.action
 
@@ -305,7 +323,13 @@ class ManualOrderPreview:
                 )
         quantity_label = "換算整股股數" if self.amount_usd is not None else "整股股數"
         session = SESSION_LABELS[self.session]
-        if self.outside_rth:
+        if self.overnight:
+            session += f"（{_SESSION_WINDOWS[self.session]}）"
+            validity = (
+                "效期：隔夜（以 DAY 送往 OVERNIGHT，IB 記為 Overnight 效期）\n"
+                "未成交部分於本次隔夜時段結束（美東 03:50）失效，不進入白天時段"
+            )
+        elif self.outside_rth:
             session += f"（{_SESSION_WINDOWS[self.session]}，允許延長時段成交）"
             carries_into = (
                 "會延續至當日一般時段與盤後，並" if self.session == "PRE_MARKET" else ""
@@ -620,6 +644,11 @@ class ManualOrderStore:
             if current["status"] in _TERMINAL_STATUSES and updates.get("status") in _ACTIVE_STATUSES:
                 conn.rollback()
                 return dict(current)
+            if current["status"] == "REJECTED" and updates.get("status") == "CANCELLED":
+                # A later completed-order record reports a refused order as
+                # plain Cancelled, without the reason; keep the rejection.
+                updates.pop("status")
+                updates.pop("status_message", None)
             if "filled_quantity" in updates:
                 updates["filled_quantity"] = max(
                     int(current["filled_quantity"] or 0),
@@ -849,8 +878,13 @@ def _status_from_trade(trade) -> tuple[str | None, str, int, float | None]:
     elif quantity > 0 and filled >= quantity:
         mapped = "FILLED"
     message = _STATUS_LABELS.get(mapped, raw_status or "等待 IB 狀態")
+    entries = getattr(trade, "log", ()) or ()
+    if mapped == "CANCELLED" and any(
+            getattr(entry, "errorCode", 0) == _IB_DIRECT_ROUTING_BLOCKED for entry in entries):
+        # ib_insync marks an order IB refused as Cancelled; this refusal
+        # comes from a Gateway setting the trader has to change.
+        return "REJECTED", _DIRECT_ROUTING_BLOCKED_MESSAGE, filled, avg_fill_price
     if mapped == "REJECTED":
-        entries = getattr(trade, "log", ()) or ()
         details = [str(getattr(entry, "message", "") or "").strip() for entry in entries]
         details = [item for item in details if item]
         if details:
@@ -1083,9 +1117,10 @@ class ManualOrderService:
     def _check_session(session: str, order_type: str) -> None:
         if session not in SESSION_LABELS:
             raise ManualOrderError("請選擇有效交易時段")
-        if session in _EXTENDED_SESSIONS and order_type != "LMT":
+        if session in _LMT_ONLY_SESSIONS and order_type != "LMT":
             raise ManualOrderError(
-                "盤前／盤後只接受 LMT 限價單；不會改用一般時段或市價送出"
+                f"{'隔夜' if session == 'OVERNIGHT' else '盤前／盤後'}只接受 LMT 限價單；"
+                "不會改用其他時段或市價送出"
             )
 
     def _require_extended_session(self, session: str) -> datetime:
@@ -1119,6 +1154,52 @@ class ManualOrderService:
                 f"IB 合約交易時間顯示 {symbol} 目前不可交易，不支援此盤前／盤後委託；"
                 "不會改用一般時段送出"
             )
+
+    def _overnight_contract(self, ib, contract):
+        """The qualified listing routed to OVERNIGHT, if IB lists it and is open now.
+
+        Eligibility and hours come from IB itself: the listing's
+        validExchanges must include OVERNIGHT, and the OVERNIGHT-routed
+        contract's trading hours (20:00-03:50 ET, Sunday from 18:00) must
+        cover now and the next minute.
+        """
+        import copy
+
+        symbol = getattr(contract, "symbol", "")
+        try:
+            listing = list(ib.reqContractDetails(contract) or [])
+            if len(listing) != 1:
+                raise ValueError(f"expected one contract detail, got {len(listing)}")
+            venues = {item.strip().upper()
+                      for item in str(listing[0].validExchanges or "").split(",")}
+        except Exception as exc:
+            raise ManualOrderError(
+                f"無法確認 {symbol} 是否為 IB 隔夜可交易標的，已阻擋委託"
+            ) from exc
+        if _OVERNIGHT_EXCHANGE not in venues:
+            raise ManualOrderError(
+                f"IB 未將 {symbol} 列為隔夜可交易標的，已阻擋委託；不會改用其他時段送出"
+            )
+        routed = copy.copy(contract)
+        routed.exchange = _OVERNIGHT_EXCHANGE
+        now = self._clock()
+        try:
+            details = list(ib.reqContractDetails(routed) or [])
+            if len(details) != 1:
+                raise ValueError(f"expected one contract detail, got {len(details)}")
+            hours, zone = details[0].tradingHours, details[0].timeZoneId
+            covered = (ib_trading_hours_include(hours, zone, now)
+                       and ib_trading_hours_include(hours, zone, now + _EXTENDED_SUBMIT_MARGIN))
+        except Exception as exc:
+            raise ManualOrderError(
+                f"無法確認 IB {symbol} 的隔夜交易時間，已阻擋委託；不會改用其他時段送出"
+            ) from exc
+        if not covered:
+            raise ManualOrderError(
+                "目前不在 IB 隔夜交易時段，或距離時段結束不到 1 分鐘"
+                f"（{_SESSION_WINDOWS['OVERNIGHT']}）；不會改用其他時段送出"
+            )
+        return routed
 
     @staticmethod
     def _qualify_contract(ib, symbol: str):
@@ -1372,6 +1453,8 @@ class ManualOrderService:
         contract, primary_exchange = self._qualify_contract(ib, symbol)
         if extended_now is not None:
             self._require_extended_contract_hours(ib, contract, extended_now)
+        if session == "OVERNIGHT":
+            contract = self._overnight_contract(ib, contract)
         quote = None
         conversion_price = None
         if order_type == "MKT":
@@ -1581,7 +1664,7 @@ class ManualOrderService:
         """Cancel an extended-hours order IB may run as a regular-session order.
 
         The reason is persisted so reconciliation keeps re-sending the cancel
-        while IB still reports the order working (see _enforce_outside_rth).
+        while IB still reports the order working (see _enforce_session_routing).
         """
         row = self.store.get(order_ref)
         if row is None or row["status"] in _TERMINAL_STATUSES:
@@ -1612,16 +1695,19 @@ class ManualOrderService:
                 filled_quantity=filled, avg_fill_price=avg_price,
             )
 
-    def _enforce_outside_rth(self, ib, ctx, open_trades) -> None:
-        """Force-cancel extended-hours orders IB may run as regular-session ones.
+    def _enforce_session_routing(self, ib, ctx, open_trades) -> None:
+        """Force-cancel manual orders IB may run outside their chosen session.
 
         Runs on a fresh connection, where open_trades carry IB's own record
-        of each order. An extended-hours order is force-cancelled when:
-        - it is still unconfirmed: its submitting connection ended (crash or
-          disconnect) before the confirmation window, so a 2109 sent to that
-          connection can no longer be received; or
-        - IB's record shows outsideRth=False, which is how IB reports an
-          order whose outsideRth it ignored (paper-verified 2026-09-28).
+        of each order. An order is force-cancelled when:
+        - extended-hours and still unconfirmed: its submitting connection
+          ended (crash or disconnect) before the confirmation window, so a
+          2109 sent to that connection can no longer be received;
+        - extended-hours and IB's record shows outsideRth=False, which is how
+          IB reports an order whose outsideRth it ignored (paper 2026-09-28);
+        - overnight and IB's record is not tif=OVERNIGHT on the OVERNIGHT
+          venue, the form IB gives an accepted overnight order (paper
+          2026-09-29); anything else could survive into the day session.
         Forced cancels are re-sent while IB still reports the order working.
         """
         for row in self.store.list_active(ctx.name):
@@ -1632,8 +1718,16 @@ class ManualOrderService:
                     reason = _UNCONFIRMED_REASON
                 elif trade is not None and not getattr(trade.order, "outsideRth", True):
                     reason = _IB_RECORD_WITHOUT_OUTSIDE_RTH_REASON
-                if reason:
-                    self.store.update(row["order_ref"], forced_cancel_reason=reason)
+            elif not reason and row.get("session") == "OVERNIGHT" and trade is not None:
+                tif = str(getattr(trade.order, "tif", "") or "").upper()
+                venue = str(getattr(getattr(trade, "contract", None), "exchange", "") or "").upper()
+                if (tif, venue) != (_OVERNIGHT_EXCHANGE, _OVERNIGHT_EXCHANGE):
+                    reason = (
+                        "IB 委託紀錄不是隔夜效期或路由"
+                        f"（tif={tif or '未提供'}，exchange={venue or '未提供'}），可能延續到白天時段"
+                    )
+            if reason and not row.get("forced_cancel_reason"):
+                self.store.update(row["order_ref"], forced_cancel_reason=reason)
             if reason and trade is not None and _ib_order_status(trade) in _IB_WORKING_STATUSES:
                 self._force_cancel(ib, trade, row["order_ref"], reason)
 
@@ -1717,7 +1811,7 @@ class ManualOrderService:
                 try:
                     with self._connected(account) as (ctx, ib):
                         open_trades = self._sync_trades(ib, ctx)
-                        self._enforce_outside_rth(ib, ctx, open_trades)
+                        self._enforce_session_routing(ib, ctx, open_trades)
                 except Exception as exc:
                     errors.append(f"{account}：{exc}")
                     for row in self.store.list_active(account):
@@ -1760,12 +1854,13 @@ class ManualOrderService:
             else f"LMT ${float(row['limit_price']):.2f}"
         )
         session = SESSION_LABELS[row["session"]]
+        validity = session if row["session"] == "OVERNIGHT" else f"{session} DAY"
         forced = row.get("forced_cancel_reason")
         return (
             f"手動委託結果｜{row['account_name']}\n"
             f"委託編號：{notification_ref}\n"
             f"{row['action']} {quantity} 股 {row['symbol']}｜"
-            f"{price_condition}｜{session} DAY\n"
+            f"{price_condition}｜{validity}\n"
             f"結果：{status}\n{fill_detail}"
             + (f"\n自動取消原因：{forced}" if forced else "")
         )

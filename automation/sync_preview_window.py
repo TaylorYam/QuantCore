@@ -58,6 +58,7 @@ class SyncPreviewWindow:
         log: Callable[[str], None],
         btn_factory: Callable,
         on_confirm: Callable[[SyncPlan], None],
+        on_takeover: Callable[[str], None] | None = None,
     ):
         missing = _THEME_KEYS - set(theme)
         if missing:
@@ -69,6 +70,8 @@ class SyncPreviewWindow:
         self._log = log
         self._btn = btn_factory
         self.on_confirm = on_confirm
+        # 「交給策略接管」（#107）：Panel 注入；None = 不顯示按鈕
+        self.on_takeover = on_takeover
         self.win: tk.Toplevel | None = None
         self._status: tk.Label | None = None
         self._body: tk.Frame | None = None
@@ -443,8 +446,14 @@ class SyncPreviewWindow:
             o = held.get(sym)
             order_text = (f"  原本要 {o.action} {o.qty}sh ({o.current}→{o.target})"
                           if o else "  本次沒有對應的策略單")
-            tk.Label(frame, text=f"  {sym:<6s}{order_text}",
-                     font=("Consolas", 9), bg=t["bg2"], fg=t["text"]).pack(anchor="w")
+            row = tk.Frame(frame, bg=t["bg2"])
+            row.pack(fill="x")
+            tk.Label(row, text=f"  {sym:<6s}{order_text}",
+                     font=("Consolas", 9), bg=t["bg2"], fg=t["text"]).pack(side="left")
+            if self.on_takeover is not None:
+                self._btn(row, "交給策略接管",
+                          lambda s=sym: self._handle_takeover(s),
+                          t["btn_bg"], width=14).pack(side="right")
             tk.Label(frame, text=f"    {reason}", font=("Consolas", 9),
                      justify="left", wraplength=680,
                      bg=t["bg2"], fg=t["text_dim"]).pack(anchor="w")
@@ -555,6 +564,11 @@ class SyncPreviewWindow:
                 self.win.destroy()
             except Exception:
                 pass
+
+    def _handle_takeover(self, symbol: str) -> None:
+        """交給策略接管（#107）：這份 Sync 預覽作廢，改開單一標的接管視窗。"""
+        self._close()
+        self.on_takeover(symbol)
 
     def _handle_confirm(self) -> None:
         """使用者按 Confirm — 跳確認 dialog，然後呼叫 on_confirm(plan)"""

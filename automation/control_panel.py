@@ -1090,10 +1090,77 @@ class ControlPanel(tk.Tk):
             log=self._log,
             btn_factory=self._btn,
             on_confirm=on_confirm,
+            on_takeover=lambda sym: self._takeover_symbol(account_name, sym),
         )
         window.show_computing()
         threading.Thread(target=self._sync_compute_thread,
                          args=(account_name, window), daemon=True).start()
+
+    # ── 交給策略接管（#107）──────────────────────────────────────────
+
+    def _takeover_symbol(self, account_name: str, symbol: str):
+        """單一標的交給策略接管：開窗算預覽，確認後只送這一檔。"""
+        from takeover_window import TakeoverWindow
+
+        self._log(f"[>] 交給策略接管 — [{account_name}] {symbol}，計算中...")
+
+        def on_confirm(preview):
+            threading.Thread(target=self._takeover_execute,
+                             args=(account_name, preview, window),
+                             daemon=True).start()
+
+        window = TakeoverWindow(
+            parent=self, account_name=account_name, symbol=symbol,
+            theme=self._theme, log=self._log, btn_factory=self._btn,
+            on_confirm=on_confirm,
+        )
+        window.show_computing()
+        threading.Thread(target=self._takeover_compute_thread,
+                         args=(account_name, symbol, window), daemon=True).start()
+
+    def _takeover_ctx(self, account_name: str):
+        from account_utils import ROLE_TAKEOVER
+        from account_ctx import AccountCtx
+        return AccountCtx.from_name(account_name, ROLE_TAKEOVER)
+
+    def _takeover_compute_thread(self, account_name: str, symbol: str, window):
+        try:
+            import strategy_takeover as st
+
+            def progress(msg: str):
+                self.after(0, lambda m=msg: (self._log(m), window.progress(m)))
+
+            preview = st.build_preview(self._takeover_ctx(account_name), symbol,
+                                       log_fn=progress)
+            self.after(0, lambda p=preview: window.show_preview(p))
+        except Exception as e:
+            err_msg = str(e)
+            self.after(0, lambda m=err_msg: self._log(f"[X] 接管預覽失敗: {m}"))
+            self.after(0, lambda m=err_msg: window.show_error(m))
+
+    def _takeover_execute(self, account_name: str, preview, window):
+        import strategy_takeover as st
+        ctx = self._takeover_ctx(account_name)
+        try:
+            result = st.submit(preview, ctx,
+                               log_fn=lambda m: self.after(0, lambda m=m: self._log(m)))
+        except st.TakeoverStale as e:
+            self.after(0, lambda f=e.fresh, n=str(e): window.show_preview(f, note=n))
+            return
+        except Exception as e:
+            err_msg = str(e)
+            self.after(0, lambda m=err_msg: self._log(f"[X] 接管失敗: {m}"))
+            self.after(0, lambda m=err_msg: window.show_error(m))
+            return
+        self.after(0, lambda r=result: (
+            self._log(f"[{'OK' if r.status == 'COMPLETED' else '!!'}] "
+                      f"接管 {preview.symbol}: {r.message}"),
+            window.show_result(r)))
+        # 接管結果（完成／未完成）→ 該帳戶 Telegram，送達才記已通知
+        try:
+            st.notify(ctx)
+        except Exception as e:
+            self.after(0, lambda m=str(e): self._log(f"[!] 接管結果通知失敗: {m}"))
 
     def _sync_compute_thread(self, account_name: str, window):
         """背景計算理論持倉與差額 — S10 thin wrapper，實作在 sync_position.compute_sync_plan"""

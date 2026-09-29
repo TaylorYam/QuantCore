@@ -48,7 +48,7 @@ _Avoid_: Merge, Netting（sector-level netting 是被否決的另一提案，見
 _Avoid_: Order list（只是最終輸出）、Rebalance（口語泛稱整個流程；指決策層時用本詞）
 
 **手動持倉 (Manual Holding)**:
-[[Account]] 裡不歸任何 [[Strategy]] 管的部位。來源兩種：[[Rebalance Plan]] 分類為策略外（other）的 IB 持倉 — 策略不會買自己 [[Universe]] 以外的標的，所以股數以 IB 為準、每次觀察跟著 IB（IB App／TWS 交易只寫 log）；以及 Panel 手動單的實際成交（送出不算，部分成交照實際股數）。唯一實作 `automation/manual_attribution.py`，紀錄檔 `automation/manual_attribution.sqlite3`（gitignored），第一次觀察即啟用（#106）。手動持倉的標的日後進入策略 Universe（被加入 S&P 500）= 碰撞：只暫停該 Account／該標的的策略單，Sync Pos 預覽顯示原因、該帳戶 Telegram 通知一次；手動股數歸零且手動單都結案才自動解除，其餘等「交給策略接管」（#107）。紀錄讀寫失敗 → 該 Account 這一輪策略單全部不送。不改訊號、[[Allocation]]、state、[[Combine]] 取整 — 碰撞期間 SP500 訊號仍把該檔當持股。
+[[Account]] 裡不歸任何 [[Strategy]] 管的部位。來源兩種：[[Rebalance Plan]] 分類為策略外（other）的 IB 持倉 — 策略不會買自己 [[Universe]] 以外的標的，所以股數以 IB 為準、每次觀察跟著 IB（IB App／TWS 交易只寫 log）；以及 Panel 手動單的實際成交（送出不算，部分成交照實際股數）。唯一實作 `automation/manual_attribution.py`，紀錄檔 `automation/manual_attribution.sqlite3`（gitignored），第一次觀察即啟用（#106）。手動持倉的標的日後進入策略 Universe（被加入 S&P 500）= 碰撞：只暫停該 Account／該標的的策略單，Sync Pos 預覽顯示原因、該帳戶 Telegram 通知一次；手動股數歸零且手動單都結案才自動解除；否則由 Panel「交給策略接管」（#107，`automation/strategy_takeover.py`）解除：預覽該檔的策略整數目標（Sync Pos 同一套語意、per-Strategy 取整、不寫 state）與差額，確認後只送這一檔，成交且 IB 股數對上才把歸屬轉給策略。紀錄讀寫失敗 → 該 Account 這一輪策略單全部不送。不改訊號、[[Allocation]]、state、[[Combine]] 取整 — 碰撞期間 SP500 訊號仍把該檔當持股。
 _Avoid_: 其他持倉（log 的 OTHER 是分類結果，手動持倉另含已碰撞的標的）、Discretionary position
 
 **Inverse Proxy**:

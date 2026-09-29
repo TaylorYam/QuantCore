@@ -143,3 +143,26 @@ def describe(result) -> str:
     else:
         hint = "未登入的請到該 Gateway 視窗手動登入；逾時的可能還在等手機 IB Key 確認。"
     return "\n".join(lines) + "\n\n" + hint
+
+
+# ── 登入後自動 Check Now → Refresh IB 的節奏（#131）─────────────────────
+# Rosa 的 Gateway（10.41）登入完成後要再過一陣子才接受 API 連線；太早 Check Now
+# 會失敗，而 GatewayMonitor 失敗就停。所以：最後一個登入後先等一下再 Check Now，
+# 沒連上的隔一段時間再試，每帳戶最多連 POST_LOGIN_MAX_CHECKS 次（反覆連線失敗
+# 曾讓 10.41 卡死），之後不論結果都 Refresh IB。
+POST_LOGIN_FIRST_CHECK_SEC = 15
+POST_LOGIN_RETRY_SEC = 20
+POST_LOGIN_MAX_CHECKS = 3
+POST_LOGIN_POLL_SEC = 1
+
+
+def next_step_after_login(states: dict[str, str], checks_done: int) -> str:
+    """依各帳戶 Gateway 監控狀態決定下一步：'wait' | 'retry' | 'refresh'。
+
+    states: 帳戶 → 'init' | 'connecting' | 'online' | 'offline'（GatewayMonitor）。
+    """
+    if any(s in ("init", "connecting") for s in states.values()):
+        return "wait"
+    if any(s != "online" for s in states.values()) and checks_done < POST_LOGIN_MAX_CHECKS:
+        return "retry"
+    return "refresh"

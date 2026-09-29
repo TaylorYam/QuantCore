@@ -463,11 +463,13 @@ def test_sync_pos_asks_for_account_and_previews_that_account(fake_config, monkey
     assert sp500_accounts == list(names)
 
 
-def run_gateway_start(fake_config, monkeypatch, never_logs_in=()):
+def run_gateway_start(fake_config, monkeypatch, never_logs_in=(), rosa_online_after_checks=1):
     """Press 啟動 Gateway on an offline Panel with faked Windows ports: Yvonne's
     credentials are missing and typed into the dialog. Returns what happened, in
-    order, in `calls` — popups, Check Now and Refresh IB (#129)."""
+    order, in `calls` — popups, Check Now and Refresh IB (#129). Rosa's monitor comes
+    online only after `rosa_online_after_checks` Check Nows (#131)."""
     import tkinter as tk
+    import gateway_start
     import gateway_start_win
     from gateway_start import Credentials
 
@@ -506,6 +508,17 @@ def run_gateway_start(fake_config, monkeypatch, never_logs_in=()):
     # Startup refresh_all schedules its own Check Now; only the button's follow-up counts here.
     monkeypatch.setattr(panel_type, "refresh_all", lambda self: None)
     monkeypatch.setattr(panel_type, "_refresh_gateway_status", lambda self: calls.append("check_now"))
+    for name in ("POST_LOGIN_FIRST_CHECK_SEC", "POST_LOGIN_RETRY_SEC", "POST_LOGIN_POLL_SEC"):
+        monkeypatch.setattr(gateway_start, name, 0)
+
+    def gw_states(self):
+        checks = calls.count("check_now")
+        if checks == 0:
+            return {a["name"]: "offline" for a in fake_config[1]}
+        return {a["name"]: ("online" if a["name"] != "Rosa" or checks >= rosa_online_after_checks
+                            else "offline") for a in fake_config[1]}
+
+    monkeypatch.setattr(panel_type, "_gw_states", gw_states)
     monkeypatch.setattr(panel_type, "_refresh_ib_live", lambda self: calls.append("refresh_ib"))
     exceptions = []
 
@@ -584,6 +597,23 @@ def test_start_gateways_all_logged_in_skips_the_popup_and_refreshes(fake_config,
     """#121/#129: credentials asked for off the Tk thread; when all three log in there
     is no popup to dismiss — Check Now then Refresh IB run by themselves."""
     assert run_gateway_start(fake_config, monkeypatch) == ["check_now", "refresh_ib"]
+
+
+@own_process
+def test_start_gateways_checks_again_until_a_slow_gateway_is_online(fake_config, monkeypatch):
+    """#131: Rosa's 10.41 Gateway accepts API connections a while after logging in.
+    A Check Now that finds it offline is repeated; Refresh IB waits until it's online."""
+    calls = run_gateway_start(fake_config, monkeypatch, rosa_online_after_checks=2)
+
+    assert calls == ["check_now", "check_now", "refresh_ib"]
+
+
+@own_process
+def test_start_gateways_gives_up_waiting_after_three_check_nows(fake_config, monkeypatch):
+    """#131: at most three Check Nows per start; then Refresh IB the accounts that are up."""
+    calls = run_gateway_start(fake_config, monkeypatch, rosa_online_after_checks=99)
+
+    assert calls == ["check_now", "check_now", "check_now", "refresh_ib"]
 
 
 @own_process

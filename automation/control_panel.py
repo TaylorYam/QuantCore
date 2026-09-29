@@ -1058,9 +1058,52 @@ class ControlPanel(tk.Tk):
                 if started:
                     self.lower()
         if started:
-            # 登入完原本要手動按的 Check Now → Refresh IB（#129）
-            self._refresh_gateway_status()
+            # 登入完原本要手動按的 Check Now → Refresh IB（#129），等 Gateway 真的
+            # 能接 API 再做（#131）
+            self._after_login_refresh()
+
+    def _after_login_refresh(self):
+        import gateway_start as gs
+        self._post_login_checks = 0
+        self._log(f"[GW] {gs.POST_LOGIN_FIRST_CHECK_SEC} 秒後 Check Now，連上後 Refresh IB")
+        self.after(int(gs.POST_LOGIN_FIRST_CHECK_SEC * 1000), self._post_login_check_now)
+
+    def _post_login_check_now(self):
+        import gateway_start as gs
+        self._post_login_checks += 1
+        self._post_login_polls = 0
+        self._refresh_gateway_status()
+        self.after(int(gs.POST_LOGIN_POLL_SEC * 1000), self._post_login_poll)
+
+    def _post_login_poll(self):
+        import gateway_start as gs
+        states = self._gw_states()
+        self._post_login_polls += 1
+        if states is None:
+            step = "refresh"
+        elif self._post_login_polls > 60 / max(gs.POST_LOGIN_POLL_SEC, 0.001):
+            step = "refresh"          # 監控一分鐘都沒結果：不再等，直接 Refresh
+        else:
+            step = gs.next_step_after_login(states, self._post_login_checks)
+        if step == "wait":
+            self.after(int(gs.POST_LOGIN_POLL_SEC * 1000), self._post_login_poll)
+        elif step == "retry":
+            pending = [n for n, s in states.items() if s != "online"]
+            self._log(f"[GW] {'、'.join(pending)} 還沒連上，"
+                      f"{gs.POST_LOGIN_RETRY_SEC} 秒後再 Check Now")
+            self.after(int(gs.POST_LOGIN_RETRY_SEC * 1000), self._post_login_check_now)
+        else:
+            pending = [n for n, s in (states or {}).items() if s != "online"]
+            if pending:
+                self._log(f"[GW] {'、'.join(pending)} 仍未連上，先 Refresh 其他帳戶")
             self._refresh_ib_live()
+
+    def _gw_states(self):
+        """各帳戶 Gateway 監控狀態；監控沒啟動回 None。"""
+        mon = getattr(self, "_gw_monitor", None)
+        if mon is None:
+            return None
+        return {a["name"]: mon.get_state(a["name"]) for a in self._accounts_meta}
 
     def _ask_gateway_credentials(self, account: str):
         """背景執行緒呼叫：在 Tk 主線程跳帳密輸入框，等使用者按 OK / Cancel。"""

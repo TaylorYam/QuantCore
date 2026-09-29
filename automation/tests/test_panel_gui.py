@@ -474,12 +474,11 @@ def run_gateway_start(fake_config, monkeypatch, never_logs_in=(), rosa_online_af
     from gateway_start import Credentials
 
     stored = {"Taylor": Credentials("t_user", "t-pw"), "Rosa": Credentials("r_user", "r-pw")}
-    launched, typed, submitted, api_ports_given, calls = [], [], [], [], []
+    launched, typed, submitted, calls = [], [], [], []
 
     class FakeWindowsPorts:
-        def __init__(self, ask_credentials, api_ports):
+        def __init__(self, ask_credentials):
             self.ask_credentials = ask_credentials
-            api_ports_given.append(api_ports)
 
         def running_live_accounts(self):
             return set()
@@ -586,9 +585,8 @@ def run_gateway_start(fake_config, monkeypatch, never_logs_in=(), rosa_online_af
     assert stored["Yvonne"] == Credentials("y_user", "y-pw")
     assert launched == ["Taylor", "Rosa", "Yvonne"]
     assert typed[-1] == ("Yvonne", Credentials("y_user", "y-pw"))
-    # #127: logins go out one account at a time, each checked on its own API port
+    # #127: logins go out one account at a time
     assert submitted == ["Taylor", "Rosa", "Yvonne"]
-    assert api_ports_given == [{a["name"]: a["port"] for a in fake_config[1]}]
     return calls
 
 

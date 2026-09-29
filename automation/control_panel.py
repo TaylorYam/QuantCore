@@ -1026,9 +1026,7 @@ class ControlPanel(tk.Tk):
         from gateway_start_win import WindowsPorts
         started = all_logged_in = False
         try:
-            api_ports = {a["name"]: int(a["port"]) for a in self._accounts_meta}
-            result = start_live_gateways(WindowsPorts(
-                ask_credentials=self._ask_gateway_credentials, api_ports=api_ports))
+            result = start_live_gateways(WindowsPorts(ask_credentials=self._ask_gateway_credentials))
             msg, ok = describe(result), True
             started = isinstance(result, Started)
             all_logged_in = started and result.all_logged_in

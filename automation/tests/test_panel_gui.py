@@ -463,17 +463,16 @@ def test_sync_pos_asks_for_account_and_previews_that_account(fake_config, monkey
     assert sp500_accounts == list(names)
 
 
-@own_process
-def test_start_gateways_asks_for_missing_credentials_then_shows_the_result(fake_config, monkeypatch):
-    """#121: 啟動 Gateway runs off the Tk thread; a missing account's credentials are
-    asked for in a dialog on the Tk thread, stored, used, and the result is shown.
-    The Windows ports are faked — no Gateway, no Credential Manager, no typing."""
+def run_gateway_start(fake_config, monkeypatch, never_logs_in=()):
+    """Press 啟動 Gateway on an offline Panel with faked Windows ports: Yvonne's
+    credentials are missing and typed into the dialog. Returns what happened, in
+    order, in `calls` — popups, Check Now and Refresh IB (#129)."""
     import tkinter as tk
     import gateway_start_win
     from gateway_start import Credentials
 
     stored = {"Taylor": Credentials("t_user", "t-pw"), "Rosa": Credentials("r_user", "r-pw")}
-    launched, typed, submitted, api_ports_given = [], [], [], []
+    launched, typed, submitted, api_ports_given, calls = [], [], [], [], []
 
     class FakeWindowsPorts:
         def __init__(self, ask_credentials, api_ports):
@@ -499,21 +498,25 @@ def test_start_gateways_asks_for_missing_credentials_then_shows_the_result(fake_
             submitted.append(account)
 
         def wait_logged_in(self, account, timeout_sec):
-            return True
+            return account not in never_logs_in
 
     monkeypatch.setattr(gateway_start_win, "WindowsPorts", FakeWindowsPorts)
     module = load_panel_module(monkeypatch)
     panel_type = offline_panel_type(monkeypatch, module)
-    shown, exceptions = [], []
-    topmost_while_shown = []
+    # Startup refresh_all schedules its own Check Now; only the button's follow-up counts here.
+    monkeypatch.setattr(panel_type, "refresh_all", lambda self: None)
+    monkeypatch.setattr(panel_type, "_refresh_gateway_status", lambda self: calls.append("check_now"))
+    monkeypatch.setattr(panel_type, "_refresh_ib_live", lambda self: calls.append("refresh_ib"))
+    exceptions = []
 
-    def showinfo(*a, **k):
-        # #124: the modal result must not hide behind the Gateway windows
-        topmost_while_shown.append(bool(k["parent"].attributes("-topmost")))
-        shown.append(("info", a))
+    def popup(kind):
+        def show(title, message, **k):
+            # #124: the modal result must not hide behind the Gateway windows
+            calls.append((kind, title, message, bool(k["parent"].attributes("-topmost"))))
+        return show
 
-    monkeypatch.setattr(module.messagebox, "showinfo", showinfo)
-    monkeypatch.setattr(module.messagebox, "showerror", lambda *a, **k: shown.append(("error", a)))
+    monkeypatch.setattr(module.messagebox, "showinfo", popup("info"))
+    monkeypatch.setattr(module.messagebox, "showerror", popup("error"))
 
     panel = panel_type()
     panel.report_callback_exception = lambda *args: exceptions.append(args[1])
@@ -545,10 +548,9 @@ def test_start_gateways_asks_for_missing_credentials_then_shows_the_result(fake_
                 next(w for w in descendants(win)
                      if isinstance(w, tk.Button) and w.cget("text") == "OK").invoke()
                 step[0] = "result"
-            elif step[0] == "result" and shown:
+            elif step[0] == "result" and "refresh_ib" in calls:
                 assert start.cget("state") == "normal"
-                assert topmost_while_shown == [True]
-                assert not panel.attributes("-topmost")   # back to normal after OK
+                assert not panel.attributes("-topmost")   # never left topmost
                 panel._quit_app()
                 step[0] = "done"
                 return
@@ -571,13 +573,31 @@ def test_start_gateways_asks_for_missing_credentials_then_shows_the_result(fake_
     assert stored["Yvonne"] == Credentials("y_user", "y-pw")
     assert launched == ["Taylor", "Rosa", "Yvonne"]
     assert typed[-1] == ("Yvonne", Credentials("y_user", "y-pw"))
-    kind, (title, message) = shown[0]
-    assert (kind, title) == ("info", "啟動 Gateway")
-    assert "Yvonne：已登入" in message
     # #127: logins go out one account at a time, each checked on its own API port
     assert submitted == ["Taylor", "Rosa", "Yvonne"]
     assert api_ports_given == [{a["name"]: a["port"] for a in fake_config[1]}]
+    return calls
+
+
+@own_process
+def test_start_gateways_all_logged_in_skips_the_popup_and_refreshes(fake_config, monkeypatch):
+    """#121/#129: credentials asked for off the Tk thread; when all three log in there
+    is no popup to dismiss — Check Now then Refresh IB run by themselves."""
+    assert run_gateway_start(fake_config, monkeypatch) == ["check_now", "refresh_ib"]
+
+
+@own_process
+def test_start_gateways_login_timeout_shows_the_result_then_refreshes(fake_config, monkeypatch):
+    """#129: an account that didn't log in needs the operator, so the result pops up
+    (on top) first; Check Now and Refresh IB follow once it is dismissed."""
+    calls = run_gateway_start(fake_config, monkeypatch, never_logs_in={"Rosa"})
+
+    (kind, title, message, topmost), *rest = calls
+    assert (kind, title, topmost) == ("info", "啟動 Gateway", True)
+    assert "Rosa：未登入 — 已送出，30 秒內沒登入完成" in message
+    assert "Yvonne：已登入" in message
     assert "y-pw" not in message
+    assert rest == ["check_now", "refresh_ib"]
 
 
 @own_process

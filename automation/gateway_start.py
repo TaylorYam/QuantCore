@@ -54,6 +54,10 @@ class Started:
     outcomes: dict[str, str]
     details: dict[str, str] = field(default_factory=dict)
 
+    @property
+    def all_logged_in(self) -> bool:
+        return all(o == "logged_in" for o in self.outcomes.values())
+
 
 class Ports(Protocol):
     def running_live_accounts(self) -> set[str]:
@@ -134,7 +138,7 @@ def describe(result) -> str:
             lines.append(f"{account}：已登入")
         else:
             lines.append(f"{account}：未登入 — {result.details.get(account, outcome)}")
-    if all(o == "logged_in" for o in result.outcomes.values()):
+    if result.all_logged_in:
         hint = "三個 Gateway 都已登入。"
     else:
         hint = "未登入的請到該 Gateway 視窗手動登入；逾時的可能還在等手機 IB Key 確認。"

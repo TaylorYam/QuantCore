@@ -1024,33 +1024,43 @@ class ControlPanel(tk.Tk):
     def _start_gateways_thread(self):
         from gateway_start import Started, describe, start_live_gateways
         from gateway_start_win import WindowsPorts
-        started = False
+        started = all_logged_in = False
         try:
             api_ports = {a["name"]: int(a["port"]) for a in self._accounts_meta}
             result = start_live_gateways(WindowsPorts(
                 ask_credentials=self._ask_gateway_credentials, api_ports=api_ports))
-            msg, ok, started = describe(result), True, isinstance(result, Started)
+            msg, ok = describe(result), True
+            started = isinstance(result, Started)
+            all_logged_in = started and result.all_logged_in
         except Exception as e:
             msg, ok = f"啟動 Gateway 失敗：{type(e).__name__}: {e}", False
-        self.after(0, lambda: self._show_gateway_start_result(msg, ok, started))
+        self.after(0, lambda: self._show_gateway_start_result(msg, ok, started, all_logged_in))
 
-    def _show_gateway_start_result(self, msg: str, ok: bool, started: bool = False):
+    def _show_gateway_start_result(self, msg: str, ok: bool, started: bool = False,
+                                   all_logged_in: bool = False):
         self._gw_starting = False
         self.btn_start_gateways.config(state="normal")
         for line in msg.splitlines():
             if line:
                 self._log(f"[GW] {line}")
-        # 結果跳窗是 modal：被 Gateway 視窗蓋住時 Panel 整個點不動（#124）。
-        # 跳窗期間 Panel 暫設最上層；開完 Gateway 的話，按 OK 後 Panel 退到後面，
-        # 讓沒登入成功的登入視窗露出來。
-        self.attributes("-topmost", True)
-        self.lift()
-        try:
-            (messagebox.showinfo if ok else messagebox.showerror)("啟動 Gateway", msg, parent=self)
-        finally:
-            self.attributes("-topmost", False)
-            if started:
-                self.lower()
+        # 三個都登入就沒有要使用者處理的事：不跳窗（#129）。其餘情況跳窗，
+        # 因為有帳戶要手動處理，或根本沒開（拒絕、取消、錯誤）。
+        if not all_logged_in:
+            # 結果跳窗是 modal：被 Gateway 視窗蓋住時 Panel 整個點不動（#124）。
+            # 跳窗期間 Panel 暫設最上層；開完 Gateway 的話，按 OK 後 Panel 退到後面，
+            # 讓沒登入成功的登入視窗露出來。
+            self.attributes("-topmost", True)
+            self.lift()
+            try:
+                (messagebox.showinfo if ok else messagebox.showerror)("啟動 Gateway", msg, parent=self)
+            finally:
+                self.attributes("-topmost", False)
+                if started:
+                    self.lower()
+        if started:
+            # 登入完原本要手動按的 Check Now → Refresh IB（#129）
+            self._refresh_gateway_status()
+            self._refresh_ib_live()
 
     def _ask_gateway_credentials(self, account: str):
         """背景執行緒呼叫：在 Tk 主線程跳帳密輸入框，等使用者按 OK / Cancel。"""

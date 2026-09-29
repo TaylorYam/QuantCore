@@ -464,6 +464,104 @@ def test_sync_pos_asks_for_account_and_previews_that_account(fake_config, monkey
 
 
 @own_process
+def test_start_gateways_asks_for_missing_credentials_then_shows_the_result(fake_config, monkeypatch):
+    """#121: 啟動 Gateway runs off the Tk thread; a missing account's credentials are
+    asked for in a dialog on the Tk thread, stored, used, and the result is shown.
+    The Windows ports are faked — no Gateway, no Credential Manager, no typing."""
+    import tkinter as tk
+    import gateway_start_win
+    from gateway_start import Credentials
+
+    stored = {"Taylor": Credentials("t_user", "t-pw"), "Rosa": Credentials("r_user", "r-pw")}
+    launched, typed = [], []
+
+    class FakeWindowsPorts:
+        def __init__(self, ask_credentials):
+            self.ask_credentials = ask_credentials
+
+        def running_live_accounts(self):
+            return set()
+
+        def get_credentials(self, account):
+            return stored.get(account)
+
+        def set_credentials(self, account, creds):
+            stored[account] = creds
+
+        def launch(self, account):
+            launched.append(account)
+
+        def fill_login(self, account, creds):
+            typed.append((account, creds))
+
+    monkeypatch.setattr(gateway_start_win, "WindowsPorts", FakeWindowsPorts)
+    module = load_panel_module(monkeypatch)
+    panel_type = offline_panel_type(monkeypatch, module)
+    shown, exceptions = [], []
+    monkeypatch.setattr(module.messagebox, "showinfo", lambda *a, **k: shown.append(("info", a)))
+    monkeypatch.setattr(module.messagebox, "showerror", lambda *a, **k: shown.append(("error", a)))
+
+    panel = panel_type()
+    panel.report_callback_exception = lambda *args: exceptions.append(args[1])
+    start = next(w for w in descendants(panel)
+                 if isinstance(w, tk.Button) and w.cget("text") == "啟動 Gateway")
+
+    def dialog(title):
+        return next((w for w in panel.winfo_children()
+                     if isinstance(w, tk.Toplevel) and w.title() == title), None)
+
+    step = ["press"]
+    deadline = time.monotonic() + GUI_DEADLINE_SEC
+
+    def check():
+        try:
+            assert not exceptions, exceptions
+            assert time.monotonic() < deadline, f"GUI stalled at {step[0]}"
+            if step[0] == "press":
+                start.invoke()
+                assert start.cget("state") == "disabled"
+                step[0] = "dialog"
+            elif step[0] == "dialog" and dialog("Gateway 帳密 — Yvonne"):
+                win = dialog("Gateway 帳密 — Yvonne")
+                assert launched == []        # nothing starts before credentials are complete
+                user, pw = [w for w in descendants(win) if isinstance(w, tk.Entry)]
+                assert pw.cget("show") == "•"
+                user.insert(0, "y_user")
+                pw.insert(0, "y-pw")
+                next(w for w in descendants(win)
+                     if isinstance(w, tk.Button) and w.cget("text") == "OK").invoke()
+                step[0] = "result"
+            elif step[0] == "result" and shown:
+                assert start.cget("state") == "normal"
+                panel._quit_app()
+                step[0] = "done"
+                return
+            panel.after(20, check)
+        except BaseException as exc:
+            exceptions.append(exc)
+            panel._quit_app()
+
+    try:
+        panel.after(20, check)
+        panel.mainloop()
+    finally:
+        if step[0] != "done":
+            try:
+                panel._quit_app()
+            except tk.TclError:
+                pass
+    assert not exceptions, exceptions
+    assert step[0] == "done"
+    assert stored["Yvonne"] == Credentials("y_user", "y-pw")
+    assert launched == ["Taylor", "Rosa", "Yvonne"]
+    assert typed[-1] == ("Yvonne", Credentials("y_user", "y-pw"))
+    kind, (title, message) = shown[0]
+    assert (kind, title) == ("info", "啟動 Gateway")
+    assert "Yvonne：已填好帳密" in message
+    assert "y-pw" not in message
+
+
+@own_process
 def test_sync_window_shows_failure_and_drops_a_plan_nobody_is_waiting_for(fake_config, monkeypatch):
     """#37: a compute failure is reported inside the Sync Position window —
     progress so far kept, no separate error dialog, still closable. Closing the

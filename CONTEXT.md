@@ -99,6 +99,17 @@ _Avoid_: Monitoring（與 GatewayMonitor 心跳連線層混淆）、Alarm job
 平日 21:31 成交回報最後固定的一行：當天 04:30 資料更新、04:40 每日報告、16:00 [[日度風控 (Daily Risk Check)]]、21:00 調倉、21:31 成交回報有沒有跑完、有沒有出錯；沒單沒事的日子 Telegram 只有這一行。依據 = 各排程入口（`--account all`）寫的執行紀錄 `automation/logs/run_status/<job>_<YYYYMMDD>.json`，實作 `automation/run_status.py`：沒有紀錄 = 沒執行；有開始沒結束 = 沒跑完；開始時間早於排程 = 手動跑的，不算。平日 21:35 沒收到 = 電腦、排程或 Telegram 本身出問題（#38）。
 _Avoid_: Heartbeat（只代表程式活著，這裡還列各排程結果）、每日報告（= 04:40 帳戶快照）
 
+**Auto-restart**:
+IB Gateway 每天在設定時間自行重啟並沿用登入 token 重連，不需要手機 IB Key。三個實盤 Gateway 都已啟用。
+_Avoid_: 斷線自動重連（auto-restart 是每天固定一次的重啟，不會在掉線時補救）
+
+**ColdRestart**:
+每週日 Gateway 的完整重新登入：token 失效，必須重新輸入帳密並用手機 IB Key 確認。當機、電腦重開後的登入也屬同一種情況。是 [[Gateway 啟動]] 的主要使用時機。
+
+**Gateway 啟動**:
+從 Panel 一鍵開啟三個實盤 Gateway（Taylor／Rosa／Yvonne），並把各自帳密填進登入視窗；按「登入」和手機 IB Key 由使用者自己處理。前提是三個實盤 Gateway 都沒有在執行（有登入或只停在登入畫面都算在執行），否則整批拒絕。模擬帳戶（paper）Gateway 不在範圍內，也不影響判斷。
+_Avoid_: 自動登入、auto-login（會被理解成連「登入」都自動按了）
+
 ## Relationships
 
 - 一個 **Account** 持有多個 **Strategy** 的部位

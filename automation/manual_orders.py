@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from functools import wraps
 import logging
@@ -74,6 +74,9 @@ _DIRECT_ROUTING_BLOCKED_MESSAGE = (
 # time to confirm outsideRth and, if IB dropped it, to cancel before the
 # regular session (pre-market) or the window's end (after-hours).
 _EXTENDED_SUBMIT_MARGIN = timedelta(minutes=1)
+# A limit this far from the last completed close is flagged, never blocked.
+_PRICE_DEVIATION_WARN = Decimal("0.10")
+_PRIOR_CLOSE_TIMEOUT_SECONDS = 10
 # TWS warning: "Attribute 'Outside Regular Trading Hours' is ignored based on
 # the order type and destination. PlaceOrder is now being processed."
 _IB_OUTSIDE_RTH_IGNORED = 2109
@@ -229,6 +232,35 @@ def read_ib_quote(ib, contract, side: str) -> BrokerQuote:
         ib.cancelMktData(contract)
 
 
+def read_ib_daily_closes(ib, contract) -> list[tuple[date, float]]:
+    """Recent regular-session daily closes from IB historical bars."""
+    bars = ib.reqHistoricalData(
+        contract, endDateTime="", durationStr="10 D", barSizeSetting="1 day",
+        whatToShow="TRADES", useRTH=True, formatDate=1,
+        timeout=_PRIOR_CLOSE_TIMEOUT_SECONDS,
+    )
+    return [(bar.date, bar.close) for bar in bars or ()]
+
+
+def last_completed_session(now: datetime) -> date | None:
+    """The latest NYSE session whose regular close is at or before now.
+
+    Today once it has closed (after hours), otherwise the previous session.
+    None for naive times and dates beyond the official registry.
+    """
+    if now.tzinfo is None:
+        return None
+    today = now.astimezone(ZoneInfo("America/New_York")).date()
+    day_clock = _nyse_day_clock(now)
+    if day_clock is not None and day_clock[0] >= day_clock[1]:
+        return today
+    try:
+        sessions = official_sessions(today - timedelta(days=14), today - timedelta(days=1))
+    except ValueError:
+        return None
+    return sessions[-1] if sessions else None
+
+
 def whole_share_quantity(*, shares: int | None = None,
                          amount_usd: Decimal | str | None = None,
                          limit_price: float | Decimal | str) -> int:
@@ -278,6 +310,32 @@ class ManualOrderPreview:
     quote: BrokerQuote | None = None
     conversion_price: float | None = None
     session: str = "REGULAR"
+    # Display-only: a changed close must not invalidate a preview at submit.
+    price_checked: bool = field(default=False, compare=False)
+    prior_close: float | None = field(default=None, compare=False)
+    prior_close_date: date | None = field(default=None, compare=False)
+
+    @property
+    def price_deviation(self) -> Decimal | None:
+        """Signed limit-vs-close deviation, or None when it cannot be computed."""
+        if self.order_type != "LMT" or self.prior_close is None or self.limit_price is None:
+            return None
+        return Decimal(str(self.limit_price)) / Decimal(str(self.prior_close)) - 1
+
+    @property
+    def price_warning(self) -> str:
+        if not self.price_checked or self.order_type != "LMT":
+            return ""
+        deviation = self.price_deviation
+        if deviation is None:
+            return "⚠ 無法取得前一日收盤價，未檢查價格偏離\n"
+        if abs(deviation) <= _PRICE_DEVIATION_WARN:
+            return ""
+        return (
+            f"⚠ 價格警示：限價 ${self.limit_price} 比 "
+            f"{self.prior_close_date:%Y-%m-%d} 收盤 ${self.prior_close:g} "
+            f"{'高' if deviation > 0 else '低'} {abs(deviation) * 100:.1f}%\n"
+        )
 
     @property
     def outside_rth(self) -> bool:
@@ -345,7 +403,8 @@ class ManualOrderPreview:
         else:
             validity = f"效期：{self.tif}（當日有效）"
         return (
-            f"Account：{self.account_name}\n"
+            self.price_warning
+            + f"Account：{self.account_name}\n"
             f"標的：{self.symbol}\n"
             f"方向：{direction}\n"
             f"{quantity_label}：{self.quantity:,}\n"
@@ -990,6 +1049,7 @@ class ManualOrderService:
                  universe_loader: Callable[[], set[str]] | None = None,
                  order_factory: Callable | None = None,
                  quote_reader: Callable | None = None,
+                 close_reader: Callable | None = None,
                  clock: Callable[[], datetime] | None = None,
                  notifier: Callable[[str, str], bool],
                  store_path: str | Path | None = None):
@@ -1014,6 +1074,7 @@ class ManualOrderService:
         self._universe_loader = universe_loader or _default_universe_loader
         self._order_factory = order_factory
         self._quote_reader = quote_reader or read_ib_quote
+        self._close_reader = close_reader or read_ib_daily_closes
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         if not callable(notifier):
             raise TypeError("ManualOrderService requires an injected notifier")
@@ -1151,6 +1212,28 @@ class ManualOrderService:
                    != now.astimezone(ZoneInfo("America/New_York")).date()):
             raise ManualOrderError("沒有有效的 IB 即時報價；請改用明確股數")
         return quote
+
+    def _prior_close(self, ib, contract) -> tuple[date, float] | None:
+        """The last completed session's close, or None if IB cannot supply it.
+
+        Only feeds a warning, so every failure degrades to None.
+        """
+        expected = last_completed_session(self._clock())
+        if expected is None:
+            return None
+        try:
+            closes = list(self._close_reader(ib, contract) or ())
+        except Exception:
+            log.warning("Manual order prior close unavailable for %s",
+                        getattr(contract, "symbol", ""), exc_info=True)
+            return None
+        for day, close in reversed(closes):
+            if isinstance(day, datetime):
+                day = day.date()
+            if (day == expected and isinstance(close, (int, float))
+                    and math.isfinite(close) and close > 0):
+                return day, float(close)
+        return None
 
     @staticmethod
     def _check_session(session: str, order_type: str) -> None:
@@ -1484,6 +1567,7 @@ class ManualOrderService:
                        price: float | None, action: str, allow_short: bool,
                        ctx, ib, amount_usd: Decimal | None = None,
                        order_type: str = "LMT", session: str = "REGULAR",
+                       check_price: bool = False,
                        ) -> tuple[ManualOrderPreview, object]:
         extended_now = (
             self._require_extended_session(session)
@@ -1496,6 +1580,8 @@ class ManualOrderService:
         contract, primary_exchange = self._qualify_contract(ib, symbol)
         if extended_now is not None:
             self._require_extended_contract_hours(ib, contract, extended_now)
+        # Closes come from the SMART listing, also for OVERNIGHT-routed orders.
+        listing = contract
         if session == "OVERNIGHT":
             contract = self._overnight_contract(ib, contract)
         quote = None
@@ -1518,6 +1604,8 @@ class ManualOrderService:
         self._assert_no_duplicate(account, ctx, symbol, open_trades)
         current = self._position(ib, ctx, contract)
         projected = self._project_position(action, quantity, current, allow_short)
+        price_checked = check_price and order_type == "LMT"
+        prior = self._prior_close(ib, listing) if price_checked else None
         preview = ManualOrderPreview(
             account_name=account, account_id=ctx.account, symbol=symbol,
             quantity=quantity, limit_price=price, tif="DAY",
@@ -1526,6 +1614,9 @@ class ManualOrderService:
             current_position=current, projected_position=projected,
             amount_usd=amount_usd, order_type=order_type,
             quote=quote, conversion_price=conversion_price, session=session,
+            price_checked=price_checked,
+            prior_close=prior[1] if prior else None,
+            prior_close_date=prior[0] if prior else None,
         )
         return preview, contract
 
@@ -1554,7 +1645,7 @@ class ManualOrderService:
         with self._connected(account) as (ctx, ib):
             preview, _contract = self._build_preview(
                 account, symbol, quantity, price, action, allow_short, ctx, ib,
-                amount, order_type, session,
+                amount, order_type, session, check_price=True,
             )
             return preview
 

@@ -427,7 +427,8 @@ class ManualOrderWindow:
         self.form_status.configure(text=f"IB 合約已確認：{preview.primary_exchange}")
         self.preview_text.configure(
             text=preview.confirmation_text,
-            fg=self.theme["text"],
+            fg=(self.theme.get("yellow", self.theme["red"])
+                if preview.price_warning else self.theme["text"]),
         )
         self.confirm_button.configure(state="normal")
 
@@ -478,6 +479,7 @@ class ManualOrderWindow:
         if not messagebox.askyesno(
             "再次核對委託",
             fresh.confirmation_text + "\n\n確認送出這筆委託？",
+            icon="warning" if fresh.price_warning else "question",
             parent=self.win,
         ):
             return

@@ -16,7 +16,7 @@ _CLIENT_ID_BASE = 20
 _CLIENT_ID_STEP = 10
 
 # role offset: rebalance=0, report=1, moo_check=2, control_panel=5,
-#              manual_order=6, gw_monitor=7, takeover=8
+#              manual_order=6, gw_monitor=7, takeover=8, panel_readonly=9
 ROLE_REBALANCE = 0
 ROLE_REPORT    = 1
 ROLE_MOO_CHECK = 2
@@ -25,6 +25,8 @@ ROLE_MANUAL_ORDER = 6
 ROLE_MONITOR   = 7
 # 交給策略接管（#107）自己的連線：接管單不會被排程調倉的「全部取消掛單」取消
 ROLE_TAKEOVER  = 8
+# 新 PySide6 Panel 並行期間的唯讀連線（#147，ADR-0012）：與 Tk Panel 同時開不互搶
+ROLE_PANEL_READONLY = 9
 
 
 def load_base_config() -> dict:

@@ -100,6 +100,11 @@ class GatewayMonitor:
     on_disconnected : callable(name, reason) | None
         連線第一次從 online 變 offline（或首次 connect 失敗）時觸發**一次**。
         同一個 thread 不會再發第二次通知。
+    role : int
+        連線身分（決定 clientId），預設值班用的 ROLE_MONITOR。新 PySide6 Panel
+        並行期間用 ROLE_PANEL_READONLY，才不會和 Tk Panel 搶同一個 clientId。
+    readonly : bool
+        以唯讀 API 連線（不能下單）。
 
     Callbacks 都在 worker thread 被呼叫 — GUI consumer 需自己 marshal 回主執行緒。
     """
@@ -110,8 +115,13 @@ class GatewayMonitor:
         on_state_change: Optional[Callable[[str, str], None]] = None,
         on_connected: Optional[Callable[[str], None]] = None,
         on_disconnected: Optional[Callable[[str, str], None]] = None,
+        *,
+        role: int = ROLE_MONITOR,
+        readonly: bool = False,
     ):
         self._account_names = list(account_names)
+        self._role = role
+        self._readonly = readonly
         self._on_state_change = on_state_change
         self._on_connected = on_connected
         self._on_disconnected = on_disconnected
@@ -185,11 +195,11 @@ class GatewayMonitor:
         ib = IB()
         try:
             # 每次 start 都重建 ctx，讓 accounts.json 改動能被套用
-            ctx = AccountCtx.from_name(name, ROLE_MONITOR)
+            ctx = AccountCtx.from_name(name, self._role)
 
             self._set_state(name, "connecting")
             ib.connect(ctx.host, ctx.port, clientId=ctx.client_id,
-                       timeout=CONNECT_TIMEOUT_SEC)
+                       timeout=CONNECT_TIMEOUT_SEC, readonly=self._readonly)
 
             self._on_connected_event(name)
 

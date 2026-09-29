@@ -137,6 +137,18 @@ def test_get_client_id_role_offset(fake_config):
     assert get_client_id("Taylor", ROLE_MONITOR) == 27
 
 
+def test_panel_readonly_role_gets_its_own_client_ids(fake_config):
+    """新 PySide6 Panel 並行期間的唯讀連線（#147）不能和任何既有用途撞號，
+    否則會和 Tk Panel／排程搶同一個 clientId（IB 會拒絕後連的那條）。"""
+    import account_utils as au
+
+    roles = [value for name, value in vars(au).items() if name.startswith("ROLE_")]
+    assert len(roles) == len(set(roles))
+    assert all(0 <= r < au._CLIENT_ID_STEP for r in roles)
+    assert au.get_client_id("Taylor", au.ROLE_PANEL_READONLY) == 29
+    assert au.get_client_id("Yvonne", au.ROLE_PANEL_READONLY) == 49
+
+
 def test_telegram_dest_shared_account_and_fallback(monkeypatch):
     """帳戶覆寫優先；帳戶讀不到退回 config.json；config 也讀不到 → 空字串（不發）。"""
     import account_utils

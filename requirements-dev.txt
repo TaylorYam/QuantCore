@@ -2,3 +2,4 @@
 # Canonical source: pyproject.toml [project.optional-dependencies.dev]
 -r requirements.txt
 pytest>=8.0
+pytest-qt>=4.4

@@ -26,6 +26,7 @@ QuantCore-master/
 │   └── reference/              #   成分股歷史 / 交易日曆
 ├── automation/                 # 自動化交易 + 控制面板
 │   ├── control_panel.py        #   Tkinter GUI 控制面板
+│   ├── qt_panel/               #   新 PySide6 Panel（並行中，ADR-0012）
 │   ├── rebalance_plan.py       #   調倉決策（純函式，不碰 IB）
 │   ├── rebalance_ib.py         #   IB Gateway 自動調倉（caller）
 │   ├── signals.py              #   策略訊號整合（SR / SP500 / Skew LS）
@@ -150,6 +151,15 @@ Tkinter GUI 儀表板（`automation/QuantCore_Panel.vbs` 靜默啟動；同時�
 - **自動刷新**：開啟時刷新一次，之後在美股交易時段固定時間刷新（美東 09:30、10:00–16:00 每小時；提前收盤日到 13:00）；標題列顯示各帳戶上次刷新時間
 - **Gateway 監控**：Gateway Status 列顯示三帳戶連線狀態，`Check Now` 重新探測；Rosa poll、TY check、Morning check 三個定時監控只在異常時發 Telegram
 - **系統匣**：關閉視窗只會縮到系統匣，監控照常運作；圖示顏色顯示 Rosa Gateway 狀態（綠 / 紅 / 灰），從系統匣選「離開」才會結束
+
+### 新 Panel（PySide6，並行中）
+
+Panel 正逐步換成 PySide6（[ADR-0012](docs/adr/0012-panel-pyside6-parallel-cutover.md)，spec #144）。切換前新舊並存：新 Panel **只看不下單、不值班**，IB 連線用自己的唯讀 clientId（`ROLE_PANEL_READONLY`），和 Tk Panel 同時開不互搶。
+
+- 安裝：`pip install -r requirements.txt`（含 `PySide6-Essentials`）
+- 建捷徑：`python automation/create_shortcut.py --qt`（桌面「QuantCore Qt — Taylor」，走 `automation/QuantCore_QtPanel.vbs`）
+- 目前內容：Dashboard 的三個 Gateway 連線狀態（心跳斷了不會自己重連：按「重新檢查」＝ Tk 的 Check Now；另外比照 Morning check，每個 NYSE 交易日台北 07:00 自動重新檢查一次，只重連已斷的帳戶、不發通知）；Portfolio／Trading 還是空殼，並行期間照舊用 Tk Panel
+- 模式由 `config.json` 的 `qt_panel_mode` 決定，預設並行模式；正式模式在切換工單 #154 才提供
 
 ---
 

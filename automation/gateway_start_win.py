@@ -1,21 +1,25 @@
-"""Gateway 啟動（#121）的真實 Windows 實作：gateway_start.Ports 的四個外部 I/O。
+"""Gateway 啟動（#121、#127）的真實 Windows 實作：gateway_start.Ports 的外部 I/O。
 
 - 正在執行的 Gateway：psutil 列 ibgateway*.exe，用 command line 對應實盤帳戶
 - 認證管理員：advapi32 CredReadW / CredWriteW（generic credential，存在本機）
 - 開啟 Gateway：gateway_launcher.start_gateway
 - 填登入視窗：找該帳戶 Gateway process 的登入視窗 → 叫到最前面 → 打字
-  帳號、Tab、密碼。不按 Enter／登入，也不動 Live/Paper、IB API 選項。
+  帳號、Tab、密碼。不動 Live/Paper、IB API 選項。
+- 送出登入（#127）：再把該帳戶的登入視窗叫到最前面，確認還在前景後按 Enter
+- 等登入完成（#127）：每秒試連該帳戶的 API port（127.0.0.1），連上立刻關閉，
+  不做 API 握手，不佔 clientId
 
 Gateway 是 Java Swing 視窗，裡面的欄位 Windows UI automation 看不到，所以只能
 靠鍵盤輸入。打字用 SendInput 的 Unicode 事件，繞過中文輸入法。
 
 不新增套件：全部 ctypes + 既有的 psutil。這支檔案離線測試不跑（會碰真的
-認證管理員與視窗）；驗收 = 使用者下一次週日 ColdRestart。
+認證管理員與視窗）；驗收 = 使用者實際開一次 Gateway。
 """
 from __future__ import annotations
 
 import ctypes
 import logging
+import socket
 import time
 from ctypes import wintypes
 from typing import Callable
@@ -135,6 +139,7 @@ _INPUT_KEYBOARD = 1
 _KEYEVENTF_KEYUP = 0x0002
 _KEYEVENTF_UNICODE = 0x0004
 _VK_TAB = 0x09
+_VK_RETURN = 0x0D
 _VK_CONTROL = 0x11
 _VK_MENU = 0x12
 _VK_A = 0x41
@@ -259,8 +264,10 @@ def _ensure_front(hwnd, account: str) -> None:
 class WindowsPorts:
     """gateway_start.Ports 的真實實作。ask_credentials 由 Panel 提供（跳輸入框）。"""
 
-    def __init__(self, ask_credentials: Callable[[str], Credentials | None]):
+    def __init__(self, ask_credentials: Callable[[str], Credentials | None],
+                 api_ports: dict[str, int]):
         self._ask = ask_credentials
+        self._api_ports = dict(api_ports)
         # 三個同時開，登入視窗等待共用同一個時限（從第一個開啟起算），
         # 某個視窗一直不出現時，不會讓後面已經出現的視窗多等一輪
         self._window_deadline: float | None = None
@@ -304,4 +311,30 @@ class WindowsPorts:
         _ensure_front(hwnd, account)
         _select_all()
         _type_text(creds.password)
-        log.info(f"Gateway [{account}] 登入視窗已填入帳密（未按登入）")
+        log.info(f"Gateway [{account}] 登入視窗已填入帳密")
+
+    def _current_login_window(self, account: str):
+        pids = {pid for pid, a in _live_gateway_pids().items() if a == account}
+        return _login_window_for(pids) if pids else None
+
+    def submit_login(self, account: str) -> None:
+        hwnd = self._current_login_window(account)
+        if not hwnd:
+            raise OSError(f"{account} 登入視窗不見了")
+        _bring_to_front(hwnd, account)
+        _ensure_front(hwnd, account)
+        _press(_VK_RETURN)
+        log.info(f"Gateway [{account}] 已送出登入，等手機 IB Key")
+
+    def wait_logged_in(self, account: str, timeout_sec: float) -> bool:
+        port = self._api_ports[account]
+        deadline = time.monotonic() + timeout_sec
+        while True:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=1):
+                    return True
+            except OSError:
+                pass
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(1)

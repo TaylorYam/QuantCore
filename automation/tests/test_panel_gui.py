@@ -473,11 +473,12 @@ def test_start_gateways_asks_for_missing_credentials_then_shows_the_result(fake_
     from gateway_start import Credentials
 
     stored = {"Taylor": Credentials("t_user", "t-pw"), "Rosa": Credentials("r_user", "r-pw")}
-    launched, typed = [], []
+    launched, typed, submitted, api_ports_given = [], [], [], []
 
     class FakeWindowsPorts:
-        def __init__(self, ask_credentials):
+        def __init__(self, ask_credentials, api_ports):
             self.ask_credentials = ask_credentials
+            api_ports_given.append(api_ports)
 
         def running_live_accounts(self):
             return set()
@@ -493,6 +494,12 @@ def test_start_gateways_asks_for_missing_credentials_then_shows_the_result(fake_
 
         def fill_login(self, account, creds):
             typed.append((account, creds))
+
+        def submit_login(self, account):
+            submitted.append(account)
+
+        def wait_logged_in(self, account, timeout_sec):
+            return True
 
     monkeypatch.setattr(gateway_start_win, "WindowsPorts", FakeWindowsPorts)
     module = load_panel_module(monkeypatch)
@@ -566,7 +573,10 @@ def test_start_gateways_asks_for_missing_credentials_then_shows_the_result(fake_
     assert typed[-1] == ("Yvonne", Credentials("y_user", "y-pw"))
     kind, (title, message) = shown[0]
     assert (kind, title) == ("info", "啟動 Gateway")
-    assert "Yvonne：已填好帳密" in message
+    assert "Yvonne：已登入" in message
+    # #127: logins go out one account at a time, each checked on its own API port
+    assert submitted == ["Taylor", "Rosa", "Yvonne"]
+    assert api_ports_given == [{a["name"]: a["port"] for a in fake_config[1]}]
     assert "y-pw" not in message
 
 

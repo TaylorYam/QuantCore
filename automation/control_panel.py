@@ -1009,7 +1009,8 @@ class ControlPanel(tk.Tk):
     # ── Gateway 啟動（#121）──────────────────────────────
 
     def _start_gateways(self):
-        """啟動 Gateway 按鈕：開三個實盤 Gateway 並填入帳密，登入與 IB Key 由使用者處理。
+        """啟動 Gateway 按鈕：開三個實盤 Gateway、填入帳密、依序按登入（#127）；
+        使用者只需到手機確認 IB Key。
 
         判斷全在 gateway_start；這裡只負責背景執行、帳密輸入框、顯示結果。不發 Telegram。
         """
@@ -1025,7 +1026,9 @@ class ControlPanel(tk.Tk):
         from gateway_start_win import WindowsPorts
         started = False
         try:
-            result = start_live_gateways(WindowsPorts(ask_credentials=self._ask_gateway_credentials))
+            api_ports = {a["name"]: int(a["port"]) for a in self._accounts_meta}
+            result = start_live_gateways(WindowsPorts(
+                ask_credentials=self._ask_gateway_credentials, api_ports=api_ports))
             msg, ok, started = describe(result), True, isinstance(result, Started)
         except Exception as e:
             msg, ok = f"啟動 Gateway 失敗：{type(e).__name__}: {e}", False
@@ -1039,7 +1042,7 @@ class ControlPanel(tk.Tk):
                 self._log(f"[GW] {line}")
         # 結果跳窗是 modal：被 Gateway 視窗蓋住時 Panel 整個點不動（#124）。
         # 跳窗期間 Panel 暫設最上層；開完 Gateway 的話，按 OK 後 Panel 退到後面，
-        # 讓登入視窗露出來。
+        # 讓沒登入成功的登入視窗露出來。
         self.attributes("-topmost", True)
         self.lift()
         try:

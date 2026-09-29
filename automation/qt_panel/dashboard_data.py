@@ -7,6 +7,7 @@ Panel 不跑任何值班 worker、不發 Telegram（ADR-0012）。今日排程�
 """
 from __future__ import annotations
 
+import html
 import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -142,7 +143,8 @@ def _recorded_row(job: run_status.Job, now: datetime, record: dict | None,
         return JobRow(job.key, job.at, job.name, "unfinished")
     outcomes = {name: (o[0], o[1]) for name, o in (record.get("outcomes") or {}).items()}
     text, level = run_status.job_segment(job, outcomes, accounts, record.get("error"))
-    detail = text.removeprefix(f"{job.at} ").strip()
+    # 總結片段是給 Telegram HTML 的：還原跳脫字元，拿掉畫面上已經有的時間與名稱
+    detail = html.unescape(text).removeprefix(f"{job.at} ").removeprefix(job.name).strip()
     return JobRow(job.key, job.at, job.name, "ok" if level == "ok" else "problem", detail)
 
 

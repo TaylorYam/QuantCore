@@ -750,3 +750,14 @@ def test_clear_empties_the_output_log(make_window, qtbot):
     w.log("something")
     qtbot.mouseClick(w.dashboard.clear_log_button, Qt.LeftButton)
     assert w.dashboard.log_text() == ""
+
+
+def test_post_login_checks_stop_when_the_panel_quits(make_window, qtbot, monkeypatch):
+    import gateway_start as gs
+    monkeypatch.setattr(gs, "POST_LOGIN_FIRST_CHECK_SEC", 0.05)
+    src = OnlineAfterRecheck({"Taylor", "Rosa", "Yvonne"})
+    w = make_window(gateway_source=src, tray_factory=None)
+    _start_and_wait(w, qtbot)
+    w.close()
+    qtbot.wait(200)
+    assert src.rechecks == 0

@@ -113,6 +113,7 @@ class GatewayStartFlow(QObject):
         self._after_checks = after_checks
         self._step_aside = step_aside
         self._running = False
+        self._stopped = False
         self._answer: dict = {}
         self._answered = threading.Event()
         self._checks = 0
@@ -122,6 +123,10 @@ class GatewayStartFlow(QObject):
 
     def is_running(self) -> bool:
         return self._running
+
+    def stop(self) -> None:
+        """Panel 關閉：還排著的登入後檢查不再執行。"""
+        self._stopped = True
 
     def start(self) -> bool:
         if self._running:
@@ -181,12 +186,16 @@ class GatewayStartFlow(QObject):
         QTimer.singleShot(int(gs.POST_LOGIN_FIRST_CHECK_SEC * 1000), self._check_now)
 
     def _check_now(self) -> None:
+        if self._stopped:
+            return
         self._checks += 1
         self._polls = 0
         self._recheck()
         QTimer.singleShot(int(gs.POST_LOGIN_POLL_SEC * 1000), self._poll)
 
     def _poll(self) -> None:
+        if self._stopped:
+            return
         states = self._states()
         self._polls += 1
         if self._polls > 60 / max(gs.POST_LOGIN_POLL_SEC, 0.001):

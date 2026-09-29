@@ -201,6 +201,7 @@ class MainWindow(QMainWindow):
         self._clock_timer.stop()
         self._signal_timer.stop()
         self._minute_timer.stop()
+        self._gateway_flow.stop()
         self._source.stop()
         if self._tray is not None:
             self._tray.hide()

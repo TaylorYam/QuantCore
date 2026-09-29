@@ -133,10 +133,11 @@ def test_started_but_not_finished_is_unfinished(tmp_path):
 
 
 def test_program_error_counts_as_a_problem(tmp_path):
-    records = {"update": _record("2026-09-29T04:30:05", error="RuntimeError: boom")}
+    records = {"update": _record("2026-09-29T04:30:05", error="RuntimeError: a < b & c")}
     rows = {r.key: r for r in _jobs(datetime(2026, 9, 29, 5, 0), records, tmp_path)}
     assert rows["update"].state == "problem"
-    assert "boom" in rows["update"].detail
+    assert "a < b & c" in rows["update"].detail                 # 畫面是純文字，不是 Telegram HTML
+    assert not rows["update"].detail.startswith("資料更新")        # 名稱已在旁邊那欄
 
 
 def test_a_manual_run_before_the_scheduled_time_does_not_count(tmp_path):

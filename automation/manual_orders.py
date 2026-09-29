@@ -11,9 +11,9 @@ explicit confirmation before calling submit().
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from functools import wraps
 import logging
 import math
@@ -291,6 +291,22 @@ def whole_share_quantity(*, shares: int | None = None,
     return quantity
 
 
+def equity_percent(value: Decimal | str) -> Decimal:
+    """Validate an account-equity percentage: 0 < pct <= 100."""
+    try:
+        pct = Decimal(str(value).strip().rstrip("%").strip())
+    except (InvalidOperation, ValueError) as exc:
+        raise ManualOrderError("請輸入有效的權益百分比") from exc
+    if not pct.is_finite() or pct <= 0 or pct > 100:
+        raise ManualOrderError("權益百分比必須大於 0 且不超過 100")
+    return pct
+
+
+def equity_amount(equity: Decimal, pct: Decimal) -> Decimal:
+    """Account equity x pct, rounded down to the cent."""
+    return (equity * pct / 100).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+
+
 @dataclass(frozen=True)
 class ManualOrderPreview:
     account_name: str
@@ -314,6 +330,9 @@ class ManualOrderPreview:
     price_checked: bool = field(default=False, compare=False)
     prior_close: float | None = field(default=None, compare=False)
     prior_close_date: date | None = field(default=None, compare=False)
+    # 帳戶權益 % 模式：預覽時換成固定 amount_usd；權益跳動不讓核對失效。
+    account_equity: Decimal | None = field(default=None, compare=False)
+    equity_pct: Decimal | None = field(default=None, compare=False)
 
     @property
     def price_deviation(self) -> Decimal | None:
@@ -368,7 +387,12 @@ class ManualOrderPreview:
         amount_details = ""
         if self.amount_usd is not None:
             estimated = Decimal(self.quantity) * Decimal(str(self.conversion_price or self.limit_price))
-            amount_details = (
+            if self.equity_pct is not None:
+                amount_details = (
+                    f"帳戶權益（IB 淨清算值）：${self.account_equity:,.2f}"
+                    f" × {self.equity_pct:g}% = ${self.amount_usd:,.2f}\n"
+                )
+            amount_details += (
                 f"輸入美元金額：${self.amount_usd:f}（預估交易目標）\n"
                 f"預估委託金額：${estimated:f}\n"
                 "美元金額只用於換算股數，非成交金額上限；實際成交金額可能超出輸入金額。\n"
@@ -1516,6 +1540,22 @@ class ManualOrderService:
                 )
 
     @staticmethod
+    def _account_equity(ib, ctx) -> Decimal:
+        """The selected Account's NetLiquidation in USD, straight from IB."""
+        values = [
+            item for item in (ib.accountSummary(ctx.account) or [])
+            if item.tag == "NetLiquidation" and item.currency == "USD"
+            and getattr(item, "account", ctx.account) == ctx.account
+        ]
+        try:
+            equity = Decimal(str(values[0].value))
+        except (IndexError, InvalidOperation, ValueError):
+            equity = None
+        if equity is None or not equity.is_finite() or equity <= 0:
+            raise ManualOrderError("讀不到帳戶權益（IB NetLiquidation USD），無法用權益百分比下單")
+        return equity
+
+    @staticmethod
     def _position(ib, ctx, contract) -> float:
         """Read this Account's synchronized IB position for the qualified contract."""
         total = 0.0
@@ -1626,9 +1666,22 @@ class ManualOrderService:
                 allow_short: bool = False,
                 amount_usd: Decimal | str | None = None,
                 order_type: str = "LMT",
-                session: str = "REGULAR") -> ManualOrderPreview:
+                session: str = "REGULAR",
+                equity_pct: Decimal | str | None = None) -> ManualOrderPreview:
         account = self._account_name(account_name)
         self._check_session(session, order_type)
+        if equity_pct is not None:
+            if quantity is not None or amount_usd is not None:
+                raise ManualOrderError("請在整股股數、美元金額與權益百分比之間擇一輸入")
+            pct = equity_percent(equity_pct)
+            with self._connected(account) as (ctx, ib):
+                equity = self._account_equity(ib, ctx)
+            preview = self.preview(
+                account, symbol, None, limit_price, action=action,
+                allow_short=allow_short, amount_usd=equity_amount(equity, pct),
+                order_type=order_type, session=session,
+            )
+            return replace(preview, account_equity=equity, equity_pct=pct)
         if order_type == "LMT":
             symbol, quantity, price, amount = self._check_request(
                 account, symbol, quantity, limit_price, amount_usd,
@@ -1661,7 +1714,9 @@ class ManualOrderService:
         )
         if fresh != preview:
             raise ManualOrderError("Account、報價、股數、合約或持倉在預覽後變更，請重新預覽")
-        return fresh
+        # Re-reading equity here would move the amount; keep the previewed one.
+        return replace(fresh, account_equity=preview.account_equity,
+                       equity_pct=preview.equity_pct)
 
     @_serialize_service_operation
     def submit(self, preview: ManualOrderPreview) -> dict:

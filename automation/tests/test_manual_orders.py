@@ -66,6 +66,9 @@ class FakeIBState:
         self.daily_bars = []
         self.history_requests = []
         self.history_error = None
+        # NetLiquidation (USD) returned by accountSummary, per account.
+        self.net_liquidation = {account: "16000" for account in self.managed}
+        self.summary_requests = []
 
 
 class FakeEvent:
@@ -112,6 +115,14 @@ class FakeIB:
 
     def managedAccounts(self):
         return self.state.managed
+
+    def accountSummary(self, account=""):
+        self.state.summary_requests.append(account)
+        rows = [NS(account=account, tag="NetLiquidation", value=value, currency="USD")
+                for account, value in self.state.net_liquidation.items()]
+        # Another account's figure and a non-USD row must never be picked.
+        rows.append(NS(account=account, tag="NetLiquidation", value="1", currency="HKD"))
+        return rows
 
     def positions(self, account=""):
         return [
@@ -1116,6 +1127,71 @@ def test_cash_mode_rejects_ambiguous_inputs_and_invalid_amounts(tmp_path):
     for amount in ("0", "-1", "NaN", "Infinity", "bad"):
         with pytest.raises(ValueError, match="美元金額"):
             service.preview("Taylor", "ZZZZ", None, 30.0, amount_usd=amount)
+    assert state.placed == []
+
+
+def test_equity_percent_preview_uses_net_liquidation_and_rounds_down(tmp_path):
+    state = FakeIBState()
+    state.net_liquidation["U002"] = "999999"
+    service = service_for(tmp_path, state)
+
+    preview = service.preview("Taylor", "ZZZZ", None, 300.0, equity_pct="30")
+    # 16000 x 30% = 4800 -> 4800 / 300 = 16 shares
+    assert (preview.quantity, preview.amount_usd) == (16, Decimal("4800.00"))
+    assert (preview.account_equity, preview.equity_pct) == (Decimal("16000"), Decimal("30"))
+    assert "帳戶權益（IB 淨清算值）：$16,000.00 × 30% = $4,800.00" in preview.confirmation_text
+    assert "換算整股股數：16" in preview.confirmation_text
+    assert state.summary_requests == ["U001"]
+
+    # 16000 x 25% = 4000 -> 4000 / 301 = 13.29 -> 13 shares
+    assert service.preview("Taylor", "ZZZZ", None, 301.0, equity_pct="25").quantity == 13
+
+    # Equity moves after the preview: the fixed amount still validates and submits.
+    state.net_liquidation["U001"] = "20000"
+    checked = service.validate_preview(preview)
+    assert checked.quantity == 16
+    assert "× 30% = $4,800.00" in checked.confirmation_text
+    service.submit(preview)
+    order = state.placed[0].order
+    assert (order.action, order.account, order.totalQuantity, order.lmtPrice) == (
+        "BUY", "U001", 16, 300.0,
+    )
+
+
+def test_equity_percent_market_order_converts_with_ib_quote(tmp_path):
+    state = FakeIBState()
+    service = service_for(
+        tmp_path, state, clock=lambda: MKT_NOW,
+        quote_reader=lambda _ib, _contract, side: BrokerQuote(300, MKT_NOW, side),
+    )
+    preview = service.preview("Taylor", "ZZZZ", None, None, equity_pct="50",
+                              order_type="MKT")
+    assert (preview.quantity, preview.amount_usd) == (26, Decimal("8000.00"))
+    assert preview.conversion_price == 300
+
+
+def test_equity_percent_rejects_bad_input_and_missing_equity(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state)
+    for pct in ("0", "-5", "100.01", "NaN", "abc", ""):
+        with pytest.raises(ValueError, match="權益百分比"):
+            service.preview("Taylor", "ZZZZ", None, 30.0, equity_pct=pct)
+    with pytest.raises(ValueError, match="擇一"):
+        service.preview("Taylor", "ZZZZ", 3, 30.0, equity_pct="30")
+    with pytest.raises(ValueError, match="擇一"):
+        service.preview("Taylor", "ZZZZ", None, 30.0, amount_usd="100", equity_pct="30")
+    assert service.preview("Taylor", "ZZZZ", None, 30.0, equity_pct="100%").quantity == 533
+
+    del state.net_liquidation["U001"]
+    with pytest.raises(ValueError, match="NetLiquidation"):
+        service.preview("Taylor", "ZZZZ", None, 30.0, equity_pct="30")
+    state.net_liquidation["U001"] = "0"
+    with pytest.raises(ValueError, match="NetLiquidation"):
+        service.preview("Taylor", "ZZZZ", None, 30.0, equity_pct="30")
+    # Too little equity for one share is the normal cash-mode error.
+    state.net_liquidation["U001"] = "50"
+    with pytest.raises(ValueError, match="不足一股"):
+        service.preview("Taylor", "ZZZZ", None, 30.0, equity_pct="25")
     assert state.placed == []
 
 

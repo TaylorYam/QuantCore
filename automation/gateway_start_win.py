@@ -6,8 +6,9 @@
 - 填登入視窗：找該帳戶 Gateway process 的登入視窗 → 叫到最前面 → 打字
   帳號、Tab、密碼。不動 Live/Paper、IB API 選項。
 - 送出登入（#127）：再把該帳戶的登入視窗叫到最前面，確認還在前景後按 Enter
-- 等登入完成（#127）：每秒試連該帳戶的 API port（127.0.0.1），連上立刻關閉，
-  不做 API 握手，不佔 clientId
+- 等登入完成（#133）：讀該帳戶 Gateway 自己的 launcher.log，出現手機 IB Key
+  確認後的 `onAuthenticationCompleted tokenProtocol=5; authenticated=true` 就算完成。
+  完全不碰 API port：#127 原本試連 port 再立刻斷開，會讓 Rosa 的 10.41 API 卡死。
 
 Gateway 是 Java Swing 視窗，裡面的欄位 Windows UI automation 看不到，所以只能
 靠鍵盤輸入。打字用 SendInput 的 Unicode 事件，繞過中文輸入法。
@@ -19,14 +20,13 @@ from __future__ import annotations
 
 import ctypes
 import logging
-import socket
 import time
 from ctypes import wintypes
 from typing import Callable
 
 import psutil
 
-from gateway_launcher import live_account_for_cmdline, start_gateway
+from gateway_launcher import ACCOUNT_SETTINGS_DIR, live_account_for_cmdline, start_gateway
 from gateway_start import Credentials, LaunchFailed, WindowNotFound
 
 log = logging.getLogger(__name__)
@@ -264,10 +264,10 @@ def _ensure_front(hwnd, account: str) -> None:
 class WindowsPorts:
     """gateway_start.Ports 的真實實作。ask_credentials 由 Panel 提供（跳輸入框）。"""
 
-    def __init__(self, ask_credentials: Callable[[str], Credentials | None],
-                 api_ports: dict[str, int]):
+    def __init__(self, ask_credentials: Callable[[str], Credentials | None]):
         self._ask = ask_credentials
-        self._api_ports = dict(api_ports)
+        # 送出登入當下各帳戶 launcher.log 的大小：之後只看新寫進來的部分
+        self._log_offsets: dict[str, int] = {}
         # 三個同時開，登入視窗等待共用同一個時限（從第一個開啟起算），
         # 某個視窗一直不出現時，不會讓後面已經出現的視窗多等一輪
         self._window_deadline: float | None = None
@@ -321,20 +321,51 @@ class WindowsPorts:
         hwnd = self._current_login_window(account)
         if not hwnd:
             raise OSError(f"{account} 登入視窗不見了")
+        self._log_offsets[account] = _file_size(_launcher_log(account))
         _bring_to_front(hwnd, account)
         _ensure_front(hwnd, account)
         _press(_VK_RETURN)
         log.info(f"Gateway [{account}] 已送出登入，等手機 IB Key")
 
     def wait_logged_in(self, account: str, timeout_sec: float) -> bool:
-        port = self._api_ports[account]
+        path = _launcher_log(account)
+        offset = self._log_offsets.get(account, 0)
         deadline = time.monotonic() + timeout_sec
         while True:
-            try:
-                with socket.create_connection(("127.0.0.1", port), timeout=1):
-                    return True
-            except OSError:
-                pass
+            if _file_size(path) < offset:
+                offset = 0            # 換日輪替成新檔：從頭讀
+            if login_completed_in(_read_from(path, offset)):
+                return True
             if time.monotonic() >= deadline:
                 return False
-            time.sleep(1)
+            time.sleep(0.5)
+
+
+def login_completed_in(log_text: str) -> bool:
+    """launcher.log 的這段文字裡，有沒有「手機 IB Key 確認後登入完成」那一行。
+
+    tokenProtocol=0 那行可能在確認 IB Key 之前就出現（2026-09-29 Rosa 14:26），不算。
+    """
+    return any("onAuthenticationCompleted tokenProtocol=5" in line
+               and "authenticated=true" in line
+               for line in log_text.splitlines())
+
+
+def _launcher_log(account: str):
+    return ACCOUNT_SETTINGS_DIR[account.upper()] / "launcher.log"
+
+
+def _file_size(path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _read_from(path, offset: int) -> str:
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            return f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""

@@ -34,8 +34,10 @@ class MonitorGatewaySource:
         self._readonly = readonly
         self._monitor_cls = monitor_cls
         self._monitor = None
+        self._on_state: OnState | None = None
 
     def start(self, on_state: OnState) -> None:
+        self._on_state = on_state
         self._monitor = self._monitor_cls(
             self._names,
             on_state_change=lambda name, state: on_state(name, state, ""),
@@ -54,7 +56,9 @@ class MonitorGatewaySource:
         if self._monitor is None:
             return
         for name in self._names:
-            self._monitor.restart_account_thread(name)
+            # 重新開始連的帳戶先顯示連線中（同 Tk Check Now），登入後的檢查才會等它有結果
+            if self._monitor.restart_account_thread(name) and self._on_state is not None:
+                self._on_state(name, "connecting", "")
 
 
 def gateway_source_for(mode: PanelMode, account_names: list[str], *,

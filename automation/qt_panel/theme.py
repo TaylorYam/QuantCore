@@ -24,7 +24,12 @@ ACCOUNT_COLOR = {"Taylor": "#d97706", "Rosa": "#0284c7", "Yvonne": "#9333ea"}
 GATEWAY_COLOR = {"init": TEXT_FAINT, "connecting": ORANGE, "online": GREEN, "offline": RED}
 GATEWAY_TEXT = {"init": "檢查中…", "connecting": "連線中…", "online": "線上", "offline": "離線"}
 
+# 今日排程各狀態的顏色（文字見 dashboard_data.JOB_STATE_TEXT）
+JOB_COLOR = {"pending": TEXT_FAINT, "missing": RED, "unfinished": RED,
+             "ok": GREEN, "problem": ORANGE, "ran": GREEN}
+
 UI_FONT = "Noto Sans TC"
+MONO_FONT = "Consolas"
 
 STYLESHEET = f"""
 QWidget {{ background: transparent; color: {TEXT}; font-family: "{UI_FONT}"; font-size: 10pt; }}
@@ -49,6 +54,11 @@ QToolTip {{ background: {SURFACE}; color: {TEXT}; border: 1px solid {BORDER_STRO
 #Dim {{ color: {TEXT_DIM}; }}
 #Faint {{ color: {TEXT_FAINT}; font-size: 9pt; }}
 #MedNum {{ font-size: 12pt; font-weight: 500; }}
+#BigNum {{ font-size: 18pt; font-weight: 700; }}
+#Log {{
+    background: {SURFACE_2}; border: 1px solid {BORDER}; border-radius: 6px;
+    font-family: "{MONO_FONT}"; font-size: 9pt; padding: 4px;
+}}
 #Placeholder {{ color: {TEXT_DIM}; font-size: 11pt; }}
 
 QPushButton {{
@@ -57,4 +67,9 @@ QPushButton {{
 }}
 QPushButton:hover {{ background: {SURFACE_HOVER}; }}
 QPushButton:pressed {{ background: {BORDER}; }}
+QPushButton:disabled {{ color: {TEXT_FAINT}; background: {SURFACE_2}; }}
+QPushButton#Primary {{ background: {ACCENT}; border-color: {ACCENT}; color: #ffffff; font-weight: 600; }}
+QPushButton#Primary:hover {{ background: #b45309; }}
+QPushButton#Primary:disabled {{ background: {BORDER_STRONG}; border-color: {BORDER_STRONG}; }}
+QPushButton#Small {{ padding: 2px 10px; font-size: 9pt; }}
 """

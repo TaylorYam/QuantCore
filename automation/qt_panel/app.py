@@ -40,6 +40,18 @@ def _relaunch_as_admin() -> None:
         None, "runas", exe, f'"{ENTRY_SCRIPT}"', str(AUTOMATION_DIR), 1)
 
 
+class WindowsCredentialStore:
+    """Gateway 帳密存在 Windows 認證管理員（同 Tk Panel 的「更新 Gateway 帳密」）。"""
+
+    def read(self, account: str):
+        from gateway_start_win import read_credentials
+        return read_credentials(account)
+
+    def write(self, account: str, creds) -> None:
+        from gateway_start_win import write_credentials
+        write_credentials(account, creds)
+
+
 def main() -> int:
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
@@ -79,11 +91,15 @@ def main() -> int:
         icon = QIcon(str(ICON_PATH))
         app.setWindowIcon(icon)
 
+        import gateway_start_win
+
         window = MainWindow(
             accounts=accounts,
             mode=mode,
             mode_note=note,
             gateway_source=gateway_source_for(mode, [a["name"] for a in accounts]),
+            gateway_ports_factory=lambda ask: gateway_start_win.WindowsPorts(ask_credentials=ask),
+            credential_store=WindowsCredentialStore(),
             tray_factory=tray_factory_for(icon, "QuantCore Panel（PySide6・並行模式）"),
             show_signal=show_signal_path(),
         )

@@ -1,7 +1,7 @@
 """新 Panel 共用的小元件。"""
 from __future__ import annotations
 
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLayout, QVBoxLayout
 
 
 class Card(QFrame):
@@ -52,3 +52,18 @@ def visible_text(widget) -> str:
     """widget 底下目前看得到的文字（測試與無障礙讀取用）。"""
     return " ".join(l.text() for l in widget.findChildren(QLabel)
                     if l.isVisibleTo(widget) and l.text())
+
+
+def all_text(widget) -> str:
+    """widget 底下所有標籤的文字，不管顯示了沒（剛加進版面的元件要等事件迴圈才顯示）。"""
+    return " ".join(l.text() for l in widget.findChildren(QLabel) if l.text())
+
+
+def clear_layout(layout: QLayout) -> None:
+    """拿掉 layout 裡的所有元件（重畫整張清單用）。"""
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        if widget is not None:
+            widget.setParent(None)   # 立刻離開畫面；deleteLater 要等事件迴圈
+            widget.deleteLater()

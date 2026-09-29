@@ -110,6 +110,10 @@ _Avoid_: 斷線自動重連（auto-restart 是每天固定一次的重啟，不�
 從 Panel 一鍵開啟三個實盤 Gateway（Taylor／Rosa／Yvonne），把各自帳密填進登入視窗，再依序替每個帳戶按「登入」：一次一個，等它登入完成（手機 IB Key 確認後，Gateway 記錄登入完成；最多 30 秒）才換下一個，讓手機一次只跳一則 IB Key。使用者只負責在手機確認 IB Key。沒登入成功的帳戶不重試，留在它的視窗給使用者手動處理（連續輸錯密碼會鎖帳號）。前提是三個實盤 Gateway 都沒有在執行（有登入或只停在登入畫面都算在執行），否則整批拒絕。模擬帳戶（paper）Gateway 不在範圍內，也不影響判斷。
 _Avoid_: Auto-restart（那是 Gateway 每天自己重啟、免 IB Key，和這個一鍵登入無關）
 
+**Broker（券商連線層）**:
+QuantCore 跟 IB 打交道的那一層：送單、查成交、查持倉與權益。畫面上使用者操作的單（手動單、Sync Pos、交給策略接管）屬於 Panel 的 Trading；真正把單送進 IB、回報成交的是 Broker。
+_Avoid_: Execution（與 [[執行盤 (Execution Session)]] 撞名）、Orders（架構圖上同時指畫面的單與送單層，見下方 Flagged ambiguities）
+
 ## Relationships
 
 - 一個 **Account** 持有多個 **Strategy** 的部位
@@ -148,3 +152,4 @@ _Avoid_: Auto-restart（那是 Gateway 每天自己重啟、免 IB Key，和這�
 - skew 方向衝突（grilling 2026-07-10）：[[Skew LS]] 在 **sector 層級做多高 skew**（skew premium），停利研究在**個股層級把高 skew 當出場訊號**（lottery/blowoff）— 同一個詞、同一 codebase、相反方向的賭注。解決：兩者是不同層級的不同異常，皆屬合法用法；個股層級高 skew 出場的有效性由回測+WF 裁決，不由類比推定
 - 「過熱」一詞不重載（grilling 2026-07-10）：既有過熱專指 adj_slope ≥ MAX_ADJ_SLOPE 的進場過濾；新的結構條件另名 [[噴出 (Blowoff)]]，兩者因子不同（迴歸斜率×r² vs 乖離/skew/kurt）、作用端不同
 - 「乖離過大該停利」直覺（研究 2026-07-11 結案）— 數據證偽且方向相反：乖離停利全 grid 慘敗（最緊門檻 CAGR 12.5% vs 32.1%），高乖離贏家是動能右尾的來源不是風險；skew/kurt 停利出場拆解後貢獻 ≤ 0（兩筆實際出場 META/PLTR 皆為壞出場）。唯一存活訊號是「噴出**進場**封鎖」（不買，但抱著的不動）且過 WF，見 [ADR-0010](docs/adr/0010-sp500-take-profit-exit-rejected.md) 與 `robustness/takeprofit_report.md`
+- 「Orders」在 Panel 換 PySide6 的架構圖上出現兩次（Trading → Orders、IBKR → Orders）（grilling 2026-09-29）— 解決：Trading 底下的單 = 使用者在畫面上操作的手動單／Sync Pos／交給策略接管；IB 連線那一支改名 [[Broker（券商連線層）]]，不叫 Execution 以免和 [[執行盤 (Execution Session)]] 混淆，見 [ADR-0012](docs/adr/0012-panel-pyside6-parallel-cutover.md)

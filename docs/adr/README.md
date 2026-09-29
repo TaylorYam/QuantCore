@@ -17,3 +17,4 @@
 | [0009](0009-constituents-gated-auto-refresh.md) | Constituents 每週 gated 自動 refresh（supersede 0002 的 on-demand-only） | accepted |
 | [0010](0010-sp500-take-profit-exit-rejected.md) | SP500 停利出場 — rejected（拆解證明出場貢獻≤0；噴出進場封鎖過 WF 另立候選） | rejected |
 | [0011](0011-sp500-blowoff-entry-block.md) | SP500 噴出進場封鎖（kurt60>P90 不佔補位名額；WF 過 gate + characterization 上線） | accepted |
+| [0012](0012-panel-pyside6-parallel-cutover.md) | Panel 換 PySide6：新舊並行、切換前新 Panel 對實盤只看不下單 | accepted |

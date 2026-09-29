@@ -871,11 +871,40 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
         lambda title, body, **_kwargs: warnings.append((title, body)),
     )
 
+    import us_symbols
+    monkeypatch.setattr(us_symbols, "load_directory", lambda: us_symbols.SymbolDirectory({
+        "SKHY": "SK hynix Inc. - American Depositary Shares",
+        "SKHU": "ProShares Ultra SK hynix",
+    }))
+
     panel = panel_type()
     panel.report_callback_exception = lambda *args: exceptions.append(args[1])
     exceptions = []
     panel._open_manual_order()
     window = panel._manual_order_window
+
+    # #140: typing shows symbol suggestions; an unknown symbol only warns.
+    load_deadline = time.monotonic() + GUI_DEADLINE_SEC
+    while window._symbols is None and time.monotonic() < load_deadline:
+        panel.update()
+    assert len(window._symbols) == 2
+    window._focused = lambda: window.symbol_entry
+    window.symbol_var.set("skh")
+    assert window._suggested == ["SKHU", "SKHY"]
+    assert window.symbol_suggestions.winfo_manager() == "place"
+    assert "找不到" in window.symbol_hint.cget("text")
+    window._move_suggestion(1)
+    window._accept_suggestion()
+    assert window.symbol_var.get() == "SKHY"
+    assert window.symbol_suggestions.winfo_manager() == ""
+    assert window.symbol_hint.cget("text") == "SK hynix Inc. - American Depositary Shares"
+    window.symbol_var.set("ZZZZ")
+    assert window._suggested == []
+    assert "仍可預覽" in window.symbol_hint.cget("text")
+    del window._focused
+    window.symbol_var.set("")
+    assert window.symbol_hint.cget("text") == ""
+
     assert window.account_var.get() == ""
     assert str(window.account_box.cget("state")) == "readonly"
     window.action_var.set("賣出")

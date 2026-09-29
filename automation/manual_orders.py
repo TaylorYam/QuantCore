@@ -334,10 +334,13 @@ class ManualOrderPreview:
             carries_into = (
                 "會延續至當日一般時段與盤後，並" if self.session == "PRE_MARKET" else ""
             )
+            # Paper, 2026-09-28: IB recorded these DAY orders as Expired at
+            # about 20:30 ET, after trading had already stopped at 20:00.
             validity = (
                 f"效期：{self.tif}（當日有效）\n"
                 f"未成交部分{carries_into}於當日盤後結束"
-                "（美東 20:00，提早收盤日 17:00）失效，不跨日"
+                "（美東 20:00，提早收盤日 17:00）後不再成交，不跨日；"
+                "IB 約半小時內回報「已失效」"
             )
         else:
             validity = f"效期：{self.tif}（當日有效）"
@@ -842,7 +845,8 @@ def _manual_order_fill_totals(fills, *, row: dict, order, trade, ctx
     return filled, avg_price if math.isfinite(avg_price) and avg_price > 0 else None
 
 
-def _status_from_trade(trade) -> tuple[str | None, str, int, float | None]:
+def _status_from_trade(trade, completed_status: str = "",
+                       ) -> tuple[str | None, str, int, float | None]:
     order_status = getattr(trade, "orderStatus", None)
     raw_status = str(getattr(order_status, "status", "") or "")
     filled_value = getattr(order_status, "filled", 0) or 0
@@ -872,6 +876,11 @@ def _status_from_trade(trade) -> tuple[str | None, str, int, float | None]:
         "Inactive": "REJECTED",
         "Expired": "EXPIRED",
     }.get(raw_status)
+    if mapped == "CANCELLED" and completed_status.startswith("Expired"):
+        # IB ends an unfilled DAY or Overnight order with status Cancelled;
+        # only completedStatus ("Expired (5)") says it expired rather than
+        # being cancelled by the trader (paper, 2026-09-28/29).
+        mapped = "EXPIRED"
     if filled > 0 and quantity > filled and mapped not in {
             "CANCEL_PENDING", "CANCEL_UNKNOWN", "CANCELLED", "EXPIRED", "REJECTED"}:
         mapped = "PARTIAL"
@@ -920,6 +929,36 @@ def _outside_rth_confirmation_window(ib, trade, warnings: list) -> bool:
         ib.sleep(_IB_ACK_POLL_SECONDS)
         waited += _IB_ACK_POLL_SECONDS
     return not warnings
+
+
+def _completed_trades_with_status(ib) -> tuple[list, dict[str, str]]:
+    """IB's completed orders, plus each one's completedStatus by orderRef.
+
+    ib_insync's Wrapper.completedOrder keeps only orderState.status, which is
+    Cancelled for both an expiry and a trader cancel, and drops
+    completedStatus. Capture it while this request runs, then restore.
+    """
+    statuses: dict[str, str] = {}
+    wrapper = getattr(ib, "wrapper", None)
+    original = getattr(wrapper, "completedOrder", None)
+    try:
+        hooked = callable(original) and "completedOrder" not in vars(wrapper)
+    except TypeError:
+        hooked = False
+    if hooked:
+        def capture(contract, order, order_state):
+            statuses[str(getattr(order, "orderRef", "") or "")] = str(
+                getattr(order_state, "completedStatus", "") or ""
+            )
+            return original(contract, order, order_state)
+
+        wrapper.completedOrder = capture
+    try:
+        trades = list(ib.reqCompletedOrders(apiOnly=True) or [])
+    finally:
+        if hooked:
+            del wrapper.completedOrder
+    return trades, statuses
 
 
 def _find_manual_trade(trades: Iterable[object], order_ref: str, account: str):
@@ -1235,8 +1274,10 @@ class ManualOrderService:
         # orders, which could otherwise keep a completed ticker locked.
         open_trades = list(ib.openTrades() or [])
         trades = list(open_trades)
+        completed_status: dict[str, str] = {}
         try:
-            trades.extend(ib.reqCompletedOrders(apiOnly=True) or [])
+            completed, completed_status = _completed_trades_with_status(ib)
+            trades.extend(completed)
         except Exception:
             # Open orders remain queryable even on older TWS API versions.
             pass
@@ -1279,7 +1320,9 @@ class ManualOrderService:
             if not current:
                 continue
             observed_refs.add(order_ref)
-            status, message, filled, avg_price = _status_from_trade(trade)
+            status, message, filled, avg_price = _status_from_trade(
+                trade, completed_status.get(order_ref, ""),
+            )
             fill_records = list(fills)
             fill_records.extend(getattr(trade, "fills", ()) or ())
             execution_filled, execution_avg = _manual_order_fill_totals(

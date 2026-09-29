@@ -37,8 +37,8 @@ ACCOUNT_GATEWAY_DIR = {
 }
 
 # Settings dir = Gateway 安裝路徑（jts.ini / autorestart token 都在 install 內）。
-# Rosa 也一樣（2026-09-29 依執行中 process 的 jtsConfigDir 查證；舊的
-# C:\Jts\gateway_b 是 IBC 時代的設定夾，已不用）。
+# Rosa 也一樣：2026-09-29 查 launcher log，每次啟動的 jtsConfigDir 都是
+# C:\Jts\ibgateway\1041；舊的 C:\Jts\gateway_b 是 IBC 時代的設定夾，已不用。
 ACCOUNT_SETTINGS_DIR = {
     "TAYLOR": Path(r"C:\IB-TAYLOR\ibgateway"),
     "YVONNE": Path(r"C:\IB-YIYI\ibgateway"),

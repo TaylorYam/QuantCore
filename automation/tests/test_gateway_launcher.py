@@ -1,15 +1,37 @@
-"""哪個執行中的 Gateway 屬於哪個實盤帳戶（#121）。
+r"""gateway_launcher：開 Gateway 帶的設定資料夾，以及執行中的 Gateway 屬於哪個實盤帳戶（#121）。
 
-測資是 2026-09-29 live 機器上三個實盤 Gateway 的實際 command line（restart token 以佔位字取代），
-以及 paper Gateway 的安裝位置。
+依據：2026-09-29 live 機器上三個實盤 Gateway 的 launcher log 與執行中 process。
+每次啟動的 jtsConfigDir 都是各自的安裝資料夾（Rosa = C:\Jts\ibgateway\1041）。
+command line 測資取自實際 process，restart token 以佔位字取代；另含 paper Gateway 的安裝位置。
+不真的開 Gateway：安裝資料夾換成 tmp，Popen 只記錄指令。
 """
 from __future__ import annotations
 
 import pytest
 
+import gateway_launcher
 from gateway_launcher import live_account_for_cmdline
 
-TAYLOR = [r"C:\IB-TAYLOR\ibgateway\ibgateway.exe", "-J-DCHANNEL=stable",
+
+@pytest.mark.parametrize("account, settings_dir", [
+    ("TAYLOR", r"C:\IB-TAYLOR\ibgateway"),
+    ("YVONNE", r"C:\IB-YIYI\ibgateway"),
+    ("ROSA", r"C:\Jts\ibgateway\1041"),
+])
+def test_gateway_starts_with_the_settings_folder_it_actually_uses(
+        account, settings_dir, tmp_path, monkeypatch):
+    (tmp_path / "ibgateway.exe").write_bytes(b"")
+    monkeypatch.setitem(gateway_launcher.ACCOUNT_GATEWAY_DIR, account, tmp_path)
+    started = []
+    monkeypatch.setattr(gateway_launcher.subprocess, "Popen",
+                        lambda cmd: started.append(cmd) or type("P", (), {"pid": 1})())
+
+    assert gateway_launcher.start_gateway(account) is not None
+
+    assert started == [[str(tmp_path / "ibgateway.exe"), f"-J-DjtsConfigDir={settings_dir}"]]
+
+
+TAYLOR =[r"C:\IB-TAYLOR\ibgateway\ibgateway.exe", "-J-DCHANNEL=stable",
           "-J-DchannelChanged=false", r"-J-DjtsConfigDir=C:\IB-TAYLOR\ibgateway",
           "-J-Drestart=TOKEN"]
 YVONNE = [r"C:\IB-YIYI\ibgateway\ibgateway.exe", "-J-DCHANNEL=stable",

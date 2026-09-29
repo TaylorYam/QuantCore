@@ -279,3 +279,8 @@ def test_a_login_that_cannot_be_submitted_fails_only_that_account():
     assert result.outcomes == {"Taylor": "submit_failed", "Rosa": "logged_in", "Yvonne": "logged_in"}
     assert "Taylor 登入視窗被切走了" in result.details["Taylor"]
     assert ("wait", "Taylor") not in ports.events
+
+
+def test_started_knows_whether_every_account_logged_in():
+    assert start_live_gateways(FakePorts()).all_logged_in
+    assert not start_live_gateways(FakePorts(never_logs_in={"Rosa"})).all_logged_in

@@ -225,7 +225,10 @@ pytest automation/tests/ -v            # 305+ 離線測試（不需 IB / 網路�
 
 - 領域語言：[CONTEXT.md](CONTEXT.md)
 - 協作規則：[AGENTS.md](AGENTS.md)
+- Claude Code 入口：[CLAUDE.md](CLAUDE.md)（引用 `AGENTS.md`）
 - 架構決策：[docs/adr/README.md](docs/adr/README.md)
+
+`AGENTS.md` 是共用 AI 開發規範。Agent 與使用者對話預設使用白話繁體中文；Agent 建立的 GitHub Issue 預設使用繁體中文。
 
 ---
 

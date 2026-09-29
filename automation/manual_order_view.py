@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from tkinter import messagebox, ttk
 
+from ime_guard import ascii_entry
+
 
 @dataclass(frozen=True)
 class ManualOrderRequest:
@@ -149,6 +151,14 @@ class ManualOrderWindow:
             form, textvariable=self.amount_var, width=18, state="disabled",
         )
         self.amount_entry.grid(row=2, column=3, sticky="ew", pady=5)
+        # 中文輸入法會把 "." 吃進組字，184.4 變 1844（#138）
+        for entry, variable in (
+            (self.symbol_entry, self.symbol_var),
+            (self.quantity_entry, self.quantity_var),
+            (self.price_entry, self.price_var),
+            (self.amount_entry, self.amount_var),
+        ):
+            ascii_entry(entry, variable)
 
         self._field_label(form, "委託類型", 3, 2)
         self.order_type_box = ttk.Combobox(

@@ -888,6 +888,36 @@ def test_panel_manual_order_requires_account_preview_and_second_confirmation(fak
 
     window.account_var.set("Rosa")
     window.symbol_var.set("ZZZZ")
+
+    # #141: account-equity % mode — preset choices, free entry, one input at a time.
+    assert str(window.percent_box.cget("state")) == "disabled"
+    window.quantity_var.set("5")
+    window.input_mode_var.set("帳戶權益 %")
+    assert window.quantity_var.get() == ""
+    assert str(window.quantity_entry.cget("state")) == "disabled"
+    assert str(window.percent_box.cget("state")) == "normal"
+    assert tuple(window.percent_box.cget("values")) == ("25", "30", "50", "75", "100")
+    window.price_var.set("300")
+    window.percent_var.set("30")
+    request = window._read_request()
+    assert (request.equity_pct, request.quantity, request.amount_usd) == (
+        Decimal("30"), None, None,
+    )
+    window.percent_var.set("40")
+    assert window._read_request().equity_pct == Decimal("40")
+    for bad in ("0", "150", "abc"):
+        window.percent_var.set(bad)
+        try:
+            window._read_request()
+        except ValueError as exc:
+            assert "權益百分比" in str(exc)
+        else:
+            raise AssertionError(f"{bad!r} accepted")
+    window.input_mode_var.set("整股股數")
+    assert window.percent_var.get() == ""
+    assert str(window.percent_box.cget("state")) == "disabled"
+    window.price_var.set("")
+
     window.input_mode_var.set("美元金額")
     assert str(window.quantity_entry.cget("state")) == "disabled"
     assert str(window.amount_entry.cget("state")) == "normal"

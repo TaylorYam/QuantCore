@@ -23,6 +23,7 @@ class ManualOrderRequest:
     amount_usd: Decimal | None = None
     order_type: str = "LMT"
     session: str = "REGULAR"
+    equity_pct: Decimal | None = None
 
 
 class ManualOrderWindow:
@@ -31,6 +32,8 @@ class ManualOrderWindow:
     POLL_INTERVAL_MS = 10_000
     SHARES_MODE = "整股股數"
     CASH_MODE = "美元金額"
+    PERCENT_MODE = "帳戶權益 %"
+    PERCENT_CHOICES = ("25", "30", "50", "75", "100")
     ACTION_LABELS = {"買進": "BUY", "賣出": "SELL", "回補空單": "COVER"}
     STORED_ACTION_LABELS = {
         "BUY": "買進", "SELL": "賣出", "SELL_SHORT": "放空", "COVER": "回補空單",
@@ -76,6 +79,7 @@ class ManualOrderWindow:
         self.symbol_var = tk.StringVar(self.win, value="")
         self.quantity_var = tk.StringVar(self.win, value="")
         self.amount_var = tk.StringVar(self.win, value="")
+        self.percent_var = tk.StringVar(self.win, value="")
         self.input_mode_var = tk.StringVar(self.win, value=self.SHARES_MODE)
         self.price_var = tk.StringVar(self.win, value="")
         self.order_type_var = tk.StringVar(self.win, value="LMT")
@@ -84,7 +88,8 @@ class ManualOrderWindow:
         self.allow_short_var = tk.BooleanVar(self.win, value=False)
         for variable in (
             self.account_var, self.symbol_var,
-            self.quantity_var, self.amount_var, self.input_mode_var,
+            self.quantity_var, self.amount_var, self.percent_var,
+            self.input_mode_var,
             self.price_var,
             self.order_type_var, self.session_var,
             self.action_var, self.allow_short_var,
@@ -142,7 +147,8 @@ class ManualOrderWindow:
         self._field_label(form, "輸入方式", 2, 0)
         self.input_mode_box = ttk.Combobox(
             form, textvariable=self.input_mode_var,
-            values=(self.SHARES_MODE, self.CASH_MODE), state="readonly", width=18,
+            values=(self.SHARES_MODE, self.CASH_MODE, self.PERCENT_MODE),
+            state="readonly", width=18,
         )
         self.input_mode_box.grid(row=2, column=1, sticky="ew", padx=(0, 14), pady=5)
 
@@ -151,40 +157,49 @@ class ManualOrderWindow:
             form, textvariable=self.amount_var, width=18, state="disabled",
         )
         self.amount_entry.grid(row=2, column=3, sticky="ew", pady=5)
+
+        self._field_label(form, "權益百分比（IB 淨清算值 × %）", 3, 2)
+        # 可自行輸入其他百分比；停用時 Combobox 不能選也不能打字。
+        self.percent_box = ttk.Combobox(
+            form, textvariable=self.percent_var,
+            values=self.PERCENT_CHOICES, state="disabled", width=18,
+        )
+        self.percent_box.grid(row=3, column=3, sticky="ew", pady=5)
         # 中文輸入法會把 "." 吃進組字，184.4 變 1844（#138）
         for entry, variable in (
             (self.symbol_entry, self.symbol_var),
             (self.quantity_entry, self.quantity_var),
             (self.price_entry, self.price_var),
             (self.amount_entry, self.amount_var),
+            (self.percent_box, self.percent_var),
         ):
             ascii_entry(entry, variable)
 
-        self._field_label(form, "委託類型", 3, 2)
+        self._field_label(form, "委託類型", 4, 2)
         self.order_type_box = ttk.Combobox(
             form, textvariable=self.order_type_var,
             values=("LMT", "MKT"), state="readonly", width=18,
         )
-        self.order_type_box.grid(row=3, column=3, sticky="ew", pady=5)
+        self.order_type_box.grid(row=4, column=3, sticky="ew", pady=5)
 
-        self._field_label(form, "方向", 3, 0)
+        self._field_label(form, "方向", 4, 0)
         self.action_box = ttk.Combobox(
             form, textvariable=self.action_var,
             values=tuple(self.ACTION_LABELS), state="readonly", width=18,
         )
-        self.action_box.grid(row=3, column=1, sticky="ew", padx=(0, 14), pady=5)
+        self.action_box.grid(row=4, column=1, sticky="ew", padx=(0, 14), pady=5)
 
-        self._field_label(form, "交易時段", 4, 0)
+        self._field_label(form, "交易時段", 5, 0)
         self.session_box = ttk.Combobox(
             form, textvariable=self.session_var,
             values=tuple(self.SESSION_CHOICES), state="readonly", width=18,
         )
-        self.session_box.grid(row=4, column=1, sticky="ew", padx=(0, 14), pady=5)
+        self.session_box.grid(row=5, column=1, sticky="ew", padx=(0, 14), pady=5)
         self.allow_short_check = ttk.Checkbutton(
             form, text="允許放空", variable=self.allow_short_var,
             state="disabled",
         )
-        self.allow_short_check.grid(row=4, column=2, columnspan=2, sticky="w", pady=5)
+        self.allow_short_check.grid(row=5, column=2, columnspan=2, sticky="w", pady=5)
 
         helper = tk.Label(
             form,
@@ -194,10 +209,10 @@ class ManualOrderWindow:
             font=self.fonts["small"], bg=t["bg2"], fg=t["text_dim"],
             anchor="w",
         )
-        helper.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(7, 2))
+        helper.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(7, 2))
 
         actions = tk.Frame(form, bg=t["bg2"])
-        actions.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(9, 0))
+        actions.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(9, 0))
         self.preview_button = ttk.Button(
             actions, text="預覽委託", command=self._preview_order,
         )
@@ -305,17 +320,26 @@ class ManualOrderWindow:
         )
 
     def _input_mode_changed(self, *_args):
-        is_cash = self.input_mode_var.get() == self.CASH_MODE
-        if is_cash:
-            self.quantity_var.set("")
-        else:
-            self.amount_var.set("")
-        self.quantity_entry.configure(
-            state="normal" if not is_cash and not self._busy else "disabled",
-        )
-        self.amount_entry.configure(
-            state="normal" if is_cash and not self._busy else "disabled",
-        )
+        mode = self.input_mode_var.get()
+        for mode_value, variable in (
+            (self.SHARES_MODE, self.quantity_var),
+            (self.CASH_MODE, self.amount_var),
+            (self.PERCENT_MODE, self.percent_var),
+        ):
+            if mode != mode_value:
+                variable.set("")
+        self._apply_input_mode_state()
+
+    def _apply_input_mode_state(self):
+        mode = self.input_mode_var.get()
+        for widget, mode_value in (
+            (self.quantity_entry, self.SHARES_MODE),
+            (self.amount_entry, self.CASH_MODE),
+            (self.percent_box, self.PERCENT_MODE),
+        ):
+            widget.configure(
+                state="normal" if mode == mode_value and not self._busy else "disabled",
+            )
 
     def _order_type_changed(self, *_args):
         if self.order_type_var.get() == "MKT":
@@ -331,6 +355,7 @@ class ManualOrderWindow:
             raise ValueError("請先選擇這筆委託要送往的 Account。")
         quantity = None
         amount = None
+        percent = None
         if self.input_mode_var.get() == self.SHARES_MODE:
             raw_quantity = self.quantity_var.get().strip()
             if not raw_quantity.isdecimal():
@@ -345,8 +370,12 @@ class ManualOrderWindow:
                 raise ValueError("請輸入有效的美元金額。") from exc
             if not amount.is_finite() or amount <= 0:
                 raise ValueError("美元金額必須大於零。")
+        elif self.input_mode_var.get() == self.PERCENT_MODE:
+            from manual_orders import equity_percent
+
+            percent = equity_percent(self.percent_var.get())
         else:
-            raise ValueError("請選擇整股股數或美元金額。")
+            raise ValueError("請選擇整股股數、美元金額或帳戶權益 %。")
         order_type = self.order_type_var.get()
         if order_type == "LMT":
             try:
@@ -375,12 +404,15 @@ class ManualOrderWindow:
             amount_usd=amount,
             order_type=order_type,
             session=session,
+            equity_pct=percent,
         )
 
     @staticmethod
     def _requested_quantity(request):
         from manual_orders import whole_share_quantity
 
+        if request.equity_pct is not None:
+            raise ValueError("修改委託時請改用整股股數或美元金額。")
         if request.order_type == "MKT":
             if request.quantity is None:
                 raise ValueError("修改時請輸入明確股數。")
@@ -414,6 +446,8 @@ class ManualOrderWindow:
                 kwargs["order_type"] = "MKT"
             if request.session != "REGULAR":
                 kwargs["session"] = request.session
+            if request.equity_pct is not None:
+                kwargs["equity_pct"] = request.equity_pct
             result = self.service.preview(
                 request.account_name, request.symbol,
                 request.quantity, request.limit_price,
@@ -544,12 +578,7 @@ class ManualOrderWindow:
         self.account_box.configure(state="disabled" if value else "readonly")
         self.symbol_entry.configure(state=state)
         self.input_mode_box.configure(state="disabled" if value else "readonly")
-        self.quantity_entry.configure(
-            state=state if self.input_mode_var.get() == self.SHARES_MODE else "disabled",
-        )
-        self.amount_entry.configure(
-            state=state if self.input_mode_var.get() == self.CASH_MODE else "disabled",
-        )
+        self._apply_input_mode_state()
         self.price_entry.configure(
             state=state if self.order_type_var.get() == "LMT" else "disabled",
         )

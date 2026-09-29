@@ -1021,22 +1021,33 @@ class ControlPanel(tk.Tk):
         threading.Thread(target=self._start_gateways_thread, daemon=True).start()
 
     def _start_gateways_thread(self):
-        from gateway_start import describe, start_live_gateways
+        from gateway_start import Started, describe, start_live_gateways
         from gateway_start_win import WindowsPorts
+        started = False
         try:
             result = start_live_gateways(WindowsPorts(ask_credentials=self._ask_gateway_credentials))
-            msg, ok = describe(result), True
+            msg, ok, started = describe(result), True, isinstance(result, Started)
         except Exception as e:
             msg, ok = f"啟動 Gateway 失敗：{type(e).__name__}: {e}", False
-        self.after(0, lambda: self._show_gateway_start_result(msg, ok))
+        self.after(0, lambda: self._show_gateway_start_result(msg, ok, started))
 
-    def _show_gateway_start_result(self, msg: str, ok: bool):
+    def _show_gateway_start_result(self, msg: str, ok: bool, started: bool = False):
         self._gw_starting = False
         self.btn_start_gateways.config(state="normal")
         for line in msg.splitlines():
             if line:
                 self._log(f"[GW] {line}")
-        (messagebox.showinfo if ok else messagebox.showerror)("啟動 Gateway", msg, parent=self)
+        # 結果跳窗是 modal：被 Gateway 視窗蓋住時 Panel 整個點不動（#124）。
+        # 跳窗期間 Panel 暫設最上層；開完 Gateway 的話，按 OK 後 Panel 退到後面，
+        # 讓登入視窗露出來。
+        self.attributes("-topmost", True)
+        self.lift()
+        try:
+            (messagebox.showinfo if ok else messagebox.showerror)("啟動 Gateway", msg, parent=self)
+        finally:
+            self.attributes("-topmost", False)
+            if started:
+                self.lower()
 
     def _ask_gateway_credentials(self, account: str):
         """背景執行緒呼叫：在 Tk 主線程跳帳密輸入框，等使用者按 OK / Cancel。"""

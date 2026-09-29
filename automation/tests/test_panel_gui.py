@@ -498,7 +498,14 @@ def test_start_gateways_asks_for_missing_credentials_then_shows_the_result(fake_
     module = load_panel_module(monkeypatch)
     panel_type = offline_panel_type(monkeypatch, module)
     shown, exceptions = [], []
-    monkeypatch.setattr(module.messagebox, "showinfo", lambda *a, **k: shown.append(("info", a)))
+    topmost_while_shown = []
+
+    def showinfo(*a, **k):
+        # #124: the modal result must not hide behind the Gateway windows
+        topmost_while_shown.append(bool(k["parent"].attributes("-topmost")))
+        shown.append(("info", a))
+
+    monkeypatch.setattr(module.messagebox, "showinfo", showinfo)
     monkeypatch.setattr(module.messagebox, "showerror", lambda *a, **k: shown.append(("error", a)))
 
     panel = panel_type()
@@ -533,6 +540,8 @@ def test_start_gateways_asks_for_missing_credentials_then_shows_the_result(fake_
                 step[0] = "result"
             elif step[0] == "result" and shown:
                 assert start.cget("state") == "normal"
+                assert topmost_while_shown == [True]
+                assert not panel.attributes("-topmost")   # back to normal after OK
                 panel._quit_app()
                 step[0] = "done"
                 return

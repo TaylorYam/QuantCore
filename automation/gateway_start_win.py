@@ -216,8 +216,14 @@ def _window_title(hwnd) -> str:
     return buf.value
 
 
+def is_login_window_title(title: str) -> bool:
+    """Gateway 登入視窗的標題隨 Gateway 語言設定而變：英文「IBKR Gateway」、
+    繁中「IBKR網關」。共同點是開頭的 IBKR；Java 的隱藏輔助視窗不會以此開頭。"""
+    return title.strip().upper().startswith("IBKR")
+
+
 def _login_window_for(pids: set[int]):
-    """這些 process 擁有的、看得見的 Gateway 視窗；還沒出現回 None。"""
+    """這些 process 擁有的、看得見的 Gateway 登入視窗；還沒出現回 None。"""
     found = []
 
     def callback(hwnd, _lparam):
@@ -225,7 +231,7 @@ def _login_window_for(pids: set[int]):
             return True
         pid = wintypes.DWORD()
         _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if pid.value in pids and "gateway" in _window_title(hwnd).lower():
+        if pid.value in pids and is_login_window_title(_window_title(hwnd)):
             found.append(hwnd)
             return False
         return True

@@ -158,7 +158,12 @@ Panel 正逐步換成 PySide6（[ADR-0012](docs/adr/0012-panel-pyside6-parallel-
 
 - 安裝：`pip install -r requirements.txt`（含 `PySide6-Essentials`）
 - 建捷徑：`python automation/create_shortcut.py --qt`（桌面「QuantCore Qt — Taylor」，走 `automation/QuantCore_QtPanel.vbs`）
-- 目前內容：Dashboard 的三個 Gateway 連線狀態（心跳斷了不會自己重連：按「重新檢查」＝ Tk 的 Check Now；另外比照 Morning check，每個 NYSE 交易日台北 07:00 自動重新檢查一次，只重連已斷的帳戶、不發通知）；Portfolio／Trading 還是空殼，並行期間照舊用 Tk Panel
+- 目前內容：Dashboard 已和 Tk 對等 —
+  - 三個 Gateway 連線狀態（心跳斷了不會自己重連：按「重新檢查」＝ Tk 的 Check Now；另外比照 Morning check，每個 NYSE 交易日台北 07:00 自動重新檢查一次，只重連已斷的帳戶、不發通知）
+  - 「一鍵啟動 Gateway」與「Gateway 帳密」：規則同 Tk 的「啟動 Gateway」（三個都要先關閉否則整批拒絕、依序登入、失敗不重試），帳密共用 Windows 認證管理員；兩邊都能按，但同時只有一邊會真的開
+  - 值班：Rosa poll／TY check／Morning check 的下次時間，以及 Tk Panel 有沒有開（沒開 = 目前沒有人值班）；新 Panel 自己不值班、不發 Telegram
+  - 今日排程（當日排程總結的畫面版，讀 `logs/run_status/`；21:31 成交回報只看它今天的 log 有沒有寫過）、資料日期（`SPY.csv` 最後一天）、最後更新時間與「重新整理」、Output Log
+  - Portfolio／Trading 還是空殼，並行期間照舊用 Tk Panel
 - 模式由 `config.json` 的 `qt_panel_mode` 決定，預設並行模式；正式模式在切換工單 #154 才提供
 
 ---

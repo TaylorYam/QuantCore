@@ -14,6 +14,7 @@ psutil==7.2.2
 Pillow==11.1.0
 pystray==0.19.5
 openpyxl==3.1.5
+PySide6-Essentials==6.11.2
 
 # ── Key transitive dependencies ────────────────────────────────
 python-dateutil==2.9.0.post0
@@ -40,8 +41,10 @@ eventkit==1.0.3
 nest-asyncio==1.6.0
 et-xmlfile==2.0.0
 six==1.17.0
+shiboken6==6.11.2
 
 # ── Dev dependencies ───────────────────────────────────────────
 pytest==9.0.3
 pluggy==1.6.0
 iniconfig==2.3.0
+pytest-qt==4.5.0

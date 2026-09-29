@@ -563,6 +563,11 @@ class ControlPanel(tk.Tk):
 
         self._btn(gw_bar, "Check Now", self._refresh_gateway_status,
                   BTN_BG, padx=6, pady=2, font=self.font_small).pack(side="right")
+        self._btn(gw_bar, "更新 Gateway 帳密", self._update_gateway_credentials,
+                  BTN_BG, padx=6, pady=2, font=self.font_small).pack(side="right", padx=(0, 4))
+        self.btn_start_gateways = self._btn(gw_bar, "啟動 Gateway", self._start_gateways,
+                                            GREEN, padx=6, pady=2, font=self.font_small)
+        self.btn_start_gateways.pack(side="right", padx=(0, 4))
         self.gw_last_lbl = tk.Label(gw_bar, text="", font=self.font_small,
                                      bg=BG2, fg=TEXT_DIM)
         self.gw_last_lbl.pack(side="right", padx=8)
@@ -1000,6 +1005,95 @@ class ControlPanel(tk.Tk):
         if respawned > 0:
             self._log(f"[>] Re-probing {respawned} Gateway(s)... "
                       f"(state callback will update colour shortly)")
+
+    # ── Gateway 啟動（#121）──────────────────────────────
+
+    def _start_gateways(self):
+        """啟動 Gateway 按鈕：開三個實盤 Gateway 並填入帳密，登入與 IB Key 由使用者處理。
+
+        判斷全在 gateway_start；這裡只負責背景執行、帳密輸入框、顯示結果。不發 Telegram。
+        """
+        if getattr(self, "_gw_starting", False):
+            return
+        self._gw_starting = True
+        self.btn_start_gateways.config(state="disabled")
+        self._log("[>] 啟動 Gateway — 檢查實盤 Gateway 是否都已關閉...")
+        threading.Thread(target=self._start_gateways_thread, daemon=True).start()
+
+    def _start_gateways_thread(self):
+        from gateway_start import describe, start_live_gateways
+        from gateway_start_win import WindowsPorts
+        try:
+            result = start_live_gateways(WindowsPorts(ask_credentials=self._ask_gateway_credentials))
+            msg, ok = describe(result), True
+        except Exception as e:
+            msg, ok = f"啟動 Gateway 失敗：{type(e).__name__}: {e}", False
+        self.after(0, lambda: self._show_gateway_start_result(msg, ok))
+
+    def _show_gateway_start_result(self, msg: str, ok: bool):
+        self._gw_starting = False
+        self.btn_start_gateways.config(state="normal")
+        for line in msg.splitlines():
+            if line:
+                self._log(f"[GW] {line}")
+        (messagebox.showinfo if ok else messagebox.showerror)("啟動 Gateway", msg, parent=self)
+
+    def _ask_gateway_credentials(self, account: str):
+        """背景執行緒呼叫：在 Tk 主線程跳帳密輸入框，等使用者按 OK / Cancel。"""
+        done = threading.Event()
+        answer = {}
+
+        def on_done(creds):
+            answer["creds"] = creds
+            done.set()
+
+        self.after(0, lambda: self._open_gateway_credentials_dialog(account, on_done))
+        done.wait()
+        return answer.get("creds")
+
+    def _open_gateway_credentials_dialog(self, account: str, on_done, username: str = ""):
+        from gateway_credentials_dialog import GatewayCredentialsDialog
+        GatewayCredentialsDialog(
+            parent=self, account=account, theme=self._theme, fonts=self._fonts,
+            btn_factory=self._btn, on_done=on_done, username=username,
+        ).show()
+
+    def _update_gateway_credentials(self):
+        """更新 Gateway 帳密按鈕：選帳戶 → 輸入新帳密 → 存進認證管理員（改密碼後用）。"""
+        from account_picker import AccountPicker
+        from gateway_start import LIVE_ACCOUNTS
+        AccountPicker(
+            parent=self,
+            title="Gateway 帳密 — 選擇帳戶",
+            accounts=list(LIVE_ACCOUNTS),
+            theme=self._theme,
+            fonts=self._fonts,
+            btn_factory=self._btn,
+            on_pick=self._edit_gateway_credentials,
+        ).show()
+
+    def _edit_gateway_credentials(self, account: str):
+        from gateway_start_win import read_credentials, write_credentials
+
+        try:
+            current = read_credentials(account)
+        except OSError as e:
+            messagebox.showerror("Gateway 帳密", f"讀取 {account} 帳密失敗：{e}", parent=self)
+            return
+
+        def on_done(creds):
+            if creds is None:
+                return
+            try:
+                write_credentials(account, creds)
+            except OSError as e:
+                messagebox.showerror("Gateway 帳密", f"儲存 {account} 帳密失敗：{e}", parent=self)
+                return
+            self._log(f"[GW] {account} Gateway 帳密已更新")
+            messagebox.showinfo("Gateway 帳密", f"{account} 帳密已存進 Windows 認證管理員。", parent=self)
+
+        self._open_gateway_credentials_dialog(
+            account, on_done, username=current.username if current else "")
 
     # ── Sync Position ─────────────────────────────────────
 

@@ -1,17 +1,17 @@
-"""
-QuantCore — IB Gateway 啟動器（手動版本，不透過 IBC）
+r"""
+QuantCore — IB Gateway 啟動器（原生 Gateway，不透過 IBC）
 
 2026-06-01 完全棄用 IBC，全部走原生 Gateway。每個帳戶獨立 Gateway 安裝
 （multi-install model），相互不干擾：
 
-    TAYLOR  C:\\IB-TAYLOR\\ibgateway\\
-    YVONNE  C:\\IB-YIYI\\ibgateway\\
-    ROSA    C:\\Jts\\ibgateway\\1041\\   (尚未遷移，仍用舊共享 binary)
+    TAYLOR  C:\IB-TAYLOR\ibgateway\      (10.45)
+    YVONNE  C:\IB-YIYI\ibgateway\        (10.45)
+    ROSA    C:\Jts\ibgateway\1041\     (10.41，尚未遷移)
 
 啟動方式：直接執行 ibgateway.exe，傳 -J-DjtsConfigDir=<settings_dir> 指定
-TWS 設定路徑。第一次啟動需要使用者**手動輸入帳密 + 2FA**；登入後 Gateway 內建
-每日 token-based auto-restart（不需 2FA），週日由 ColdRestart 觸發、需手動
-2FA 一次。
+TWS 設定路徑。三個都已啟用每日 Auto-restart（沿用 token 重連、免 IB Key）；
+週日 ColdRestart、當機或電腦重開後需要重新輸入帳密 + 手機 IB Key，這時用
+Panel 的「啟動 Gateway」（gateway_start.py，#121）一次開三個並填好帳密。
 
 棄用 IBC 的原因：IBC 3.23.0 在 Gateway 10.41 的 UI scraper 找不到 Auto
 Restart 控件（"could not find auto logoff/restart time controls"），加上
@@ -45,6 +45,34 @@ ACCOUNT_SETTINGS_DIR = {
     "ROSA":   LEGACY_GATEWAY_DIR,
 }
 
+_CONFIG_DIR_FLAG = "-J-DjtsConfigDir="
+
+
+def _same_dir(a: str | Path, b: Path) -> bool:
+    return str(a).rstrip(r"\/").lower() == str(b).rstrip(r"\/").lower()
+
+
+def live_account_for_cmdline(cmdline: list[str]) -> str | None:
+    r"""執行中 Gateway 的 command line → 實盤帳戶名（Taylor/Rosa/Yvonne），不是就 None。
+
+    先看 jtsConfigDir，對不上再看 exe 所在的安裝資料夾：用舊設定夾或從開始選單
+    直接開的實盤 Gateway 也要算到（寧可多擋，不可重複開）。
+    paper Gateway（C:\IB-Paper Trade）不屬於任何實盤帳戶。
+    """
+    if not cmdline:
+        return None
+    config_dir = next((arg[len(_CONFIG_DIR_FLAG):] for arg in cmdline
+                       if arg.startswith(_CONFIG_DIR_FLAG)), None)
+    if config_dir is not None:
+        for account, settings_dir in ACCOUNT_SETTINGS_DIR.items():
+            if _same_dir(config_dir, settings_dir):
+                return account.capitalize()
+    install_dir = Path(cmdline[0]).parent
+    for account, gateway_dir in ACCOUNT_GATEWAY_DIR.items():
+        if _same_dir(install_dir, gateway_dir):
+            return account.capitalize()
+    return None
+
 
 def _restore_exe(gateway_dir: Path):
     """Gateway shutdown 後有時會把 ibgateway.exe 改名 ibgateway1.exe，啟動前還原。"""
@@ -58,8 +86,8 @@ def start_gateway(account_name: str) -> subprocess.Popen | None:
     """
     啟動指定帳戶的 IB Gateway。
 
-    第一次啟動會跳登入畫面，需手動輸入帳密 + IBKR Mobile 2FA。
-    之後 Gateway 自己 daily auto-restart，週日 ColdRestart 需要再一次 2FA。
+    啟動後會跳登入畫面，要輸入帳密 + 手機 IB Key（Panel「啟動 Gateway」會代填帳密）。
+    之後 Gateway 每天 Auto-restart 免 IB Key，週日 ColdRestart 需要再登入一次。
 
     回傳 Popen 物件，None 表示失敗。
     """

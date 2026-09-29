@@ -9,6 +9,7 @@ TakeoverWindow — 交給策略接管視窗（#107）
 
 Pure UI — 不連 IB、不管執行緒、不發 Telegram（control_panel 負責）。
 依賴以 constructor 注入，與 SyncPreviewWindow 同一套 theme／按鈕工廠。
+顯示的文字由 takeover_preview_text 產生（與 Qt Panel 共用）。
 """
 
 from __future__ import annotations
@@ -17,12 +18,7 @@ import tkinter as tk
 from tkinter import messagebox
 from typing import Callable
 
-_RESULT_TITLE = {
-    "COMPLETED": "✅ 接管完成",
-    "PENDING": "🕐 已送出，等成交與對帳",
-    "FAILED": "❌ 接管未完成",
-    "DRY_RUN": "[DRY RUN] 沒有送單",
-}
+import takeover_preview_text as preview_text
 
 
 class TakeoverWindow:
@@ -46,7 +42,7 @@ class TakeoverWindow:
 
     def show_computing(self) -> None:
         t = self.t
-        title = f"交給策略接管 — {self.account_name} {self.symbol}"
+        title = preview_text.window_title(self.account_name, self.symbol)
         win = tk.Toplevel(self.parent)
         self.win = win
         win.title(title)
@@ -81,10 +77,9 @@ class TakeoverWindow:
             self._label(f"⚠️ {note}", fg=t["red"])
         for line in preview.lines():
             self._label(line)
-        confirm = ("確認接管" if preview.quantity == 0
-                   else f"確認接管並送出 {preview.action} {preview.quantity}")
         self._footer([("Cancel", self._close, t["btn_bg"]),
-                      (confirm, self._handle_confirm, t["red"])])
+                      (preview_text.confirm_label(preview), self._handle_confirm,
+                       t["red"])])
 
     def show_sending(self) -> None:
         if self._alive():
@@ -96,7 +91,7 @@ class TakeoverWindow:
             return
         t = self.t
         ok = result.status == "COMPLETED"
-        self._status.config(text=_RESULT_TITLE.get(result.status, result.status),
+        self._status.config(text=preview_text.result_title(result.status),
                             fg=t["green"] if ok else t["text"])
         self._label("")
         self._label(result.message, fg=t["green"] if ok else t["text"])
@@ -149,14 +144,9 @@ class TakeoverWindow:
 
     def _handle_confirm(self) -> None:
         p = self.preview
-        what = ("不需下單，直接把這檔交給策略" if p.quantity == 0
-                else f"送出 {p.action} {p.quantity} 股 {p.symbol}（LMT，只這一檔）")
-        if not messagebox.askyesno(
-                "確認交給策略接管",
-                f"[{p.account_name}] {p.symbol}\n{what}\n"
-                "成交並與 IB 持倉對上後才解除暫停。確定？",
-                parent=self.win):
+        if not messagebox.askyesno(preview_text.CONFIRM_TITLE,
+                                   preview_text.confirm_prompt(p), parent=self.win):
             return
-        self._log(f"[>] 交給策略接管 [{p.account_name}] {p.symbol}...")
+        self._log(preview_text.start_log_line(p))
         self.show_sending()
         self.on_confirm(p)

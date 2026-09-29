@@ -2,54 +2,25 @@
 
 from __future__ import annotations
 
-import math
 import threading
 import tkinter as tk
-from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
 from tkinter import messagebox, ttk
 
+import manual_order_form as order_form
 from ime_guard import ascii_entry
-
-
-@dataclass(frozen=True)
-class ManualOrderRequest:
-    account_name: str
-    symbol: str
-    quantity: int | None
-    limit_price: float | None
-    action: str = "BUY"
-    allow_short: bool = False
-    amount_usd: Decimal | None = None
-    order_type: str = "LMT"
-    session: str = "REGULAR"
-    equity_pct: Decimal | None = None
+from manual_order_form import ManualOrderForm
 
 
 class ManualOrderWindow:
     """Panel adapter; all account, contract, and order decisions live in service."""
 
     POLL_INTERVAL_MS = 10_000
-    SHARES_MODE = "整股股數"
-    CASH_MODE = "美元金額"
-    PERCENT_MODE = "帳戶權益 %"
-    PERCENT_CHOICES = ("25", "30", "50", "75", "100")
-    ACTION_LABELS = {"買進": "BUY", "賣出": "SELL", "回補空單": "COVER"}
-    STORED_ACTION_LABELS = {
-        "BUY": "買進", "SELL": "賣出", "SELL_SHORT": "放空", "COVER": "回補空單",
-    }
-    FORM_ACTION_LABELS = {**STORED_ACTION_LABELS, "SELL_SHORT": "賣出"}
-    SESSION_CHOICES = {
-        "一般時段": "REGULAR", "盤前": "PRE_MARKET", "盤後": "AFTER_HOURS",
-        "隔夜（IBKR Overnight）": "OVERNIGHT",
-    }
-    FORM_SESSION_LABELS = {code: label for label, code in SESSION_CHOICES.items()}
-    STORED_SESSION_LABELS = {
-        "REGULAR": "一般時段 RTH / DAY",
-        "PRE_MARKET": "盤前 outsideRTH / DAY",
-        "AFTER_HOURS": "盤後 outsideRTH / DAY",
-        "OVERNIGHT": "隔夜 OVERNIGHT",
-    }
+    SHARES_MODE = order_form.SHARES_MODE
+    CASH_MODE = order_form.CASH_MODE
+    PERCENT_MODE = order_form.PERCENT_MODE
+    PERCENT_CHOICES = order_form.PERCENT_CHOICES
+    ACTION_LABELS = order_form.ACTION_LABELS
+    SESSION_CHOICES = order_form.SESSION_CHOICES
 
     SYMBOL_SUGGESTION_LIMIT = 8
 
@@ -365,36 +336,20 @@ class ManualOrderWindow:
             )
 
     def _update_symbol_hint(self):
-        text = self.symbol_var.get().strip()
-        color = self.theme["text_dim"]
-        if self._symbols is None:
-            hint = "美股代號清單載入中…" if text else ""
-        elif self._symbols is False:
-            hint = "無法取得美股代號清單，請自行確認代號" if text else ""
-        elif not text:
-            hint = ""
-        else:
-            name = self._symbols.name_for(text)
-            if name:
-                hint = name if len(name) <= 60 else name[:59] + "…"
-                color = self.theme["text"]
-            else:
-                hint = "清單內找不到此代號（仍可預覽，以 IB 合約檢查為準）"
-                color = self.theme["yellow"]
-        self.symbol_hint.configure(text=hint, fg=color)
+        hint, color = order_form.symbol_hint(self._symbols, self.symbol_var.get())
+        self.symbol_hint.configure(text=hint, fg=self.theme[color])
 
     def _show_suggestions(self, matches):
         self._suggested = [symbol for symbol, _name in matches]
         box = self.symbol_suggestions
         box.delete(0, "end")
-        # 只剩一個且已完全相符時不必再跳清單
-        if not matches or (len(matches) == 1 and matches[0][0]
-                           == self.symbol_var.get().strip().upper()):
+        lines = order_form.suggestion_lines(matches, self.symbol_var.get())
+        if not lines:
             self._hide_suggestions()
             return
-        for symbol, name in matches:
-            box.insert("end", f"{symbol:<6}  {name[:60]}")
-        box.configure(height=len(matches))
+        for line in lines:
+            box.insert("end", line)
+        box.configure(height=len(lines))
         box.selection_set(0)
         box.place(in_=self.symbol_entry, relx=1.0, rely=1.0, y=2,
                   anchor="ne", width=520)
@@ -497,78 +452,23 @@ class ManualOrderWindow:
             else "disabled",
         )
 
-    def _read_request(self):
-        account = self.account_var.get().strip()
-        if not account:
-            raise ValueError("請先選擇這筆委託要送往的 Account。")
-        quantity = None
-        amount = None
-        percent = None
-        if self.input_mode_var.get() == self.SHARES_MODE:
-            raw_quantity = self.quantity_var.get().strip()
-            if not raw_quantity.isdecimal():
-                raise ValueError("整股股數必須是正整數。")
-            quantity = int(raw_quantity)
-            if quantity <= 0:
-                raise ValueError("整股股數必須大於零。")
-        elif self.input_mode_var.get() == self.CASH_MODE:
-            try:
-                amount = Decimal(self.amount_var.get().strip())
-            except InvalidOperation as exc:
-                raise ValueError("請輸入有效的美元金額。") from exc
-            if not amount.is_finite() or amount <= 0:
-                raise ValueError("美元金額必須大於零。")
-        elif self.input_mode_var.get() == self.PERCENT_MODE:
-            from manual_orders import equity_percent
-
-            percent = equity_percent(self.percent_var.get())
-        else:
-            raise ValueError("請選擇整股股數、美元金額或帳戶權益 %。")
-        order_type = self.order_type_var.get()
-        if order_type == "LMT":
-            try:
-                price = float(self.price_var.get().strip())
-            except ValueError as exc:
-                raise ValueError("請輸入自填限價。") from exc
-            if not math.isfinite(price) or price <= 0:
-                raise ValueError("限價必須大於零。")
-        elif order_type == "MKT":
-            price = None
-        else:
-            raise ValueError("請選擇有效委託類型。")
-        session = self.SESSION_CHOICES.get(self.session_var.get())
-        if session is None:
-            raise ValueError("請選擇交易時段。")
-        if session != "REGULAR" and order_type != "LMT":
-            # Never switch the trader's MKT to LMT or regular hours on their behalf.
-            raise ValueError("盤前／盤後／隔夜只接受 LMT 限價單；請改選 LMT，或改用一般時段。")
-        return ManualOrderRequest(
-            account_name=account,
-            symbol=self.symbol_var.get().strip(),
-            quantity=quantity,
-            limit_price=price,
-            action=self.ACTION_LABELS[self.action_var.get()],
+    def _form(self):
+        return ManualOrderForm(
+            account=self.account_var.get(),
+            symbol=self.symbol_var.get(),
+            input_mode=self.input_mode_var.get(),
+            quantity=self.quantity_var.get(),
+            amount=self.amount_var.get(),
+            percent=self.percent_var.get(),
+            order_type=self.order_type_var.get(),
+            price=self.price_var.get(),
+            session=self.session_var.get(),
+            action=self.action_var.get(),
             allow_short=bool(self.allow_short_var.get()),
-            amount_usd=amount,
-            order_type=order_type,
-            session=session,
-            equity_pct=percent,
         )
 
-    @staticmethod
-    def _requested_quantity(request):
-        from manual_orders import whole_share_quantity
-
-        if request.equity_pct is not None:
-            raise ValueError("修改委託時請改用整股股數或美元金額。")
-        if request.order_type == "MKT":
-            if request.quantity is None:
-                raise ValueError("修改時請輸入明確股數。")
-            return request.quantity
-        return whole_share_quantity(
-            shares=request.quantity, amount_usd=request.amount_usd,
-            limit_price=request.limit_price,
-        )
+    def _read_request(self):
+        return order_form.parse_request(self._form())
 
     def _preview_order(self):
         if self._busy:
@@ -586,20 +486,10 @@ class ManualOrderWindow:
 
     def _preview_worker(self, request):
         try:
-            kwargs = dict(
-                action=request.action, allow_short=request.allow_short,
-                amount_usd=request.amount_usd,
-            )
-            if request.order_type == "MKT":
-                kwargs["order_type"] = "MKT"
-            if request.session != "REGULAR":
-                kwargs["session"] = request.session
-            if request.equity_pct is not None:
-                kwargs["equity_pct"] = request.equity_pct
             result = self.service.preview(
                 request.account_name, request.symbol,
                 request.quantity, request.limit_price,
-                **kwargs,
+                **order_form.preview_kwargs(request),
             )
             self._post(lambda: self._preview_complete(request, result, None))
         except Exception as exc:
@@ -697,24 +587,11 @@ class ManualOrderWindow:
             self.form_status.configure(text="送單前重新檢查未通過")
             self.preview_text.configure(text=error, fg=self.theme["red"])
             return
-        needs_attention = result["status"] not in {"SENT", "ACCEPTED", "PARTIAL", "FILLED"}
-        # The message carries IB's reason for rejections and forced cancels.
         self.form_status.configure(
-            text=f"{result['account_name']} {result['symbol']}："
-                 f"{result.get('status_message') or result.get('status_label', result['status'])}",
-            fg=self.theme["red"] if needs_attention else self.theme["green"],
+            text=order_form.submit_status_text(result),
+            fg=self.theme["red"] if order_form.needs_attention(result) else self.theme["green"],
         )
-        price_condition = (
-            "MKT" if result.get("order_type") == "MKT"
-            else f"LMT {result['limit_price']} USD"
-        )
-        session = result.get("session") or "REGULAR"
-        self.log(
-            f"[>] Manual order [{result['account_name']}] "
-            f"{result['action']} {result['quantity']}sh {result['symbol']} "
-            f"{price_condition} {session} — {result['status']}"
-            + (f" ({result.get('status_message', '')})" if needs_attention else "")
-        )
+        self.log(order_form.submit_log_line(result))
         self._render_orders(self._active_orders())
         self._refresh_status()
 
@@ -747,10 +624,7 @@ class ManualOrderWindow:
         try:
             return self.service.list_orders(active_only=True)
         except TypeError:
-            return [row for row in self.service.list_orders()
-                    if row.get("status") not in {
-                        "FILLED", "REJECTED", "CANCELLED", "EXPIRED",
-                    }]
+            return order_form.open_orders(self.service.list_orders())
 
     def _selected_order(self):
         selected = self.orders.selection()
@@ -758,20 +632,13 @@ class ManualOrderWindow:
 
     def _update_selection_actions(self, *_args):
         row = self._selected_order()
-        selectable = (
-            not self._busy and row is not None
-            and row.get("status") not in {
-                "CANCEL_PENDING", "CANCEL_UNKNOWN", "IB_UNKNOWN",
-                "SUBMISSION_UNKNOWN",
-            }
-        )
-        state = "normal" if selectable else "disabled"
         if hasattr(self, "cancel_button"):
-            self.cancel_button.configure(state=state)
+            self.cancel_button.configure(
+                state="normal" if not self._busy and order_form.can_cancel(row) else "disabled",
+            )
         if hasattr(self, "modify_button"):
             self.modify_button.configure(
-                state=state if row is not None and row.get("order_type", "LMT") == "LMT"
-                else "disabled",
+                state="normal" if not self._busy and order_form.can_modify(row) else "disabled",
             )
 
     def _order_selected(self, *_args):
@@ -782,10 +649,7 @@ class ManualOrderWindow:
         if row is None or self._busy:
             return
         if not messagebox.askyesno(
-            "取消手動委託",
-            f"向 IB 要求取消 {row['account_name']} 的 {row['symbol']} "
-            f"{row['quantity']} 股委託？\n\n取消完成前仍可能成交。",
-            parent=self.win,
+            "取消手動委託", order_form.cancel_prompt(row), parent=self.win,
         ):
             return
         self._request_cancel(row["order_ref"], None)
@@ -796,21 +660,17 @@ class ManualOrderWindow:
             return
         if row.get("order_type", "LMT") == "MKT":
             return
-        row_session = row.get("session") or "REGULAR"
-        if (self.account_var.get().strip() != row["account_name"]
-                or self.symbol_var.get().strip().upper() != row["symbol"]
-                or self.action_var.get() != self.FORM_ACTION_LABELS[row["action"]]
-                or bool(self.allow_short_var.get()) != (row["action"] == "SELL_SHORT")
-                or self.SESSION_CHOICES.get(self.session_var.get()) != row_session):
-            self.account_var.set(row["account_name"])
-            self.symbol_var.set(row["symbol"])
-            self.action_var.set(self.FORM_ACTION_LABELS[row["action"]])
-            self.allow_short_var.set(row["action"] == "SELL_SHORT")
-            self.input_mode_var.set(self.SHARES_MODE)
-            self.order_type_var.set("LMT")
-            self.session_var.set(self.FORM_SESSION_LABELS[row_session])
-            self.quantity_var.set(str(row["quantity"]))
-            self.price_var.set(str(row["limit_price"]))
+        if not order_form.form_matches_row(self._form(), row):
+            loaded = order_form.form_from_row(row)
+            self.account_var.set(loaded.account)
+            self.symbol_var.set(loaded.symbol)
+            self.action_var.set(loaded.action)
+            self.allow_short_var.set(loaded.allow_short)
+            self.input_mode_var.set(loaded.input_mode)
+            self.order_type_var.set(loaded.order_type)
+            self.session_var.set(loaded.session)
+            self.quantity_var.set(loaded.quantity)
+            self.price_var.set(loaded.price)
             self.form_status.configure(text="已載入選定委託；調整價格或股數後再次按修改。")
             self.preview_text.configure(
                 text="修改流程會先等待 IB 確認取消，再提供新委託預覽。",
@@ -819,40 +679,13 @@ class ManualOrderWindow:
             return
         try:
             request = self._read_request()
-            if request.order_type != "LMT":
-                raise ValueError("修改限價單時請選擇 LMT。")
-            requested_quantity = self._requested_quantity(request)
+            requested_quantity = order_form.modify_quantity(request)
+            order_form.check_modify(row, request, requested_quantity)
         except ValueError as exc:
             messagebox.showwarning("修改手動委託", str(exc), parent=self.win)
             return
-        if (request.account_name != row["account_name"]
-                or request.symbol != row["symbol"]
-                or request.action != ("SELL" if row["action"] == "SELL_SHORT" else row["action"])
-                or request.allow_short != (row["action"] == "SELL_SHORT")
-                or request.session != row_session):
-            messagebox.showwarning(
-                "修改手動委託", "修改只允許變更原委託的價格或股數。", parent=self.win,
-            )
-            return
-        if (requested_quantity == int(row["quantity"])
-                and request.limit_price == float(row["limit_price"])):
-            messagebox.showwarning(
-                "修改手動委託", "請先變更價格或股數。", parent=self.win,
-            )
-            return
-        cash_target = (
-            f"預估交易目標 ${request.amount_usd:f} → "
-            if request.amount_usd is not None else ""
-        )
-        prompt = (
-            f"先取消目前的 {row['quantity']} 股 {row['symbol']} 委託，"
-            f"等 IB 確認後再預覽新條件：\n"
-            f"{cash_target}{requested_quantity} 股，LMT ${request.limit_price:.2f}"
-            f"（{self.FORM_SESSION_LABELS[request.session]}）\n\n"
-            "原委託取消前仍可能成交；不會自動送出新委託。"
-        )
         if not messagebox.askyesno(
-            "取消後修改手動委託", prompt,
+            "取消後修改手動委託", order_form.modify_prompt(row, request, requested_quantity),
             parent=self.win,
         ):
             return
@@ -861,10 +694,7 @@ class ManualOrderWindow:
     def _request_cancel(self, order_ref, replacement_request):
         row = self._order_rows.get(order_ref)
         if row is not None:
-            pending_row = dict(
-                row, status="CANCEL_PENDING", status_label="取消確認中",
-                status_message="已記錄取消要求，等待 IB 確認",
-            )
+            pending_row = order_form.cancel_pending_row(row)
             self._order_rows[order_ref] = pending_row
             try:
                 values = list(self.orders.item(order_ref, "values"))
@@ -925,40 +755,24 @@ class ManualOrderWindow:
         request = self._replacement_request
         self._replacement_order_ref = None
         self._replacement_request = None
-        if row.get("status") != "CANCELLED":
-            self.preview_text.configure(
-                text=(f"IB 已回報原委託：{row.get('status_label', row.get('status'))}；"
-                      "不會送出修改後委託。"),
-                fg=self.theme["text"],
-            )
+        replacement = order_form.replacement_after_cancel(row, request)
+        if replacement.form is None:
+            self.preview_text.configure(text=replacement.message, fg=self.theme["text"])
             return
-        filled = int(row.get("filled_quantity") or 0)
-        remaining = max(0, self._requested_quantity(request) - filled)
-        if remaining <= 0:
-            self.preview_text.configure(
-                text="取消確認前的成交已達修改後股數；沒有可重下的數量。",
-                fg=self.theme["text"],
-            )
-            return
-        self.account_var.set(request.account_name)
-        self.symbol_var.set(request.symbol)
-        # After any partial fill, prefill the remaining shares explicitly so a
-        # cash target cannot recalculate to the original total on re-preview.
-        self.input_mode_var.set(self.SHARES_MODE)
-        self.quantity_var.set(str(remaining))
-        self.price_var.set(str(request.limit_price))
-        self.action_var.set(self.FORM_ACTION_LABELS[request.action])
-        self.allow_short_var.set(request.allow_short)
-        self.session_var.set(self.FORM_SESSION_LABELS[request.session])
+        loaded = replacement.form
+        self.account_var.set(loaded.account)
+        self.symbol_var.set(loaded.symbol)
+        self.input_mode_var.set(loaded.input_mode)
+        self.quantity_var.set(loaded.quantity)
+        self.price_var.set(loaded.price)
+        self.action_var.set(loaded.action)
+        self.allow_short_var.set(loaded.allow_short)
+        self.session_var.set(loaded.session)
         self._preview = None
         self._preview_request = None
         self.confirm_button.configure(state="disabled")
         self.form_status.configure(text="IB 已確認取消；請預覽並再次確認新委託。")
-        self.preview_text.configure(
-            text=(f"原委託已取消，期間成交 {filled} 股。"
-                  f"新委託數量已調整為 {remaining} 股；按「預覽委託」後再確認送出。"),
-            fg=self.theme["text"],
-        )
+        self.preview_text.configure(text=replacement.message, fg=self.theme["text"])
 
     def _refresh_status(self):
         if self._closed or self._refreshing:
@@ -990,10 +804,7 @@ class ManualOrderWindow:
         if self._replacement_order_ref is not None:
             previous = next((row for row in self.service.list_orders()
                              if row.get("order_ref") == self._replacement_order_ref), None)
-            if previous and previous.get("status") not in {
-                "SENDING", "SENT", "ACCEPTED", "PARTIAL", "CANCEL_PENDING",
-                "CANCEL_UNKNOWN", "IB_UNKNOWN", "SUBMISSION_UNKNOWN",
-            }:
+            if previous and not order_form.replacement_waiting(previous):
                 self._finish_replacement_if_ready(previous)
         errors = result.get("errors", [])
         self.order_status.configure(
@@ -1007,31 +818,11 @@ class ManualOrderWindow:
         for item in self.orders.get_children():
             self.orders.delete(item)
         self._order_rows = {}
-        for row in rows:
-            if row.get("status") in {"FILLED", "REJECTED", "CANCELLED", "EXPIRED"}:
-                continue
-            filled = int(row.get("filled_quantity") or 0)
-            avg_price = row.get("avg_fill_price")
-            fill_text = f"{filled}/{row['quantity']}"
-            if avg_price:
-                fill_text += " @ $" + f"{float(avg_price):.2f}"
-            price_condition = (
-                "MKT" if row.get("order_type") == "MKT"
-                else f"LMT ${float(row['limit_price']):.2f}"
-            )
+        for row in order_form.open_orders(rows):
             order_ref = row["order_ref"]
             self._order_rows[order_ref] = row
             self.orders.insert(
-                "", "end", iid=order_ref,
-                values=(
-                    row["account_name"], row["symbol"],
-                    self.STORED_ACTION_LABELS.get(row["action"], row["action"]),
-                    row["quantity"], price_condition,
-                    self.STORED_SESSION_LABELS.get(
-                        row.get("session") or "REGULAR", row.get("session"),
-                    ),
-                    row.get("status_label", row["status"]), fill_text,
-                ),
+                "", "end", iid=order_ref, values=order_form.order_row_values(row),
             )
         self._update_selection_actions()
 

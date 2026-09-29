@@ -60,6 +60,7 @@ class FakeIBState:
         self.pending_errors = []
         # {n: action(ib, trade)} run on the n-th ib.sleep() after placeOrder.
         self.sleep_actions = {}
+        self.ib_instances = []
         self.sleeps_since_place = 0
 
 
@@ -82,11 +83,21 @@ class FakeEvent:
             handler(*args)
 
 
+class FakeWrapper:
+    """ib_insync's Wrapper.completedOrder turns IB's record into a Trade and
+    drops orderState (and its completedStatus)."""
+
+    def completedOrder(self, contract, order, order_state):
+        pass
+
+
 class FakeIB:
     def __init__(self, state):
         self.state = state
         self.connected = False
         self.errorEvent = FakeEvent()
+        self.wrapper = FakeWrapper()
+        state.ib_instances.append(self)
 
     def connect(self, host, port, *, clientId, timeout):
         import asyncio
@@ -128,6 +139,14 @@ class FakeIB:
 
     def reqCompletedOrders(self, apiOnly=True):
         assert apiOnly is True
+        for trade in self.state.completed_trades:
+            # IB's completedOrder message: orderState.status is Cancelled for
+            # both an expiry and a trader cancel; completedStatus tells them
+            # apart (paper, 2026-09-29).
+            self.wrapper.completedOrder(trade.contract, trade.order, NS(
+                status=trade.orderStatus.status,
+                completedStatus=getattr(trade, "completed_status", ""),
+            ))
         return list(self.state.completed_trades)
 
     def fills(self):
@@ -1835,3 +1854,66 @@ def test_overnight_notification_and_lifecycle_name_the_session(tmp_path):
     assert "LMT $10.00｜隔夜\n" in message
     assert "DAY" not in message
     assert "1/2" in message
+
+
+# --- IB expiry vs trader cancel (completedStatus) -------------------------
+
+@pytest.mark.parametrize("session,clock,label", [
+    ("REGULAR", MKT_NOW, "一般時段 DAY"),
+    ("AFTER_HOURS", AFTER_HOURS_NOW, "盤後 DAY"),
+    ("OVERNIGHT", OVERNIGHT_NOW, "隔夜"),
+])
+def test_ib_expiry_is_shown_as_expired_not_cancelled(tmp_path, session, clock, label):
+    # Paper, 2026-09-28/29: IB ended unfilled DAY and Overnight orders with
+    # status Cancelled and completedStatus "Expired (5)".
+    state = FakeIBState()
+    service = service_for(tmp_path, state, clock=lambda: clock)
+    submitted = service.submit(
+        service.preview("Taylor", "ZZZZ", 4, 10.0, session=session),
+    )
+    trade = state.open_trades.pop()
+    trade.orderStatus.status = "Cancelled"
+    trade.orderStatus.filled = 1
+    trade.completed_status = "Expired (5)"
+    state.completed_trades.append(trade)
+
+    service.refresh_status()
+
+    row = service.store.get(submitted["order_ref"])
+    assert (row["status"], row["filled_quantity"]) == ("EXPIRED", 1)
+    assert service.list_orders()[0]["status_label"] == "已失效"
+    [(_account, message)] = state.notifications
+    assert "結果：已失效" in message
+    assert label in message
+    assert "1/4" in message
+
+
+def test_trader_cancel_reported_on_completed_order_stays_cancelled(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state)
+    submitted = service.submit(service.preview("Taylor", "ZZZZ", 2, 8.25))
+    trade = state.open_trades.pop()
+    trade.orderStatus.status = "Cancelled"
+    trade.completed_status = "Cancelled by Trader"
+    state.completed_trades.append(trade)
+
+    service.refresh_status()
+
+    assert service.store.get(submitted["order_ref"])["status"] == "CANCELLED"
+    assert "結果：已取消" in state.notifications[0][1]
+
+
+def test_reading_completed_orders_leaves_ib_insync_wrapper_unchanged(tmp_path):
+    state = FakeIBState()
+    service = service_for(tmp_path, state)
+    service.submit(service.preview("Taylor", "ZZZZ", 2, 8.25))
+    trade = state.open_trades.pop()
+    trade.orderStatus.status = "Cancelled"
+    trade.completed_status = "Expired (5)"
+    state.completed_trades.append(trade)
+
+    service.refresh_status()
+
+    assert state.ib_instances
+    for ib in state.ib_instances:
+        assert "completedOrder" not in vars(ib.wrapper)

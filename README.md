@@ -158,7 +158,7 @@ Panel 正逐步換成 PySide6（[ADR-0012](docs/adr/0012-panel-pyside6-parallel-
 
 - 安裝：`pip install -r requirements.txt`（含 `PySide6-Essentials`）
 - 建捷徑：`python automation/create_shortcut.py --qt`（桌面「QuantCore Qt — Taylor」，走 `automation/QuantCore_QtPanel.vbs`）
-- 目前內容：Dashboard 的三個 Gateway 連線狀態（心跳斷了不會自己重連，按「重新檢查」＝ Tk 的 Check Now）；Portfolio／Trading 還是空殼，並行期間照舊用 Tk Panel
+- 目前內容：Dashboard 的三個 Gateway 連線狀態（心跳斷了不會自己重連：按「重新檢查」＝ Tk 的 Check Now；另外比照 Morning check，每個 NYSE 交易日台北 07:00 自動重新檢查一次，只重連已斷的帳戶、不發通知）；Portfolio／Trading 還是空殼，並行期間照舊用 Tk Panel
 - 模式由 `config.json` 的 `qt_panel_mode` 決定，預設並行模式；正式模式在切換工單 #154 才提供
 
 ---

@@ -8,12 +8,15 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
+from zoneinfo import ZoneInfo
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QButtonGroup, QFrame, QHBoxLayout, QLabel, QMainWindow, QPushButton, QStackedWidget,
     QVBoxLayout, QWidget,
 )
+
+from morning_check import next_morning_check_time
 
 from qt_panel import theme
 from qt_panel.dashboard import Dashboard
@@ -27,6 +30,11 @@ PLACEHOLDER = {
     "Trading": "Trading 畫面製作中。並行期間下單請用 Tk Panel。",
 }
 SHOW_SIGNAL_POLL_MS = 2000
+AUTO_RECHECK_POLL_MS = 60_000
+
+
+def _taipei_now() -> datetime:
+    return datetime.now(ZoneInfo("Asia/Taipei"))
 
 
 class _GatewayBridge(QObject):
@@ -69,11 +77,13 @@ class MainWindow(QMainWindow):
     def __init__(self, *, accounts: list[dict], mode: PanelMode,
                  gateway_source: GatewaySource,
                  clock: Callable[[], datetime] = datetime.now,
+                 taipei_now: Callable[[], datetime] = _taipei_now,
                  tray_factory=None, show_signal: Path | None = None,
                  mode_note: str = ""):
         super().__init__()
         self._source = gateway_source
         self._clock = clock
+        self._taipei_now = taipei_now
         self._tray_factory = tray_factory
         self._tray = None
         self._show_signal = show_signal
@@ -125,6 +135,13 @@ class MainWindow(QMainWindow):
         self._clock_timer = QTimer(self, interval=1000, timeout=self._update_clock)
         self._signal_timer = QTimer(self, interval=SHOW_SIGNAL_POLL_MS,
                                     timeout=self.check_show_signal)
+        # 並行期間不值班，但比照 Morning check 每個交易日 07:00 重新檢查一次 Gateway
+        # （每天 06:00 自動重啟後心跳已斷、不會自己重連）。每分鐘比對一次時間，
+        # 電腦睡眠醒來也不會漏掉。
+        self._recheck_timer = QTimer(self, interval=AUTO_RECHECK_POLL_MS,
+                                     timeout=self.tick_auto_recheck)
+        self._next_recheck = next_morning_check_time(self._taipei_now())
+        self.dashboard.set_next_auto_recheck(self._next_recheck)
         self._update_clock()
 
     # ── 生命週期 ─────────────────────────────────────────────────────
@@ -133,6 +150,7 @@ class MainWindow(QMainWindow):
         self._running = True
         self._source.start(self._bridge.changed.emit)
         self._clock_timer.start()
+        self._recheck_timer.start()
         if self._show_signal is not None:
             self._signal_timer.start()
         if self._tray_factory is not None:
@@ -149,6 +167,7 @@ class MainWindow(QMainWindow):
         self._running = False
         self._clock_timer.stop()
         self._signal_timer.stop()
+        self._recheck_timer.stop()
         self._source.stop()
         if self._tray is not None:
             self._tray.hide()
@@ -182,6 +201,16 @@ class MainWindow(QMainWindow):
         except OSError:
             pass
         self.show_window()
+
+    def tick_auto_recheck(self) -> None:
+        if not self._running:
+            return
+        now = self._taipei_now()
+        if now < self._next_recheck:
+            return
+        self._source.recheck()
+        self._next_recheck = next_morning_check_time(now)
+        self.dashboard.set_next_auto_recheck(self._next_recheck)
 
     def _update_clock(self) -> None:
         self._header.clock.setText(self._clock().strftime("%Y-%m-%d  %H:%M:%S"))

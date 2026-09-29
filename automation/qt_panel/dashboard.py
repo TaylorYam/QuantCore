@@ -1,6 +1,7 @@
 """Dashboard 畫面（#147：Gateway 狀態；其餘區塊在 #148 補齊）。"""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Callable
 
 from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
@@ -54,6 +55,8 @@ class Dashboard(QWidget):
         head = QHBoxLayout()
         head.addWidget(label("GATEWAY", name="SectionTitle"))
         head.addStretch(1)
+        self._auto_recheck = label(name="Faint")
+        head.addWidget(self._auto_recheck)
         self.recheck_button = QPushButton("重新檢查")
         self.recheck_button.setToolTip("斷線的 Gateway 各重連一次；連著的不動（同 Tk 的 Check Now）")
         self.recheck_button.clicked.connect(on_recheck)
@@ -78,6 +81,12 @@ class Dashboard(QWidget):
         card = self._cards.get(name)
         if card is not None:
             card.set_state(state, detail)
+
+    def set_next_auto_recheck(self, when: datetime) -> None:
+        self._auto_recheck.setText(f"交易日 07:00 自動重新檢查 · 下次 {when:%m-%d %H:%M}")
+
+    def auto_recheck_text(self) -> str:
+        return self._auto_recheck.text()
 
     def gateway_names(self) -> list[str]:
         return list(self._cards)

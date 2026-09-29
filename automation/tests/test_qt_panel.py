@@ -177,6 +177,48 @@ def test_recheck_button_asks_the_source_to_probe_again(make_window, source, qtbo
     assert source.rechecks == 1
 
 
+class MutableClock:
+    def __init__(self, now):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+
+def test_gateways_are_rechecked_automatically_at_the_next_morning_check_time(make_window, source):
+    """並行期間新 Panel 不值班，但比照 Morning check：每個 NYSE 交易日台北 07:00
+    自動重新檢查一次（只重連已斷的帳戶），Gateway 每天 06:00 自動重啟後才會恢復。"""
+    taipei = MutableClock(datetime(2026, 9, 29, 20, 30))      # 週二晚上
+    w = make_window(taipei_now=taipei)
+    assert "09-30 07:00" in w.dashboard.auto_recheck_text()
+
+    w.tick_auto_recheck()
+    assert source.rechecks == 0
+
+    taipei.now = datetime(2026, 9, 30, 7, 0, 30)
+    w.tick_auto_recheck()
+    assert source.rechecks == 1
+    assert "10-01 07:00" in w.dashboard.auto_recheck_text()
+
+    w.tick_auto_recheck()                                        # 同一天不再重複
+    assert source.rechecks == 1
+
+
+def test_auto_recheck_skips_weekends_and_nyse_holidays(make_window, source):
+    taipei = MutableClock(datetime(2026, 10, 2, 8, 0))          # 週五早上
+    w = make_window(taipei_now=taipei)
+    assert "10-05 07:00" in w.dashboard.auto_recheck_text()     # 下週一
+
+
+def test_auto_recheck_stops_after_quit(make_window, source):
+    taipei = MutableClock(datetime(2026, 9, 29, 20, 30))
+    w = make_window(taipei_now=taipei, tray_factory=None)
+    w.close()
+    taipei.now = datetime(2026, 9, 30, 7, 1)
+    w.tick_auto_recheck()
+    assert source.rechecks == 0
+
+
 def test_dashboard_says_watch_runs_in_the_tk_panel(make_window):
     assert "Tk Panel" in make_window().dashboard.watch_note()
 

@@ -8,7 +8,7 @@ import pytest
 
 from gateway_start import (
     Cancelled, Credentials, LaunchFailed, Refused, Started, WindowNotFound,
-    describe, start_live_gateways,
+    describe, next_step_after_login, start_live_gateways,
 )
 
 CREDS = {
@@ -284,3 +284,28 @@ def test_a_login_that_cannot_be_submitted_fails_only_that_account():
 def test_started_knows_whether_every_account_logged_in():
     assert start_live_gateways(FakePorts()).all_logged_in
     assert not start_live_gateways(FakePorts(never_logs_in={"Rosa"})).all_logged_in
+
+
+# ── 登入後的 Check Now → Refresh IB 節奏（#131）──────────────────────
+
+ONLINE = {"Taylor": "online", "Rosa": "online", "Yvonne": "online"}
+
+
+def test_refresh_once_every_monitor_is_online():
+    assert next_step_after_login(ONLINE, checks_done=1) == "refresh"
+
+
+@pytest.mark.parametrize("pending", ["init", "connecting"])
+def test_wait_while_any_monitor_is_still_connecting(pending):
+    assert next_step_after_login({**ONLINE, "Rosa": pending}, checks_done=1) == "wait"
+
+
+def test_an_account_not_ready_yet_gets_another_check_now():
+    # Rosa（10.41）登入後比較慢才接受 API 連線
+    assert next_step_after_login({**ONLINE, "Rosa": "offline"}, checks_done=1) == "retry"
+    assert next_step_after_login({**ONLINE, "Rosa": "offline"}, checks_done=2) == "retry"
+
+
+def test_after_three_check_nows_refresh_anyway():
+    # 每帳戶最多連 3 次（2026-04-15：10.41 反覆 connect 會卡死）
+    assert next_step_after_login({**ONLINE, "Rosa": "offline"}, checks_done=3) == "refresh"

@@ -80,15 +80,22 @@ def test_refusal_names_the_live_account_so_the_trader_can_find_the_wrong_port():
         ib.connect("127.0.0.1", 4001, clientId=92, timeout=10)
 
 
-def test_order_calls_recheck_the_gateway_and_never_reach_a_live_account():
+def test_order_calls_on_a_refused_connection_never_reach_the_gateway():
+    ib, raw = gated(["U123"])
+    with pytest.raises(SendRefused):
+        ib.connect("127.0.0.1", 4001, clientId=92, timeout=10)
+    for call in (lambda: ib.placeOrder("c", "o"), lambda: ib.cancelOrder("o")):
+        with pytest.raises(SendRefused):
+            call()
+    assert not any(c[0] in ("placeOrder", "cancelOrder") for c in raw.calls)
+
+
+def test_order_calls_after_disconnect_are_refused():
     ib, raw = gated(["DU111"])
     ib.connect("127.0.0.1", 4013, clientId=92, timeout=10)
-    raw.managed = ["U123"]          # 同一連線後來回報實盤帳號
+    ib.disconnect()
     with pytest.raises(SendRefused):
         ib.placeOrder("c", "o")
-    with pytest.raises(SendRefused):
-        ib.cancelOrder("o")
-    assert not any(call[0] in ("placeOrder", "cancelOrder") for call in raw.calls)
 
 
 def test_order_calls_before_a_checked_connection_are_refused():

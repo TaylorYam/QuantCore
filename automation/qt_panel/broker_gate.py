@@ -3,7 +3,9 @@
 **送單閘門**：新 Panel 所有會送單的路徑（手動單、之後的 Sync Pos、交給策略接管）
 都用 `SendGate.broker()` 建 IB 連線，這是唯一的判斷點。連上 Gateway 後先讀它
 管理的帳號；並行模式下只要有一個不是 paper（DU/DF 開頭）就立刻斷線並拒絕，
-送單／撤單前還會再讀一次。做法沿用 `paper_verify_manual_orders` 的 paper-only 檢查。
+沒通過檢查的連線一律不能送單／撤單。做法沿用 `paper_verify_manual_orders` 的
+paper-only 檢查。帳號清單是連線時 Gateway 給的，同一條連線不會變，所以只查一次：
+在 placeOrder 才拒絕的話，service 已經先寫了委託紀錄，會留下卡住的假委託。
 正式模式（切換工單 #154）才放行實盤。
 
 **paper 連線設定**：並行模式下 Trading 只接 paper Gateway，位置寫在 config.json 的
@@ -45,7 +47,7 @@ def paper_only_problem(accounts: Iterable[str]) -> str:
 
 
 class _GatedBroker:
-    """包住一條 IB 連線：connect 後檢查帳號，送單／撤單前再檢查一次。其餘原樣轉交。"""
+    """包住一條 IB 連線：connect 後檢查帳號，沒通過就不能送單／撤單。其餘原樣轉交。"""
 
     def __init__(self, inner, gate: "SendGate"):
         self._inner = inner
@@ -62,17 +64,16 @@ class _GatedBroker:
         self._checked = True
         return result
 
-    def _recheck(self) -> None:
+    def _require_checked(self) -> None:
         if not self._checked:
             raise SendRefused("送單閘門拒絕：連線尚未通過帳號檢查，沒有送出任何單。")
-        self._gate.check(self._inner.managedAccounts())
 
     def placeOrder(self, contract, order):
-        self._recheck()
+        self._require_checked()
         return self._inner.placeOrder(contract, order)
 
     def cancelOrder(self, *args, **kwargs):
-        self._recheck()
+        self._require_checked()
         return self._inner.cancelOrder(*args, **kwargs)
 
     def disconnect(self):

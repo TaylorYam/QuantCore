@@ -332,7 +332,8 @@ def test_ascii_fields_turn_off_the_input_method_and_convert_full_width(trading_w
     panel = w.trading.manual
     fields = (panel.symbol_edit, panel.quantity_edit, panel.price_edit, panel.amount_edit,
               panel.percent_box.lineEdit())
-    assert all(not f.testAttribute(Qt.WA_InputMethodEnabled) for f in fields)
+    assert all(not f.testAttribute(Qt.WA_InputMethodEnabled)
+               for f in fields + (panel.percent_box,))
     panel.price_edit.setText("１８４．４")
     assert panel.price_edit.text() == "184.4"
     panel.price_edit.setText("184。4")

@@ -187,6 +187,8 @@ class ManualOrderPanel(QWidget):
         for edit in (self.symbol_edit, self.quantity_edit, self.price_edit,
                      self.amount_edit, self.percent_box.lineEdit()):
             ascii_only(edit)
+        # 可編輯的 QComboBox 焦點在 combo 本身，輸入法要在它身上關
+        self.percent_box.setAttribute(Qt.WA_InputMethodEnabled, False)
 
         actions = QHBoxLayout()
         self.preview_button = QPushButton("預覽委託")
@@ -272,8 +274,7 @@ class ManualOrderPanel(QWidget):
         self._poll.stop()
 
     def _has_work(self) -> bool:
-        pending = getattr(self.service, "has_pending_notifications", lambda: False)
-        return self.service.has_active_orders() or pending()
+        return self.service.has_active_orders() or self.service.has_pending_notifications()
 
     def _poll_status(self) -> None:
         if not self._closed and not self._refreshing and self._has_work():
@@ -414,8 +415,7 @@ class ManualOrderPanel(QWidget):
         self.price_edit.setText(loaded.price)
 
     def _set_preview_text(self, text: str, key: str = "text") -> None:
-        self.preview_text.setText(text)
-        self.preview_text.setStyleSheet(f"color: {theme.color(key)};")
+        self._set_status(self.preview_text, text, key)
 
     def _set_status(self, target, text: str, key: str = "text_dim") -> None:
         target.setText(text)

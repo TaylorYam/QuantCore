@@ -40,7 +40,8 @@ from qt_panel.broker_gate import PaperTarget, SendGate
 from qt_panel.gateway_status import GatewaySource
 from qt_panel.mode import PanelMode
 from qt_panel.portfolio import EQUITY, FLOWS, PARAMS, TRADES, PortfolioPage
-from qt_panel.trading import TradingPage, paper_manual_order_service
+from qt_panel.sync_pos import PaperSync
+from qt_panel.trading import PaperFiles, TradingPage, paper_manual_order_service
 from qt_panel.widgets import label, pill, visible_text
 
 PAGES = ["Dashboard", "Portfolio", "Trading"]
@@ -84,6 +85,11 @@ def _default_broker():
     return IB()
 
 
+def _load_account_ctx(name: str, role: int):
+    from account_ctx import AccountCtx
+    return AccountCtx.from_name(name, role)
+
+
 class MainWindow(QMainWindow):
     quit_requested = Signal()
 
@@ -109,7 +115,9 @@ class MainWindow(QMainWindow):
                  paper_problem: str = "尚未設定 paper 連線",
                  broker_factory: Callable[[], object] = _default_broker,
                  manual_order_service: Callable[..., object] | None = None,
-                 symbol_loader: Callable | None = None):
+                 symbol_loader: Callable | None = None,
+                 paper_files: PaperFiles = PaperFiles(),
+                 account_ctx_loader: Callable | None = None):
         super().__init__()
         self._source = gateway_source
         self._credential_store = credential_store
@@ -162,7 +170,8 @@ class MainWindow(QMainWindow):
         # 送單閘門：Trading 每一條 IB 連線都從這裡建，並行模式只放行 paper
         self.send_gate = SendGate(mode, broker_factory)
         self.trading = self._build_trading(
-            mode, paper_target, paper_problem, manual_order_service, symbol_loader)
+            mode, paper_target, paper_problem, manual_order_service, symbol_loader,
+            paper_files, account_ctx_loader)
         self._pages: dict[str, QWidget] = {"Dashboard": self.dashboard,
                                            "Portfolio": self.portfolio,
                                            "Trading": self.trading}
@@ -212,14 +221,14 @@ class MainWindow(QMainWindow):
         self._update_clock()
 
     def _build_trading(self, mode, paper_target, paper_problem, service_factory,
-                       symbol_loader) -> TradingPage:
+                       symbol_loader, paper_files, account_ctx_loader) -> TradingPage:
         from manual_orders import SUPPORTED_MANUAL_ACCOUNTS
         supported = {n.casefold() for n in SUPPORTED_MANUAL_ACCOUNTS}
         names = [n for n in self._names if n.casefold() in supported]
-        service, problem, target_text = None, paper_problem, ""
+        service, sync, problem, target_text = None, None, paper_problem, ""
         # 正式模式（#154）才會接實盤帳戶；在那之前一律要有 paper 設定
         if mode is PanelMode.PARALLEL and paper_target is not None:
-            factory = service_factory or paper_manual_order_service(names)
+            factory = service_factory or paper_manual_order_service(names, paper_files.orders)
             try:
                 service = factory(ib_factory=self.send_gate.broker,
                                   account_ctx_factory=paper_target.account_ctx,
@@ -227,8 +236,13 @@ class MainWindow(QMainWindow):
                 target_text = paper_target.describe()
             except Exception as e:
                 problem = f"手動單服務無法啟動：{e}"
+            if service is not None:
+                sync = PaperSync(target=paper_target, send_gate=self.send_gate,
+                                 files=paper_files,
+                                 account_ctx_loader=account_ctx_loader or _load_account_ctx)
         return TradingPage(names, service, unavailable=problem, target_text=target_text,
-                           dialogs=self._dialogs, log=self.log, symbol_loader=symbol_loader)
+                           dialogs=self._dialogs, log=self.log, symbol_loader=symbol_loader,
+                           sync=sync)
 
     def _manual_order_notice(self, account: str, message: str) -> bool:
         """手動單結案通知：paper 單只寫 Output Log，不發 Telegram。"""

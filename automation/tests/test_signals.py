@@ -208,3 +208,22 @@ def test_get_market_regime_numeric_values():
     assert state["SPY_MA200"] > 0
     # DD is negative or zero (drawdown from ATH)
     assert state["SPY_DD"] <= 0.001  # small epsilon
+
+
+def test_get_sp500_weights_without_persist_reads_but_never_writes_state(monkeypatch):
+    """新 Panel 的 paper Sync Pos（#152）只讀實盤帳戶的 SP500 state、不寫回。"""
+    import pandas as pd
+    import signals
+    import sp500_state
+    from strategies.sp500_momentum import signal as sp_signal
+
+    saved = []
+    monkeypatch.setattr(sp500_state, "load_state", lambda name: {"bull_weeks_counter": 3})
+    monkeypatch.setattr(sp500_state, "save_state", lambda name, state: saved.append(name))
+    monkeypatch.setattr(sp_signal, "get_latest_weights_live",
+                        lambda holdings, state: ({"AAPL": 1.0}, pd.Timestamp("2026-09-23"),
+                                                 dict(state, bull_weeks_counter=4)))
+    assert signals.get_sp500_weights([], "Taylor", persist=False) == ({"AAPL": 1.0}, "2026-09-23")
+    assert saved == []
+    signals.get_sp500_weights([], "Taylor")
+    assert saved == ["Taylor"]

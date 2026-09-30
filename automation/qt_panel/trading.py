@@ -17,8 +17,8 @@ from typing import Callable
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QHeaderView,
-    QLineEdit, QListWidget, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
-    QWidget,
+    QLineEdit, QListWidget, QPushButton, QSizePolicy, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 import manual_order_form as order_form
@@ -37,6 +37,9 @@ POLL_INTERVAL_MS = 10_000
 SYMBOL_SUGGESTION_LIMIT = 8
 ORDER_COLUMNS = ("Account", "標的", "方向", "數量", "價格條件", "時段", "IB 狀態", "成交")
 STATUS_COLUMN = 6
+# 表單欄位固定寬度、靠左排：寬螢幕不會把輸入框拉滿整行（#169）
+FIELD_WIDTH = 240
+SYMBOL_WIDTH = 320      # 代碼欄下方要放公司名稱提示
 
 
 def paper_manual_order_service(account_names: list[str],
@@ -117,14 +120,15 @@ class ManualOrderPanel(QWidget):
 
         form_card = Card("手動下單 · 一般時段 LMT / MKT · 盤前／盤後／隔夜 LMT · 整股")
         grid = QGridLayout()
-        grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(6)
-        grid.setColumnStretch(1, 1)
-        grid.setColumnStretch(3, 1)
+        grid.setHorizontalSpacing(12)
+        grid.setColumnMinimumWidth(1, FIELD_WIDTH + 24)     # 左右兩組欄位之間留空
+        grid.setColumnStretch(4, 1)                         # 多出的寬度都放最右邊
 
-        def field(text, row, column, widget):
+        def field(text, row, column, widget, width=FIELD_WIDTH):
             grid.addWidget(label(text), row, column)
-            grid.addWidget(widget, row, column + 1)
+            widget.setFixedWidth(width)
+            grid.addWidget(widget, row, column + 1, Qt.AlignLeft)
 
         self.account_box = QComboBox()
         self.account_box.addItems(account_names)
@@ -136,10 +140,13 @@ class ManualOrderPanel(QWidget):
         symbol_lay.setContentsMargins(0, 0, 0, 0)
         symbol_lay.setSpacing(2)
         self.symbol_edit = QLineEdit()
+        self.symbol_edit.setFixedWidth(FIELD_WIDTH)
         self.symbol_hint = label(name="Faint")
+        # 提示長短不影響欄寬，太長就截掉（完整名稱在滑鼠提示）
+        self.symbol_hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         symbol_lay.addWidget(self.symbol_edit)
         symbol_lay.addWidget(self.symbol_hint)
-        field("美股代碼", 0, 2, symbol_cell)
+        field("美股代碼", 0, 2, symbol_cell, SYMBOL_WIDTH)
 
         self.quantity_edit = QLineEdit()
         field(order_form.SHARES_MODE, 1, 0, self.quantity_edit)
@@ -259,6 +266,8 @@ class ManualOrderPanel(QWidget):
         self.order_type_box.currentTextChanged.connect(self._order_type_changed)
         self.symbol_edit.textChanged.connect(self._update_symbol_hint)
         self.symbol_edit.textEdited.connect(self._symbol_edited)
+        # 預設用帳戶權益 %（使用者 09-30 決定；Tk 版仍預設整股股數）
+        self.input_mode_box.setCurrentText(order_form.PERCENT_MODE)
 
     # ── 生命週期 ─────────────────────────────────────────────────────
 
@@ -309,6 +318,7 @@ class ManualOrderPanel(QWidget):
     def _update_symbol_hint(self, *_args) -> None:
         hint, key = order_form.symbol_hint(self._symbols, self.symbol_edit.text())
         self.symbol_hint.setText(hint)
+        self.symbol_hint.setToolTip(hint)
         self.symbol_hint.setStyleSheet(f"color: {theme.color(key)};")
 
     def _symbol_edited(self, *_args) -> None:

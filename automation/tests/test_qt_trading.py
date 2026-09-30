@@ -89,6 +89,7 @@ def fill(panel, *, account="Taylor", symbol="AAPL", quantity="5", price="100",
     panel.account_box.setCurrentText(account)
     panel.symbol_edit.setText(symbol)
     panel.action_box.setCurrentText(action)
+    panel.input_mode_box.setCurrentText("整股股數")
     panel.quantity_edit.setText(quantity)
     panel.price_edit.setText(price)
 
@@ -345,6 +346,23 @@ def test_ascii_fields_turn_off_the_input_method_and_convert_full_width(trading_w
     panel.input_mode_box.setCurrentText("帳戶權益 %")
     panel.percent_box.lineEdit().setText("２５")
     assert panel.percent_box.currentText() == "25"
+
+
+def test_input_mode_starts_at_percent_of_equity(trading_window):
+    panel = trading_window().trading.manual
+    assert panel.input_mode_box.currentText() == "帳戶權益 %"
+    assert panel.percent_box.isEnabled()
+    assert not panel.quantity_edit.isEnabled() and not panel.amount_edit.isEnabled()
+
+
+def test_form_fields_keep_a_compact_width_in_a_wide_window(trading_window, qtbot):
+    w = trading_window()
+    w.resize(2400, 1000)
+    panel = w.trading.manual
+    qtbot.waitUntil(lambda: panel.width() > 1800, timeout=2000)
+    for field in (panel.account_box, panel.symbol_edit, panel.quantity_edit,
+                  panel.price_edit, panel.input_mode_box, panel.percent_box):
+        assert field.width() <= 320, field
 
 
 def test_percent_of_equity_uses_the_paper_account_equity(trading_window, ib_state, qtbot):

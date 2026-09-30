@@ -367,6 +367,8 @@ def test_atomic_apply_published_files_inherit_destination_acl(tmp_path, monkeypa
         ["T1", "T2"],
     )
 
+    # Control files carry the inherited BUILTIN\Users grant, so a restricted
+    # staging DACL on the published files cannot go unnoticed.
     assert ";;;BU)" in _dacl_sddl(ref_control)
     assert _dacl_sddl(const_file) == _dacl_sddl(ref_control)
     assert _dacl_sddl(stock_dir / "NEWT.csv") == _dacl_sddl(stock_control)

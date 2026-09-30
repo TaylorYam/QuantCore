@@ -10,7 +10,7 @@ import ib_flex
 from ib_flex import CashFlowCache, FlexError, FlexNotConfigured, load_cash_flows, parse_cash_flows
 from performance import CashFlow
 
-TOKEN = "SECRET-TOKEN-123"
+TOKEN = "123456789012345678901234"
 
 
 def statement(*rows, account="U1111111"):
@@ -207,6 +207,22 @@ def test_missing_flex_settings_are_reported(tmp_path):
         with pytest.raises(FlexNotConfigured, match="flex_token"):
             load_cash_flows("Rosa", cfg, cache, now=NOW, http_get=FakeHttp(),
                             sleep=lambda s: None)
+
+
+def test_flex_settings_are_checked_before_contacting_ib(tmp_path):
+    cache = CashFlowCache(tmp_path / "flows.json")
+    cases = [
+        ({"flex_token": TOKEN, "flex_query_id": "U12345678"}, "看起來填成了帳號"),
+        ({"flex_token": TOKEN, "flex_query_id": "12a4"}, "flex_query_id 應該是純數字"),
+        ({"flex_token": "１２３４", "flex_query_id": "777"}, "全形"),
+    ]
+    for cfg, message in cases:
+        http = FakeHttp()
+        with pytest.raises(FlexNotConfigured, match=message) as e:
+            load_cash_flows("Rosa", cfg, cache, now=NOW, http_get=http, sleep=lambda s: None)
+        assert http.urls == [] and TOKEN not in str(e.value)
+    # 前後空白、數字型別都接受
+    assert ib_flex.flex_settings({"flex_token": f" {TOKEN} ", "flex_query_id": 777}) == (TOKEN, "777")
 
 
 def test_a_broken_cache_file_is_treated_as_empty(tmp_path):

@@ -177,6 +177,24 @@ class CashFlowCache:
         os.replace(tmp, self.path)
 
 
+def flex_settings(cfg: dict) -> tuple[str, str]:
+    """(token, Query ID) from an account's config; both are digits only.
+
+    Checked before contacting IB: a mistyped value (e.g. the account number U… in
+    flex_query_id) otherwise only comes back as IB's vague error 1020.
+    """
+    token = str(cfg.get("flex_token") or "").strip()
+    query_id = str(cfg.get("flex_query_id") or "").strip()
+    if not token or not query_id:
+        raise FlexNotConfigured("未設定 IB Flex（accounts.json 的 flex_token／flex_query_id）")
+    if not (query_id.isascii() and query_id.isdigit()):
+        hint = "，看起來填成了帳號" if query_id[:1].upper() == "U" else ""
+        raise FlexNotConfigured(f"flex_query_id 應該是純數字（Flex Query 的編號）{hint}")
+    if not (token.isascii() and token.isdigit()):
+        raise FlexNotConfigured("flex_token 應該是純數字（檢查有沒有全形數字或多餘字元）")
+    return token, query_id
+
+
 def _as_cash_flows(flows: list[FlexCashFlow]) -> list[CashFlow]:
     return [CashFlow(f.date, f.amount) for f in sorted(flows, key=lambda f: (f.date, f.id))]
 
@@ -188,14 +206,12 @@ def load_cash_flows(account: str, cfg: dict, cache: CashFlowCache, *, now: datet
 
     A failed download falls back to the cache (with the reason); with no cache it raises.
     """
-    token, query_id = cfg.get("flex_token"), cfg.get("flex_query_id")
-    if not token or not query_id:
-        raise FlexNotConfigured("未設定 IB Flex（accounts.json 的 flex_token／flex_query_id）")
+    token, query_id = flex_settings(cfg)
     cached, fetched_at = cache.read(account)
     if fetched_at is not None and fetched_at.date() == now.date():
         return FlowsResult(_as_cash_flows(cached), fetched_at)
     try:
-        xml = download_statement(str(token), str(query_id), http_get=http_get, sleep=sleep)
+        xml = download_statement(token, query_id, http_get=http_get, sleep=sleep)
         flows = parse_cash_flows(xml, cfg.get("account"))
     except FlexError as e:
         if fetched_at is None:
@@ -220,10 +236,8 @@ def check_report(account: str, accounts: list[dict], nav, *,
     cfg = next((a for a in accounts if a.get("name") == account), None)
     if cfg is None:
         raise FlexError(f"accounts.json 沒有帳戶 {account}")
-    token, query_id = cfg.get("flex_token"), cfg.get("flex_query_id")
-    if not token or not query_id:
-        raise FlexNotConfigured("未設定 IB Flex（accounts.json 的 flex_token／flex_query_id）")
-    flows = _as_cash_flows(parse_cash_flows(download(str(token), str(query_id)),
+    token, query_id = flex_settings(cfg)
+    flows = _as_cash_flows(parse_cash_flows(download(token, query_id),
                                             cfg.get("account")))
     lines = [f"{account}：Flex 出入金 {len(flows)} 筆"]
     lines += [f"  {f.date}  {f.amount:+,.2f}" for f in flows]

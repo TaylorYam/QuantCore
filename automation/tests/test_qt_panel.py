@@ -212,6 +212,8 @@ class FakeDialogs:
         self.answers = answers or {}
         self.asked = []
         self.messages = []
+        self.confirms = []
+        self.confirm_answers = []
 
     def ask_credentials(self, account, username=""):
         self.asked.append((account, username, threading.current_thread() is threading.main_thread()))
@@ -219,6 +221,10 @@ class FakeDialogs:
 
     def show_message(self, title, text, *, error=False):
         self.messages.append((title, text, error))
+
+    def confirm(self, title, text, *, warning=False):
+        self.confirms.append((title, text, warning))
+        return self.confirm_answers.pop(0) if self.confirm_answers else True
 
 
 class FakeStore:
@@ -288,6 +294,7 @@ def make_window(qtbot, source, ports, dialogs, portfolio, extras):
         kw.setdefault("tk_panel_running", lambda: True)
         kw.setdefault("taipei_now", lambda: datetime(2026, 9, 29, 20, 30))
         kw.setdefault("clock", lambda: datetime(2026, 9, 29, 20, 30, 5))
+        kw.setdefault("symbol_loader", lambda: None)
         w = MainWindow(**kw)
         qtbot.addWidget(w)
         w.start()
@@ -377,9 +384,11 @@ def test_state_for_an_unknown_account_is_ignored(make_window, source):
     assert w.dashboard.gateway_names() == ["Taylor", "Rosa", "Yvonne"]
 
 
-def test_trading_is_still_a_placeholder_that_points_to_tk(make_window):
-    w = make_window()
-    assert "Tk Panel" in w.page_text("Trading")
+def test_trading_without_paper_settings_explains_it_cannot_send(make_window):
+    w = make_window(paper_problem="尚未設定 paper 連線：請在 config.json 加上 qt_panel_paper。")
+    text = w.page_text("Trading")
+    assert "paper" in text and "不能送單" in text and "qt_panel_paper" in text
+    assert w.trading.manual is None
 
 
 def test_recheck_button_asks_the_source_to_probe_again(make_window, source, qtbot):
@@ -434,9 +443,11 @@ def test_dashboard_says_watch_runs_in_the_tk_panel(make_window):
     assert "Tk Panel" in make_window().dashboard.watch_note()
 
 
-def test_new_panel_has_no_path_to_watch_telegram_or_orders():
-    """並行模式不值班、不發 Telegram、不下單（ADR-0012）：qt_panel 完全不 import 這些模組。"""
-    forbidden = {"monitor_engine", "notify", "manual_orders", "sync_position",
+def test_new_panel_has_no_path_to_watch_telegram_or_strategy_orders():
+    """並行模式不值班、不發 Telegram（ADR-0012）：qt_panel 完全不 import 這些模組。
+    手動單（#151）走 manual_orders，但連線一律經過送單閘門（見 test_qt_trading）；
+    Sync Pos／接管在 #152／#153 接上閘門前也不 import。"""
+    forbidden = {"monitor_engine", "notify", "sync_position",
                  "strategy_takeover", "rebalance_ib"}
     package = Path(__file__).resolve().parents[1] / "qt_panel"
     imported = set()

@@ -111,8 +111,12 @@ _Avoid_: 斷線自動重連（auto-restart 是每天固定一次的重啟，不�
 _Avoid_: Auto-restart（那是 Gateway 每天自己重啟、免 IB Key，和這個一鍵登入無關）
 
 **並行模式 (Parallel Mode)**:
-Panel 從 Tk 換成 PySide6 的過渡期（ADR-0012）：新 Panel 和 Tk Panel 同時存在，新 Panel 只看不下單、不值班，IB 連線用自己的唯讀身分；值班與實盤下單仍由 Tk Panel 負責。相對的是**正式模式**：切換後值班、系統匣、實盤送單都交給新 Panel。由 `config.json` 的 `qt_panel_mode` 決定，預設並行模式。
+Panel 從 Tk 換成 PySide6 的過渡期（ADR-0012）：新 Panel 和 Tk Panel 同時存在，新 Panel 對實盤只看不下單、不值班，IB 連線用自己的唯讀身分；新 Panel 的 Trading 只接 paper Gateway（經過 [[送單閘門]]）。值班與實盤下單仍由 Tk Panel 負責。相對的是**正式模式**：切換後值班、系統匣、實盤送單都交給新 Panel。由 `config.json` 的 `qt_panel_mode` 決定，預設並行模式。
 _Avoid_: 測試模式、Paper 模式（並行模式照樣讀實盤帳戶，只是不下單；paper 是模擬帳戶）
+
+**送單閘門 (Send Gate)**:
+新 Panel 所有送單路徑（手動單、Sync Pos、交給策略接管）共用的唯一判斷點：每條送單連線連上 Gateway 後先讀它管理的帳號，並行模式下不是全部 paper（DU/DF 開頭）就斷線拒絕並在畫面說明。正式模式才放行實盤。
+_Avoid_: paper 模式（並行模式照樣讀實盤，閘門只管送單）
 
 **Broker（券商連線層）**:
 QuantCore 跟 IB 打交道的那一層：送單、查成交、查持倉與權益。畫面上使用者操作的單（手動單、Sync Pos、交給策略接管）屬於 Panel 的 Trading；真正把單送進 IB、回報成交的是 Broker。

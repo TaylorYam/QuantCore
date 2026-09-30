@@ -154,7 +154,7 @@ Tkinter GUI 儀表板（`automation/QuantCore_Panel.vbs` 靜默啟動；同時�
 
 ### 新 Panel（PySide6，並行中）
 
-Panel 正逐步換成 PySide6（[ADR-0012](docs/adr/0012-panel-pyside6-parallel-cutover.md)，spec #144）。切換前新舊並存：新 Panel **只看不下單、不值班**，IB 連線用自己的唯讀 clientId（`ROLE_PANEL_READONLY`），和 Tk Panel 同時開不互搶。
+Panel 正逐步換成 PySide6（[ADR-0012](docs/adr/0012-panel-pyside6-parallel-cutover.md)，spec #144）。切換前新舊並存：新 Panel **對實盤只看不下單、不值班**（Trading 只接 paper），IB 連線用自己的唯讀 clientId（`ROLE_PANEL_READONLY`），和 Tk Panel 同時開不互搶。
 
 - 安裝：`pip install -r requirements.txt`（含 `PySide6-Essentials`、`pyqtgraph`）
 - 建捷徑：`python automation/create_shortcut.py --qt`（桌面「QuantCore Qt — Taylor」，走 `automation/QuantCore_QtPanel.vbs`）
@@ -174,7 +174,10 @@ Panel 正逐步換成 PySide6（[ADR-0012](docs/adr/0012-panel-pyside6-parallel-
   2. 同一頁的 Flex Web Service Configuration：開啟並產生 token（有效期限最長一年，到期要重新產生）
   3. 在本機 `automation/accounts.json` 該帳戶加上 `"flex_token"`、`"flex_query_id"`（範本見 `accounts.example.json`）。token 是機密，不要貼到任何地方
   - 新 Panel 開啟時與按「重新讀取 IB」時下載，同一天成功下載過就不再下載；結果合併存在 `automation/flex_cash_flows.json`（gitignored，只有日期與金額），所以超過一年的舊出入金也會保留。Flex 走 IB 網站，不經過 Gateway、不佔 clientId、不下單
-  - Trading 還是空殼，並行期間下單照舊用 Tk Panel
+  - Trading（#151）：手動單，流程同 Tk 的「手動下單」（選帳戶、代號建議、方向、股數／美元金額／權益 %、預覽含限價偏離警示與盤前盤後／隔夜標示、再次核對後跳確認視窗、委託狀態含部分成交／取消／修改／過期）；欄位解析、預覽與狀態文字和 Tk 共用 `automation/manual_order_form.py`。英數欄位關閉輸入法、全形自動轉半形（待注音實測）
+    - **並行期間只接 paper**：送單連線一律經過送單閘門（`automation/qt_panel/broker_gate.py`），連上 Gateway 先讀它管理的帳號，不是全部 DU/DF 開頭就斷線拒絕、畫面說明原因，送單／撤單前再檢查一次。實盤下單照舊用 Tk Panel
+    - paper 連線設定：在本機 `automation/config.json` 加上 `"qt_panel_paper": {"port": <paper Gateway 的 API port>, "account": "DU…"}`（可選 `host`，預設 127.0.0.1；`client_id`，預設 92）。沒設定、帳號不是 DU/DF、或 port 等於三個實盤 Gateway 之一時，Trading 只顯示原因、不能送單。帳戶選單照列三個帳戶，但全部送到這個 paper 帳號
+    - paper 單另存 `automation/qt_panel_paper_orders.sqlite3`（gitignored），不混進 Tk 的 `manual_orders.sqlite3`；結案通知只寫 Output Log，不發 Telegram
 - 模式由 `config.json` 的 `qt_panel_mode` 決定，預設並行模式；正式模式在切換工單 #154 才提供
 
 ---

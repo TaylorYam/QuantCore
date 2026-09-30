@@ -78,6 +78,7 @@ def main() -> int:
     try:
         from account_utils import load_accounts, load_base_config
         from qt_panel import theme
+        from qt_panel.broker_gate import load_paper_target
         from qt_panel.gateway_status import gateway_source_for
         from qt_panel.main_window import MainWindow
         from qt_panel.mode import resolve_mode
@@ -87,8 +88,10 @@ def main() -> int:
         )
         from qt_panel.tray import tray_factory_for
 
-        mode, note = resolve_mode(load_base_config())
+        config = load_base_config()
+        mode, note = resolve_mode(config)
         accounts = [{"name": a["name"], "port": a.get("port")} for a in load_accounts()]
+        paper_target, paper_problem = load_paper_target(config, accounts)
 
         app.setFont(QFont(theme.UI_FONT, 10))
         app.setStyleSheet(theme.STYLESHEET)
@@ -111,6 +114,8 @@ def main() -> int:
             trades_fetch=read_recent_trades,
             tray_factory=tray_factory_for(icon, "QuantCore Panel（PySide6・並行模式）"),
             show_signal=show_signal_path(),
+            paper_target=paper_target,
+            paper_problem=paper_problem,
         )
         window.quit_requested.connect(app.quit)
         window.start()

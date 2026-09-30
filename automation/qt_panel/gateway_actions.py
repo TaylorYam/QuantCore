@@ -62,6 +62,7 @@ class CredentialsDialog(QDialog):
 class Dialogs(Protocol):
     def ask_credentials(self, account: str, username: str = "") -> Credentials | None: ...
     def show_message(self, title: str, text: str, *, error: bool = False) -> None: ...
+    def confirm(self, title: str, text: str, *, warning: bool = False) -> bool: ...
 
 
 class QtDialogs:
@@ -81,6 +82,14 @@ class QtDialogs:
                           title, text, QMessageBox.Ok, self._parent)
         box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         box.exec()
+
+    def confirm(self, title: str, text: str, *, warning: bool = False) -> bool:
+        """送單前的確認視窗；預設按鈕是「否」，按 Enter 不會誤送。"""
+        box = QMessageBox(QMessageBox.Warning if warning else QMessageBox.Question,
+                          title, text, QMessageBox.Yes | QMessageBox.No, self._parent)
+        box.setDefaultButton(QMessageBox.No)
+        box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        return box.exec() == QMessageBox.Yes
 
 
 class CredentialStore(Protocol):

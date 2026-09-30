@@ -16,9 +16,11 @@ import pytest
 
 if os.environ.get("CI"):
     import PySide6  # noqa: F401  CI 一定要真的跑，不能整檔略過還顯示綠燈
+    import pyqtgraph  # noqa: F401
     import pytestqt  # noqa: F401
 else:
     pytest.importorskip("PySide6")
+    pytest.importorskip("pyqtgraph")
     pytest.importorskip("pytestqt")
 
 from PySide6.QtCore import Qt  # noqa: E402
@@ -144,6 +146,57 @@ class FakePortfolio:
         return result
 
 
+def nav_series(start, days, first=100_000.0, step=100.0):
+    import pandas as pd
+    index = pd.date_range(start, periods=days, freq="D")
+    return pd.Series([first + i * step for i in range(days)], index=index)
+
+
+class FakeExtras:
+    """權益序列、策略設定、最近成交的假讀取：每帳戶回傳設定好的值，或丟出例外。"""
+
+    def __init__(self):
+        self.equity = {
+            "Taylor": nav_series("2025-01-01", 600),                     # 到 2026-08-23
+            "Rosa": nav_series("2026-06-01", 100, first=80_000.0, step=-50.0),
+            "Yvonne": nav_series("2026-09-01", 1, first=110_000.0),
+        }
+        self.config = {
+            "Taylor": {"alloc_sr": 0.80, "alloc_sp500": 0.50, "alloc_skewls": 0.0},
+            "Rosa": {"alloc_sr": 0.50, "alloc_sp500": 0.30, "alloc_skewls": 0.20},
+            "Yvonne": {"alloc_sr": 0.75, "alloc_sp500": 0.45, "alloc_skewls": 0.30},
+        }
+        self.trades = {
+            "Taylor": [
+                {"datetime": "2026-09-29 21:30:05", "symbol": "XLK", "action": "BUY",
+                 "qty": 10, "fill_price": 230.5, "strategy": "SR", "status": "Filled",
+                 "dry_run": False},
+                {"datetime": "2026-09-28 21:30:06", "symbol": "AAPL", "action": "SELL",
+                 "qty": 3, "fill_price": 0.0, "strategy": "Stocks", "status": "DRY RUN",
+                 "dry_run": True},
+            ],
+            "Rosa": [],
+            "Yvonne": [],
+        }
+        self.calls = []
+
+    def _get(self, kind, table, name):
+        self.calls.append((kind, name))
+        result = table[name]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def equity_fetch(self, name):
+        return self._get("equity", self.equity, name)
+
+    def config_fetch(self, name):
+        return self._get("config", self.config, name)
+
+    def trades_fetch(self, name):
+        return self._get("trades", self.trades, name)
+
+
 class FakeDialogs:
     def __init__(self, answers=None):
         self.answers = answers or {}
@@ -198,7 +251,12 @@ def portfolio():
 
 
 @pytest.fixture
-def make_window(qtbot, source, ports, dialogs, portfolio):
+def extras():
+    return FakeExtras()
+
+
+@pytest.fixture
+def make_window(qtbot, source, ports, dialogs, portfolio, extras):
     from qt_panel.main_window import MainWindow
     from qt_panel.mode import PanelMode
 
@@ -209,6 +267,9 @@ def make_window(qtbot, source, ports, dialogs, portfolio):
         kw.setdefault("gateway_ports_factory", lambda ask: setattr(ports, "ask", ask) or ports)
         kw.setdefault("credential_store", FakeStore())
         kw.setdefault("portfolio_fetch", portfolio)
+        kw.setdefault("equity_fetch", extras.equity_fetch)
+        kw.setdefault("strategy_config_fetch", extras.config_fetch)
+        kw.setdefault("trades_fetch", extras.trades_fetch)
         kw.setdefault("portfolio_next_refresh", lambda now: now + timedelta(days=1))
         kw.setdefault("dialogs", dialogs)
         kw.setdefault("read_data_date", lambda: "2026-09-28")
@@ -375,6 +436,25 @@ def test_new_panel_has_no_path_to_watch_telegram_or_orders():
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported.add(node.module.split(".")[0])
     assert not imported & forbidden
+
+
+def test_new_panel_has_no_path_that_writes_accounts_or_config():
+    """策略參數只顯示（#150）：qt_panel 不引用任何寫 accounts.json／config.json 的函式。"""
+    import account_utils
+
+    writers = {"update_account_config"}                        # account_utils 唯一的寫入函式
+    assert all(hasattr(account_utils, w) for w in writers)
+    package = Path(__file__).resolve().parents[1] / "qt_panel"
+    names = set()
+    for path in package.glob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Name):
+                names.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                names.add(node.attr)
+            elif isinstance(node, ast.alias):
+                names.add(node.name.split(".")[-1])
+    assert not names & writers
 
 
 # ── 關閉與系統匣 ─────────────────────────────────────────────────────
@@ -1003,3 +1083,208 @@ def test_popup_menus_have_an_opaque_theme_background(qtbot):
     pixel = menu.grab().toImage().pixelColor(menu.width() // 2, 3)
     assert pixel.alpha() == 255
     assert pixel.name() == theme.SURFACE
+
+
+# ── 權益曲線、策略參數、最近成交（#150）──────────────────────────────
+
+def _wait_extras(w, qtbot):
+    qtbot.waitUntil(lambda: not w.account_extras_loading(), timeout=3000)
+
+
+def test_equity_chart_plots_the_selected_accounts_daily_nav(make_window, qtbot, extras):
+    w = make_window()
+    _wait_extras(w, qtbot)
+    chart = w.portfolio.detail.equity
+    expected = [(f"{d:%Y-%m-%d}", v) for d, v in extras.equity["Taylor"].items()]
+    assert chart.points() == expected                                   # 同一份權益序列
+    w.portfolio.select("Rosa")
+    assert chart.points()[0] == ("2026-06-01", 80_000.0)
+    assert len(chart.points()) == 100
+
+
+def test_range_buttons_set_the_visible_period(make_window, qtbot):
+    w = make_window()
+    _wait_extras(w, qtbot)
+    chart = w.portfolio.detail.equity
+    assert chart.checked_range() == "1Y"                                # 預設近一年
+    qtbot.mouseClick(chart.range_buttons["1M"], Qt.LeftButton)
+    start, end = chart.x_range_dates()
+    assert "2026-07-20" <= start <= "2026-07-23" and end >= "2026-08-23"
+    qtbot.mouseClick(chart.range_buttons["YTD"], Qt.LeftButton)
+    assert "2025-12-20" <= chart.x_range_dates()[0] <= "2026-01-01"
+    qtbot.mouseClick(chart.range_buttons["全部"], Qt.LeftButton)
+    assert chart.x_range_dates()[0] <= "2025-01-01"
+    assert chart.checked_range() == "全部"
+
+
+def test_wheel_zooms_the_time_axis_and_clears_the_range_button(make_window, qtbot):
+    from PySide6.QtCore import QPoint, QPointF
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
+
+    w = make_window()
+    _wait_extras(w, qtbot)
+    w.nav_button("Portfolio").click()
+    chart = w.portfolio.detail.equity
+    qtbot.mouseClick(chart.range_buttons["全部"], Qt.LeftButton)
+    before = chart.viewbox.viewRange()[0]
+    view = chart.plot.viewport()
+    pos = QPointF(view.width() / 2, view.height() / 2)
+    event = QWheelEvent(pos, view.mapToGlobal(pos), QPoint(0, 0), QPoint(0, 240),
+                        Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
+    QApplication.sendEvent(view, event)
+    after = chart.viewbox.viewRange()[0]
+    assert after[1] - after[0] < (before[1] - before[0]) * 0.9         # 放大了
+    assert chart.checked_range() is None
+
+
+def test_hovering_the_chart_shows_the_date_and_equity(make_window, qtbot, extras):
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    w = make_window()
+    _wait_extras(w, qtbot)
+    w.nav_button("Portfolio").click()
+    chart = w.portfolio.detail.equity
+    qtbot.mouseClick(chart.range_buttons["1M"], Qt.LeftButton)
+    view = chart.plot.viewport()
+    pos = QPointF(chart.plot.mapFromScene(chart.scene_pos_of("2026-08-10")))
+    event = QMouseEvent(QMouseEvent.MouseMove, pos, view.mapToGlobal(pos),
+                        Qt.NoButton, Qt.NoButton, Qt.NoModifier)
+    QApplication.sendEvent(view, event)
+    nav = extras.equity["Taylor"]["2026-08-10"]
+    assert chart.hover_text().startswith("2026-08-10")
+    assert f"${nav:,.0f}" in chart.hover_text()
+
+
+def test_overview_cards_show_a_sixty_day_sparkline(make_window, qtbot):
+    w = make_window()
+    _wait_extras(w, qtbot)
+    taylor = w.portfolio.card("Taylor").sparkline.points()
+    assert taylor[0][0] == "2026-06-24" and taylor[-1][0] == "2026-08-23"   # 近 60 天
+    assert "近 60 天 +" in w.portfolio.card_text("Taylor")
+    assert "近 60 天 -" in w.portfolio.card_text("Rosa")
+    assert len(w.portfolio.card("Yvonne").sparkline.points()) == 1
+
+
+def test_clicking_the_sparkline_still_selects_the_account(make_window, qtbot):
+    w = make_window()
+    _wait_extras(w, qtbot)
+    w.nav_button("Portfolio").click()
+    spark = w.portfolio.card("Rosa").sparkline
+    qtbot.mouseClick(w.portfolio.card("Rosa"), Qt.LeftButton,
+                     pos=spark.geometry().center())
+    assert w.portfolio.selected_account() == "Rosa"
+
+
+def test_equity_read_failure_only_affects_that_account(make_window, qtbot, extras):
+    extras.equity["Rosa"] = OSError("portfolio_tracker.xlsx locked")
+    w = make_window()
+    _wait_extras(w, qtbot)
+    w.portfolio.select("Rosa")
+    assert "權益紀錄讀取失敗" in w.portfolio.detail.equity.empty_text()
+    assert w.portfolio.card("Rosa").sparkline.points() == []
+    assert "Rosa] 權益紀錄讀取失敗" in w.dashboard.log_text()
+    w.portfolio.select("Taylor")
+    assert w.portfolio.detail.equity.points()
+    assert w.portfolio.detail.equity.empty_text() == ""
+
+
+def test_strategy_params_show_each_allocation_and_the_leverage(make_window, qtbot):
+    from qt_panel import theme
+
+    w = make_window()
+    _wait_extras(w, qtbot)
+    params = w.portfolio.detail.params
+    text = params.text()
+    for part in ("SR", "80%", "SP500", "50%", "Skew LS", "0%", "Leverage",
+                 "130% (1.3x)", "Borrow: 30%", "唯讀"):
+        assert part in text
+    assert params.value_color("130% (1.3x)") == theme.ORANGE
+    w.portfolio.select("Yvonne")
+    assert "150% (1.5x)" in params.text() and "Borrow: 50%" in params.text()
+    w.portfolio.select("Rosa")
+    assert "100% (1.0x)" in params.text() and "No leverage" in params.text()
+    assert params.value_color("100% (1.0x)") == theme.GREEN
+
+
+def test_strategy_params_have_no_controls_to_change_them(make_window, qtbot):
+    from PySide6.QtWidgets import QAbstractButton, QAbstractSlider, QAbstractSpinBox, QLineEdit
+
+    w = make_window()
+    _wait_extras(w, qtbot)
+    params = w.portfolio.detail.params
+    for kind in (QAbstractButton, QAbstractSlider, QAbstractSpinBox, QLineEdit):
+        assert params.findChildren(kind) == []
+
+
+def test_strategy_config_read_failure_is_shown(make_window, qtbot, extras):
+    extras.config["Taylor"] = ValueError("Account 'Taylor' not found")
+    w = make_window()
+    _wait_extras(w, qtbot)
+    assert "設定讀取失敗" in w.portfolio.detail.params.text()
+    assert "130%" not in w.portfolio.detail.params.text()
+
+
+def test_recent_trades_match_the_tk_rows_with_full_date(make_window, qtbot, extras):
+    from qt_panel import theme
+    from trades_display import trade_row
+
+    w = make_window()
+    _wait_extras(w, qtbot)
+    trades = w.portfolio.detail.trades
+    assert trades.rows() == [
+        ("2026-09-29 21:30:05", "XLK", "BUY", "10", "$230.50", "SR", "Filled"),
+        ("2026-09-28 21:30:06", "AAPL", "SELL", "3", "—", "Stocks", "DRY RUN [DRY]"),
+    ]
+    for got, tr in zip(trades.rows(), extras.trades["Taylor"]):
+        assert got[1:] == trade_row(tr).cells()[1:]                      # 和 Tk 同一套格式
+    assert trades.table.item(1, 2).foreground().color().name() == theme.RED
+    assert trades.table.item(1, 6).foreground().color().name() == theme.AMBER
+    w.portfolio.select("Rosa")
+    assert trades.rows() == [] and trades.empty_text() == "近 7 天沒有成交"
+
+
+def test_refresh_rereads_equity_params_and_trades(make_window, qtbot, extras):
+    w = make_window()
+    _wait_extras(w, qtbot)
+    extras.calls.clear()
+    extras.config["Taylor"] = {"alloc_sr": 0.60, "alloc_sp500": 0.20, "alloc_skewls": 0.0}
+    qtbot.mouseClick(w.portfolio.refresh_button, Qt.LeftButton)
+    _wait_extras(w, qtbot)
+    assert sorted(extras.calls) == sorted(
+        (kind, name) for kind in ("equity", "config", "trades")
+        for name in ("Taylor", "Rosa", "Yvonne"))
+    assert "80% (0.8x)" in w.portfolio.detail.params.text()
+
+
+def test_account_extras_are_not_read_after_quit(make_window, qtbot, extras):
+    w = make_window(tray_factory=None)
+    _wait_extras(w, qtbot)
+    w.close()
+    extras.calls.clear()
+    assert w.load_account_extras() is False
+    assert extras.calls == []
+
+
+def test_strategy_allocations_are_read_without_other_config_fields(fake_config):
+    from qt_panel.portfolio_source import read_strategy_allocations
+
+    assert read_strategy_allocations("Yvonne") == {
+        "alloc_sr": 0.75, "alloc_sp500": 0.45, "alloc_skewls": 0.30}
+
+
+def test_equity_ranges_never_start_before_the_first_day():
+    import pandas as pd
+    from qt_panel.equity import range_start, recent
+
+    first, last = pd.Timestamp("2026-03-15"), pd.Timestamp("2026-09-30")
+    assert range_start("1M", first, last) == pd.Timestamp("2026-08-30")
+    assert range_start("3M", first, last) == pd.Timestamp("2026-06-30")
+    assert range_start("YTD", first, last) == first
+    assert range_start("1Y", first, last) == first
+    assert range_start("全部", first, last) == first
+    assert range_start("YTD", pd.Timestamp("2025-01-01"), last) == pd.Timestamp("2026-01-01")
+    s = nav_series("2026-01-01", 100)
+    assert recent(s).index[0] == s.index[-1] - pd.Timedelta(days=60)

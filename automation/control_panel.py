@@ -45,7 +45,6 @@ if not _is_admin():
 # ── 路徑設定 ────────────────────────────────────────────────
 BASE_DIR    = Path(__file__).parent
 PORTFOLIO_FILE = BASE_DIR / "portfolio_tracker.xlsx"
-TRADE_FILE     = BASE_DIR / "trade_log.xlsx"
 LOG_DIR        = BASE_DIR / "logs"
 
 from account_utils import (
@@ -57,10 +56,8 @@ from panel_task_cards import TradesView
 from strategy_params_view import StrategyParamsView
 from log_window import LogWindow
 from trades_popup import TradesPopup
+from trades_display import read_latest_trades
 
-
-# SR ETFs (for classifying holdings) — R1.3：單一來源在 ib_fetcher
-from ib_fetcher import SR_ETFS
 
 # ── 顏色主題（深藍 + 金色）───────────────────────────────────
 BG        = "#0b1120"     # 深海藍底色
@@ -181,54 +178,6 @@ def fetch_ib_portfolio(account_name: str = "") -> dict:
 
     ctx = AccountCtx.from_name(account_name, ROLE_PANEL)
     return _if.fetch_portfolio(ctx, readonly=True)
-
-
-def read_latest_trades(account_name: str = "") -> list:
-    """讀取 trade_log.xlsx 最近 7 天的交易記錄，可按帳戶篩選"""
-    try:
-        import pandas as pd
-        if not TRADE_FILE.exists():
-            return []
-        df = pd.read_excel(TRADE_FILE, sheet_name="Trades")
-        if df.empty:
-            return []
-        # 按帳戶篩選
-        if account_name and "Account" in df.columns:
-            df = df[df["Account"] == account_name]
-            if df.empty:
-                return []
-        # 滾動 7 天（不限筆數）
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-        cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=7)
-        recent = df[df["Date"] >= cutoff].iloc[::-1]
-        trades = []
-        for _, row in recent.iterrows():
-            sym = str(row["Symbol"])
-            raw_strat = str(row.get("Strategy", ""))
-            if sym in SR_ETFS:
-                strat = "SR"
-            elif "SR" in raw_strat and "SP500" not in raw_strat and "Combo" not in raw_strat:
-                strat = "SR"
-            else:
-                strat = "Stocks"
-            fill_px = row.get("FillPrice", 0)
-            try:
-                fill_px = float(fill_px)
-            except (ValueError, TypeError):
-                fill_px = 0.0
-            trades.append({
-                "datetime": str(row.get("DateTime", "")),
-                "symbol": sym,
-                "action": str(row["Action"]),
-                "qty": int(row["Qty"]),
-                "fill_price": fill_px,
-                "strategy": strat,
-                "status": str(row.get("FillStatus", "")),
-                "dry_run": bool(row.get("DryRun", True)),
-            })
-        return trades
-    except Exception:
-        return []
 
 
 def get_last_data_update() -> str:

@@ -26,6 +26,8 @@ from __future__ import annotations
 import tkinter as tk
 from typing import Callable, Tuple
 
+from strategy_params_display import allocations_from_cfg, strategy_params
+
 
 _REQUIRED_THEME_KEYS = {
     "bg2", "bg3", "text", "text_dim",
@@ -164,9 +166,7 @@ class StrategyParamsView:
 
     def update_cfg(self, cfg: dict) -> None:
         """Refresh allocation sliders from a cfg dict."""
-        alloc_sr = cfg.get("alloc_sr", 0.80)
-        alloc_sp = cfg.get("alloc_sp500", 0.50)
-        alloc_sk = cfg.get("alloc_skewls", 0.0)
+        alloc_sr, alloc_sp, alloc_sk = allocations_from_cfg(cfg)
         self.sr_scale.set(alloc_sr)
         self.sp_scale.set(alloc_sp)
         self.sk_scale.set(alloc_sk)
@@ -190,17 +190,8 @@ class StrategyParamsView:
 
     def _update_alloc_display(self, alloc_sr: float, alloc_sp: float,
                               alloc_sk: float = 0.0) -> None:
-        t = self.t
-        total = alloc_sr + alloc_sp + alloc_sk
-        self.sr_pct_lbl.config(text=f"{alloc_sr:.0%}")
-        self.sp_pct_lbl.config(text=f"{alloc_sp:.0%}")
-        self.sk_pct_lbl.config(text=f"{alloc_sk:.0%}")
-        self.lev_lbl.config(text=f"{total:.0%} ({total:.1f}x)")
-
-        if total > 1.0:
-            borrow = total - 1.0
-            self.lev_detail.config(text=f"Borrow: {borrow:.0%}")
-            self.lev_lbl.config(fg=t["orange"])
-        else:
-            self.lev_detail.config(text="No leverage")
-            self.lev_lbl.config(fg=t["green"])
+        params = strategy_params(alloc_sr, alloc_sp, alloc_sk)
+        for lbl, row in zip((self.sr_pct_lbl, self.sp_pct_lbl, self.sk_pct_lbl), params.rows):
+            lbl.config(text=row.text)
+        self.lev_lbl.config(text=params.leverage_text, fg=self.t[params.leverage_color])
+        self.lev_detail.config(text=params.detail)

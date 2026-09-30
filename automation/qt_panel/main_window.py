@@ -1,14 +1,16 @@
-"""新 Panel 主視窗：頂端列＋左側導覽＋三個畫面（#147、#148）。
+"""新 Panel 主視窗：頂端列＋左側導覽＋三個畫面（#147、#148、#149、#150）。
 
 外部依賴全部從建構子注入（Gateway 狀態來源、Gateway 啟動的 Ports、認證管理員、
-查權益／持倉的函式、資料日期／今日排程／Tk Panel 是否值班的讀取、時鐘、系統匣
-工廠、叫回視窗的訊號檔），測試用假的驅動，不連 IB、不讀真實檔案。
+查權益／持倉的函式、權益序列／策略設定／最近成交的讀取、資料日期／今日排程／
+Tk Panel 是否值班的讀取、時鐘、系統匣工廠、叫回視窗的訊號檔），測試用假的驅動，
+不連 IB、不讀真實檔案。
 
 並行模式不值班（ADR-0012）：值班只顯示下次時間與 Tk Panel 有沒有開，這裡
 不建任何值班 worker、不發 Telegram。
 """
 from __future__ import annotations
 
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -32,7 +34,7 @@ from qt_panel.gateway_actions import (
 )
 from qt_panel.gateway_status import GatewaySource
 from qt_panel.mode import PanelMode
-from qt_panel.portfolio import PortfolioPage
+from qt_panel.portfolio import EQUITY, PARAMS, TRADES, PortfolioPage
 from qt_panel.widgets import label, pill, visible_text
 
 PAGES = ["Dashboard", "Portfolio", "Trading"]
@@ -51,6 +53,8 @@ class _Bridge(QObject):
     """背景 thread 的回呼 → Qt 主執行緒（跨執行緒的 signal 會自動排隊）。"""
     gateway_changed = Signal(str, str, str)
     log = Signal(str)
+    account_extra = Signal(str, str, object, str)     # 帳戶, kind, 資料, 錯誤
+    extras_done = Signal()
 
 
 class _Header(QFrame):
@@ -90,6 +94,9 @@ class MainWindow(QMainWindow):
                  gateway_ports_factory: PortsFactory,
                  credential_store: CredentialStore,
                  portfolio_fetch: Callable[[str], dict],
+                 equity_fetch: Callable[[str], object],
+                 strategy_config_fetch: Callable[[str], dict],
+                 trades_fetch: Callable[[str], list],
                  portfolio_next_refresh: Callable[[datetime], datetime] | None = None,
                  dialogs: Dialogs | None = None,
                  read_data_date: Callable[[], str] = dashboard_data.read_data_date,
@@ -105,6 +112,11 @@ class MainWindow(QMainWindow):
         self._dialogs = dialogs if dialogs is not None else QtDialogs(self)
         self._read_data_date = read_data_date
         names = [a["name"] for a in accounts]
+        self._names = names
+        # 單一帳戶頁的權益序列、策略參數（唯讀）、最近成交：都是讀檔，背景讀
+        self._extra_fetchers = ((PARAMS, strategy_config_fetch), (TRADES, trades_fetch),
+                                (EQUITY, equity_fetch))
+        self._extras_loading = False
         self._today_jobs = today_jobs or (lambda now: dashboard_data.today_jobs(now, names))
         self._tk_panel_running = tk_panel_running
         self._clock = clock
@@ -165,6 +177,8 @@ class MainWindow(QMainWindow):
         self._bridge = _Bridge()
         self._bridge.gateway_changed.connect(self._on_gateway_state)
         self._bridge.log.connect(self._append_log)
+        self._bridge.account_extra.connect(self._on_account_extra)
+        self._bridge.extras_done.connect(self._on_extras_done)
         self._gateway_flow = GatewayStartFlow(
             ports_factory=gateway_ports_factory, dialogs=self._dialogs, log=self.log,
             recheck=self._source.recheck, states=self.dashboard.gateway_states,
@@ -196,6 +210,7 @@ class MainWindow(QMainWindow):
         self._source.start(self._bridge.gateway_changed.emit)
         self._reload()
         self._portfolio_loop.start()
+        self.load_account_extras()
         self._clock_timer.start()
         self._minute_timer.start()
         if self._show_signal is not None:
@@ -310,7 +325,44 @@ class MainWindow(QMainWindow):
             self.log(f"[>] 讀取帳戶權益與持倉：{'、'.join(started)}")
         else:
             self.log("[>] 帳戶查詢還在進行中")
+        self.load_account_extras()
         return started
+
+    def load_account_extras(self) -> bool:
+        """背景讀各帳戶的策略設定、最近成交、權益序列；上一輪還沒讀完就不重複讀。"""
+        if not self._running or self._extras_loading:
+            return False
+        self._extras_loading = True
+        names, fetchers, emit = list(self._names), self._extra_fetchers, self._bridge
+
+        def work():
+            try:
+                for name in names:
+                    for kind, fetch in fetchers:
+                        try:
+                            data, error = fetch(name), ""
+                        except Exception as e:
+                            data, error = None, str(e) or type(e).__name__
+                        emit.account_extra.emit(name, kind, data, error)
+            finally:
+                emit.extras_done.emit()
+
+        threading.Thread(target=work, name="qt-panel-account-extras", daemon=True).start()
+        return True
+
+    def _on_account_extra(self, name: str, kind: str, data, error: str) -> None:
+        if not self._running:
+            return
+        self.portfolio.set_extra(name, kind, data, error)
+        if error:
+            what = {EQUITY: "權益紀錄", PARAMS: "策略設定", TRADES: "成交紀錄"}[kind]
+            self.log(f"[X] [{name}] {what}讀取失敗：{error}")
+
+    def _on_extras_done(self) -> None:
+        self._extras_loading = False
+
+    def account_extras_loading(self) -> bool:
+        return self._extras_loading
 
     def _on_portfolio_change(self, name: str, state) -> None:
         self.portfolio.set_state(name, state)

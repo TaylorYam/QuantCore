@@ -1,4 +1,4 @@
-"""新 Panel 主視窗：頂端列＋左側導覽＋三個畫面（#147、#148、#149、#150）。
+"""新 Panel 主視窗：頂端列＋左側導覽＋三個畫面（#147、#148、#149、#150、#151）。
 
 外部依賴全部從建構子注入（Gateway 狀態來源、Gateway 啟動的 Ports、認證管理員、
 查權益／持倉的函式、權益序列／策略設定／最近成交的讀取、資料日期／今日排程／
@@ -7,6 +7,10 @@ Tk Panel 是否值班的讀取、時鐘、系統匣工廠、叫回視窗的訊�
 
 並行模式不值班（ADR-0012）：值班只顯示下次時間與 Tk Panel 有沒有開，這裡
 不建任何值班 worker、不發 Telegram。
+
+送單（#151）：Trading 的所有送單連線都由這裡建的送單閘門（broker_gate.SendGate）
+產生；並行模式下只接 config.json `qt_panel_paper` 指定的 paper Gateway，三個帳戶
+名稱都導向那個 paper 帳號，手動單通知只寫 Output Log。
 """
 from __future__ import annotations
 
@@ -16,7 +20,7 @@ from pathlib import Path
 from typing import Callable
 from zoneinfo import ZoneInfo
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import (
     QButtonGroup, QFrame, QHBoxLayout, QLabel, QMainWindow, QPushButton, QStackedWidget,
     QVBoxLayout, QWidget,
@@ -32,15 +36,14 @@ from qt_panel.dashboard_data import JobRow
 from qt_panel.gateway_actions import (
     CredentialStore, Dialogs, GatewayStartFlow, PortsFactory, QtDialogs,
 )
+from qt_panel.broker_gate import PaperTarget, SendGate
 from qt_panel.gateway_status import GatewaySource
 from qt_panel.mode import PanelMode
 from qt_panel.portfolio import EQUITY, FLOWS, PARAMS, TRADES, PortfolioPage
+from qt_panel.trading import TradingPage, paper_manual_order_service
 from qt_panel.widgets import label, pill, visible_text
 
 PAGES = ["Dashboard", "Portfolio", "Trading"]
-PLACEHOLDER = {
-    "Trading": "Trading 畫面製作中。並行期間下單請用 Tk Panel。",
-}
 SHOW_SIGNAL_POLL_MS = 2000
 AUTO_RECHECK_POLL_MS = 60_000
 
@@ -76,14 +79,9 @@ class _Header(QFrame):
         lay.addWidget(self.clock)
 
 
-def _placeholder(text: str) -> QWidget:
-    page = QWidget()
-    lay = QVBoxLayout(page)
-    msg = label(text, name="Placeholder")
-    msg.setAlignment(Qt.AlignCenter)
-    msg.setWordWrap(True)
-    lay.addWidget(msg)
-    return page
+def _default_broker():
+    from ib_insync import IB
+    return IB()
 
 
 class MainWindow(QMainWindow):
@@ -106,7 +104,12 @@ class MainWindow(QMainWindow):
                  clock: Callable[[], datetime] = datetime.now,
                  taipei_now: Callable[[], datetime] = _taipei_now,
                  tray_factory=None, show_signal: Path | None = None,
-                 mode_note: str = ""):
+                 mode_note: str = "",
+                 paper_target: PaperTarget | None = None,
+                 paper_problem: str = "尚未設定 paper 連線",
+                 broker_factory: Callable[[], object] = _default_broker,
+                 manual_order_service: Callable[..., object] | None = None,
+                 symbol_loader: Callable | None = None):
         super().__init__()
         self._source = gateway_source
         self._credential_store = credential_store
@@ -156,11 +159,13 @@ class MainWindow(QMainWindow):
             on_edit_credentials=self.edit_gateway_credentials,
             credential_accounts=LIVE_ACCOUNTS, on_refresh=self.refresh)
         self.portfolio = PortfolioPage(names, on_refresh=self.refresh_portfolio)
+        # 送單閘門：Trading 每一條 IB 連線都從這裡建，並行模式只放行 paper
+        self.send_gate = SendGate(mode, broker_factory)
+        self.trading = self._build_trading(
+            mode, paper_target, paper_problem, manual_order_service, symbol_loader)
         self._pages: dict[str, QWidget] = {"Dashboard": self.dashboard,
-                                           "Portfolio": self.portfolio}
-        for name in PAGES:
-            if name not in self._pages:
-                self._pages[name] = _placeholder(PLACEHOLDER[name])
+                                           "Portfolio": self.portfolio,
+                                           "Trading": self.trading}
         for name in PAGES:
             button = QPushButton(name)
             button.setObjectName("NavButton")
@@ -206,6 +211,31 @@ class MainWindow(QMainWindow):
         self.dashboard.set_next_auto_recheck(self._next_recheck)
         self._update_clock()
 
+    def _build_trading(self, mode, paper_target, paper_problem, service_factory,
+                       symbol_loader) -> TradingPage:
+        from manual_orders import SUPPORTED_MANUAL_ACCOUNTS
+        supported = {n.casefold() for n in SUPPORTED_MANUAL_ACCOUNTS}
+        names = [n for n in self._names if n.casefold() in supported]
+        service, problem, target_text = None, paper_problem, ""
+        # 正式模式（#154）才會接實盤帳戶；在那之前一律要有 paper 設定
+        if mode is PanelMode.PARALLEL and paper_target is not None:
+            factory = service_factory or paper_manual_order_service(names)
+            try:
+                service = factory(ib_factory=self.send_gate.broker,
+                                  account_ctx_factory=paper_target.account_ctx,
+                                  notifier=self._manual_order_notice)
+                target_text = paper_target.describe()
+            except Exception as e:
+                problem = f"手動單服務無法啟動：{e}"
+        return TradingPage(names, service, unavailable=problem, target_text=target_text,
+                           dialogs=self._dialogs, log=self.log, symbol_loader=symbol_loader)
+
+    def _manual_order_notice(self, account: str, message: str) -> bool:
+        """手動單結案通知：paper 單只寫 Output Log，不發 Telegram。"""
+        lines = [line.strip() for line in message.splitlines() if line.strip()]
+        self.log(f"[手動單·paper] {account}：" + " ／ ".join(lines))
+        return True
+
     # ── 生命週期 ─────────────────────────────────────────────────────
 
     def start(self) -> None:
@@ -214,6 +244,7 @@ class MainWindow(QMainWindow):
         self._reload()
         self._portfolio_loop.start()
         self.load_account_extras()
+        self.trading.start()
         self._clock_timer.start()
         self._minute_timer.start()
         if self._show_signal is not None:
@@ -235,6 +266,7 @@ class MainWindow(QMainWindow):
         self._minute_timer.stop()
         self._gateway_flow.stop()
         self._portfolio_loop.stop()
+        self.trading.stop()
         self._source.stop()
         if self._tray is not None:
             self._tray.hide()

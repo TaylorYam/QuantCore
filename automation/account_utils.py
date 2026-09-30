@@ -28,6 +28,11 @@ ROLE_TAKEOVER  = 8
 # 新 PySide6 Panel 並行期間的唯讀連線（#147，ADR-0012）：與 Tk Panel 同時開不互搶
 ROLE_PANEL_READONLY = 9
 
+# 新 Panel 查權益／持倉（#149）：ROLE_PANEL_READONLY 被它的 Gateway 心跳長連線佔著，
+# 同一個 clientId 不能同時連兩條，所以查詢另用一段號碼（Taylor 69／Rosa 79／Yvonne 89）。
+# 帳戶數 ≤ 4 時不會和上面的 BASE + idx*STEP + role 撞號。
+_QT_PANEL_QUERY_CLIENT_ID_BASE = 69
+
 
 def load_base_config() -> dict:
     """讀取 config.json（共用設定）"""
@@ -138,6 +143,14 @@ def get_client_id(account_name: str, role: int = ROLE_REBALANCE) -> int:
             idx = i
             break
     return _CLIENT_ID_BASE + idx * _CLIENT_ID_STEP + role
+
+
+def get_qt_panel_query_client_id(account_name: str) -> int:
+    """新 Panel 查權益／持倉用的 clientId（見 _QT_PANEL_QUERY_CLIENT_ID_BASE）。"""
+    accounts = load_accounts()
+    idx = next((i for i, a in enumerate(accounts)
+                if a['name'].upper() == account_name.upper()), 0)
+    return _QT_PANEL_QUERY_CLIENT_ID_BASE + idx * _CLIENT_ID_STEP
 
 
 def get_all_account_configs() -> list[dict]:

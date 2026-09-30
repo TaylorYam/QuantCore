@@ -169,3 +169,16 @@ def test_telegram_dest_shared_account_and_fallback(monkeypatch):
 
     monkeypatch.setattr(account_utils, "load_base_config", missing)
     assert account_utils.telegram_dest("Taylor") == {"token": "", "chat_id": ""}
+
+
+def test_qt_panel_queries_get_client_ids_outside_every_account_role(fake_config):
+    """新 Panel 查權益／持倉（#149）：心跳已佔 ROLE_PANEL_READONLY（29/39/49），
+    查詢另用 69/79/89，和所有帳戶的所有用途都不撞號。"""
+    import account_utils as au
+
+    names = [a["name"] for a in au.load_accounts()]
+    ids = [au.get_qt_panel_query_client_id(n) for n in names]
+    assert ids == [69, 79, 89]
+    roles = [value for name, value in vars(au).items() if name.startswith("ROLE_")]
+    taken = {au.get_client_id(n, r) for n in names for r in roles}
+    assert not taken & set(ids)

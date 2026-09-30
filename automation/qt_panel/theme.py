@@ -24,6 +24,14 @@ ACCOUNT_COLOR = {"Taylor": "#d97706", "Rosa": "#0284c7", "Yvonne": "#9333ea"}
 GATEWAY_COLOR = {"init": TEXT_FAINT, "connecting": ORANGE, "online": GREEN, "offline": RED}
 GATEWAY_TEXT = {"init": "檢查中…", "connecting": "連線中…", "online": "線上", "offline": "離線"}
 
+AMBER = "#b45309"   # 白底上看得清楚的黃（Tk 的 yellow）
+
+# portfolio_display 等共用模組回傳的 theme key → 新 Panel 的顏色
+THEME_KEY_COLOR = {"text": TEXT, "text_dim": TEXT_DIM, "green": GREEN, "red": RED,
+                   "yellow": AMBER, "orange": ORANGE, "blue": "#1d4ed8"}
+# 持倉歸屬（portfolio_display.owner_of）的顏色
+OWNER_COLOR = {"SR": "#1d4ed8", "SkewLS": "#7c3aed", "SP500": GREEN, "手動": TEXT_DIM}
+
 # 今日排程各狀態的顏色（文字見 dashboard_data.JOB_STATE_TEXT）
 JOB_COLOR = {"pending": TEXT_FAINT, "missing": RED, "unfinished": RED,
              "ok": GREEN, "problem": ORANGE, "ran": GREEN}
@@ -55,6 +63,17 @@ QToolTip {{ background: {SURFACE}; color: {TEXT}; border: 1px solid {BORDER_STRO
 #Faint {{ color: {TEXT_FAINT}; font-size: 9pt; }}
 #MedNum {{ font-size: 12pt; font-weight: 500; }}
 #BigNum {{ font-size: 18pt; font-weight: 700; }}
+#Card[clickable="true"]:hover {{ border-color: {BORDER_STRONG}; }}
+#Card[selected="true"] {{ border: 2px solid {ACCENT}; }}
+QPushButton#Chip {{ padding: 3px 12px; border-radius: 12px; font-size: 9pt; }}
+QPushButton#Chip:checked {{ background: {NAVY}; border-color: {NAVY}; color: #ffffff; }}
+QTableWidget {{
+    background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 6px;
+    gridline-color: {SURFACE_2}; selection-background-color: {SURFACE_2}; selection-color: {TEXT};
+}}
+QHeaderView::section {{
+    background: {SURFACE_2}; color: {TEXT_DIM}; border: none; padding: 4px 6px; font-size: 9pt;
+}}
 #Log {{
     background: {SURFACE_2}; border: 1px solid {BORDER}; border-radius: 6px;
     font-family: "{MONO_FONT}"; font-size: 9pt; padding: 4px;

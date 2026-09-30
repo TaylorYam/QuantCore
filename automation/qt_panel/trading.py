@@ -16,9 +16,9 @@ from typing import Callable
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QHeaderView,
-    QLineEdit, QListWidget, QPushButton, QSizePolicy, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
+    QLineEdit, QListWidget, QPushButton, QScrollArea, QSizePolicy, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 import manual_order_form as order_form
@@ -738,7 +738,16 @@ class TradingPage(QWidget):
                  target_text: str = "", dialogs, log: Callable[[str], None],
                  symbol_loader: Callable | None = None):
         super().__init__()
-        lay = QVBoxLayout(self)
+        # 內容放進捲動區：確認內容很多行時可以捲，不會撐大主視窗被螢幕切掉（#171）
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        content = QWidget()
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+        self.scroll_area.setWidget(content)
+        outer.addWidget(self.scroll_area)
+        lay = QVBoxLayout(content)
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(12)
         banner = Card()

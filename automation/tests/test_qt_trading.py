@@ -365,6 +365,20 @@ def test_form_fields_keep_a_compact_width_in_a_wide_window(trading_window, qtbot
         assert field.width() <= 320, field
 
 
+def test_tall_trading_content_scrolls_instead_of_growing_the_window(trading_window, qtbot):
+    """確認內容多行時整頁會超過螢幕高度（#171）：要能捲動，不能撐大主視窗被螢幕切掉。"""
+    w = trading_window()
+    panel = w.trading.manual
+    panel._set_preview_text("\n".join(f"第 {i} 行" for i in range(40)))
+    qtbot.wait(50)
+    assert w.minimumSizeHint().height() < 700
+    w.resize(1400, 700)
+    area = w.trading.scroll_area
+    qtbot.waitUntil(lambda: area.verticalScrollBar().maximum() > 0, timeout=2000)
+    area.verticalScrollBar().setValue(area.verticalScrollBar().maximum())
+    table_bottom = panel.orders.mapTo(area.viewport(), panel.orders.rect().bottomLeft()).y()
+    assert table_bottom <= area.viewport().height()
+
 def test_percent_of_equity_uses_the_paper_account_equity(trading_window, ib_state, qtbot):
     w = trading_window()
     panel = w.trading.manual

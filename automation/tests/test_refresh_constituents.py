@@ -14,6 +14,7 @@ No network or Wikipedia access.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -244,14 +245,14 @@ def test_atomic_apply_stages_new_and_replaced_files_under_destination_directorie
     monkeypatch.setattr(refresh, "CONST_FILE", const_file)
     monkeypatch.setattr(refresh, "log", lambda *_args, **_kwargs: None)
 
-    real_mkdtemp = refresh.tempfile.mkdtemp
+    real_make_staging_dir = refresh._make_staging_dir
     staging_parents = []
 
-    def tracked_mkdtemp(*, prefix, dir=None):
-        staging_parents.append(Path(dir) if dir is not None else None)
-        return real_mkdtemp(prefix=prefix, dir=dir)
+    def tracked_make_staging_dir(parent, prefix):
+        staging_parents.append(Path(parent))
+        return real_make_staging_dir(parent, prefix)
 
-    monkeypatch.setattr(refresh.tempfile, "mkdtemp", tracked_mkdtemp)
+    monkeypatch.setattr(refresh, "_make_staging_dir", tracked_make_staging_dir)
 
     class FakeTicker:
         def history(self, **_kwargs):
@@ -276,6 +277,99 @@ def test_atomic_apply_stages_new_and_replaced_files_under_destination_directorie
     assert pd.read_csv(stock_dir / "AAA.csv").iloc[0]["Close"] == 10.5
     assert pd.read_csv(stock_dir / "BBB.csv").iloc[0]["Close"] == 10.5
     assert pd.ExcelFile(const_file, engine="openpyxl").sheet_names == ["2026"]
+    assert not list(ref_dir.glob("refresh_const_*"))
+    assert not list(stock_dir.glob("refresh_const_stocks_*"))
+
+
+def _dacl_sddl(path: Path) -> str:
+    """Return the DACL of *path* as an SDDL string (Windows only)."""
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    SE_FILE_OBJECT = 1
+    DACL_SECURITY_INFORMATION = 0x4
+    SDDL_REVISION_1 = 1
+
+    sd = ctypes.c_void_p()
+    rc = advapi32.GetNamedSecurityInfoW(
+        wintypes.LPCWSTR(str(path)), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        None, None, None, None, ctypes.byref(sd),
+    )
+    assert rc == 0, f"GetNamedSecurityInfoW({path}) failed: {rc}"
+    try:
+        text = wintypes.LPWSTR()
+        ok = advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            sd, SDDL_REVISION_1, DACL_SECURITY_INFORMATION,
+            ctypes.byref(text), None,
+        )
+        assert ok, f"SDDL conversion failed: {ctypes.get_last_error()}"
+        try:
+            return text.value
+        finally:
+            kernel32.LocalFree(text)
+    finally:
+        kernel32.LocalFree(sd)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows ACL behaviour")
+def test_atomic_apply_published_files_inherit_destination_acl(tmp_path, monkeypatch):
+    """#161: Python 3.13 mkdtemp staging gave published files a protected
+    SYSTEM/Administrators/OWNER RIGHTS DACL, so a SYSTEM refresh left the
+    xlsx and new CSVs unreadable for non-elevated users.  Published files
+    must carry the same DACL as a file created directly in the destination."""
+    import subprocess
+
+    import data.refresh_constituents as refresh
+
+    # pytest creates tmp_path with mode 0o700, which Python 3.13 turns into
+    # the same restricted DACL as mkdtemp and would hide the bug.  Give the
+    # tree an inheritable read grant for BUILTIN\Users, as data/ has.
+    root = tmp_path / "data"
+    root.mkdir()
+    subprocess.run(
+        ["icacls", str(root), "/grant", "*S-1-5-32-545:(OI)(CI)R"],
+        check=True, capture_output=True,
+    )
+    ref_dir = root / "reference"
+    stock_dir = root / "stocks"
+    ref_dir.mkdir()
+    stock_dir.mkdir()
+    const_file = ref_dir / "sp500_constituents_daily.xlsx"
+    pd.DataFrame({"Date": [pd.Timestamp("2026-01-01")], "T1": ["AAA"]}).to_excel(
+        const_file, sheet_name="2026", index=False,
+    )
+    ref_control = ref_dir / "control.txt"
+    stock_control = stock_dir / "control.txt"
+    ref_control.write_text("x", encoding="utf-8")
+    stock_control.write_text("x", encoding="utf-8")
+
+    monkeypatch.setattr(refresh, "REF_DIR", ref_dir)
+    monkeypatch.setattr(refresh, "STOCK_DIR", stock_dir)
+    monkeypatch.setattr(refresh, "CONST_FILE", const_file)
+    monkeypatch.setattr(refresh, "log", lambda *_args, **_kwargs: None)
+
+    class FakeTicker:
+        def history(self, **_kwargs):
+            return pd.DataFrame(
+                {"Open": [1.0], "High": [1.0], "Low": [1.0], "Close": [1.0],
+                 "Adj Close": [1.0], "Volume": [1]},
+                index=pd.DatetimeIndex(["2026-01-02"]),
+            )
+
+    monkeypatch.setattr(refresh.yf, "Ticker", lambda _symbol: FakeTicker())
+
+    refresh.atomic_apply(
+        {pd.Timestamp("2026-01-02"): {"AAA", "NEWT"}},
+        {"NEWT"},
+        {"2026": pd.DataFrame({"Date": [pd.Timestamp("2026-01-01")], "T1": ["AAA"]})},
+        ["T1", "T2"],
+    )
+
+    assert ";;;BU)" in _dacl_sddl(ref_control)
+    assert _dacl_sddl(const_file) == _dacl_sddl(ref_control)
+    assert _dacl_sddl(stock_dir / "NEWT.csv") == _dacl_sddl(stock_control)
 
 
 def test_g7_halts_on_closure_listed_in_the_gap():

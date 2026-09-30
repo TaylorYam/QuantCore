@@ -22,9 +22,9 @@ import argparse
 import html
 import json
 import os
+import secrets
 import shutil
 import sys
-import tempfile
 import urllib.request
 from datetime import date, datetime
 from io import StringIO
@@ -489,6 +489,24 @@ def show_diff(
 
 
 # ── Atomic apply ─────────────────────────────────────────────────────────────
+def _make_staging_dir(parent: Path, prefix: str) -> Path:
+    """Create a uniquely named staging directory that inherits *parent*'s ACL.
+
+    Not tempfile.mkdtemp: on Windows, Python 3.13 turns its 0o700 mode into a
+    protected SYSTEM/Administrators/OWNER RIGHTS DACL, which staged files keep
+    after os.replace — a SYSTEM refresh then publishes files that
+    non-elevated users cannot read (#161).
+    """
+    for _ in range(100):
+        path = parent / f"{prefix}{secrets.token_hex(4)}"
+        try:
+            os.mkdir(path)
+        except FileExistsError:
+            continue
+        return path
+    raise FileExistsError(f"no unused staging directory name under {parent}")
+
+
 def atomic_apply(
     snapshots: dict[pd.Timestamp, set[str]],
     new_tickers: set[str],
@@ -504,11 +522,9 @@ def atomic_apply(
     ref_staging: Path | None = None
     stock_staging: Path | None = None
     try:
-        ref_staging = Path(tempfile.mkdtemp(prefix="refresh_const_", dir=REF_DIR))
+        ref_staging = _make_staging_dir(REF_DIR, "refresh_const_")
         if new_tickers:
-            stock_staging = Path(tempfile.mkdtemp(
-                prefix="refresh_const_stocks_", dir=STOCK_DIR,
-            ))
+            stock_staging = _make_staging_dir(STOCK_DIR, "refresh_const_stocks_")
 
         # ─ Stage 1: fetch new ticker CSVs ────────────────────────────────────
         for tk in sorted(new_tickers):

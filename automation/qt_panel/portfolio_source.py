@@ -52,6 +52,20 @@ def read_strategy_allocations(account_name: str) -> dict:
     return {key: cfg[key] for key, *_ in STRATEGIES if key in cfg}
 
 
+def load_account_cash_flows(account_name: str):
+    """出入金（ib_flex.FlowsResult）：IB Flex 報表＋本機快取，同一天只下載一次。
+
+    token／Query ID 在 accounts.json 該帳戶的 flex_token／flex_query_id（唯讀）。
+    """
+    from datetime import datetime
+
+    from account_utils import load_accounts
+    from ib_flex import CashFlowCache, account_entry, load_cash_flows
+
+    cfg = account_entry(load_accounts(), account_name) or {}
+    return load_cash_flows(account_name, cfg, CashFlowCache(), now=datetime.now())
+
+
 def read_recent_trades(account_name: str) -> list:
     from trades_display import read_latest_trades
     return read_latest_trades(account_name)

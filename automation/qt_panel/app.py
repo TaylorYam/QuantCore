@@ -82,7 +82,8 @@ def main() -> int:
         from qt_panel.main_window import MainWindow
         from qt_panel.mode import resolve_mode
         from qt_panel.portfolio_source import (
-            fetch_readonly_portfolio, load_equity, read_recent_trades, read_strategy_allocations,
+            fetch_readonly_portfolio, load_account_cash_flows, load_equity, read_recent_trades,
+            read_strategy_allocations,
         )
         from qt_panel.tray import tray_factory_for
 
@@ -105,6 +106,7 @@ def main() -> int:
             credential_store=WindowsCredentialStore(),
             portfolio_fetch=fetch_readonly_portfolio,
             equity_fetch=load_equity,
+            cash_flows_fetch=load_account_cash_flows,
             strategy_config_fetch=read_strategy_allocations,
             trades_fetch=read_recent_trades,
             tray_factory=tray_factory_for(icon, "QuantCore Panel（PySide6・並行模式）"),

@@ -5,7 +5,9 @@
     "port": 4001,
     "alloc_sr": 0.0,
     "alloc_sp500": 0.40,
-    "alloc_skewls": 1.0
+    "alloc_skewls": 1.0,
+    "flex_token": "YOUR_FLEX_WEB_SERVICE_TOKEN",
+    "flex_query_id": "000000"
   },
   {
     "name": "AccountB",
@@ -13,6 +15,8 @@
     "port": 4002,
     "alloc_sr": 0.0,
     "alloc_sp500": 0.70,
-    "alloc_skewls": 1.0
+    "alloc_skewls": 1.0,
+    "flex_token": "YOUR_FLEX_WEB_SERVICE_TOKEN",
+    "flex_query_id": "000000"
   }
 ]

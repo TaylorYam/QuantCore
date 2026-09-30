@@ -1,7 +1,8 @@
 """Portfolio 畫面（#149、#150）：上方三帳戶總覽，點選後下方顯示該帳戶的細節。
 
-細節：指標卡、權益曲線（pyqtgraph，#150）、策略參數（唯讀）、配置圓環、持倉、
-最近成交。權益序列、策略參數、最近成交由主視窗在背景讀好再交給這裡（set_extra）。
+細節：指標卡、權益／業績曲線（pyqtgraph，#150、#166）、策略參數（唯讀）、配置圓環、
+持倉、最近成交。權益序列、出入金、策略參數、最近成交由主視窗在背景讀好再交給這裡
+（set_extra）。
 
 讀數沿用 portfolio_queries 的 QueryState；指標卡、報表日期、持倉列、圓環圖資料
 都來自 portfolio_display（和 Tk PortfolioView 共用），這裡只負責 Qt 元件。
@@ -23,13 +24,13 @@ from portfolio_queries import QueryState
 
 from qt_panel import theme
 from qt_panel.account_panels import RecentTradesCard, StrategyParamsCard
-from qt_panel.equity import SPARKLINE_DAYS, EquityChart, Sparkline, change_text
+from qt_panel.equity import EquityChart, Sparkline, recent_change
 from qt_panel.widgets import Card, all_text, clear_layout, dot, label
 
 OWNER_FILTERS = ("全部", "SR", "SkewLS", "SP500", display.MANUAL)
 TABLE_COLUMNS = ("歸屬", "代號", "股數", "權重", "成本", "現價", "損益", "損益%", "名稱")
-# 主視窗在背景讀的三種帳戶資料（set_extra 的 kind）
-EQUITY, PARAMS, TRADES = "equity", "params", "trades"
+# 主視窗在背景讀的帳戶資料（set_extra 的 kind）
+EQUITY, FLOWS, PARAMS, TRADES = "equity", "flows", "params", "trades"
 
 
 def _time(state) -> str:
@@ -124,10 +125,11 @@ class OverviewCard(Card):
         self._status.setText(text)
         self._status.setStyleSheet(f"color: {theme.color(color)};")
 
-    def set_equity(self, series) -> None:
-        shown = self.sparkline.set_series(series)
-        text, color = change_text(shown)
-        self._spark_change.setText(f"近 {SPARKLINE_DAYS} 天 {text}" if text else "")
+    def set_equity(self, series, flows=None) -> None:
+        """小圖畫權益；旁邊的近 60 天報酬有出入金紀錄時改算業績（入金不算賺錢）。"""
+        self.sparkline.set_series(series)
+        text, color = recent_change(series, flows)
+        self._spark_change.setText(text)
         self._spark_change.setStyleSheet(f"color: {color};")
 
     def mousePressEvent(self, event) -> None:
@@ -298,7 +300,7 @@ class AccountDetail(QWidget):
 
         top = QHBoxLayout()
         top.setSpacing(12)
-        equity = Card("權益曲線")
+        equity = Card("權益／業績")
         self.equity = EquityChart()
         equity.body.addWidget(self.equity, 1)
         top.addWidget(equity, 1)
@@ -334,6 +336,7 @@ class AccountDetail(QWidget):
         series, error = extras.get(EQUITY, (None, ""))
         self.equity.set_series(series, f"權益紀錄讀取失敗：{error}" if error
                                else "沒有權益紀錄" if EQUITY in extras else "載入中…")
+        self.equity.set_cash_flows(*extras.get(FLOWS, (None, "")))
         self.params.set_config(*extras.get(PARAMS, (None, "")))
         self.trades.set_trades(*extras.get(TRADES, (None, "")))
 
@@ -431,12 +434,16 @@ class PortfolioPage(QWidget):
             self.detail.show_account(name, state)
 
     def set_extra(self, name: str, kind: str, data, error: str = "") -> None:
-        """主視窗背景讀好的權益序列（EQUITY）、策略設定（PARAMS）、最近成交（TRADES）。"""
+        """主視窗背景讀好的權益序列（EQUITY）、出入金（FLOWS，ib_flex.FlowsResult）、
+        策略設定（PARAMS）、最近成交（TRADES）。"""
         if name not in self._cards:
             return
-        self._extras[name][kind] = (None if error else data, error)
-        if kind == EQUITY:
-            self._cards[name].set_equity(None if error else data)
+        extras = self._extras[name]
+        extras[kind] = (None if error else data, error)
+        if kind in (EQUITY, FLOWS):
+            series = extras.get(EQUITY, (None, ""))[0]
+            flows = extras.get(FLOWS, (None, ""))[0]
+            self._cards[name].set_equity(series, flows.flows if flows else None)
         if name == self._selected:
             self.detail.show_extras(self._extras[name])
 

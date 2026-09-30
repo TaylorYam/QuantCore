@@ -44,6 +44,10 @@ STYLESHEET = f"""
 QWidget {{ background: transparent; color: {TEXT}; font-family: "{UI_FONT}"; font-size: 10pt; }}
 QMainWindow, QDialog {{ background: {BG}; }}
 QToolTip {{ background: {SURFACE}; color: {TEXT}; border: 1px solid {BORDER_STRONG}; padding: 4px; }}
+QMenu {{ background: {SURFACE}; color: {TEXT}; border: 1px solid {BORDER_STRONG}; padding: 4px; }}
+QMenu::item {{ padding: 6px 24px 6px 14px; border-radius: 4px; }}
+QMenu::item:selected {{ background: {SURFACE_HOVER}; }}
+QMenu::separator {{ height: 1px; background: {BORDER}; margin: 4px 6px; }}
 
 #Header {{ background: {SURFACE}; border-bottom: 1px solid {BORDER}; }}
 #Brand {{ font-size: 14pt; font-weight: 700; color: {NAVY}; }}

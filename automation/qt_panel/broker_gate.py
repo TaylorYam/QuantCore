@@ -15,7 +15,7 @@ paper-only 檢查。帳號清單是連線時 Gateway 給的，同一條連線不
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Callable, Iterable, Mapping
 
@@ -29,6 +29,8 @@ DEFAULT_PAPER_HOST = "127.0.0.1"
 # paper Gateway 上的 clientId；paper_verify_manual_orders 預設用 91，錯開才能同時開。
 # IB 只允許同一個 clientId 撤自己的單，所以固定不變。
 DEFAULT_PAPER_CLIENT_ID = 92
+# Sync Pos 在 paper 上用下一個 clientId：和手動單的對帳連線同時存在也不會互踢
+SYNC_CLIENT_OFFSET = 1
 
 
 class SendRefused(ManualOrderError):
@@ -112,6 +114,13 @@ class PaperTarget:
         """ManualOrderService 的 account_ctx_factory：任何帳戶名稱都導向 paper 帳號。"""
         return SimpleNamespace(name=name, account=self.account, host=self.host,
                                port=self.port, client_id=self.client_id)
+
+    def sync_ctx(self, base):
+        """Sync Pos 的 AccountCtx：策略設定（Allocation 等）沿用該帳戶，
+        連線改到 paper；不去實盤 Gateway 借報價、不帶 Telegram 設定、一定真的送（paper）。"""
+        return replace(base, host=self.host, port=self.port, account=self.account,
+                       client_id=self.client_id + SYNC_CLIENT_OFFSET, price_feed_port=None,
+                       dry_run=False, tg_token="", tg_chat_id="")
 
     def describe(self) -> str:
         return f"paper 帳號 {self.account}（{self.host}:{self.port}）"

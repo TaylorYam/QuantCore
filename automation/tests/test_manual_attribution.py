@@ -474,6 +474,45 @@ def test_sync_pos_previews_paused_orders_and_never_sends_them(sync_env):
     assert sync_env.ib.cancelled == [8]
 
 
+
+def test_paper_sync_records_never_touch_live_records(sync_env, paths, tmp_path, monkeypatch):
+    """新 Panel 的 paper Sync Pos（#152）：用 paper 自己的歸屬紀錄與手動單紀錄、
+    SP500／SkewLS state 只讀不寫；實盤帳戶的紀錄一個 byte 都不變。"""
+    import signals
+    import skewls_state
+    import sync_position
+    from dataclasses import replace
+
+    ma.evaluate("Rosa", {"AAPL": 100.0, "XYZ": 10.0}, UNIVERSE)
+    ma.evaluate("Rosa", {"AAPL": 100.0, "XYZ": 10.0}, JOINED)      # 實盤：XYZ 暫停中
+    assert "XYZ" in ma.paused_symbols("Rosa")
+    live_before = paths.ledger.read_bytes()
+    persist_args, skew_saves, paper_ibs = [], [], []
+    monkeypatch.setattr(signals, "get_sp500_weights",
+                        lambda holdings, name, persist=True: (
+                            persist_args.append(persist)
+                            or ({"AAPL": 0.5, "XYZ": 0.5}, "2026-09-23")))
+    monkeypatch.setattr(signals, "get_skewls_weights", lambda: ({"SH": 0.1}, "2026-09-23"))
+    monkeypatch.setattr(skewls_state, "save_state", lambda *a: skew_saves.append(a))
+
+    def paper_connect(ctx):
+        paper_ibs.append(FakeIB({"AAPL": 100.0, "XYZ": 10.0}))
+        return paper_ibs[-1]
+
+    records = sync_position.SyncRecords(
+        connect=paper_connect, attribution_ledger=tmp_path / "paper_attribution.sqlite3",
+        manual_orders_store=tmp_path / "paper_orders.sqlite3", persist_strategy_state=False)
+    plan = sync_position.compute_sync_plan(replace(_ctx(), alloc_skewls=0.2), records=records)
+    assert plan.paused == {}                    # 實盤 Rosa 的暫停不套到 paper
+    placed, _ = sync_position.submit_sync_orders(plan)
+
+    assert {o["symbol"] for o in placed} >= {"XYZ"}
+    assert ("XYZ", "BUY", 240) in paper_ibs[-1].placed
+    assert sync_env.ib is None                  # 沒有經過實盤連線
+    assert persist_args == [False] and skew_saves == []
+    assert paths.ledger.read_bytes() == live_before
+    assert (tmp_path / "paper_attribution.sqlite3").exists()
+
 _PREVIEW_SCRIPT = r"""
 import json, sys, tkinter as tk
 sys.path[:0] = sys.argv[1:3]

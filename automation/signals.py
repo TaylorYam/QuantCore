@@ -75,7 +75,7 @@ def get_sr_weights(as_of_date: Optional[pd.Timestamp] = None
 # ── SP500 Momentum ────────────────────────────────────────────────────────
 
 def get_sp500_weights(current_sp500_holdings: list[str],
-                      account_name: str) -> tuple[dict, str]:
+                      account_name: str, *, persist: bool = True) -> tuple[dict, str]:
     """
     基於 IB 帳戶的實際 SP500 持股，產生 live 目標權重（與 backtester 一致）。
 
@@ -94,6 +94,8 @@ def get_sp500_weights(current_sp500_holdings: list[str],
         IB 帳戶中屬於 SP500 策略的股票代碼（不含 SR ETFs）
     account_name : str
         帳戶名稱，用於讀取 / 寫入 state file（必填）
+    persist : bool
+        False = 只讀 state、不寫回（新 Panel 的 paper Sync Pos，#152）
 
     Returns
     -------
@@ -115,7 +117,8 @@ def get_sp500_weights(current_sp500_holdings: list[str],
     state = load_state(account_name)
     wgt, signal_date, new_state = get_latest_weights_live(
         current_sp500_holdings, state)
-    save_state(account_name, new_state)
+    if persist:
+        save_state(account_name, new_state)
 
     sig_date_str = str(signal_date.date())
     log.info(f"SP500 signal date: {sig_date_str}  "

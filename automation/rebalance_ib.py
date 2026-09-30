@@ -103,13 +103,16 @@ def make_order(action: str, qty: int, lmt_price: float,
     return o
 
 
-def place_orders(ib: IB, order_list: list, ctx: AccountCtx) -> tuple:
+def place_orders(ib: IB, order_list: list, ctx: AccountCtx, *,
+                 attribution_path=None) -> tuple:
     """先 SELL 再 BUY。回傳 (placed_list, trades_list)
 
     策略送單的最終閘門（#106）：手動持倉暫停中的標的不送；讀不到暫停
-    紀錄時拋 ManualAttributionError，一張都不送。
+    紀錄時拋 ManualAttributionError，一張都不送。attribution_path = 暫停紀錄檔，
+    None = 實盤預設（新 Panel 的 paper Sync Pos 用自己的檔，#152）。
     """
-    order_list, _held = manual_attribution.gate_orders(ctx.name, order_list)
+    order_list, _held = manual_attribution.gate_orders(ctx.name, order_list,
+                                                       path=attribution_path)
     sells = [o for o in order_list if o['action'] == 'SELL']
     buys  = [o for o in order_list if o['action'] == 'BUY']
     placed, trades = [], []

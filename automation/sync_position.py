@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field, replace as _replace
+from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
@@ -40,6 +41,35 @@ log = logging.getLogger(__name__)
 
 
 # ── Data classes ──────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class SyncRecords:
+    """Sync Pos 用的 IB 連線與本機紀錄。
+
+    預設 = 實盤（Tk Panel）：ib_fetcher.connect、實盤的手動歸屬紀錄與手動單紀錄、
+    寫回 SP500／SkewLS state。新 Panel 的 paper Sync Pos（#152）換一組：連線走
+    送單閘門、歸屬與手動單紀錄用 paper 專用檔、state 只讀不寫 — paper 帳戶的
+    持倉與成交不能改到實盤帳戶的紀錄。
+    """
+    connect: Optional[Callable[[AccountCtx], object]] = None   # None = ib_fetcher.connect
+    attribution_ledger: Optional[Path] = None                  # None = 實盤紀錄檔
+    manual_orders_store: Optional[Path] = None                 # None = 實盤手動單紀錄
+    persist_strategy_state: bool = True
+
+    def open(self, ctx: AccountCtx):
+        return (self.connect or ib_fetcher.connect)(ctx)
+
+    # 實盤預設不多傳參數：呼叫與改動前完全相同
+    def sp500_state_options(self) -> dict:
+        return {} if self.persist_strategy_state else {"persist": False}
+
+    def gate_options(self) -> dict:
+        return ({} if self.attribution_ledger is None
+                else {"attribution_path": self.attribution_ledger})
+
+
+LIVE_RECORDS = SyncRecords()
+
 
 # 決策層的訂單 dataclass（唯一實作在 rebalance_plan）；
 # SyncOrder 為舊名 re-export — panel / sync_preview_window 沿用此路徑。
@@ -69,6 +99,7 @@ class SyncPlan:
     paused: dict[str, str] = field(default_factory=dict)        # 標的 → 原因
     paused_orders: list[SyncOrder] = field(default_factory=list)
     pause_notices: list[manual_attribution.Notice] = field(default_factory=list)  # 尚未通知
+    records: SyncRecords = LIVE_RECORDS   # 送單沿用計算時的連線與紀錄
 
 
 # ── Compute phase ─────────────────────────────────────────────────────
@@ -76,6 +107,8 @@ class SyncPlan:
 def compute_sync_plan(
     ctx: AccountCtx,
     log_fn: Optional[Callable[[str], None]] = None,
+    *,
+    records: SyncRecords = LIVE_RECORDS,
 ) -> SyncPlan:
     """
     連線 IB、計算理論持倉與差額 order list，回傳完整 SyncPlan。
@@ -87,6 +120,8 @@ def compute_sync_plan(
     log_fn : callable(str) | None
         progress log callback（GUI 用，在呼叫 thread 執行；main-thread marshalling
         由 caller 負責）
+    records : SyncRecords
+        IB 連線與本機紀錄；預設實盤
 
     Returns
     -------
@@ -125,7 +160,7 @@ def compute_sync_plan(
 
     # 2. 連 IB
     _log("  Connecting to IB...")
-    ib = ib_fetcher.connect(ctx)
+    ib = records.open(ctx)
     try:
         nav = ib_fetcher.get_nav(ib, ctx)
         current_pos = ib_fetcher.get_positions(ib, ctx)
@@ -139,13 +174,15 @@ def compute_sync_plan(
 
         # 3b. 手動持倉歸屬（#106）— 讀寫失敗拋例外：本帳戶這次不 Sync
         #     （在 4. 算 SP500 訊號寫 state 之前）
-        attribution = manual_attribution.evaluate(ctx.name, current_pos,
-                                                  sp500_universe)
+        attribution = manual_attribution.evaluate(
+            ctx.name, current_pos, sp500_universe,
+            ledger_path=records.attribution_ledger,
+            manual_orders_path=records.manual_orders_store)
 
         # 4. SP500 目標權重
         _log("  Computing SP500 weights...")
         sp500_wgt, sp500_date = signals.get_sp500_weights(
-            current_sp500_holdings, ctx.name)
+            current_sp500_holdings, ctx.name, **records.sp500_state_options())
 
         # 5. 取報價
         all_syms = list(set(
@@ -202,6 +239,7 @@ def compute_sync_plan(
         paused=dict(attribution.paused),
         paused_orders=paused_orders,
         pause_notices=list(attribution.new_notices),
+        records=records,
     )
 
 
@@ -368,7 +406,8 @@ def submit_sync_orders(
     # Frozen AccountCtx replace → LMT + outsideRTH 版本（不汙染原 ctx）
     exec_ctx = _replace(plan.ctx, order_type='LMT', outside_rth=True)
 
-    ib = ib_fetcher.connect(exec_ctx)
+    records = plan.records
+    ib = records.open(exec_ctx)
     try:
         # 1. 取消既有掛單（Panel 手動單除外，#106）
         open_trades = manual_attribution.strategy_open_trades(ib.openTrades())
@@ -396,7 +435,8 @@ def submit_sync_orders(
             _log(f"  LMT {o.action} {o.qty}sh {o.symbol} @ ${lmt:.2f}")
 
         # 4. 送單（透過 rebalance_ib.place_orders）
-        placed, trades = reb.place_orders(ib, ib_orders, ctx=exec_ctx)
+        placed, trades = reb.place_orders(ib, ib_orders, ctx=exec_ctx,
+                                          **records.gate_options())
 
         # 5. 等成交回報
         fill_results = []
@@ -405,7 +445,7 @@ def submit_sync_orders(
 
         # 6. SkewLS state 更新（Sync Pos = 強制同步，所以即使非 threshold-triggered 也存）
         #    這樣下次 scheduled threshold check 才有正確 baseline。
-        if plan.skewls_wgt and plan.ctx.alloc_skewls > 0:
+        if plan.skewls_wgt and plan.ctx.alloc_skewls > 0 and records.persist_strategy_state:
             try:
                 import skewls_state
                 from datetime import date as _date

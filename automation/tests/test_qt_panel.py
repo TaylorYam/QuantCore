@@ -445,10 +445,10 @@ def test_dashboard_says_watch_runs_in_the_tk_panel(make_window):
 
 def test_new_panel_has_no_path_to_watch_telegram_or_strategy_orders():
     """並行模式不值班、不發 Telegram（ADR-0012）：qt_panel 完全不 import 這些模組。
-    手動單（#151）走 manual_orders，但連線一律經過送單閘門（見 test_qt_trading）；
-    Sync Pos／接管在 #152／#153 接上閘門前也不 import。"""
-    forbidden = {"monitor_engine", "notify", "sync_position",
-                 "strategy_takeover", "rebalance_ib"}
+    手動單（#151）走 manual_orders、Sync Pos（#152）走 sync_position，連線一律經過
+    送單閘門（見 test_qt_trading、test_qt_sync_pos）；接管在 #153 接上閘門前也不 import。"""
+    forbidden = {"monitor_engine", "notify", "strategy_takeover", "rebalance_ib",
+                 "excel_logger"}
     package = Path(__file__).resolve().parents[1] / "qt_panel"
     imported = set()
     for path in package.glob("*.py"):

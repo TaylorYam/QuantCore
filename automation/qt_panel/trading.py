@@ -10,15 +10,15 @@
 """
 from __future__ import annotations
 
-import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
-    QLineEdit, QListWidget, QPushButton, QScrollArea, QSizePolicy, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout,
+    QHeaderView, QLineEdit, QListWidget, QPushButton, QScrollArea, QSizePolicy,
+    QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 import manual_order_form as order_form
@@ -26,12 +26,22 @@ from ime_guard import to_ascii_input
 from manual_order_form import ManualOrderForm
 
 from qt_panel import theme
+from qt_panel.trading_common import MainThread, background
 from qt_panel.widgets import Card, label
 
 AUTOMATION_DIR = Path(__file__).resolve().parent.parent
 # paper 單另存一個紀錄檔：不能混進 Tk Panel 的 manual_orders.sqlite3，否則 Tk 的
 # 對帳會拿實盤 Gateway 去找這些單。
 PAPER_STORE_PATH = AUTOMATION_DIR / "qt_panel_paper_orders.sqlite3"
+# paper 帳戶的手動持倉歸屬紀錄（#152）：不能寫進實盤的 manual_attribution.sqlite3
+PAPER_ATTRIBUTION_PATH = AUTOMATION_DIR / "qt_panel_paper_attribution.sqlite3"
+
+
+@dataclass(frozen=True)
+class PaperFiles:
+    """paper 專用的本機紀錄檔。"""
+    orders: Path = PAPER_STORE_PATH
+    attribution: Path = PAPER_ATTRIBUTION_PATH
 
 POLL_INTERVAL_MS = 10_000
 SYMBOL_SUGGESTION_LIMIT = 8
@@ -71,19 +81,6 @@ def ascii_only(edit: QLineEdit) -> None:
     edit.textChanged.connect(normalize)
 
 
-class _MainThread(QObject):
-    """背景執行緒把 callback 排回主執行緒執行。"""
-    call = Signal(object)
-
-    def __init__(self):
-        super().__init__()
-        self.call.connect(self._run, Qt.QueuedConnection)
-
-    @Slot(object)
-    def _run(self, fn) -> None:
-        fn()
-
-
 class ManualOrderPanel(QWidget):
     """手動單：表單、確認內容、手動委託狀態。"""
 
@@ -95,7 +92,7 @@ class ManualOrderPanel(QWidget):
         self._dialogs = dialogs
         self._log = log
         self._target_text = target_text
-        self._main = _MainThread()
+        self._main = MainThread()
         self._preview = None
         self._preview_request = None
         self._busy = False
@@ -291,13 +288,9 @@ class ManualOrderPanel(QWidget):
 
     def _background(self, work: Callable[[], object],
                     done: Callable[[object, str | None], None]) -> None:
-        def run():
-            try:
-                result, error = work(), None
-            except Exception as exc:
-                result, error = None, str(exc) or type(exc).__name__
-            self._main.call.emit(lambda: None if self._closed else done(result, error))
-        threading.Thread(target=run, name="qt-panel-manual-order", daemon=True).start()
+        background(self._main, work,
+                   lambda result, error: None if self._closed else done(result, error),
+                   name="qt-panel-manual-order")
 
     # ── 代號建議 ─────────────────────────────────────────────────────
 
@@ -732,11 +725,11 @@ class ManualOrderPanel(QWidget):
 
 
 class TradingPage(QWidget):
-    """Trading 分頁：送單目標說明＋手動單。沒有可用的 paper 連線時只顯示原因。"""
+    """Trading 分頁：送單目標說明＋手動單／Sync Pos 切換。沒有可用的 paper 連線時只顯示原因。"""
 
     def __init__(self, account_names: list[str], service, *, unavailable: str = "",
                  target_text: str = "", dialogs, log: Callable[[str], None],
-                 symbol_loader: Callable | None = None):
+                 symbol_loader: Callable | None = None, sync=None):
         super().__init__()
         # 內容放進捲動區：確認內容很多行時可以捲，不會撐大主視窗被螢幕切掉（#171）
         outer = QVBoxLayout(self)
@@ -755,10 +748,11 @@ class TradingPage(QWidget):
             title = "並行模式：Trading 只接 paper Gateway，目前不能送單"
             detail = unavailable
         else:
-            title = f"並行模式：手動單一律送往 {target_text}，不會送到實盤"
+            title = f"並行模式：手動單與 Sync Pos 一律送往 {target_text}，不會送到實盤"
             detail = ("帳戶選單照列三個帳戶，但全部導向這個 paper 帳號。"
                       "每條送單連線都會先確認 Gateway 管理的帳號全部是 paper（DU/DF 開頭），"
-                      "否則斷線拒絕。實盤下單請用 Tk Panel。")
+                      "否則斷線拒絕。paper 不寫實盤的 state、歸屬與成交紀錄，也不發 Telegram。"
+                      "實盤下單請用 Tk Panel。")
         self.banner_title = label(title, color=theme.WARN_TEXT)
         self.banner_title.setStyleSheet(f"color: {theme.WARN_TEXT}; font-weight: 600;")
         self.banner_title.setWordWrap(True)
@@ -768,13 +762,36 @@ class TradingPage(QWidget):
         banner.body.addWidget(self.banner_detail)
         lay.addWidget(banner)
         self.manual: ManualOrderPanel | None = None
-        if service is not None:
-            self.manual = ManualOrderPanel(account_names, service, dialogs=dialogs, log=log,
-                                           symbol_loader=symbol_loader,
-                                           target_text=target_text)
-            lay.addWidget(self.manual, 1)
-        else:
+        self.sync = None
+        if service is None:
             lay.addStretch(1)
+            return
+        from qt_panel.sync_pos import SyncPosPanel
+
+        tabs = QHBoxLayout()
+        tabs.setSpacing(6)
+        self.manual_tab = QPushButton("手動單")
+        self.sync_tab = QPushButton("Sync Pos")
+        stack = QStackedWidget()
+        self.manual = ManualOrderPanel(account_names, service, dialogs=dialogs, log=log,
+                                       symbol_loader=symbol_loader, target_text=target_text)
+        stack.addWidget(self.manual)
+        pages = [(self.manual_tab, self.manual)]
+        if sync is not None:
+            self.sync = SyncPosPanel(account_names, sync, dialogs=dialogs, log=log)
+            stack.addWidget(self.sync)
+            pages.append((self.sync_tab, self.sync))
+        group = QButtonGroup(self)
+        for button, page in pages:
+            button.setObjectName("Chip")
+            button.setCheckable(True)
+            button.clicked.connect(lambda _=False, p=page: stack.setCurrentWidget(p))
+            group.addButton(button)
+            tabs.addWidget(button)
+        self.manual_tab.setChecked(True)
+        tabs.addStretch(1)
+        lay.addLayout(tabs)
+        lay.addWidget(stack, 1)
 
     def start(self) -> None:
         if self.manual is not None:
@@ -783,3 +800,5 @@ class TradingPage(QWidget):
     def stop(self) -> None:
         if self.manual is not None:
             self.manual.stop()
+        if self.sync is not None:
+            self.sync.stop()

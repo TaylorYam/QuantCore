@@ -983,3 +983,23 @@ def test_manual_symbols_are_read_from_the_attribution_ledger_read_only(tmp_path)
     broken = tmp_path / "broken.sqlite3"
     broken.write_bytes(b"not a database")
     assert "manual_error" in read_manual_symbols("Taylor", broken)
+
+
+# ── 樣式（#162）─────────────────────────────────────────────────────
+
+def test_popup_menus_have_an_opaque_theme_background(qtbot):
+    """系統匣右鍵與「Gateway 帳密」選單是獨立的彈出視窗：背景透明會被 Windows 畫成黑色。"""
+    from PySide6.QtGui import QAction
+    from PySide6.QtWidgets import QMenu
+    from qt_panel import theme
+
+    menu = QMenu()
+    qtbot.addWidget(menu)
+    menu.setStyleSheet(theme.STYLESHEET)
+    menu.addAction(QAction("顯示 Panel", menu))
+    menu.addSeparator()
+    menu.addAction(QAction("離開", menu))
+    menu.adjustSize()
+    pixel = menu.grab().toImage().pixelColor(menu.width() // 2, 3)
+    assert pixel.alpha() == 255
+    assert pixel.name() == theme.SURFACE

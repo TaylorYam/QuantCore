@@ -12,11 +12,13 @@ from __future__ import annotations
 from typing import Callable
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QHBoxLayout, QHeaderView, QPlainTextEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+import manual_attribution
 import sync_preview_rows as preview_rows
 
 from qt_panel import theme
@@ -38,7 +40,11 @@ class PaperSync:
 
     def _connect(self, ctx):
         ib = self._gate.broker()
-        ib.connect(ctx.host, ctx.port, clientId=ctx.client_id, timeout=20)
+        try:
+            ib.connect(ctx.host, ctx.port, clientId=ctx.client_id, timeout=20)
+        except BaseException:
+            ib.disconnect()            # 同 ib_fetcher.connect：連不上也要收掉 socket
+            raise
         return ib
 
     def records(self):
@@ -54,14 +60,23 @@ class PaperSync:
         ctx = self._target.sync_ctx(self._load_ctx(account, ROLE_REBALANCE))
         return sync_position.compute_sync_plan(ctx, log_fn=log_fn, records=self.records())
 
+    def take_notices(self, plan) -> list[str]:
+        """新出現的暫停通知：回傳要寫進 Output Log 的行，並在 paper 歸屬紀錄記已通知，
+        同一件事只提一次（Tk 是發 Telegram 成功才記）。"""
+        lines = manual_attribution.pause_notice_lines(plan.pause_notices)
+        manual_attribution.mark_notified(plan.ctx.name, [n.key for n in plan.pause_notices],
+                                         path=self._files.attribution)
+        return lines
+
     def submit(self, plan, log_fn: Callable[[str], None]):
         import sync_position
         return sync_position.submit_sync_orders(plan, log_fn=log_fn)
 
 
-def _mono(text: str = "", key: str = "text") -> QWidget:
+def _mono(text: str = "", color_key: str = "text") -> QWidget:
     lbl = label(text)
-    lbl.setStyleSheet(f"font-family: '{theme.MONO_FONT}'; font-size: 9pt; color: {theme.color(key)};")
+    lbl.setStyleSheet(f"font-family: '{theme.MONO_FONT}'; font-size: 9pt; "
+                      f"color: {theme.color(color_key)};")
     lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
     return lbl
 
@@ -76,6 +91,8 @@ class SyncPosPanel(QWidget):
         self._main = MainThread()
         self._generation = 0          # 計算的代號：放棄或重算後，舊的結果不採用
         self._computing = False
+        # 背景計算還連著 paper（同一個 clientId）：放棄後也要等它結束才能重算
+        self._worker_running = False
         self._sending = False
         self._closed = False
         self._plan = None
@@ -90,6 +107,7 @@ class SyncPosPanel(QWidget):
         self.account_box = QComboBox()
         self.account_box.addItems(account_names)
         self.account_box.setFixedWidth(FIELD_WIDTH)
+        self.account_box.currentTextChanged.connect(self._account_changed)
         row.addWidget(self.account_box)
         self.compute_button = QPushButton("計算")
         self.compute_button.setObjectName("Primary")
@@ -164,7 +182,7 @@ class SyncPosPanel(QWidget):
 
     def _update_buttons(self) -> None:
         idle = not self._computing and not self._sending
-        self.compute_button.setEnabled(idle)
+        self.compute_button.setEnabled(idle and not self._worker_running)
         self.account_box.setEnabled(idle)
         self.discard_button.setEnabled(self._computing)
         self.confirm_button.setEnabled(idle and self._plan is not None)
@@ -172,12 +190,13 @@ class SyncPosPanel(QWidget):
     # ── 計算 ─────────────────────────────────────────────────────────
 
     def compute(self) -> None:
-        if self._computing or self._sending or self._closed:
+        if self._computing or self._sending or self._worker_running or self._closed:
             return
         account = self.account_box.currentText()
         self._generation += 1
         generation = self._generation
         self._computing = True
+        self._worker_running = True
         self._plan = None
         self.preview.hide()
         self.progress.clear()
@@ -199,7 +218,9 @@ class SyncPosPanel(QWidget):
             self._log(msg)
 
     def _computed(self, generation: int, plan, error) -> None:
+        self._worker_running = False
         if generation != self._generation or self._closed:
+            self._update_buttons()
             return          # 已放棄或已重算：沒人在等這份結果，不顯示、不送
         self._computing = False
         if error:
@@ -210,18 +231,28 @@ class SyncPosPanel(QWidget):
         self._plan = plan if plan.orders else None
         for line in preview_rows.log_summary_lines(plan):
             self._log(line)
-        for line in _pause_notice_lines(plan):
-            self._log(f"[手動持倉·paper] [{plan.ctx.name}] {line}")
+        try:
+            for line in self._sync.take_notices(plan):
+                self._log(f"[手動持倉·paper] [{plan.ctx.name}] {line}")
+        except Exception as e:
+            self._log(f"[!] 手動持倉暫停通知失敗: {e}")
         self._show_plan(plan)
         self._set_status(f"[{plan.ctx.name}] 計算完成，請核對後再送出。")
         self._update_buttons()
+
+    def _account_changed(self, *_args) -> None:
+        if self.preview.isVisibleTo(self) and not self._sending:
+            self._plan = None
+            self.preview.hide()
+            self._set_status("帳戶已變更，請重新計算。")
+            self._update_buttons()
 
     def discard(self) -> None:
         if not self._computing:
             return
         self._generation += 1
         self._computing = False
-        self._set_status("已放棄這次計算；結果不會顯示、不會送出。")
+        self._set_status("已放棄這次計算；結果不會顯示、不會送出（背景連線結束後可重新計算）。")
         self._log("[i] Sync Pos 計算已放棄")
         self._update_buttons()
 
@@ -264,7 +295,7 @@ class SyncPosPanel(QWidget):
                 item = QTableWidgetItem(value)
                 item.setTextAlignment(Qt.AlignCenter)
                 if value in ("BUY", "SELL"):
-                    item.setForeground(_qcolor(theme.color(trade.color)))
+                    item.setForeground(QColor(theme.color(trade.color)))
                 self.trades.setItem(r, c, item)
         self.trades.setFixedHeight(
             self.trades.horizontalHeader().height() + 4
@@ -345,12 +376,3 @@ class SyncPosPanel(QWidget):
         return [tuple(self.trades.item(r, c).text() for c in range(self.trades.columnCount()))
                 for r in range(self.trades.rowCount())]
 
-
-def _pause_notice_lines(plan) -> list[str]:
-    import manual_attribution
-    return manual_attribution.pause_notice_lines(plan.pause_notices)
-
-
-def _qcolor(value: str):
-    from PySide6.QtGui import QColor
-    return QColor(value)

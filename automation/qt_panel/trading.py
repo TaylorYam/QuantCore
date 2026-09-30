@@ -26,6 +26,7 @@ from ime_guard import to_ascii_input
 from manual_order_form import ManualOrderForm
 
 from qt_panel import theme
+from qt_panel.sync_pos import PaperSync, SyncPosPanel
 from qt_panel.trading_common import MainThread, background
 from qt_panel.widgets import Card, label
 
@@ -729,7 +730,7 @@ class TradingPage(QWidget):
 
     def __init__(self, account_names: list[str], service, *, unavailable: str = "",
                  target_text: str = "", dialogs, log: Callable[[str], None],
-                 symbol_loader: Callable | None = None, sync=None):
+                 symbol_loader: Callable | None = None, sync: PaperSync | None = None):
         super().__init__()
         # 內容放進捲動區：確認內容很多行時可以捲，不會撐大主視窗被螢幕切掉（#171）
         outer = QVBoxLayout(self)
@@ -766,8 +767,6 @@ class TradingPage(QWidget):
         if service is None:
             lay.addStretch(1)
             return
-        from qt_panel.sync_pos import SyncPosPanel
-
         tabs = QHBoxLayout()
         tabs.setSpacing(6)
         self.manual_tab = QPushButton("手動單")

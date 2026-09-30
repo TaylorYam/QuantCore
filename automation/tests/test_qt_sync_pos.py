@@ -110,13 +110,16 @@ def sync_env(broker, monkeypatch, tmp_path):
     return live
 
 
+SKEWLS_ALLOC = {"Taylor": 0.0, "Rosa": 0.2, "Yvonne": 0.0}
+
+
 def base_ctx(name, role):
     from account_ctx import AccountCtx
     return AccountCtx(
         name=name, account={"Taylor": "U001", "Rosa": "U002", "Yvonne": "U003"}[name],
         host="127.0.0.1", port={"Taylor": 4001, "Rosa": 4002, "Yvonne": 4003}[name],
         client_id=20 + role, dry_run=True, order_type="MOO", outside_rth=False,
-        wait_fill_sec=0, alloc_sr=0.0, alloc_sp500=0.5, alloc_skewls=0.0,
+        wait_fill_sec=0, alloc_sr=0.0, alloc_sp500=0.5, alloc_skewls=SKEWLS_ALLOC[name],
         price_feed_port=4002, tg_token="LIVE-TOKEN", tg_chat_id="LIVE-CHAT",
     )
 
@@ -265,11 +268,60 @@ def test_discarded_computation_is_dropped_and_never_sent(sync_window, broker, qt
     assert sync.computing()
     qtbot.mouseClick(sync.discard_button, Qt.LeftButton)
     assert not sync.computing()
+    # 舊的計算還連著 paper（同一個 clientId）：結束前不能重算
+    assert not sync.compute_button.isEnabled()
     broker.gate.set()
-    qtbot.wait(300)
+    qtbot.waitUntil(sync.compute_button.isEnabled, timeout=5000)
     assert sync.trade_table() == []
     assert not sync.confirm_button.isVisible()
     assert broker.placed == []
+
+
+def test_changing_the_account_clears_the_preview(sync_window, broker, qtbot):
+    w = sync_window()
+    sync = w.trading.sync
+    compute(qtbot, sync, "Taylor")
+    assert sync.confirm_button.isEnabled()
+    sync.account_box.setCurrentText("Rosa")
+    assert sync.trade_table() == []
+    assert not sync.confirm_button.isVisible()
+    assert "重新計算" in sync.status_text()
+
+
+def test_pause_notice_is_logged_once_like_tk(sync_window, paper_files, qtbot):
+    import manual_attribution as ma
+
+    ma.evaluate("Taylor", {"AAPL": 100.0, "XYZ": 10.0}, UNIVERSE,
+                ledger_path=paper_files.attribution, manual_orders_path=paper_files.orders)
+    w = sync_window()
+    sync = w.trading.sync
+    compute(qtbot, sync)
+    compute(qtbot, sync)
+    qtbot.wait(100)
+    assert w.dashboard.log_text().count("[手動持倉·paper]") == 1
+
+
+def test_paper_sync_writes_no_skewls_state_trade_log_or_telegram(
+        sync_window, broker, dialogs, monkeypatch, qtbot):
+    import excel_logger
+    import notify
+    import signals
+    import skewls_state
+
+    touched = []
+    monkeypatch.setattr(signals, "get_skewls_weights", lambda: ({"SH": 0.2}, "2026-09-29"))
+    monkeypatch.setattr(skewls_state, "save_state", lambda *a: touched.append("skewls"))
+    monkeypatch.setattr(excel_logger, "append_trade_log", lambda *a, **k: touched.append("xlsx"))
+    monkeypatch.setattr(notify, "tg_send", lambda *a, **k: touched.append("telegram"))
+    broker.positions = {}
+    w = sync_window()
+    sync = w.trading.sync
+    compute(qtbot, sync, "Rosa")                         # Rosa 有 SkewLS 配置
+    assert "SkewLS" in sync.subtitle_text()
+    qtbot.mouseClick(sync.confirm_button, Qt.LeftButton)
+    wait_sent(qtbot, sync)
+    assert ("SH", "BUY", 40, "LMT", "DU001") in broker.placed   # 20% × SkewLS 20% × $100k ÷ $100
+    assert touched == []
 
 
 def test_shutdown_drops_a_running_computation(sync_window, broker, qtbot):

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from portfolio_display import (
     HOLDING_HEADERS, MAX_DONUT_LABELS, all_holding_rows, donut, fmt_dollar, holdings_text,
-    leverage, metrics, owner_of, refresh_summary, report_line, status_line,
+    metrics, owner_of, refresh_summary, report_line, status_line,
 )
 from portfolio_queries import QueryState
 
@@ -72,11 +72,6 @@ def test_exposure_at_exactly_100_is_still_green():
     assert got["strat_exp"][1:] == ("100%", "green")
 
 
-def test_leverage_is_total_market_value_over_nav():
-    assert leverage(pf(nav=1000, etf=[h("XLK", 13, 100.0, 100.0)])) == 1.3
-    assert leverage(pf(nav=0)) == 0
-
-
 # ── 報表日期、讀取狀態 ────────────────────────────────────────────────
 
 def test_report_line_tags_non_excel_sources():
@@ -141,6 +136,17 @@ def test_owner_follows_strategy_buckets():
     assert owner_of("BTC", 3, "other") == "手動"
     rows = all_holding_rows(pf(etf=[h("SIJ", 5, 10.0, 10.0)], other=[h("BTC", 1, 1.0, 1.0)]))
     assert [r.owner for r in rows] == ["SkewLS", "手動"]
+
+
+def test_manual_holdings_that_collided_with_a_universe_are_manual():
+    """CONTEXT「手動持倉」：策略外持倉之外，碰撞進策略 Universe 的手動持倉也算手動。"""
+    assert owner_of("AAPL", 3, "stock", {"AAPL"}) == "手動"
+    assert owner_of("XLK", 3, "etf", {"XLK"}) == "手動"
+    data = pf(etf=[h("XLK", 5, 10.0, 10.0)], stocks=[h("AAPL", 2, 10.0, 10.0)],
+              manual_symbols={"AAPL": "手動 2 股，IB 2 股"})
+    rows = {r.symbol: r for r in all_holding_rows(data)}
+    assert rows["AAPL"].owner == "手動" and "手動 2 股" in rows["AAPL"].manual_reason
+    assert rows["XLK"].owner == "SR" and rows["XLK"].manual_reason == ""
 
 
 def test_holdings_text_aligns_columns_like_the_tk_panel():

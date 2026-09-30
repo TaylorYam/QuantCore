@@ -25,12 +25,13 @@ GATEWAY_COLOR = {"init": TEXT_FAINT, "connecting": ORANGE, "online": GREEN, "off
 GATEWAY_TEXT = {"init": "檢查中…", "connecting": "連線中…", "online": "線上", "offline": "離線"}
 
 AMBER = "#b45309"   # 白底上看得清楚的黃（Tk 的 yellow）
+BLUE = "#1d4ed8"
 
 # portfolio_display 等共用模組回傳的 theme key → 新 Panel 的顏色
 THEME_KEY_COLOR = {"text": TEXT, "text_dim": TEXT_DIM, "green": GREEN, "red": RED,
-                   "yellow": AMBER, "orange": ORANGE, "blue": "#1d4ed8"}
+                   "yellow": AMBER, "orange": ORANGE, "blue": BLUE}
 # 持倉歸屬（portfolio_display.owner_of）的顏色
-OWNER_COLOR = {"SR": "#1d4ed8", "SkewLS": "#7c3aed", "SP500": GREEN, "手動": TEXT_DIM}
+OWNER_COLOR = {"SR": BLUE, "SkewLS": "#7c3aed", "SP500": GREEN, "手動": TEXT_DIM}
 
 # 今日排程各狀態的顏色（文字見 dashboard_data.JOB_STATE_TEXT）
 JOB_COLOR = {"pending": TEXT_FAINT, "missing": RED, "unfinished": RED,

@@ -148,6 +148,9 @@ def get_client_id(account_name: str, role: int = ROLE_REBALANCE) -> int:
 def get_qt_panel_query_client_id(account_name: str) -> int:
     """新 Panel 查權益／持倉用的 clientId（見 _QT_PANEL_QUERY_CLIENT_ID_BASE）。"""
     accounts = load_accounts()
+    if _CLIENT_ID_BASE + len(accounts) * _CLIENT_ID_STEP > _QT_PANEL_QUERY_CLIENT_ID_BASE:
+        raise ValueError("帳戶超過 4 個，新 Panel 查詢的 clientId 會和既有用途撞號，"
+                         "請先改 _QT_PANEL_QUERY_CLIENT_ID_BASE")
     idx = next((i for i, a in enumerate(accounts)
                 if a['name'].upper() == account_name.upper()), 0)
     return _QT_PANEL_QUERY_CLIENT_ID_BASE + idx * _CLIENT_ID_STEP

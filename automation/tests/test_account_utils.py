@@ -182,3 +182,13 @@ def test_qt_panel_queries_get_client_ids_outside_every_account_role(fake_config)
     roles = [value for name, value in vars(au).items() if name.startswith("ROLE_")]
     taken = {au.get_client_id(n, r) for n in names for r in roles}
     assert not taken & set(ids)
+
+
+def test_qt_panel_query_client_ids_refuse_a_layout_that_would_collide(monkeypatch):
+    import pytest
+    import account_utils as au
+
+    monkeypatch.setattr(au, "load_accounts",
+                        lambda: [{"name": f"A{i}"} for i in range(5)])
+    with pytest.raises(ValueError):
+        au.get_qt_panel_query_client_id("A0")

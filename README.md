@@ -164,7 +164,7 @@ Panel 正逐步換成 PySide6（[ADR-0012](docs/adr/0012-panel-pyside6-parallel-
     - 「一鍵啟動 Gateway」與「Gateway 帳密」：規則同 Tk 的「啟動 Gateway」（三個都要先關閉否則整批拒絕、依序登入、失敗不重試），帳密共用 Windows 認證管理員；兩邊都能按，但不要兩邊同時按（開始時才檢查有沒有 Gateway 在跑，兩個 Panel 之間沒有鎖）
     - 值班：Rosa poll／TY check／Morning check 的下次時間，以及 Tk Panel 有沒有開（沒開 = 目前沒有人值班）；新 Panel 自己不值班、不發 Telegram
     - 今日排程（當日排程總結的畫面版，讀 `logs/run_status/`；21:31 成交回報只看它今天的 log 有沒有寫過）、資料日期（`SPY.csv` 最後一天）、最後更新時間與「重新整理」、Output Log
-  - Portfolio：上方三帳戶總覽（權益、未平倉損益、Leverage／Cushion、讀數來源），點選後下方顯示該帳戶的指標卡、配置圓環與持倉表（歸屬 SR／SkewLS／SP500／手動，可依歸屬篩選、點欄位排序）。讀取排程同 Tk（開啟時一次、美股盤中固定時間），「重新讀取 IB」手動讀，Gateway 一鍵登入後也會自動讀一次；某帳戶讀取失敗只影響它自己，有上次讀數就照樣顯示並標「快取」。查詢用新 Panel 自己的唯讀 clientId（Taylor 69／Rosa 79／Yvonne 89），不和心跳（29／39／49）、Tk、排程撞號。指標卡、持倉列、圓環資料與 Tk 共用 `automation/portfolio_display.py`
+  - Portfolio：上方三帳戶總覽（權益、未平倉損益、Account Exposure／Cushion、讀數來源），點選後下方顯示該帳戶的指標卡、配置圓環與持倉表（歸屬 SR／SkewLS／SP500／手動；策略外持倉與碰撞進策略 Universe 的手動持倉都標手動，唯讀讀 `manual_attribution` 紀錄；可依歸屬篩選、點欄位排序）。讀取排程同 Tk（開啟時一次、美股盤中固定時間），「重新讀取 IB」手動讀，Gateway 一鍵登入後也會自動讀一次；某帳戶讀取失敗只影響它自己，有上次讀數就照樣顯示並標「快取」。查詢用新 Panel 自己的唯讀 clientId（Taylor 69／Rosa 79／Yvonne 89），不和心跳（29／39／49）、Tk、排程撞號。指標卡、持倉列、圓環資料與 Tk 共用 `automation/portfolio_display.py`
   - Trading 還是空殼，並行期間下單照舊用 Tk Panel
 - 模式由 `config.json` 的 `qt_panel_mode` 決定，預設並行模式；正式模式在切換工單 #154 才提供
 

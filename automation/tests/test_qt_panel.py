@@ -831,7 +831,7 @@ def test_overview_shows_equity_and_unrealized_pnl_for_every_account(make_window,
     text = w.portfolio.card_text("Taylor")
     assert "$50,000" in text and "未平倉損益" in text
     assert "+$" in text                                                   # 未平倉損益為正
-    assert "Leverage" in text and "Cushion 35%" in text
+    assert "Account Exposure" in text and "Cushion 35%" in text
     assert "IB Live [Taylor]" in text                                     # 讀數來源
     assert "$110,000" in w.portfolio.card_text("Yvonne")
 
@@ -943,3 +943,43 @@ def test_readonly_portfolio_query_uses_its_own_client_id(fake_config, monkeypatc
     ctx, readonly = seen[0]
     assert ctx.client_id == 79 and readonly is True
     assert ctx.name == "Rosa"
+
+
+def test_manual_holdings_that_collided_with_a_universe_show_as_manual(make_window, qtbot,
+                                                                      portfolio):
+    portfolio.results["Taylor"]["manual_symbols"] = {"AAPL": "手動 30 股，IB 30 股"}
+    w = make_window()
+    _wait_portfolio(w, qtbot)
+    rows = {r[1]: r[0] for r in w.portfolio.detail.holdings.visible_rows()}
+    assert rows["AAPL"] == "手動" and rows["XLK"] == "SR"
+    table = w.portfolio.detail.holdings.table
+    aapl = next(r for r in range(table.rowCount()) if table.item(r, 1).text() == "AAPL")
+    assert "碰撞" in table.item(aapl, 0).toolTip()
+
+
+def test_manual_attribution_read_failure_is_flagged_not_fatal(make_window, qtbot, portfolio):
+    portfolio.results["Taylor"]["manual_error"] = "手動歸屬紀錄讀取失敗：locked"
+    w = make_window()
+    _wait_portfolio(w, qtbot)
+    assert "$50,000" in w.portfolio.card_text("Taylor")
+    assert "手動歸屬讀取失敗" in w.portfolio.detail.header_text()
+
+
+def test_manual_symbols_are_read_from_the_attribution_ledger_read_only(tmp_path):
+    import sqlite3
+    from qt_panel.portfolio_source import read_manual_symbols
+
+    ledger = tmp_path / "manual_attribution.sqlite3"
+    assert read_manual_symbols("Taylor", ledger) == {"manual_symbols": {}}   # 尚未啟用
+    with sqlite3.connect(ledger) as conn:
+        conn.execute("CREATE TABLE pauses (account_name TEXT, symbol TEXT, reason TEXT)")
+        conn.execute("INSERT INTO pauses VALUES ('Taylor', 'AAPL', 'why')")
+        conn.execute("INSERT INTO pauses VALUES ('Rosa', 'MSFT', 'other')")
+    conn.close()
+    before = ledger.read_bytes()
+    assert read_manual_symbols("Taylor", ledger) == {"manual_symbols": {"AAPL": "why"}}
+    assert ledger.read_bytes() == before                                     # 不寫入
+
+    broken = tmp_path / "broken.sqlite3"
+    broken.write_bytes(b"not a database")
+    assert "manual_error" in read_manual_symbols("Taylor", broken)

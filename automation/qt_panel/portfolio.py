@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QGridLayout, QHBoxLayout, QHeaderView, QPushButton,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 import portfolio_display as display
+from portfolio_queries import QueryState
 
 from qt_panel import theme
 from qt_panel.widgets import Card, all_text, clear_layout, dot, label
@@ -104,7 +105,7 @@ class OverviewCard(Card):
         self._upnl.setText(values["pnl"].text)
         self._upnl.setStyleSheet(f"color: {_color(values['pnl'].color)};")
         if pf.get("available"):
-            self._meta.setText(f"Leverage {display.leverage(pf):.2f}x · "
+            self._meta.setText(f"Account Exposure {values['total_exp'].text} · "
                                f"Cushion {pf['cushion']:.0f}%")
         else:
             self._meta.setText("")
@@ -168,7 +169,8 @@ class _SortItem(QTableWidgetItem):
 
     def __init__(self, text: str, key):
         super().__init__(text)
-        self._key = key
+        # 數字一律轉 float：IB 回的股數、損益% 可能 int 和 float 混在一起
+        self._key = float(key) if isinstance(key, (int, float)) else key
 
     def __lt__(self, other) -> bool:
         if isinstance(other, _SortItem) and type(self._key) is type(other._key):
@@ -183,6 +185,8 @@ def _row_items(row: display.HoldingRow) -> list[QTableWidgetItem]:
     items = [_SortItem(row.owner, row.owner)] + [
         _SortItem(text, key) for text, key in zip(cells, keys[1:])]
     items[0].setForeground(QColor(theme.OWNER_COLOR.get(row.owner, theme.TEXT)))
+    if row.manual_reason:
+        items[0].setToolTip(f"手動持倉進入策略 Universe（碰撞）：{row.manual_reason}")
     for i in (6, 7):
         pnl = row.upnl if i == 6 else row.upnl_pct
         if pnl:
@@ -301,6 +305,9 @@ class AccountDetail(QWidget):
         text, color = display.status_line(state)
         if is_cached(state):
             text = f"快取 · {text}"
+        if pf.get("manual_error"):
+            text = f"手動歸屬讀取失敗（歸屬欄只看分類）· {text}"
+            color = "yellow"
         self._status.setText(text)
         self._status.setStyleSheet(f"color: {_color(color)};")
 
@@ -337,8 +344,6 @@ class AccountDetail(QWidget):
 # ── 畫面 ─────────────────────────────────────────────────────────────
 
 class PortfolioPage(QWidget):
-    account_selected = Signal(str)
-
     def __init__(self, accounts: list[str], *, on_refresh: Callable[[], None]):
         super().__init__()
         self._states: dict = {}
@@ -386,7 +391,6 @@ class PortfolioPage(QWidget):
             return
         self._selected = name
         self._refresh_selection()
-        self.account_selected.emit(name)
 
     def _refresh_selection(self) -> None:
         for n, card in self._cards.items():
@@ -395,7 +399,6 @@ class PortfolioPage(QWidget):
         if state is not None:
             self.detail.show_account(self._selected, state)
         elif self._selected:
-            from portfolio_queries import QueryState
             self.detail.show_account(self._selected, QueryState())
 
     # ── 讀取（測試與狀態檢查用）──

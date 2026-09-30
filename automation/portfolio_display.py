@@ -58,11 +58,6 @@ def exposures(pf: dict) -> tuple[float, float]:
     return strategy_mktval / nav * 100, mktval / nav * 100
 
 
-def leverage(pf: dict) -> float:
-    nav = pf.get("nav", 0)
-    return pf.get("total_mktval", 0) / nav if nav > 0 else 0
-
-
 def metrics(pf: dict) -> list[Metric]:
     if not pf.get("available"):
         return [Metric(key, title, empty, "text_dim") for key, title, empty in METRIC_TITLES]
@@ -139,20 +134,23 @@ def fmt_dollar(val: float) -> str:
     return "$0"
 
 
-def owner_of(symbol: str, shares: float, group: str) -> str:
-    """Which Strategy a holding belongs to, from the bucket it was fetched into.
+def owner_of(symbol: str, shares: float, group: str,
+             manual: frozenset | set | dict = frozenset()) -> str:
+    """Which Strategy a holding belongs to (CONTEXT「手動持倉」).
 
-    Same heuristic as the daily snapshot (`excel_logger._classify_strategy`):
-    inverse ETFs and short sector ETFs are SkewLS; other sector ETFs SR;
-    SP500 Universe stocks SP500; everything outside the strategies is manual.
+    Holdings outside every Strategy (the "other" bucket) are manual, and so are
+    `manual` symbols: manual holdings that collided with a Strategy Universe
+    (`manual_attribution.paused_symbols`). Otherwise the bucket decides, with the
+    daily snapshot's heuristic (`excel_logger._classify_strategy`): inverse ETFs
+    and short sector ETFs are SkewLS, other sector ETFs SR, Universe stocks SP500.
     """
+    if group == "other" or symbol in manual:
+        return MANUAL
     if group == "etf":
         if symbol in SKEWLS_INVERSE_TICKERS or (symbol in SR_ETFS and shares < 0):
             return "SkewLS"
         return "SR"
-    if group == "stock":
-        return "SP500"
-    return MANUAL
+    return "SP500"
 
 
 @dataclass(frozen=True)
@@ -168,6 +166,7 @@ class HoldingRow:
     upnl: float
     upnl_pct: float
     name: str
+    manual_reason: str = ""   # why a Strategy-Universe symbol counts as manual
 
     def cells(self) -> tuple[str, ...]:
         """One text cell per HOLDING_HEADERS."""
@@ -184,13 +183,18 @@ class HoldingRow:
         )
 
 
-def holding_rows(holdings: list, nav: float, group: str) -> list[HoldingRow]:
-    """One group's rows, largest |market value| first."""
+def holding_rows(holdings: list, nav: float, group: str,
+                 manual: dict[str, str] | None = None) -> list[HoldingRow]:
+    """One group's rows, largest |market value| first.
+
+    manual: collided manual holdings, symbol → pause reason (see owner_of).
+    """
+    manual = manual or {}
     rows = []
     for h in sorted(holdings, key=lambda x: -abs(x["mkt_val"])):
         rows.append(HoldingRow(
             group=group,
-            owner=owner_of(h["symbol"], h["shares"], group),
+            owner=owner_of(h["symbol"], h["shares"], group, manual),
             symbol=h["symbol"],
             shares=h["shares"],
             weight_pct=h["mkt_val"] / nav * 100 if nav > 0 else 0,
@@ -200,6 +204,7 @@ def holding_rows(holdings: list, nav: float, group: str) -> list[HoldingRow]:
             upnl=h.get("upnl", 0),
             upnl_pct=h.get("upnl_pct", 0),
             name=h.get("name") or TICKER_NAMES.get(h["symbol"], ""),
+            manual_reason=manual.get(h["symbol"], "") if group != "other" else "",
         ))
     return rows
 
@@ -208,8 +213,9 @@ def all_holding_rows(pf: dict) -> list[HoldingRow]:
     if not pf.get("available"):
         return []
     nav = pf["nav"]
+    manual = pf.get("manual_symbols") or {}
     return [row for group, key in HOLDING_GROUPS
-            for row in holding_rows(pf.get(key, []), nav, group)]
+            for row in holding_rows(pf.get(key, []), nav, group, manual)]
 
 
 def holdings_text(rows: list[HoldingRow]) -> tuple[str, str]:

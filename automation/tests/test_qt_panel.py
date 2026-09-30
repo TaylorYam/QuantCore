@@ -9,7 +9,7 @@ from __future__ import annotations
 import ast
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -104,6 +104,46 @@ class FakePorts:
         return account in self.logged_in
 
 
+def holding(sym, sh, cost, px, name=""):
+    return {"symbol": sym, "shares": sh, "avg_cost": cost, "mkt_px": px,
+            "mkt_val": sh * px, "upnl": (px - cost) * sh,
+            "upnl_pct": (px / cost - 1) * 100 if cost else 0, "name": name}
+
+
+def portfolio_dict(name, nav=100_000.0, cushion=35.0, etf=(), stocks=(), other=()):
+    etf, stocks, other = list(etf), list(stocks), list(other)
+    strat = sum(x["mkt_val"] for x in etf + stocks)
+    oth = sum(x["mkt_val"] for x in other)
+    return {"available": True, "date": "2026-09-30", "nav": nav, "cushion": cushion,
+            "etf_holdings": etf, "stock_holdings": stocks, "other_holdings": other,
+            "strategy_mktval": strat, "other_mktval": oth, "total_mktval": strat + oth,
+            "total_upnl": sum(x["upnl"] for x in etf + stocks + other),
+            "source": f"IB Live [{name}]"}
+
+
+class FakePortfolio:
+    """portfolio_fetch 的假實作：每帳戶回傳設定好的 dict，或丟出例外。"""
+
+    def __init__(self):
+        self.results = {
+            "Taylor": portfolio_dict(
+                "Taylor", nav=50_000.0,
+                etf=[holding("XLK", 40, 200.0, 230.0), holding("SIJ", 100, 12.0, 11.0)],
+                stocks=[holding("AAPL", 30, 150.0, 200.0, "Apple Inc")],
+                other=[holding("BTC", 50, 30.0, 45.0, "Bitcoin ETF")]),
+            "Rosa": portfolio_dict("Rosa", nav=80_000.0, etf=[holding("XLB", 100, 90.0, 95.0)]),
+            "Yvonne": portfolio_dict("Yvonne", nav=110_000.0, cushion=8.0),
+        }
+        self.calls = []
+
+    def __call__(self, name):
+        self.calls.append(name)
+        result = self.results[name]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
 class FakeDialogs:
     def __init__(self, answers=None):
         self.answers = answers or {}
@@ -153,7 +193,12 @@ def dialogs():
 
 
 @pytest.fixture
-def make_window(qtbot, source, ports, dialogs):
+def portfolio():
+    return FakePortfolio()
+
+
+@pytest.fixture
+def make_window(qtbot, source, ports, dialogs, portfolio):
     from qt_panel.main_window import MainWindow
     from qt_panel.mode import PanelMode
 
@@ -163,6 +208,8 @@ def make_window(qtbot, source, ports, dialogs):
         kw.setdefault("gateway_source", source)
         kw.setdefault("gateway_ports_factory", lambda ask: setattr(ports, "ask", ask) or ports)
         kw.setdefault("credential_store", FakeStore())
+        kw.setdefault("portfolio_fetch", portfolio)
+        kw.setdefault("portfolio_next_refresh", lambda now: now + timedelta(days=1))
         kw.setdefault("dialogs", dialogs)
         kw.setdefault("read_data_date", lambda: "2026-09-28")
         kw.setdefault("today_jobs", lambda now: [])
@@ -258,10 +305,9 @@ def test_state_for_an_unknown_account_is_ignored(make_window, source):
     assert w.dashboard.gateway_names() == ["Taylor", "Rosa", "Yvonne"]
 
 
-def test_portfolio_and_trading_are_placeholders_that_point_to_tk(make_window):
+def test_trading_is_still_a_placeholder_that_points_to_tk(make_window):
     w = make_window()
-    for page in ("Portfolio", "Trading"):
-        assert "Tk Panel" in w.page_text(page)
+    assert "Tk Panel" in w.page_text("Trading")
 
 
 def test_recheck_button_asks_the_source_to_probe_again(make_window, source, qtbot):
@@ -663,11 +709,13 @@ def test_watch_next_run_moves_on_with_the_minute_tick(make_window):
     assert "下次 今天 21:30" in w.dashboard.watch_text()
 
 
-def test_parallel_mode_runs_no_watch_worker(make_window, source):
+def test_parallel_mode_runs_no_watch_worker(make_window, source, qtbot):
     """並行模式：值班時間到了也不跑任何 worker、不發 Telegram，只更新顯示。"""
     taipei = MutableClock(datetime(2026, 9, 29, 20, 59))
-    before = {t.ident for t in threading.enumerate()}
     w = make_window(taipei_now=taipei)
+    qtbot.waitUntil(lambda: not [t for t in threading.enumerate()
+                                 if t.name.startswith("portfolio-")], timeout=3000)
+    before = {t.ident for t in threading.enumerate()}      # 開啟時的權益查詢已結束
     for now in (datetime(2026, 9, 29, 21, 0, 5),                # Rosa poll
                 datetime(2026, 9, 30, 20, 5, 5)):               # TY check
         taipei.now = now
@@ -761,3 +809,177 @@ def test_post_login_checks_stop_when_the_panel_quits(make_window, qtbot, monkeyp
     w.close()
     qtbot.wait(200)
     assert src.rechecks == 0
+
+
+# ── Portfolio（#149）────────────────────────────────────────────────
+
+def _done(w, name):
+    state = w.portfolio._states.get(name)
+    return state is not None and not state.running
+
+
+def _wait_portfolio(w, qtbot, *names):
+    names = names or ("Taylor", "Rosa", "Yvonne")
+    qtbot.waitUntil(lambda: all(_done(w, n) for n in names), timeout=3000)
+
+
+def test_overview_shows_equity_and_unrealized_pnl_for_every_account(make_window, qtbot,
+                                                                   portfolio):
+    w = make_window()
+    _wait_portfolio(w, qtbot)
+    assert sorted(portfolio.calls) == ["Rosa", "Taylor", "Yvonne"]      # 開啟時自動讀一次
+    text = w.portfolio.card_text("Taylor")
+    assert "$50,000" in text and "未平倉損益" in text
+    assert "+$" in text                                                   # 未平倉損益為正
+    assert "Account Exposure" in text and "Cushion 35%" in text
+    assert "IB Live [Taylor]" in text                                     # 讀數來源
+    assert "$110,000" in w.portfolio.card_text("Yvonne")
+
+
+def test_clicking_an_account_shows_its_holdings_with_strategy_owner(make_window, qtbot):
+    w = make_window()
+    _wait_portfolio(w, qtbot)
+    assert w.portfolio.selected_account() == "Taylor"
+    rows = [(r[0], r[1]) for r in w.portfolio.detail.holdings.visible_rows()]
+    # 預設順序同 Tk：ETF → 個股 → 手動，各組市值大的在前
+    assert rows == [("SR", "XLK"), ("SkewLS", "SIJ"), ("SP500", "AAPL"), ("手動", "BTC")]
+
+    qtbot.mouseClick(w.portfolio.card("Rosa"), Qt.LeftButton)
+    assert w.portfolio.selected_account() == "Rosa"
+    assert [r[1] for r in w.portfolio.detail.holdings.visible_rows()] == ["XLB"]
+    assert "Rosa" in w.portfolio.detail.header_text()
+    assert "Report Date: 2026-09-30  [IB Live [Rosa]]" in w.portfolio.detail.header_text()
+
+
+def test_detail_shows_the_shared_metric_cards_and_donut(make_window, qtbot):
+    w = make_window()
+    _wait_portfolio(w, qtbot)
+    w.portfolio.select("Yvonne")
+    metrics = w.portfolio.detail.metrics_text()
+    for title in ("Net Asset Value", "Unrealized P&L", "Margin Cushion",
+                  "Strategy Exposure", "Account Exposure"):
+        assert title in metrics
+    assert "8.0%" in metrics                                              # 緩衝 <10%
+    w.portfolio.select("Taylor")
+    legend = w.portfolio.detail.legend_text()
+    assert "XLK" in legend and "Other" in legend and "Cash" in legend
+
+
+def test_owner_filter_and_numeric_sort(make_window, qtbot):
+    w = make_window()
+    _wait_portfolio(w, qtbot)
+    holdings = w.portfolio.detail.holdings
+    qtbot.mouseClick(holdings.filter_buttons["手動"], Qt.LeftButton)
+    assert [r[1] for r in holdings.visible_rows()] == ["BTC"]
+    qtbot.mouseClick(holdings.filter_buttons["全部"], Qt.LeftButton)
+    holdings.table.sortItems(6, Qt.DescendingOrder)                       # 損益（數值排序）
+    assert [r[1] for r in holdings.visible_rows()] == ["AAPL", "XLK", "BTC", "SIJ"]
+
+
+def test_one_account_failing_only_affects_its_own_card(make_window, qtbot, portfolio):
+    portfolio.results["Rosa"] = RuntimeError("connection refused")
+    w = make_window()
+    _wait_portfolio(w, qtbot)
+    rosa = w.portfolio.card_text("Rosa")
+    assert "讀取失敗" in rosa and "connection refused" in rosa and "$—" in rosa
+    assert "$50,000" in w.portfolio.card_text("Taylor")
+    assert "$110,000" in w.portfolio.card_text("Yvonne")
+    assert "Rosa] 權益／持倉讀取失敗" in w.dashboard.log_text()
+
+
+def test_a_failed_refresh_keeps_the_last_reading_marked_as_cached(make_window, qtbot,
+                                                                    portfolio):
+    w = make_window()
+    _wait_portfolio(w, qtbot)
+    portfolio.results["Taylor"] = RuntimeError("timeout")
+    w.refresh_portfolio()
+    qtbot.waitUntil(lambda: w.portfolio._states["Taylor"].error == "timeout", timeout=3000)
+    card = w.portfolio.card_text("Taylor")
+    assert "$50,000" in card                                              # 上次讀數照樣顯示
+    assert "快取 · IB Live [Taylor]" in card
+    assert "timeout" in card
+    assert "快取" in w.portfolio.detail.header_text()
+
+
+def test_refresh_button_queries_every_account_again(make_window, qtbot, portfolio):
+    w = make_window()
+    _wait_portfolio(w, qtbot)
+    portfolio.calls.clear()
+    qtbot.mouseClick(w.portfolio.refresh_button, Qt.LeftButton)
+    qtbot.waitUntil(lambda: all(_done(w, n) and w.portfolio._states[n].refresh_source == "manual"
+                                for n in ("Taylor", "Rosa", "Yvonne")), timeout=3000)
+    assert sorted(portfolio.calls) == ["Rosa", "Taylor", "Yvonne"]
+    assert "讀取帳戶權益與持倉" in w.dashboard.log_text()
+
+
+def test_portfolio_is_read_again_after_gateway_login(make_window, qtbot, portfolio,
+                                                      no_post_login_wait):
+    src = OnlineAfterRecheck({"Taylor", "Rosa", "Yvonne"})
+    w = make_window(gateway_source=src)
+    _wait_portfolio(w, qtbot)
+    portfolio.calls.clear()
+    _start_and_wait(w, qtbot)
+    qtbot.waitUntil(lambda: len(portfolio.calls) == 3, timeout=3000)   # 同 Tk：登入後 Refresh IB
+
+
+def test_portfolio_queries_stop_when_the_panel_quits(make_window, qtbot, portfolio):
+    w = make_window(tray_factory=None)
+    _wait_portfolio(w, qtbot)
+    w.close()
+    portfolio.calls.clear()
+    assert w.refresh_portfolio() == ()
+    assert portfolio.calls == []
+
+
+def test_readonly_portfolio_query_uses_its_own_client_id(fake_config, monkeypatch):
+    """新 Panel 查詢用 69/79/89：心跳佔著 29/39/49，Tk 查詢用 25/35/45（#149）。"""
+    import ib_fetcher
+    from qt_panel.portfolio_source import fetch_readonly_portfolio
+
+    seen = []
+    monkeypatch.setattr(ib_fetcher, "fetch_portfolio",
+                        lambda ctx, readonly=False: seen.append((ctx, readonly)) or {})
+    fetch_readonly_portfolio("Rosa")
+    ctx, readonly = seen[0]
+    assert ctx.client_id == 79 and readonly is True
+    assert ctx.name == "Rosa"
+
+
+def test_manual_holdings_that_collided_with_a_universe_show_as_manual(make_window, qtbot,
+                                                                      portfolio):
+    portfolio.results["Taylor"]["manual_symbols"] = {"AAPL": "手動 30 股，IB 30 股"}
+    w = make_window()
+    _wait_portfolio(w, qtbot)
+    rows = {r[1]: r[0] for r in w.portfolio.detail.holdings.visible_rows()}
+    assert rows["AAPL"] == "手動" and rows["XLK"] == "SR"
+    table = w.portfolio.detail.holdings.table
+    aapl = next(r for r in range(table.rowCount()) if table.item(r, 1).text() == "AAPL")
+    assert "碰撞" in table.item(aapl, 0).toolTip()
+
+
+def test_manual_attribution_read_failure_is_flagged_not_fatal(make_window, qtbot, portfolio):
+    portfolio.results["Taylor"]["manual_error"] = "手動歸屬紀錄讀取失敗：locked"
+    w = make_window()
+    _wait_portfolio(w, qtbot)
+    assert "$50,000" in w.portfolio.card_text("Taylor")
+    assert "手動歸屬讀取失敗" in w.portfolio.detail.header_text()
+
+
+def test_manual_symbols_are_read_from_the_attribution_ledger_read_only(tmp_path):
+    import sqlite3
+    from qt_panel.portfolio_source import read_manual_symbols
+
+    ledger = tmp_path / "manual_attribution.sqlite3"
+    assert read_manual_symbols("Taylor", ledger) == {"manual_symbols": {}}   # 尚未啟用
+    with sqlite3.connect(ledger) as conn:
+        conn.execute("CREATE TABLE pauses (account_name TEXT, symbol TEXT, reason TEXT)")
+        conn.execute("INSERT INTO pauses VALUES ('Taylor', 'AAPL', 'why')")
+        conn.execute("INSERT INTO pauses VALUES ('Rosa', 'MSFT', 'other')")
+    conn.close()
+    before = ledger.read_bytes()
+    assert read_manual_symbols("Taylor", ledger) == {"manual_symbols": {"AAPL": "why"}}
+    assert ledger.read_bytes() == before                                     # 不寫入
+
+    broken = tmp_path / "broken.sqlite3"
+    broken.write_bytes(b"not a database")
+    assert "manual_error" in read_manual_symbols("Taylor", broken)

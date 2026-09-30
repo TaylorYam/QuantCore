@@ -1,8 +1,8 @@
 """新 Panel 主視窗：頂端列＋左側導覽＋三個畫面（#147、#148）。
 
 外部依賴全部從建構子注入（Gateway 狀態來源、Gateway 啟動的 Ports、認證管理員、
-資料日期／今日排程／Tk Panel 是否值班的讀取、時鐘、系統匣工廠、叫回視窗的
-訊號檔），測試用假的驅動，不連 IB、不讀真實檔案。
+查權益／持倉的函式、資料日期／今日排程／Tk Panel 是否值班的讀取、時鐘、系統匣
+工廠、叫回視窗的訊號檔），測試用假的驅動，不連 IB、不讀真實檔案。
 
 並行模式不值班（ADR-0012）：值班只顯示下次時間與 Tk Panel 有沒有開，這裡
 不建任何值班 worker、不發 Telegram。
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from gateway_start import LIVE_ACCOUNTS
 from morning_check import next_morning_check_time
+from portfolio_queries import PortfolioQueries, PortfolioRefreshLoop
 
 from qt_panel import dashboard_data, theme
 from qt_panel.dashboard import Dashboard
@@ -31,11 +32,11 @@ from qt_panel.gateway_actions import (
 )
 from qt_panel.gateway_status import GatewaySource
 from qt_panel.mode import PanelMode
+from qt_panel.portfolio import PortfolioPage
 from qt_panel.widgets import label, pill, visible_text
 
 PAGES = ["Dashboard", "Portfolio", "Trading"]
 PLACEHOLDER = {
-    "Portfolio": "Portfolio 畫面製作中。並行期間請在 Tk Panel 查看帳戶權益與持倉。",
     "Trading": "Trading 畫面製作中。並行期間下單請用 Tk Panel。",
 }
 SHOW_SIGNAL_POLL_MS = 2000
@@ -88,6 +89,8 @@ class MainWindow(QMainWindow):
                  gateway_source: GatewaySource,
                  gateway_ports_factory: PortsFactory,
                  credential_store: CredentialStore,
+                 portfolio_fetch: Callable[[str], dict],
+                 portfolio_next_refresh: Callable[[datetime], datetime] | None = None,
                  dialogs: Dialogs | None = None,
                  read_data_date: Callable[[], str] = dashboard_data.read_data_date,
                  today_jobs: Callable[[datetime], list[JobRow]] | None = None,
@@ -137,9 +140,12 @@ class MainWindow(QMainWindow):
             on_start_gateways=self.start_gateways,
             on_edit_credentials=self.edit_gateway_credentials,
             credential_accounts=LIVE_ACCOUNTS, on_refresh=self.refresh)
-        self._pages: dict[str, QWidget] = {"Dashboard": self.dashboard}
-        for name in PAGES[1:]:
-            self._pages[name] = _placeholder(PLACEHOLDER[name])
+        self.portfolio = PortfolioPage(names, on_refresh=self.refresh_portfolio)
+        self._pages: dict[str, QWidget] = {"Dashboard": self.dashboard,
+                                           "Portfolio": self.portfolio}
+        for name in PAGES:
+            if name not in self._pages:
+                self._pages[name] = _placeholder(PLACEHOLDER[name])
         for name in PAGES:
             button = QPushButton(name)
             button.setObjectName("NavButton")
@@ -164,6 +170,13 @@ class MainWindow(QMainWindow):
             recheck=self._source.recheck, states=self.dashboard.gateway_states,
             after_checks=self._after_gateway_login, step_aside=self.showMinimized)
         self._gateway_flow.running_changed.connect(self.dashboard.set_gateway_starting)
+        # 權益／持倉：和 Tk 同一套查詢與排程（開啟時一次、美股盤中固定時間），
+        # 每個帳戶查完各自更新，一個失敗不影響其他帳戶
+        self._portfolio_queries = PortfolioQueries(names, portfolio_fetch)
+        self._portfolio_loop = PortfolioRefreshLoop(
+            self._portfolio_queries, self._schedule, self._cancel,
+            self._on_portfolio_change, next_refresh_time=portfolio_next_refresh,
+            log=self.log)
         self._clock_timer = QTimer(self, interval=1000, timeout=self._update_clock)
         self._signal_timer = QTimer(self, interval=SHOW_SIGNAL_POLL_MS,
                                     timeout=self.check_show_signal)
@@ -182,6 +195,7 @@ class MainWindow(QMainWindow):
         self._running = True
         self._source.start(self._bridge.gateway_changed.emit)
         self._reload()
+        self._portfolio_loop.start()
         self._clock_timer.start()
         self._minute_timer.start()
         if self._show_signal is not None:
@@ -202,6 +216,7 @@ class MainWindow(QMainWindow):
         self._signal_timer.stop()
         self._minute_timer.stop()
         self._gateway_flow.stop()
+        self._portfolio_loop.stop()
         self._source.stop()
         if self._tray is not None:
             self._tray.hide()
@@ -280,10 +295,47 @@ class MainWindow(QMainWindow):
         return self._gateway_flow.is_running()
 
     def _after_gateway_login(self) -> None:
-        # Tk 版此時 Refresh IB；新 Panel 還沒有 Portfolio（#149），只重讀 Dashboard。
+        # 同 Tk：登入後的檢查結束就讀一次權益與持倉（Refresh IB）。
         # 不再重新檢查 Gateway：每帳戶連線次數已由 POST_LOGIN_MAX_CHECKS 限住。
         self._reload()
         self.log("[GW] 登入後檢查完成")
+        self.refresh_portfolio()
+
+    # ── 權益／持倉 ───────────────────────────────────────────────────
+
+    def refresh_portfolio(self) -> tuple:
+        """三個帳戶各查一次（唯讀）；還在查的帳戶不重複送。"""
+        started = self._portfolio_loop.refresh()
+        if started:
+            self.log(f"[>] 讀取帳戶權益與持倉：{'、'.join(started)}")
+        else:
+            self.log("[>] 帳戶查詢還在進行中")
+        return started
+
+    def _on_portfolio_change(self, name: str, state) -> None:
+        self.portfolio.set_state(name, state)
+        if not state.running:
+            if state.error:
+                self.log(f"[X] [{name}] 權益／持倉讀取失敗：{state.error}")
+            else:
+                self.log(f"[OK] [{name}] 權益／持倉已更新")
+
+    def _schedule(self, ms: int, fn) -> QTimer:
+        """PortfolioRefreshLoop 的計時器（同 Tk 的 after）：單次、觸發後自己釋放。"""
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(fn)
+        timer.timeout.connect(timer.deleteLater)
+        timer.start(ms)
+        return timer
+
+    @staticmethod
+    def _cancel(timer: QTimer) -> None:
+        try:
+            timer.stop()
+            timer.deleteLater()
+        except RuntimeError:        # 已觸發並釋放
+            pass
 
     def edit_gateway_credentials(self, account: str) -> None:
         """更新某帳戶存在認證管理員的 Gateway 帳密（改密碼後用）。"""

@@ -34,7 +34,7 @@ from qt_panel.gateway_actions import (
 )
 from qt_panel.gateway_status import GatewaySource
 from qt_panel.mode import PanelMode
-from qt_panel.portfolio import EQUITY, PARAMS, TRADES, PortfolioPage
+from qt_panel.portfolio import EQUITY, FLOWS, PARAMS, TRADES, PortfolioPage
 from qt_panel.widgets import label, pill, visible_text
 
 PAGES = ["Dashboard", "Portfolio", "Trading"]
@@ -95,6 +95,7 @@ class MainWindow(QMainWindow):
                  credential_store: CredentialStore,
                  portfolio_fetch: Callable[[str], dict],
                  equity_fetch: Callable[[str], object],
+                 cash_flows_fetch: Callable[[str], object],
                  strategy_config_fetch: Callable[[str], dict],
                  trades_fetch: Callable[[str], list],
                  portfolio_next_refresh: Callable[[datetime], datetime] | None = None,
@@ -113,9 +114,10 @@ class MainWindow(QMainWindow):
         self._read_data_date = read_data_date
         names = [a["name"] for a in accounts]
         self._names = names
-        # 單一帳戶頁的權益序列、策略參數（唯讀）、最近成交：都是讀檔，背景讀
+        # 單一帳戶頁的權益序列、策略參數（唯讀）、最近成交：讀本機檔案，背景讀；
+        # 出入金要向 IB Flex 下載（可能要等幾秒），排在所有帳戶的本機資料之後
         self._extra_fetchers = ((PARAMS, strategy_config_fetch), (TRADES, trades_fetch),
-                                (EQUITY, equity_fetch))
+                                (EQUITY, equity_fetch), (FLOWS, cash_flows_fetch))
         self._extras_loading = False
         self._today_jobs = today_jobs or (lambda now: dashboard_data.today_jobs(now, names))
         self._tk_panel_running = tk_panel_running
@@ -329,7 +331,7 @@ class MainWindow(QMainWindow):
         return started
 
     def load_account_extras(self) -> bool:
-        """背景讀各帳戶的策略設定、最近成交、權益序列；上一輪還沒讀完就不重複讀。"""
+        """背景讀各帳戶的策略設定、最近成交、權益序列、出入金；上一輪還沒讀完就不重複讀。"""
         if not self._running or self._extras_loading:
             return False
         self._extras_loading = True
@@ -337,8 +339,8 @@ class MainWindow(QMainWindow):
 
         def work():
             try:
-                for name in names:
-                    for kind, fetch in fetchers:
+                for kind, fetch in fetchers:
+                    for name in names:
                         try:
                             data, error = fetch(name), ""
                         except Exception as e:
@@ -355,8 +357,11 @@ class MainWindow(QMainWindow):
             return
         self.portfolio.set_extra(name, kind, data, error)
         if error:
-            what = {EQUITY: "權益紀錄", PARAMS: "策略設定", TRADES: "成交紀錄"}[kind]
+            what = {EQUITY: "權益紀錄", FLOWS: "出入金", PARAMS: "策略設定",
+                    TRADES: "成交紀錄"}[kind]
             self.log(f"[X] [{name}] {what}讀取失敗：{error}")
+        elif kind == FLOWS and data.error:
+            self.log(f"[!] [{name}] 出入金下載失敗，改用快取：{data.error}")
 
     def _on_extras_done(self) -> None:
         self._extras_loading = False

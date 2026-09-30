@@ -118,6 +118,10 @@ _Avoid_: 測試模式、Paper 模式（並行模式照樣讀實盤帳戶，只�
 QuantCore 跟 IB 打交道的那一層：送單、查成交、查持倉與權益。畫面上使用者操作的單（手動單、Sync Pos、交給策略接管）屬於 Panel 的 Trading；真正把單送進 IB、回報成交的是 Broker。
 _Avoid_: Execution（與 [[執行盤 (Execution Session)]] 撞名）、Orders（架構圖上同時指畫面的單與送單層，見下方 Flagged ambiguities）
 
+**業績 (Performance)**:
+單一 [[Account]] 排除出入金後的累積報酬（時間加權報酬，TWR），比照 IB PortfolioAnalyst：每天報酬 = (今天權益 − 這段期間的淨入金) ÷ 前一天權益 − 1，再連乘。入金不算賺錢、提款不算虧損。權益來自每日快照（`portfolio_tracker.xlsx` Daily），出入金來自 IB Flex 報表（`automation/ib_flex.py`，每帳戶在 `accounts.json` 設 `flex_token`／`flex_query_id`）；計算在 `automation/performance.py`。股息、利息、手續費屬於報酬本身，不算出入金。相對的是**權益**（NAV），含出入金。
+_Avoid_: 報酬率（沒說清楚是否含出入金）、PnL（損益是金額，業績是百分比）
+
 ## Relationships
 
 - 一個 **Account** 持有多個 **Strategy** 的部位

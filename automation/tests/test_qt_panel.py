@@ -178,6 +178,13 @@ class FakeExtras:
             "Rosa": [],
             "Yvonne": [],
         }
+        from ib_flex import FlexNotConfigured, FlowsResult
+        fetched = datetime(2026, 9, 30, 9, 0)
+        self.flows = {
+            "Taylor": FlowsResult([], fetched),
+            "Rosa": FlowsResult([], fetched),
+            "Yvonne": FlexNotConfigured("未設定 IB Flex（accounts.json 的 flex_token／flex_query_id）"),
+        }
         self.calls = []
 
     def _get(self, kind, table, name):
@@ -192,6 +199,9 @@ class FakeExtras:
 
     def config_fetch(self, name):
         return self._get("config", self.config, name)
+
+    def flows_fetch(self, name):
+        return self._get("flows", self.flows, name)
 
     def trades_fetch(self, name):
         return self._get("trades", self.trades, name)
@@ -268,6 +278,7 @@ def make_window(qtbot, source, ports, dialogs, portfolio, extras):
         kw.setdefault("credential_store", FakeStore())
         kw.setdefault("portfolio_fetch", portfolio)
         kw.setdefault("equity_fetch", extras.equity_fetch)
+        kw.setdefault("cash_flows_fetch", extras.flows_fetch)
         kw.setdefault("strategy_config_fetch", extras.config_fetch)
         kw.setdefault("trades_fetch", extras.trades_fetch)
         kw.setdefault("portfolio_next_refresh", lambda now: now + timedelta(days=1))
@@ -1163,8 +1174,8 @@ def test_overview_cards_show_a_sixty_day_sparkline(make_window, qtbot):
     _wait_extras(w, qtbot)
     taylor = w.portfolio.card("Taylor").sparkline.points()
     assert taylor[0][0] == "2026-06-24" and taylor[-1][0] == "2026-08-23"   # 近 60 天
-    assert "近 60 天 +" in w.portfolio.card_text("Taylor")
-    assert "近 60 天 -" in w.portfolio.card_text("Rosa")
+    assert "近 60 天業績 +" in w.portfolio.card_text("Taylor")
+    assert "近 60 天業績 -" in w.portfolio.card_text("Rosa")
     assert len(w.portfolio.card("Yvonne").sparkline.points()) == 1
 
 
@@ -1254,7 +1265,7 @@ def test_refresh_rereads_equity_params_and_trades(make_window, qtbot, extras):
     qtbot.mouseClick(w.portfolio.refresh_button, Qt.LeftButton)
     _wait_extras(w, qtbot)
     assert sorted(extras.calls) == sorted(
-        (kind, name) for kind in ("equity", "config", "trades")
+        (kind, name) for kind in ("equity", "config", "trades", "flows")
         for name in ("Taylor", "Rosa", "Yvonne"))
     assert "80% (0.8x)" in w.portfolio.detail.params.text()
 
@@ -1288,3 +1299,145 @@ def test_equity_ranges_never_start_before_the_first_day():
     assert range_start("YTD", pd.Timestamp("2025-01-01"), last) == pd.Timestamp("2026-01-01")
     s = nav_series("2026-01-01", 100)
     assert recent(s).index[0] == s.index[-1] - pd.Timedelta(days=60)
+
+
+# ── 權益／業績切換（#166）────────────────────────────────────────────
+
+def deposit_case(extras):
+    """Rosa：每天 +1%，2026-08-10（美國日）入金 10,000 → 台北 08-11 的快照權益跳上去。"""
+    from datetime import date
+
+    import pandas as pd
+    from ib_flex import FlowsResult
+    from performance import CashFlow
+
+    index = pd.date_range("2026-08-01", periods=20, freq="D")
+    values, nav = [], 10_000.0
+    for day in index:
+        nav *= 1.01
+        if day == pd.Timestamp("2026-08-11"):
+            nav += 10_000.0
+        values.append(nav)
+    extras.equity["Rosa"] = pd.Series(values, index=index)
+    extras.flows["Rosa"] = FlowsResult([CashFlow(date(2026, 8, 10), 10_000.0)],
+                                       datetime(2026, 9, 30, 9, 0))
+
+
+def _perf(w, qtbot, name="Taylor"):
+    _wait_extras(w, qtbot)
+    w.nav_button("Portfolio").click()
+    w.portfolio.select(name)
+    chart = w.portfolio.detail.equity
+    qtbot.mouseClick(chart.mode_buttons["業績"], Qt.LeftButton)
+    return chart
+
+
+def test_performance_mode_excludes_deposits(make_window, qtbot, extras):
+    deposit_case(extras)
+    w = make_window()
+    chart = _perf(w, qtbot, "Rosa")
+    assert chart.mode() == "業績"
+    qtbot.mouseClick(chart.range_buttons["全部"], Qt.LeftButton)
+    perf = [v for _, v in chart.points()]
+    steps = [(b + 100) / (a + 100) - 1 for a, b in zip(perf, perf[1:])]
+    assert steps == pytest.approx([0.01] * 19)                        # 入金那天也只有 +1%
+    assert perf[0] == pytest.approx(0.0)
+    assert "已排除出入金（IB Flex，09-30 09:00 下載）" in chart.note_text()
+
+    qtbot.mouseClick(chart.mode_buttons["權益"], Qt.LeftButton)
+    navs = [v for _, v in chart.points()]
+    assert max(b / a - 1 for a, b in zip(navs, navs[1:])) > 0.5       # 權益有入金的跳動
+    assert chart.note_text() == ""
+
+
+def test_performance_starts_each_range_at_zero(make_window, qtbot):
+    w = make_window()
+    chart = _perf(w, qtbot)
+    qtbot.mouseClick(chart.range_buttons["1M"], Qt.LeftButton)
+    points = dict(chart.points())
+    assert points["2026-07-23"] == pytest.approx(0.0)                # 1M 起點（08-23 往前一個月）
+    # 沒有出入金時，業績就是權益的報酬
+    assert points["2026-08-23"] == pytest.approx((159_900 / 156_800 - 1) * 100)
+    assert points["2026-07-01"] < 0                                   # 起點之前相對起點
+
+
+def test_hovering_in_performance_mode_shows_the_return(make_window, qtbot):
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    w = make_window()
+    chart = _perf(w, qtbot)
+    qtbot.mouseClick(chart.range_buttons["1M"], Qt.LeftButton)
+    view = chart.plot.viewport()
+    pos = QPointF(chart.plot.mapFromScene(chart.scene_pos_of("2026-08-10")))
+    QApplication.sendEvent(view, QMouseEvent(QMouseEvent.MouseMove, pos, view.mapToGlobal(pos),
+                                             Qt.NoButton, Qt.NoButton, Qt.NoModifier))
+    expected = (158_600 / 156_800 - 1) * 100
+    assert chart.hover_text() == f"2026-08-10　業績 {expected:+.2f}%　距前高 +0.0%"
+
+
+def test_performance_without_flex_settings_explains_and_equity_still_works(make_window, qtbot):
+    w = make_window()
+    chart = _perf(w, qtbot, "Yvonne")
+    assert "業績需要出入金紀錄" in chart.empty_text() and "flex_token" in chart.empty_text()
+    assert chart.points() == []
+    assert "Yvonne] 出入金讀取失敗" in w.dashboard.log_text()
+    w.portfolio.select("Taylor")                                     # 其他帳戶的業績照常
+    assert chart.points() and chart.empty_text() == ""
+    w.portfolio.select("Yvonne")
+    qtbot.mouseClick(chart.mode_buttons["權益"], Qt.LeftButton)
+    assert chart.points() == [("2026-09-01", 110_000.0)]
+
+
+def test_a_stale_flex_cache_is_labelled(make_window, qtbot, extras):
+    from ib_flex import FlowsResult
+
+    extras.flows["Taylor"] = FlowsResult([], datetime(2026, 9, 29, 9, 0),
+                                         "IB Flex 拒絕請求（1018）：Too many requests.")
+    w = make_window()
+    chart = _perf(w, qtbot)
+    assert chart.points()
+    assert "出入金下載失敗，使用 09-29 09:00 的快取" in chart.note_text()
+    assert "[!] [Taylor] 出入金下載失敗，改用快取" in w.dashboard.log_text()
+
+
+def test_overview_change_uses_performance_when_flows_are_known(make_window, qtbot, extras):
+    deposit_case(extras)
+    w = make_window()
+    _wait_extras(w, qtbot)
+    rosa = w.portfolio.card_text("Rosa")
+    expected = (1.01 ** 19 - 1) * 100                                 # 入金不算賺錢
+    assert f"近 60 天業績 +{expected:.1f}%" in rosa
+
+
+def test_overview_change_without_flows_says_it_is_equity(make_window, qtbot, extras):
+    from ib_flex import FlexNotConfigured
+
+    extras.flows["Taylor"] = FlexNotConfigured("未設定 IB Flex")
+    w = make_window()
+    _wait_extras(w, qtbot)
+    assert "近 60 天權益 +" in w.portfolio.card_text("Taylor")
+
+
+def test_cash_flows_are_read_with_the_accounts_flex_settings(fake_config, monkeypatch, tmp_path):
+    import account_utils
+    import ib_flex
+    from ib_flex import FlexNotConfigured
+    from qt_panel.portfolio_source import load_account_cash_flows
+
+    monkeypatch.setattr(ib_flex, "CACHE_FILE", tmp_path / "flows.json")
+    with pytest.raises(FlexNotConfigured):
+        load_account_cash_flows("Rosa")                               # 範例設定沒有 flex 欄位
+
+    accounts = account_utils.load_accounts()
+    for a in accounts:
+        a.update(flex_token="T", flex_query_id="Q")
+    monkeypatch.setattr(account_utils, "load_accounts", lambda: accounts)
+    seen = []
+    monkeypatch.setattr(ib_flex, "load_cash_flows",
+                        lambda name, cfg, cache, now: seen.append((name, cfg, cache.path)) or "ok")
+    assert load_account_cash_flows("Rosa") == "ok"
+    name, cfg, path = seen[0]
+    assert name == "Rosa" and cfg["account"] == "U12770188" and cfg["flex_query_id"] == "Q"
+    assert path == tmp_path / "flows.json"

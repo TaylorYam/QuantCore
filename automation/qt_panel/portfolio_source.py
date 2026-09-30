@@ -1,4 +1,4 @@
-"""新 Panel 查權益／持倉（#149）。
+"""新 Panel 查權益／持倉（#149），以及單一帳戶頁的權益序列、策略設定、最近成交（#150）。
 
 查詢本身沿用 `ib_fetcher.fetch_portfolio`（和 Tk Panel 同一套，唯讀連線、查完就斷），
 只換 clientId：新 Panel 的 Gateway 心跳已經佔著 ROLE_PANEL_READONLY 那組號碼，
@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+
+ALLOC_KEYS = ("alloc_sr", "alloc_sp500", "alloc_skewls")
 
 
 def fetch_readonly_portfolio(account_name: str) -> dict:
@@ -34,3 +36,23 @@ def read_manual_symbols(account_name: str, path=None) -> dict:
         return {"manual_symbols": paused_symbols(account_name, path)}
     except ManualAttributionError as e:
         return {"manual_error": str(e)}
+
+
+# ── 單一帳戶頁的其他資料（#150）：都只讀檔，不連 IB ─────────────────
+
+def load_equity(account_name: str):
+    """每日 NAV（和 Telegram 權益曲線同一個來源）。"""
+    from equity_chart import load_equity_series
+    return load_equity_series(account_name)
+
+
+def read_strategy_allocations(account_name: str) -> dict:
+    """帳戶的三個 Allocation（唯讀；只取 alloc 欄位，不把 token 等設定帶進畫面）。"""
+    from account_utils import get_account_config
+    cfg = get_account_config(account_name)
+    return {k: cfg[k] for k in ALLOC_KEYS if k in cfg}
+
+
+def read_recent_trades(account_name: str) -> list:
+    from trades_display import read_latest_trades
+    return read_latest_trades(account_name)

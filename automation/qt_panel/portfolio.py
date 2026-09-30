@@ -1,4 +1,7 @@
-"""Portfolio 畫面（#149）：上方三帳戶總覽，點選後下方顯示該帳戶的權益讀數與持倉。
+"""Portfolio 畫面（#149、#150）：上方三帳戶總覽，點選後下方顯示該帳戶的細節。
+
+細節：指標卡、權益曲線（pyqtgraph，#150）、策略參數（唯讀）、配置圓環、持倉、
+最近成交。權益序列、策略參數、最近成交由主視窗在背景讀好再交給這裡（set_extra）。
 
 讀數沿用 portfolio_queries 的 QueryState；指標卡、報表日期、持倉列、圓環圖資料
 都來自 portfolio_display（和 Tk PortfolioView 共用），這裡只負責 Qt 元件。
@@ -11,18 +14,22 @@ from typing import Callable
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QGridLayout, QHBoxLayout, QHeaderView, QPushButton,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
+    QPushButton, QScrollArea, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 import portfolio_display as display
 from portfolio_queries import QueryState
 
 from qt_panel import theme
+from qt_panel.account_panels import RecentTradesCard, StrategyParamsCard
+from qt_panel.equity import SPARKLINE_DAYS, EquityChart, Sparkline, change_text
 from qt_panel.widgets import Card, all_text, clear_layout, dot, label
 
 OWNER_FILTERS = ("全部", "SR", "SkewLS", "SP500", display.MANUAL)
 TABLE_COLUMNS = ("歸屬", "代號", "股數", "權重", "成本", "現價", "損益", "損益%", "名稱")
+# 主視窗在背景讀的三種帳戶資料（set_extra 的 kind）
+EQUITY, PARAMS, TRADES = "equity", "params", "trades"
 
 
 def _color(key: str) -> str:
@@ -87,6 +94,13 @@ class OverviewCard(Card):
         grid.addWidget(self._nav, 1, 0)
         grid.addWidget(self._upnl, 1, 1, Qt.AlignRight | Qt.AlignBottom)
         self.body.addLayout(grid)
+        spark_row = QHBoxLayout()
+        spark_row.setSpacing(8)
+        self.sparkline = Sparkline()
+        spark_row.addWidget(self.sparkline, 1)
+        self._spark_change = label(name="Faint")
+        spark_row.addWidget(self._spark_change, 0, Qt.AlignBottom)
+        self.body.addLayout(spark_row)
         self._meta = label(name="Faint")
         self.body.addWidget(self._meta)
         self._status = label(name="Faint")
@@ -113,6 +127,12 @@ class OverviewCard(Card):
         text, color = card_status(state)
         self._status.setText(text)
         self._status.setStyleSheet(f"color: {_color(color)};")
+
+    def set_equity(self, series) -> None:
+        shown = self.sparkline.set_series(series)
+        text, color = change_text(shown)
+        self._spark_change.setText(f"近 {SPARKLINE_DAYS} 天 {text}" if text else "")
+        self._spark_change.setStyleSheet(f"color: {color};")
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
@@ -280,6 +300,17 @@ class AccountDetail(QWidget):
         self._metrics_row.setSpacing(12)
         lay.addLayout(self._metrics_row)
 
+        top = QHBoxLayout()
+        top.setSpacing(12)
+        equity = Card("權益曲線")
+        self.equity = EquityChart()
+        equity.body.addWidget(self.equity, 1)
+        top.addWidget(equity, 1)
+        self.params = StrategyParamsCard()
+        self.params.setFixedWidth(300)
+        top.addWidget(self.params)
+        lay.addLayout(top)
+
         body = QHBoxLayout()
         body.setSpacing(12)
         chart = Card("配置")
@@ -292,11 +323,23 @@ class AccountDetail(QWidget):
         chart.setFixedWidth(300)
         body.addWidget(chart)
         holdings = Card()
+        holdings.setMinimumHeight(320)
         self.holdings = HoldingsTable()
         holdings.body.addWidget(self.holdings, 1)
         body.addWidget(holdings, 1)
         lay.addLayout(body, 1)
         self._chart_card = chart
+
+        self.trades = RecentTradesCard()
+        lay.addWidget(self.trades)
+
+    def show_extras(self, extras: dict) -> None:
+        """權益序列、策略參數、最近成交：{kind: (資料 或 None, 錯誤訊息)}；沒有的 kind 顯示載入中。"""
+        series, error = extras.get(EQUITY, (None, ""))
+        self.equity.set_series(series, f"權益紀錄讀取失敗：{error}" if error
+                               else "沒有權益紀錄" if EQUITY in extras else "載入中…")
+        self.params.set_config(*extras.get(PARAMS, (None, "")))
+        self.trades.set_trades(*extras.get(TRADES, (None, "")))
 
     def show_account(self, name: str, state) -> None:
         pf = state.portfolio or {"available": False, "error": state.error or "No data yet"}
@@ -347,6 +390,7 @@ class PortfolioPage(QWidget):
     def __init__(self, accounts: list[str], *, on_refresh: Callable[[], None]):
         super().__init__()
         self._states: dict = {}
+        self._extras: dict[str, dict] = {name: {} for name in accounts}
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 20, 24, 20)
         root.setSpacing(16)
@@ -371,7 +415,11 @@ class PortfolioPage(QWidget):
         root.addLayout(row)
 
         self.detail = AccountDetail()
-        root.addWidget(self.detail, 1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(self.detail)
+        root.addWidget(scroll, 1)
         self._selected = accounts[0] if accounts else ""
         for name in accounts:
             self._states[name] = None
@@ -386,6 +434,16 @@ class PortfolioPage(QWidget):
         if name == self._selected:
             self.detail.show_account(name, state)
 
+    def set_extra(self, name: str, kind: str, data, error: str = "") -> None:
+        """主視窗背景讀好的權益序列（EQUITY）、策略設定（PARAMS）、最近成交（TRADES）。"""
+        if name not in self._cards:
+            return
+        self._extras[name][kind] = (None if error else data, error)
+        if kind == EQUITY:
+            self._cards[name].set_equity(None if error else data)
+        if name == self._selected:
+            self.detail.show_extras(self._extras[name])
+
     def select(self, name: str) -> None:
         if name not in self._cards:
             return
@@ -395,11 +453,11 @@ class PortfolioPage(QWidget):
     def _refresh_selection(self) -> None:
         for n, card in self._cards.items():
             card.set_selected(n == self._selected)
+        if not self._selected:
+            return
         state = self._states.get(self._selected)
-        if state is not None:
-            self.detail.show_account(self._selected, state)
-        elif self._selected:
-            self.detail.show_account(self._selected, QueryState())
+        self.detail.show_account(self._selected, state if state is not None else QueryState())
+        self.detail.show_extras(self._extras[self._selected])
 
     # ── 讀取（測試與狀態檢查用）──
 

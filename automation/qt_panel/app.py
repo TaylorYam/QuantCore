@@ -81,7 +81,9 @@ def main() -> int:
         from qt_panel.gateway_status import gateway_source_for
         from qt_panel.main_window import MainWindow
         from qt_panel.mode import resolve_mode
-        from qt_panel.portfolio_source import fetch_readonly_portfolio
+        from qt_panel.portfolio_source import (
+            fetch_readonly_portfolio, load_equity, read_recent_trades, read_strategy_allocations,
+        )
         from qt_panel.tray import tray_factory_for
 
         mode, note = resolve_mode(load_base_config())
@@ -102,6 +104,9 @@ def main() -> int:
             gateway_ports_factory=lambda ask: gateway_start_win.WindowsPorts(ask_credentials=ask),
             credential_store=WindowsCredentialStore(),
             portfolio_fetch=fetch_readonly_portfolio,
+            equity_fetch=load_equity,
+            strategy_config_fetch=read_strategy_allocations,
+            trades_fetch=read_recent_trades,
             tray_factory=tray_factory_for(icon, "QuantCore Panel（PySide6・並行模式）"),
             show_signal=show_signal_path(),
         )

@@ -3,7 +3,8 @@ TradesView — Recent Trades list (left-column panel)
 (R3.3 extracted from control_panel.py).
 
 Design:
-  - Pure UI class, no imports from control_panel.
+  - Pure UI class, no imports from control_panel; row text and colors come
+    from trades_display (shared with the new Panel, #150).
   - Dependencies injected via constructor: theme (dict), fonts (dict).
   - Owns its widget references — no pollution of Panel namespace.
 
@@ -15,6 +16,8 @@ Public API:
 from __future__ import annotations
 
 import tkinter as tk
+
+from trades_display import EMPTY_TEXT, TRADE_COLUMNS, trade_row
 
 
 _REQUIRED_THEME_KEYS_TRADES = {
@@ -100,7 +103,7 @@ class TradesView:
 
         if not trades:
             tk.Label(
-                self._inner, text="No recent trades (7 days)",
+                self._inner, text=EMPTY_TEXT,
                 font=f["mono_sm"], bg=t["bg2"], fg=t["text_dim"],
             ).pack(anchor="w")
             return
@@ -108,38 +111,19 @@ class TradesView:
         # Header row
         hdr = tk.Frame(self._inner, bg=t["bg2"])
         hdr.pack(fill="x")
-        for txt, w in [
-            ("Time", 14), ("Symbol", 7), ("Action", 5), ("Qty", 5),
-            ("Price", 8), ("Strategy", 10), ("Status", 10),
-        ]:
+        for txt, w in TRADE_COLUMNS:
             tk.Label(hdr, text=txt, font=f["mono_sm"], bg=t["bg2"],
                      fg=t["text_dim"], width=w, anchor="w").pack(side="left")
 
         for tr in trades:
             row = tk.Frame(self._inner, bg=t["bg2"])
             row.pack(fill="x")
-            dt_short = tr["datetime"][-8:] if len(tr["datetime"]) >= 8 else tr["datetime"]
-            action_color = t["red"] if tr["action"] == "SELL" else t["green"]
-            dry_tag = " [DRY]" if tr["dry_run"] else ""
-
-            fill_px = tr.get("fill_price", 0)
-            px_text = f"${fill_px:.2f}" if fill_px > 0 else "—"
-
-            tk.Label(row, text=dt_short, font=f["mono_sm"], bg=t["bg2"],
-                     fg=t["text_dim"], width=14, anchor="w").pack(side="left")
-            tk.Label(row, text=tr["symbol"], font=f["mono_sm"], bg=t["bg2"],
-                     fg=t["text"], width=7, anchor="w").pack(side="left")
-            tk.Label(row, text=tr["action"], font=f["mono_sm"], bg=t["bg2"],
-                     fg=action_color, width=5, anchor="w").pack(side="left")
-            tk.Label(row, text=str(tr["qty"]), font=f["mono_sm"], bg=t["bg2"],
-                     fg=t["text"], width=5, anchor="w").pack(side="left")
-            tk.Label(row, text=px_text, font=f["mono_sm"], bg=t["bg2"],
-                     fg=t["text"], width=8, anchor="w").pack(side="left")
-            tk.Label(row, text=tr["strategy"], font=f["mono_sm"], bg=t["bg2"],
-                     fg=t["text_dim"], width=10, anchor="w").pack(side="left")
-            tk.Label(
-                row, text=f'{tr["status"]}{dry_tag}',
-                font=f["mono_sm"], bg=t["bg2"],
-                fg=t["yellow"] if "DRY" in tr["status"] else t["green"],
-                width=14, anchor="w",
-            ).pack(side="left")
+            r = trade_row(tr)
+            for text, fg, w in (
+                (r.time, "text_dim", 14), (r.symbol, "text", 7),
+                (r.action, r.action_color, 5), (r.qty, "text", 5),
+                (r.price, "text", 8), (r.strategy, "text_dim", 10),
+                (r.status, r.status_color, 14),
+            ):
+                tk.Label(row, text=text, font=f["mono_sm"], bg=t["bg2"],
+                         fg=t[fg], width=w, anchor="w").pack(side="left")

@@ -216,3 +216,33 @@ def test_a_broken_cache_file_is_treated_as_empty(tmp_path):
                              http_get=FakeHttp(send_ok(), statement({"amount": "5", "id": "1"})),
                              sleep=lambda s: None)
     assert result.flows == [CashFlow(date(2026, 4, 28), 5.0)]
+
+
+# ── 手動驗證指令 ──────────────────────────────────────────────────────
+
+def test_check_report_lines_up_flows_with_nav_jumps():
+    import pandas as pd
+
+    nav = pd.Series([1_000.0, 1_010.0, 2_020.1, 2_050.0],
+                    index=pd.to_datetime(["2026-04-27", "2026-04-28", "2026-04-29", "2026-04-30"]))
+    accounts = [{"name": "Rosa", "account": "U1111111", "flex_token": TOKEN,
+                 "flex_query_id": "777"}]
+    seen = []
+    xml = statement({"amount": "1000", "id": "1", "reportDate": "20260428"})
+    lines = ib_flex.check_report("Rosa", accounts, nav,
+                                 download=lambda t, q: seen.append((t, q)) or xml)
+    text = "\n".join(lines)
+    assert seen == [(TOKEN, "777")]
+    assert "2026-04-28  +1,000.00" in text
+    assert "2026-04-29  權益 +100.0% → 業績 +1.0%（歸到這天的出入金 +1,000.00）" in text
+    assert TOKEN not in text and "U1111111" not in text
+
+
+def test_check_report_needs_the_flex_settings():
+    import pandas as pd
+
+    with pytest.raises(FlexNotConfigured):
+        ib_flex.check_report("Rosa", [{"name": "Rosa"}], pd.Series(dtype=float),
+                             download=lambda t, q: "")
+    with pytest.raises(FlexError, match="沒有帳戶"):
+        ib_flex.check_report("Nobody", [], pd.Series(dtype=float), download=lambda t, q: "")

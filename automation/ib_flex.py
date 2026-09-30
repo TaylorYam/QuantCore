@@ -204,3 +204,75 @@ def load_cash_flows(account: str, cfg: dict, cache: CashFlowCache, *, now: datet
     cache.merge(account, flows, now)
     merged, _ = cache.read(account)
     return FlowsResult(_as_cash_flows(merged), now)
+
+
+# ── Manual check (python ib_flex.py <account> [--dir <automation dir>]) ───
+
+def check_report(account: str, accounts: list[dict], nav, *,
+                 download: Callable[[str, str], str] = download_statement,
+                 jump_pct: float = 5.0) -> list[str]:
+    """One-off verification: download this account's Flex statement (no cache write) and
+    line up its deposits / withdrawals with the NAV jumps. Prints no token or account id."""
+    import pandas as pd
+
+    from performance import growth_index
+
+    cfg = next((a for a in accounts if a.get("name") == account), None)
+    if cfg is None:
+        raise FlexError(f"accounts.json 沒有帳戶 {account}")
+    token, query_id = cfg.get("flex_token"), cfg.get("flex_query_id")
+    if not token or not query_id:
+        raise FlexNotConfigured("未設定 IB Flex（accounts.json 的 flex_token／flex_query_id）")
+    flows = _as_cash_flows(parse_cash_flows(download(str(token), str(query_id)),
+                                            cfg.get("account")))
+    lines = [f"{account}：Flex 出入金 {len(flows)} 筆"]
+    lines += [f"  {f.date}  {f.amount:+,.2f}" for f in flows]
+    if nav.empty:
+        return lines + ["（沒有權益紀錄，無法對照）"]
+    nav = nav.sort_index()
+    growth = growth_index(nav, flows)
+    days = nav.index
+    lines.append(f"權益單日變動超過 {jump_pct:.0f}% 的快照（→ 排除出入金後）：")
+    for i in range(1, len(days)):
+        raw = (nav.iloc[i] / nav.iloc[i - 1] - 1) * 100
+        if abs(raw) <= jump_pct:
+            continue
+        perf = (growth.iloc[i] / growth.iloc[i - 1] - 1) * 100
+        counted = sum(f.amount for f in flows
+                      if days[i - 1] <= pd.Timestamp(f.date) < days[i])
+        lines.append(f"  {days[i]:%Y-%m-%d}  權益 {raw:+.1f}% → 業績 {perf:+.1f}%"
+                     f"（歸到這天的出入金 {counted:+,.2f}）")
+    lines.append(f"全期間：權益直接相比 {(nav.iloc[-1] / nav.iloc[0] - 1) * 100:+.1f}%，"
+                 f"業績 {(growth.iloc[-1] - 1) * 100:+.1f}%"
+                 f"（{days[0]:%Y-%m-%d} → {days[-1]:%Y-%m-%d}）")
+    return lines
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="IB Flex 出入金驗證（只讀，不寫快取）")
+    parser.add_argument("account")
+    parser.add_argument("--dir", type=Path, default=Path(__file__).parent,
+                        help="放 accounts.json、portfolio_tracker.xlsx 的 automation 目錄")
+    args = parser.parse_args(argv)
+    import equity_chart
+
+    try:
+        accounts = json.loads((args.dir / "accounts.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        print(f"[X] 讀不到 {args.dir / 'accounts.json'}：{e}")
+        return 1
+    equity_chart.PORTFOLIO_FILE = args.dir / "portfolio_tracker.xlsx"
+    try:
+        lines = check_report(args.account, accounts,
+                             equity_chart.load_equity_series(args.account))
+    except FlexError as e:
+        print(f"[X] {e}")
+        return 1
+    print("\n".join(lines))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

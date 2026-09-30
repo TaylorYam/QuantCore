@@ -55,6 +55,14 @@ QMenu {{ background: {SURFACE}; color: {TEXT}; border: 1px solid {BORDER_STRONG}
 QMenu::item {{ padding: 6px 24px 6px 14px; border-radius: 4px; }}
 QMenu::item:selected {{ background: {SURFACE_HOVER}; }}
 QMenu::separator {{ height: 1px; background: {BORDER}; margin: 4px 6px; }}
+/* 下拉清單是獨立的彈出視窗，透明背景在 Windows 原生樣式會變黑（#169） */
+QComboBoxPrivateContainer {{ background: {SURFACE}; border: 1px solid {BORDER_STRONG}; }}
+QComboBox QAbstractItemView {{
+    background: {SURFACE}; color: {TEXT}; border: none; outline: 0;
+    selection-background-color: {SURFACE_HOVER}; selection-color: {TEXT};
+}}
+QComboBox QAbstractItemView::item {{ padding: 4px 8px; color: {TEXT}; }}
+QComboBox QAbstractItemView::item:selected {{ background: {SURFACE_HOVER}; color: {TEXT}; }}
 
 #Header {{ background: {SURFACE}; border-bottom: 1px solid {BORDER}; }}
 #Brand {{ font-size: 14pt; font-weight: 700; color: {NAVY}; }}

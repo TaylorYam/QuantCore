@@ -1107,6 +1107,36 @@ def test_popup_menus_have_an_opaque_theme_background(qtbot):
     assert pixel.name() == theme.SURFACE
 
 
+
+@pytest.mark.parametrize("style_name", ["windows11", "windowsvista"])
+def test_combo_box_dropdowns_have_an_opaque_theme_background(qtbot, style_name):
+    """下拉清單也是獨立的彈出視窗（#169）：背景透明時 Windows 原生樣式畫成黑底
+    （離線測試預設的 Fusion 不會，所以指定實機用的樣式）。"""
+    from PySide6.QtCore import QPoint
+    from PySide6.QtWidgets import QComboBox, QStyleFactory
+    from qt_panel import theme
+
+    style = QStyleFactory.create(style_name)
+    if style is None:
+        pytest.skip(f"{style_name} 樣式只在 Windows 上有")
+    combo = QComboBox()
+    qtbot.addWidget(combo)
+    combo.setStyle(style)
+    combo.setStyleSheet(theme.STYLESHEET)
+    combo.addItems(["Taylor", "Rosa", "Yvonne"])
+    combo.show()
+    combo.showPopup()
+    view = combo.view()
+    qtbot.waitUntil(view.isVisible, timeout=2000)
+    popup = view.window()
+    image = popup.grab().toImage()
+    row = view.visualRect(view.model().index(2, 0))          # 沒選取的那一列，取右側空白處
+    in_row = view.viewport().mapTo(popup, QPoint(row.right() - 4, row.center().y()))
+    for point in (in_row, QPoint(popup.width() // 2, popup.height() - 2)):
+        pixel = image.pixelColor(point)
+        assert (pixel.alpha(), pixel.name()) == (255, theme.SURFACE), point
+    combo.hidePopup()
+
 # ── 權益曲線、策略參數、最近成交（#150）──────────────────────────────
 
 def _wait_extras(w, qtbot):

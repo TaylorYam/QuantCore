@@ -59,6 +59,17 @@ def _seconds(index: pd.DatetimeIndex) -> np.ndarray:
     return (index.values.astype("datetime64[s]").astype(np.int64)).astype(float)
 
 
+def _day(seconds: float) -> str:
+    return f"{pd.Timestamp(int(seconds), unit='s'):%Y-%m-%d}"
+
+
+def _curve_points(curve) -> list[tuple[str, float]]:
+    x, y = curve.getData()
+    if x is None:
+        return []
+    return [(_day(s), float(v)) for s, v in zip(x, y)]
+
+
 def _series(series) -> pd.Series:
     if series is None:
         return pd.Series(dtype=float)
@@ -203,15 +214,11 @@ class EquityChart(QWidget):
     # ── 讀取（測試與狀態檢查用）──
 
     def points(self) -> list[tuple[str, float]]:
-        x, y = self._curve.getData()
-        if x is None:
-            return []
-        return [(f"{pd.Timestamp(int(s), unit='s'):%Y-%m-%d}", float(v)) for s, v in zip(x, y)]
+        return _curve_points(self._curve)
 
     def x_range_dates(self) -> tuple[str, str]:
         x0, x1 = self.viewbox.viewRange()[0]
-        return (f"{pd.Timestamp(int(x0), unit='s'):%Y-%m-%d}",
-                f"{pd.Timestamp(int(x1), unit='s'):%Y-%m-%d}")
+        return _day(x0), _day(x1)
 
     def checked_range(self) -> str | None:
         return next((k for k, b in self.range_buttons.items() if b.isChecked()), None)
@@ -255,7 +262,4 @@ class Sparkline(pg.PlotWidget):
         return data
 
     def points(self) -> list[tuple[str, float]]:
-        x, y = self._curve.getData()
-        if x is None:
-            return []
-        return [(f"{pd.Timestamp(int(s), unit='s'):%Y-%m-%d}", float(v)) for s, v in zip(x, y)]
+        return _curve_points(self._curve)

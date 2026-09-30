@@ -21,10 +21,6 @@ from qt_panel.widgets import Card, all_text, clear_layout, label
 TRADE_HEADERS = ("時間", "代號", "方向", "股數", "成交價", "策略", "狀態")
 
 
-def _color(key: str) -> str:
-    return theme.THEME_KEY_COLOR.get(key, theme.TEXT)
-
-
 class StrategyParamsCard(Card):
     """各 Strategy 的 Allocation 與合計 Leverage（唯讀）。"""
 
@@ -51,13 +47,13 @@ class StrategyParamsCard(Card):
         params = strategy_params_display.strategy_params(
             *strategy_params_display.allocations_from_cfg(cfg))
         for r, row in enumerate(params.rows):
-            self._grid.addWidget(label(row.label, color=_color(row.color)), r, 0)
-            value = label(row.text, name="MedNum", color=_color(row.color))
+            self._grid.addWidget(label(row.label, color=theme.color(row.color)), r, 0)
+            value = label(row.text, name="MedNum", color=theme.color(row.color))
             self._grid.addWidget(value, r, 1, Qt.AlignRight)
         n = len(params.rows)
         self._grid.addWidget(label("Leverage", name="Dim"), n, 0)
         self._grid.addWidget(label(params.leverage_text, name="MedNum",
-                                   color=_color(params.leverage_color)), n, 1, Qt.AlignRight)
+                                   color=theme.color(params.leverage_color)), n, 1, Qt.AlignRight)
         self._grid.addWidget(label(params.detail, name="Faint"), n + 1, 0, 1, 2)
         self._grid.setColumnStretch(0, 1)
 
@@ -96,11 +92,9 @@ class RecentTradesCard(Card):
         self.table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             cells = (row.datetime,) + row.cells()[1:]       # 7 天內會跨日：顯示完整日期時間
-            colors = ("text_dim", "text", row.action_color, "text", "text", "text_dim",
-                      row.status_color)
-            for c, (text, color) in enumerate(zip(cells, colors)):
+            for c, (text, color) in enumerate(zip(cells, row.colors())):
                 item = QTableWidgetItem(text)
-                item.setForeground(QColor(_color(color)))
+                item.setForeground(QColor(theme.color(color)))
                 if c in (3, 4):
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.table.setItem(r, c, item)

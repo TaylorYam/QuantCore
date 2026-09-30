@@ -119,11 +119,8 @@ class TradesView:
             row = tk.Frame(self._inner, bg=t["bg2"])
             row.pack(fill="x")
             r = trade_row(tr)
-            for text, fg, w in (
-                (r.time, "text_dim", 14), (r.symbol, "text", 7),
-                (r.action, r.action_color, 5), (r.qty, "text", 5),
-                (r.price, "text", 8), (r.strategy, "text_dim", 10),
-                (r.status, r.status_color, 14),
-            ):
+            # Status cells are wider than their header (14 vs 10), as before
+            widths = (14, 7, 5, 5, 8, 10, 14)
+            for text, fg, w in zip(r.cells(), r.colors(), widths):
                 tk.Label(row, text=text, font=f["mono_sm"], bg=t["bg2"],
                          fg=t[fg], width=w, anchor="w").pack(side="left")

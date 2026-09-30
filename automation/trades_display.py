@@ -40,6 +40,11 @@ class TradeRow:
         return (self.time, self.symbol, self.action, self.qty, self.price,
                 self.strategy, self.status)
 
+    def colors(self) -> tuple[str, ...]:
+        """Theme key of each cell, same order as cells()."""
+        return ("text_dim", "text", self.action_color, "text", "text", "text_dim",
+                self.status_color)
+
 
 def trade_row(tr: dict) -> TradeRow:
     dt = tr["datetime"]

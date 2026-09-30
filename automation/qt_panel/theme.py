@@ -30,6 +30,13 @@ BLUE = "#1d4ed8"
 # portfolio_display 等共用模組回傳的 theme key → 新 Panel 的顏色
 THEME_KEY_COLOR = {"text": TEXT, "text_dim": TEXT_DIM, "green": GREEN, "red": RED,
                    "yellow": AMBER, "orange": ORANGE, "blue": BLUE}
+
+
+def color(key: str) -> str:
+    """共用模組回傳的 theme key → 顏色；不認得的 key 用一般文字色。"""
+    return THEME_KEY_COLOR.get(key, TEXT)
+
+
 # 持倉歸屬（portfolio_display.owner_of）的顏色
 OWNER_COLOR = {"SR": BLUE, "SkewLS": "#7c3aed", "SP500": GREEN, "手動": TEXT_DIM}
 

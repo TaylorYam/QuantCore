@@ -32,10 +32,6 @@ TABLE_COLUMNS = ("歸屬", "代號", "股數", "權重", "成本", "現價", "�
 EQUITY, PARAMS, TRADES = "equity", "params", "trades"
 
 
-def _color(key: str) -> str:
-    return theme.THEME_KEY_COLOR.get(key, theme.TEXT)
-
-
 def _time(state) -> str:
     return state.updated_at.astimezone().strftime("%m-%d %H:%M:%S") if state.updated_at else ""
 
@@ -117,7 +113,7 @@ class OverviewCard(Card):
         values = {m.key: m for m in display.metrics(pf)}
         self._nav.setText(values["nav"].text)
         self._upnl.setText(values["pnl"].text)
-        self._upnl.setStyleSheet(f"color: {_color(values['pnl'].color)};")
+        self._upnl.setStyleSheet(f"color: {theme.color(values['pnl'].color)};")
         if pf.get("available"):
             self._meta.setText(f"Account Exposure {values['total_exp'].text} · "
                                f"Cushion {pf['cushion']:.0f}%")
@@ -126,7 +122,7 @@ class OverviewCard(Card):
         self._source.setText(source_tag(state))
         text, color = card_status(state)
         self._status.setText(text)
-        self._status.setStyleSheet(f"color: {_color(color)};")
+        self._status.setStyleSheet(f"color: {theme.color(color)};")
 
     def set_equity(self, series) -> None:
         shown = self.sparkline.set_series(series)
@@ -175,7 +171,7 @@ class DonutWidget(QWidget):
             painter.drawArc(inner, start, span)
             start += span
         text, color = self._donut.center
-        painter.setPen(QColor(_color(color)))
+        painter.setPen(QColor(theme.color(color)))
         font = QFont(painter.font())
         font.setBold(True)
         painter.setFont(font)
@@ -352,12 +348,12 @@ class AccountDetail(QWidget):
             text = f"手動歸屬讀取失敗（歸屬欄只看分類）· {text}"
             color = "yellow"
         self._status.setText(text)
-        self._status.setStyleSheet(f"color: {_color(color)};")
+        self._status.setStyleSheet(f"color: {theme.color(color)};")
 
         clear_layout(self._metrics_row)
         for metric in display.metrics(pf):
             card = Card(metric.title)
-            value = label(metric.text, name="MedNum", color=_color(metric.color))
+            value = label(metric.text, name="MedNum", color=theme.color(metric.color))
             card.body.addWidget(value, 0, Qt.AlignRight)
             self._metrics_row.addWidget(card, 1)
 

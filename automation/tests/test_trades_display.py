@@ -20,6 +20,7 @@ def test_row_cells_and_colors():
     assert row.cells() == ("21:30:05", "XLK", "BUY", "10", "$230.50", "SR", "Filled")
     assert row.datetime == "2026-09-29 21:30:05"
     assert (row.action_color, row.status_color) == ("green", "green")
+    assert row.colors() == ("text_dim", "text", "green", "text", "text", "text_dim", "green")
 
 
 def test_sell_is_red_and_dry_run_is_tagged_and_yellow():

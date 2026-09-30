@@ -12,8 +12,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-ALLOC_KEYS = ("alloc_sr", "alloc_sp500", "alloc_skewls")
-
 
 def fetch_readonly_portfolio(account_name: str) -> dict:
     import ib_fetcher
@@ -49,8 +47,9 @@ def load_equity(account_name: str):
 def read_strategy_allocations(account_name: str) -> dict:
     """帳戶的三個 Allocation（唯讀；只取 alloc 欄位，不把 token 等設定帶進畫面）。"""
     from account_utils import get_account_config
+    from strategy_params_display import STRATEGIES
     cfg = get_account_config(account_name)
-    return {k: cfg[k] for k in ALLOC_KEYS if k in cfg}
+    return {key: cfg[key] for key, *_ in STRATEGIES if key in cfg}
 
 
 def read_recent_trades(account_name: str) -> list:

@@ -100,6 +100,15 @@ QHeaderView::section {{
 }}
 #Placeholder {{ color: {TEXT_DIM}; font-size: 11pt; }}
 
+/* 捲軸：細、圓角、沒有上下箭頭；平常淺灰，滑鼠移上去變深（#171） */
+QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px 2px 2px 0; }}
+QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 0 2px 2px 2px; }}
+QScrollBar::handle:vertical {{ background: {BORDER_STRONG}; border-radius: 4px; min-height: 36px; }}
+QScrollBar::handle:horizontal {{ background: {BORDER_STRONG}; border-radius: 4px; min-width: 36px; }}
+QScrollBar::handle:hover, QScrollBar::handle:pressed {{ background: {TEXT_FAINT}; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; border: none; background: none; }}
+QScrollBar::add-page, QScrollBar::sub-page {{ background: none; }}
+
 QPushButton {{
     background: {SURFACE}; border: 1px solid {BORDER_STRONG}; border-radius: 6px;
     padding: 5px 14px; color: {TEXT};

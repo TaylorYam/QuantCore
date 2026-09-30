@@ -1137,6 +1137,28 @@ def test_combo_box_dropdowns_have_an_opaque_theme_background(qtbot, style_name):
         assert (pixel.alpha(), pixel.name()) == (255, theme.SURFACE), point
     combo.hidePopup()
 
+
+def test_scroll_bars_are_slim_theme_bars_without_arrows(qtbot):
+    """捲軸用主題的細圓角樣式（#171），不是 Windows 原生捲軸。"""
+    from PySide6.QtWidgets import QLabel, QScrollArea, QStyleFactory
+    from qt_panel import theme
+
+    area = QScrollArea()
+    qtbot.addWidget(area)
+    style = QStyleFactory.create("windows11") or QStyleFactory.create("fusion")
+    area.setStyle(style)
+    area.setStyleSheet(theme.STYLESHEET)
+    area.setWidget(QLabel("\n".join(str(i) for i in range(200))))
+    area.resize(300, 300)
+    area.show()
+    bar = area.verticalScrollBar()
+    qtbot.waitUntil(lambda: bar.maximum() > 0, timeout=2000)
+    assert bar.width() <= 10
+    image = bar.grab().toImage()
+    colors = {image.pixelColor(x, y).name()
+              for x in range(image.width()) for y in range(image.height())}
+    assert theme.BORDER_STRONG in colors
+
 # ── 權益曲線、策略參數、最近成交（#150）──────────────────────────────
 
 def _wait_extras(w, qtbot):

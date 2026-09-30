@@ -12,6 +12,9 @@ Public API:
     pv.build_holdings(parent)   # ETF / Stock / Other lists
     pv.update_state(name, state)
     pv.update(pf_dict)
+
+Display text and colors come from `portfolio_display` (shared with the Qt
+Panel, #149); this module only owns the Tk widgets and the matplotlib donut.
 """
 
 from __future__ import annotations
@@ -20,27 +23,12 @@ import math
 import tkinter as tk
 from typing import Optional
 
-from ib_fetcher import SR_ETFS, ETF_TICKERS
+import portfolio_display as display
 
 
 _REQUIRED_THEME_KEYS = {
     "bg", "bg2", "bg3", "text", "text_dim",
     "blue", "green", "red", "yellow", "orange",
-}
-
-_TICKER_NAMES: dict[str, str] = {
-    "XLK": "Technology",      "XLF": "Financials",
-    "XLV": "Health Care",     "XLE": "Energy",
-    "XLI": "Industrials",     "XLY": "Cons Discret",
-    "XLB": "Materials",       "XLP": "Cons Staples",
-    "XLU": "Utilities",       "XLC": "Comm Services",
-    "XLRE": "Real Estate",
-    "REW": "UltraShort Tech",     "SEF": "Short Fin",
-    "RXD": "UltraShort HC",       "ERY": "Bear Energy 3x",
-    "SIJ": "UltraShort Ind",      "SCC": "UltraShort CD",
-    "SMN": "UltraShort Mat",      "SZK": "UltraShort CS",
-    "SDP": "UltraShort Util",     "REK": "Short RE",
-    "SPY": "S&P 500 ETF",         "SSO": "Ultra S&P 500",
 }
 
 _REQUIRED_FONTS_KEYS = {"small", "mono_sm", "med_num"}
@@ -68,13 +56,8 @@ class PortfolioView:
 
         row = tk.Frame(parent, bg=t["bg2"])
         row.pack(fill="x")
-        cards = (
-            ("nav_card", "Net Asset Value", "$—"),
-            ("pnl_card", "Unrealized P&L", "$—"),
-            ("margin_card", "Margin Cushion", "—%"),
-            ("strat_exp_card", "Strategy Exposure", "—%"),
-            ("total_exp_card", "Account Exposure", "—%"),
-        )
+        cards = [(f"{key}_card", title, value)
+                 for key, title, value in display.METRIC_TITLES]
         for index, (attribute, title, value) in enumerate(cards):
             row.columnconfigure(index, weight=1, uniform="metrics")
             card = self._metric_card(row, title, value, t["text"])
@@ -151,37 +134,22 @@ class PortfolioView:
 
     def update_state(self, name, state) -> None:
         self.update(state.portfolio or {"available": False, "error": "No data yet"})
-        last = (state.updated_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
-                if state.updated_at else "—")
         summary = getattr(self, "refresh_summary_lbl", None)
         if summary is not None:
-            source = {"manual": "Manual", "auto": "Auto"}.get(state.refresh_source, "Unknown source")
-            detail = source if state.updated_at else "No data yet"
-            if state.running:
-                detail += " · Updating"
-            elif state.error:
-                detail += " · Failed"
-            summary.config(text=f"{name} | {detail}\n{last}",
-                           fg=self.t["yellow"] if state.error else self.t["text"])
-        status = "Updating" if state.running else "Failed" if state.error else "OK"
-        source_tag = ""
-        if state.refresh_source:
-            source_tag = f" ({state.refresh_source})"
-        self.report_date_lbl.config(
-            text=f"{status} | {last}{source_tag}",
-            fg=self.t["yellow"] if state.error else self.t["text_dim"])
+            text, color = display.refresh_summary(name, state)
+            summary.config(text=text, fg=self.t[color])
+        text, color = display.status_line(state)
+        self.report_date_lbl.config(text=text, fg=self.t[color])
+
+    def _show_metrics(self, pf: dict) -> None:
+        for metric in display.metrics(pf):
+            card = getattr(self, f"{metric.key}_card")
+            card._val_lbl.config(text=metric.text, fg=self.t[metric.color])
 
     def update(self, pf: dict) -> None:
-        t = self.t
-
         if not pf.get("available"):
-            err = pf.get("error", "No data yet")
-            self.nav_card._val_lbl.config(text="$—", fg=t["text_dim"])
-            self.pnl_card._val_lbl.config(text="$—", fg=t["text_dim"])
-            self.margin_card._val_lbl.config(text="—%", fg=t["text_dim"])
-            self.strat_exp_card._val_lbl.config(text="—%", fg=t["text_dim"])
-            self.total_exp_card._val_lbl.config(text="—%", fg=t["text_dim"])
-            self.report_date_lbl.config(text=f"Report: {err}")
+            self._show_metrics(pf)
+            self.report_date_lbl.config(text=display.report_line(pf))
             self.etf_list.config(text="(no data)")
             self.stock_list.config(text="(no data)")
             self.other_list.config(text="(no data)")
@@ -192,47 +160,17 @@ class PortfolioView:
                 self.chart_canvas = None
             return
 
+        self._show_metrics(pf)
+        self.report_date_lbl.config(text=display.report_line(pf))
+
         nav = pf["nav"]
-        upnl = pf["total_upnl"]
-        cushion = pf["cushion"]
-        mktval = pf["total_mktval"]
-        strategy_mktval = pf.get("strategy_mktval", mktval)
-        other_mktval = pf.get("other_mktval", 0)
-        strat_exposure = (strategy_mktval / nav * 100) if nav > 0 else 0
-        total_exposure = (mktval / nav * 100) if nav > 0 else 0
-        exposure = strat_exposure
-
-        self.nav_card._val_lbl.config(text=f"${nav:,.0f}", fg=t["text"])
-
-        sign = "+" if upnl >= 0 else ""
-        pnl_color = t["green"] if upnl >= 0 else t["red"]
-        self.pnl_card._val_lbl.config(text=f"{sign}${upnl:,.2f}", fg=pnl_color)
-
-        if cushion < 10:
-            m_color = t["red"]
-        elif cushion < 25:
-            m_color = t["yellow"]
-        else:
-            m_color = t["green"]
-        self.margin_card._val_lbl.config(text=f"{cushion:.1f}%", fg=m_color)
-
-        s_color = t["orange"] if strat_exposure > 100 else t["green"]
-        self.strat_exp_card._val_lbl.config(text=f"{strat_exposure:.0f}%", fg=s_color)
-
-        a_color = t["orange"] if total_exposure > 100 else t["green"]
-        self.total_exp_card._val_lbl.config(text=f"{total_exposure:.0f}%", fg=a_color)
-
-        source = pf.get("source", "Excel")
-        src_tag = f"  [{source}]" if source != "Excel" else ""
-        self.report_date_lbl.config(text=f"Report Date: {pf['date']}{src_tag}")
-
         self._render_holdings_list(self.etf_hdr, self.etf_list,
-                                    pf.get("etf_holdings", []), nav)
+                                    pf.get("etf_holdings", []), nav, "etf")
         self._render_holdings_list(self.stock_hdr, self.stock_list,
-                                    pf.get("stock_holdings", []), nav)
+                                    pf.get("stock_holdings", []), nav, "stock")
         self._render_holdings_list(self.other_hdr, self.other_list,
                                     pf.get("other_holdings", []),
-                                    nav, empty_text="(none)")
+                                    nav, "other", empty_text="(none)")
 
         if self.chart_canvas:
             try:
@@ -241,71 +179,27 @@ class PortfolioView:
                 pass
             self.chart_canvas = None
 
-        all_holdings = pf.get("etf_holdings", []) + pf.get("stock_holdings", [])
-        if (all_holdings or other_mktval > 0) and nav > 0:
-            self._render_pie_chart(all_holdings, nav, exposure, other_val=other_mktval)
-
-    @staticmethod
-    def _fmt_dollar(val: float) -> str:
-        if val > 0:
-            return f"+${val:,.0f}"
-        elif val < 0:
-            return f"-${abs(val):,.0f}"
-        return "$0"
+        donut = display.donut(pf)
+        if donut is not None:
+            self._draw_donut(donut)
 
     def _render_holdings_list(self, hdr_widget: tk.Label, widget: tk.Label,
-                               holdings: list, nav: float,
+                               holdings: list, nav: float, group: str,
                                empty_text: str = "(empty)") -> None:
-        if not holdings:
-            hdr_widget.config(text="")
-            widget.config(text=empty_text)
-            return
-
-        sorted_h = sorted(holdings, key=lambda x: -abs(x["mkt_val"]))
-
-        rows = []
-        for h in sorted_h:
-            w = h["mkt_val"] / nav * 100 if nav > 0 else 0
-            avg = h.get("avg_cost", 0)
-            upnl_val = h.get("upnl", 0)
-            pct = h.get("upnl_pct", 0)
-            sign = "+" if pct >= 0 else ""
-            name = h.get("name") or _TICKER_NAMES.get(h["symbol"], "")
-            rows.append((
-                h["symbol"],
-                f"{h['shares']}",
-                f"{w:.0f}%",
-                f"${avg:,.2f}",
-                f"${h['mkt_px']:,.2f}",
-                self._fmt_dollar(upnl_val),
-                f"{sign}{pct:.1f}%",
-                name,
-            ))
-
-        headers = ("UL", "SH", "Wt%", "Cost", "Price", "P&L", "P&L%", "Name")
-        widths = [len(h) for h in headers]
-        for r in rows:
-            for i, cell in enumerate(r):
-                widths[i] = max(widths[i], len(cell))
-
-        def _fmt_row(cells):
-            parts = [f"{cells[0]:<{widths[0]}}"]
-            for i in range(1, 7):
-                parts.append(f"{cells[i]:>{widths[i]}}")
-            parts.append("")
-            parts.append(f"{cells[7]:<{widths[7]}}")
-            return "  ".join(parts)
-
-        hdr_widget.config(text=_fmt_row(headers))
-        lines = [_fmt_row(r) for r in rows]
-        widget.config(text="\n".join(lines))
+        header, body = display.holdings_text(display.holding_rows(holdings, nav, group))
+        hdr_widget.config(text=header)
+        widget.config(text=body or empty_text)
 
     # ── Donut chart ───────────────────────────────────────────
 
-    _MAX_PIE_LABELS = 12
+    _MAX_PIE_LABELS = display.MAX_DONUT_LABELS
 
     def _render_pie_chart(self, holdings: list, nav: float, exposure: float,
                            other_val: float = 0) -> None:
+        slices = display.donut_slices(holdings, nav, exposure, other_val)
+        self._draw_donut(display.Donut(slices, exposure, display.donut_center(exposure)))
+
+    def _draw_donut(self, donut: "display.Donut") -> None:
         t = self.t
 
         import matplotlib
@@ -317,53 +211,9 @@ class PortfolioView:
             self.chart_canvas.get_tk_widget().destroy()
             self.chart_canvas = None
 
-        sorted_h = sorted(holdings, key=lambda x: -abs(x["mkt_val"]))
-        total_mktval = sum(abs(h["mkt_val"]) for h in sorted_h)
-
-        if len(sorted_h) > self._MAX_PIE_LABELS:
-            top_h = sorted_h[:self._MAX_PIE_LABELS]
-            rest_h = sorted_h[self._MAX_PIE_LABELS:]
-            rest_val = sum(abs(h["mkt_val"]) for h in rest_h)
-            rest_count = len(rest_h)
-        else:
-            top_h = sorted_h
-            rest_val = 0
-            rest_count = 0
-
-        labels = [h["symbol"] for h in top_h]
-        values = [abs(h["mkt_val"]) for h in top_h]
-
-        etf_blues = ["#3b82f6", "#60a5fa", "#93c5fd", "#bfdbfe",
-                      "#2563eb", "#1d4ed8", "#1e40af", "#1e3a8a",
-                      "#6366f1", "#818cf8", "#a5b4fc"]
-        stock_greens = ["#22c55e", "#4ade80", "#86efac", "#bbf7d0",
-                         "#16a34a", "#15803d", "#166534", "#14532d"]
-        colors = []
-        ei, si = 0, 0
-        for h in top_h:
-            if h["symbol"] in ETF_TICKERS:
-                colors.append(etf_blues[ei % len(etf_blues)])
-                ei += 1
-            else:
-                colors.append(stock_greens[si % len(stock_greens)])
-                si += 1
-
-        if rest_count > 0:
-            labels.append(f"+{rest_count} more")
-            values.append(rest_val)
-            colors.append("#9ca3af")
-
-        if other_val > 0:
-            labels.append("Other")
-            values.append(abs(other_val))
-            total_mktval += abs(other_val)
-            colors.append("#6b7280")
-
-        if exposure < 100 and nav > total_mktval:
-            cash = nav - total_mktval
-            labels.append("Cash")
-            values.append(cash)
-            colors.append("#4b5563")
+        labels = [s.label for s in donut.slices]
+        values = [s.value for s in donut.slices]
+        colors = [s.color for s in donut.slices]
 
         fig, ax = plt.subplots(figsize=(2.8, 2.0), dpi=100)
         fig.patch.set_facecolor(t["bg2"])
@@ -381,7 +231,7 @@ class PortfolioView:
         annotations = []
         for i, (wedge, label) in enumerate(zip(wedges, labels)):
             ang = (wedge.theta2 + wedge.theta1) / 2
-            pct = values[i] / nav * 100 if nav > 0 else 0
+            pct = donut.slices[i].pct_of_nav
             side = 1 if math.cos(math.radians(ang)) >= 0 else -1
             y_pos = 0.95 * math.sin(math.radians(ang))
             annotations.append((ang, pct, label, side, y_pos))
@@ -425,14 +275,9 @@ class PortfolioView:
                 ),
             )
 
-        if exposure > 100:
-            center_text = f"{exposure:.0f}%\nof NAV"
-            center_color = t["orange"]
-        else:
-            center_text = f"{exposure:.0f}%\nExposure"
-            center_color = t["green"]
+        center_text, center_color = donut.center
         ax.text(center_x, 0, center_text, ha="center", va="center",
-                fontsize=8, fontweight="bold", color=center_color)
+                fontsize=8, fontweight="bold", color=t[center_color])
 
         fig.tight_layout(pad=0.3)
 

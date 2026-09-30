@@ -119,6 +119,7 @@ class MainWindow(QMainWindow):
         self._extra_fetchers = ((PARAMS, strategy_config_fetch), (TRADES, trades_fetch),
                                 (EQUITY, equity_fetch), (FLOWS, cash_flows_fetch))
         self._extras_loading = False
+        self._flow_problems: dict[str, str] = {}      # 出入金問題每帳戶同樣的只記一次
         self._today_jobs = today_jobs or (lambda now: dashboard_data.today_jobs(now, names))
         self._tk_panel_running = tk_panel_running
         self._clock = clock
@@ -356,12 +357,23 @@ class MainWindow(QMainWindow):
         if not self._running:
             return
         self.portfolio.set_extra(name, kind, data, error)
-        if error:
-            what = {EQUITY: "權益紀錄", FLOWS: "出入金", PARAMS: "策略設定",
-                    TRADES: "成交紀錄"}[kind]
+        if kind == FLOWS:
+            self._log_flow_problem(name, error, data)
+        elif error:
+            what = {EQUITY: "權益紀錄", PARAMS: "策略設定", TRADES: "成交紀錄"}[kind]
             self.log(f"[X] [{name}] {what}讀取失敗：{error}")
-        elif kind == FLOWS and data.error:
-            self.log(f"[!] [{name}] 出入金下載失敗，改用快取：{data.error}")
+
+    def _log_flow_problem(self, name: str, error: str, result) -> None:
+        # 沒設定 Flex 是常態：每次重新讀取都記一筆會洗版，同樣的問題只記一次
+        if error:
+            problem = f"[X] [{name}] 出入金讀取失敗：{error}"
+        elif result.error:
+            problem = f"[!] [{name}] 出入金下載失敗，改用快取：{result.error}"
+        else:
+            problem = ""
+        if problem and problem != self._flow_problems.get(name):
+            self.log(problem)
+        self._flow_problems[name] = problem
 
     def _on_extras_done(self) -> None:
         self._extras_loading = False

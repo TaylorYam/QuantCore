@@ -6,7 +6,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from performance import CashFlow, cumulative_return, growth_index, rebase
+from performance import CashFlow, growth_index, rebase
 
 
 def nav(*pairs):
@@ -76,8 +76,3 @@ def test_rebase_starts_the_range_at_zero_percent():
     assert rebase(g, pd.Timestamp("2026-04-02 12:00"))["2026-04-03"] == pytest.approx(0.0)
     assert rebase(g, pd.Timestamp("2026-05-01")).empty
 
-
-def test_cumulative_return_over_the_whole_series():
-    s = nav(("2026-04-02", 1_000.0), ("2026-04-03", 2_020.0))
-    r = cumulative_return(s, [CashFlow(date(2026, 4, 2), 1_000.0)])
-    assert list(r) == pytest.approx([0.0, 2.0])

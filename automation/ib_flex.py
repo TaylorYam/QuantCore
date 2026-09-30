@@ -7,9 +7,18 @@ its token and Query ID live in the local accounts.json (`flex_token`,
 `flex_query_id`). The token is a secret: it is only put in the request URL and is
 scrubbed from every error message; the cache never stores it.
 
-Downloaded flows are merged into a local cache (by IB transaction id), so history
-older than the query period survives and the chart still works when Flex is down.
-A successful download is not repeated on the same day (Flex rate-limits tokens).
+Date: `reportDate` (the day IB booked the flow). Checked against the real statements
+of all three accounts on 2026-09-30: every deposit / withdrawal lined up with the NAV
+jump in the next Taipei-dated Daily snapshot (see performance.py). A statement without
+reportDate is rejected rather than silently using settleDate, which can be days later.
+Internal cash transfers between IB accounts are reported by IB under the same
+Deposits/Withdrawals type; none occurred in the checked history.
+
+Downloaded flows are merged into a local cache: flows inside the downloaded
+statement's period are replaced by the new download (so IB corrections win), older
+ones are kept, so history beyond the query period survives and the chart still works
+when Flex is down. A successful download is not repeated on the same day (Flex
+rate-limits tokens).
 """
 
 from __future__ import annotations
@@ -25,7 +34,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Callable
 
-from performance import CashFlow
+from performance import CashFlow, growth_index
 
 SEND_URL = ("https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService/"
             "SendRequest")
@@ -76,12 +85,33 @@ def _xml(text: str) -> ET.Element:
         raise FlexError(f"IB Flex 回傳的不是報表（{e}）") from None
 
 
-def parse_cash_flows(xml_text: str, account_id: str | None = None) -> list[FlexCashFlow]:
+def _statement(xml_text: str) -> ET.Element:
     root = _xml(xml_text)
     if root.tag != "FlexQueryResponse":
         raise FlexError(f"IB Flex 回傳的不是報表（{root.tag}）")
+    return root
+
+
+def _missing_field(name: str) -> FlexError:
+    return FlexError(f"報表缺 {name} 欄位：Flex Query 的 Cash Transactions 請勾選全部欄位")
+
+
+def _flow(a: dict) -> tuple[date, float]:
+    day = _parse_date(a.get("reportDate", ""))
+    if day is None:
+        raise _missing_field("reportDate")
+    fx = a.get("fxRateToBase")
+    if not fx:
+        if a.get("currency", "USD") not in ("", "USD"):
+            raise _missing_field("fxRateToBase")
+        fx = 1
+    return day, float(a.get("amount") or 0) * float(fx)
+
+
+def parse_cash_flows(xml_text: str, account_id: str | None = None) -> list[FlexCashFlow]:
     flows = []
-    for row in root.iter("CashTransaction"):
+    seen: dict[str, int] = {}
+    for row in _statement(xml_text).iter("CashTransaction"):
         a = row.attrib
         if a.get("type") not in FLOW_TYPES:
             continue
@@ -89,14 +119,27 @@ def parse_cash_flows(xml_text: str, account_id: str | None = None) -> list[FlexC
             continue
         if account_id and a.get("accountId") not in (None, "", account_id):
             continue
-        day = next(filter(None, (_parse_date(a.get(k, ""))
-                                 for k in ("reportDate", "settleDate", "dateTime"))), None)
-        if day is None:
-            continue
-        amount = float(a.get("amount") or 0) * float(a.get("fxRateToBase") or 1)
-        flows.append(FlexCashFlow(a.get("transactionID") or f"{day.isoformat()}|{amount}",
-                                  day, amount))
+        try:
+            day, amount = _flow(a)
+        except ValueError as e:
+            raise FlexError(f"報表內容無法解讀：{e}") from None
+        flow_id = a.get("transactionID")
+        if not flow_id:                    # same-day, same-amount flows stay separate
+            key = f"{day.isoformat()}|{amount}"
+            seen[key] = seen.get(key, 0) + 1
+            flow_id = key if seen[key] == 1 else f"{key}|{seen[key]}"
+        flows.append(FlexCashFlow(flow_id, day, amount))
     return flows
+
+
+def statement_period(xml_text: str) -> tuple[date, date] | None:
+    """(fromDate, toDate) the statement covers; None when IB does not say."""
+    days = [(_parse_date(s.get("fromDate", "")), _parse_date(s.get("toDate", "")))
+            for s in _statement(xml_text).iter("FlexStatement")]
+    days = [(f, t) for f, t in days if f and t]
+    if not days:
+        return None
+    return min(f for f, _ in days), max(t for _, t in days)
 
 
 # ── Download ────────────────────────────────────────────────────────
@@ -141,6 +184,10 @@ def download_statement(token: str, query_id: str, *,
 
 # ── Cache ───────────────────────────────────────────────────────────
 
+def _order(flow: FlexCashFlow) -> tuple[date, str]:
+    return flow.date, flow.id
+
+
 class CashFlowCache:
     """{"accounts": {name: {"fetched_at": iso, "flows": [{id, date, amount}]}}}"""
 
@@ -155,26 +202,38 @@ class CashFlowCache:
             return {"accounts": {}}
 
     def read(self, account: str) -> tuple[list[FlexCashFlow], datetime | None]:
+        """A missing or unreadable entry reads as empty (the next download rebuilds it)."""
         entry = self._load()["accounts"].get(account)
-        if not entry:
+        try:
+            flows = [FlexCashFlow(f["id"], date.fromisoformat(f["date"]), float(f["amount"]))
+                     for f in entry["flows"]]
+            return flows, datetime.fromisoformat(entry["fetched_at"])
+        except (KeyError, TypeError, ValueError):
             return [], None
-        flows = [FlexCashFlow(f["id"], date.fromisoformat(f["date"]), float(f["amount"]))
-                 for f in entry.get("flows", [])]
-        return flows, datetime.fromisoformat(entry["fetched_at"])
 
-    def merge(self, account: str, flows: list[FlexCashFlow], fetched_at: datetime) -> None:
+    def merge(self, account: str, flows: list[FlexCashFlow], fetched_at: datetime,
+              period: tuple[date, date] | None = None) -> None:
+        """Add a download: inside its period the download replaces the cache (IB may
+        have corrected a flow); outside it, cached flows are kept."""
         data = self._load()
         old, _ = self.read(account)
+        if period is not None:
+            old = [f for f in old if not period[0] <= f.date <= period[1]]
         by_id = {f.id: f for f in old}
         by_id.update({f.id: f for f in flows})
         data["accounts"][account] = {
             "fetched_at": fetched_at.isoformat(),
             "flows": [{"id": f.id, "date": f.date.isoformat(), "amount": f.amount}
-                      for f in sorted(by_id.values(), key=lambda f: (f.date, f.id))],
+                      for f in sorted(by_id.values(), key=_order)],
         }
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
         os.replace(tmp, self.path)
+
+
+def account_entry(accounts: list[dict], name: str) -> dict | None:
+    """This account's accounts.json entry (name matched like account_utils: any case)."""
+    return next((a for a in accounts if str(a.get("name", "")).upper() == name.upper()), None)
 
 
 def flex_settings(cfg: dict) -> tuple[str, str]:
@@ -196,7 +255,7 @@ def flex_settings(cfg: dict) -> tuple[str, str]:
 
 
 def _as_cash_flows(flows: list[FlexCashFlow]) -> list[CashFlow]:
-    return [CashFlow(f.date, f.amount) for f in sorted(flows, key=lambda f: (f.date, f.id))]
+    return [CashFlow(f.date, f.amount) for f in sorted(flows, key=_order)]
 
 
 def load_cash_flows(account: str, cfg: dict, cache: CashFlowCache, *, now: datetime,
@@ -213,11 +272,12 @@ def load_cash_flows(account: str, cfg: dict, cache: CashFlowCache, *, now: datet
     try:
         xml = download_statement(token, query_id, http_get=http_get, sleep=sleep)
         flows = parse_cash_flows(xml, cfg.get("account"))
+        period = statement_period(xml)
     except FlexError as e:
         if fetched_at is None:
             raise
         return FlowsResult(_as_cash_flows(cached), fetched_at, str(e))
-    cache.merge(account, flows, now)
+    cache.merge(account, flows, now, period)
     merged, _ = cache.read(account)
     return FlowsResult(_as_cash_flows(merged), now)
 
@@ -231,9 +291,7 @@ def check_report(account: str, accounts: list[dict], nav, *,
     line up its deposits / withdrawals with the NAV jumps. Prints no token or account id."""
     import pandas as pd
 
-    from performance import growth_index
-
-    cfg = next((a for a in accounts if a.get("name") == account), None)
+    cfg = account_entry(accounts, account)
     if cfg is None:
         raise FlexError(f"accounts.json 沒有帳戶 {account}")
     token, query_id = flex_settings(cfg)

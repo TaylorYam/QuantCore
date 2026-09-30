@@ -56,8 +56,3 @@ def rebase(growth: pd.Series, start: pd.Timestamp) -> pd.Series:
         return base
     return (growth / base.iloc[0] - 1) * 100
 
-
-def cumulative_return(nav: pd.Series, flows: list[CashFlow]) -> pd.Series:
-    """Cumulative return in % since the first snapshot."""
-    growth = growth_index(nav, flows)
-    return rebase(growth, growth.index[0]) if not growth.empty else growth

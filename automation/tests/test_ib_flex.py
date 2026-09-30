@@ -85,12 +85,35 @@ def test_parse_skips_summary_rows_and_other_accounts():
     assert len(parse_cash_flows(xml)) == 2
 
 
-def test_parse_falls_back_to_the_transaction_date_and_a_synthetic_id():
-    xml = statement({"amount": "700", "reportDate": "", "settleDate": "",
-                     "dateTime": "20260506;093000"})
-    [flow] = parse_cash_flows(xml)
-    assert flow.date == date(2026, 5, 6)
-    assert flow.id == "2026-05-06|700.0"
+def test_parse_needs_the_report_date():
+    """已用三個帳戶的真實報表確認 reportDate 對得上權益跳動；沒有就報錯，不改用 settleDate。"""
+    xml = statement({"amount": "700", "id": "1", "reportDate": "", "settleDate": "20260506"})
+    with pytest.raises(FlexError, match="reportDate"):
+        parse_cash_flows(xml)
+
+
+def test_foreign_currency_needs_the_fx_rate():
+    row = ('<CashTransaction accountId="U1111111" currency="{cur}" type="Deposits/Withdrawals" '
+           'amount="1000" reportDate="20260428" transactionID="1" />')
+    wrap = ('<FlexQueryResponse><FlexStatements><FlexStatement accountId="U1111111">'
+            '<CashTransactions>{rows}</CashTransactions></FlexStatement></FlexStatements>'
+            '</FlexQueryResponse>')
+    with pytest.raises(FlexError, match="fxRateToBase"):
+        parse_cash_flows(wrap.format(rows=row.format(cur="HKD")))
+    [flow] = parse_cash_flows(wrap.format(rows=row.format(cur="USD")))
+    assert flow.amount == 1000.0
+
+
+def test_same_day_same_amount_flows_without_an_id_stay_separate():
+    xml = statement({"amount": "700", "reportDate": "20260506"},
+                    {"amount": "700", "reportDate": "20260506"})
+    flows = parse_cash_flows(xml)
+    assert [f.id for f in flows] == ["2026-05-06|700.0", "2026-05-06|700.0|2"]
+
+
+def test_unreadable_values_are_a_flex_error():
+    with pytest.raises(FlexError, match="無法解讀"):
+        parse_cash_flows(statement({"amount": "abc", "id": "1"}))
 
 
 def test_parse_rejects_something_that_is_not_a_flex_statement():
@@ -180,6 +203,33 @@ def test_a_new_day_downloads_again_and_keeps_older_history(tmp_path):
     assert result.fetched_at == tomorrow
 
 
+def test_a_new_download_replaces_its_period_so_ib_corrections_win(tmp_path):
+    cache = CashFlowCache(tmp_path / "flows.json")
+    load_cash_flows("Rosa", CFG, cache, now=NOW,
+                    http_get=FakeHttp(send_ok(), statement(
+                        {"amount": "100", "id": "old", "reportDate": "20250101"},
+                        {"amount": "200", "id": "wrong", "reportDate": "20260428"})),
+                    sleep=lambda s: None)
+    # IB 事後更正：同一期間的新報表沒有 "wrong"，改成另一筆
+    result = load_cash_flows("Rosa", CFG, cache, now=datetime(2026, 10, 1, 9, 0),
+                             http_get=FakeHttp(send_ok(), statement(
+                                 {"amount": "250", "id": "fixed", "reportDate": "20260428"})),
+                             sleep=lambda s: None)
+    assert sorted((f.date.isoformat(), f.amount) for f in result.flows) == [
+        ("2025-01-01", 100.0), ("2026-04-28", 250.0)]         # 報表期間外的舊紀錄保留
+
+
+def test_a_bad_statement_falls_back_to_the_cache(tmp_path):
+    cache = CashFlowCache(tmp_path / "flows.json")
+    load_cash_flows("Rosa", CFG, cache, now=NOW,
+                    http_get=FakeHttp(send_ok(), statement({"amount": "5", "id": "1"})),
+                    sleep=lambda s: None)
+    result = load_cash_flows("Rosa", CFG, cache, now=datetime(2026, 10, 1, 9, 0),
+                             http_get=FakeHttp(send_ok(), statement({"amount": "x", "id": "2"})),
+                             sleep=lambda s: None)
+    assert result.flows == [CashFlow(date(2026, 4, 28), 5.0)] and "無法解讀" in result.error
+
+
 def test_a_failed_download_falls_back_to_the_cache_with_the_reason(tmp_path):
     cache = CashFlowCache(tmp_path / "flows.json")
     load_cash_flows("Rosa", CFG, cache, now=NOW,
@@ -225,9 +275,14 @@ def test_flex_settings_are_checked_before_contacting_ib(tmp_path):
     assert ib_flex.flex_settings({"flex_token": f" {TOKEN} ", "flex_query_id": 777}) == (TOKEN, "777")
 
 
-def test_a_broken_cache_file_is_treated_as_empty(tmp_path):
+@pytest.mark.parametrize("content", [
+    "{not json",
+    '{"accounts": {"Rosa": {"flows": [{"id": "1"}]}}}',              # 欄位不完整
+    '{"accounts": {"Rosa": {"fetched_at": "bad", "flows": []}}}',
+])
+def test_a_broken_cache_file_is_treated_as_empty(tmp_path, content):
     path = tmp_path / "flows.json"
-    path.write_text("{not json", encoding="utf-8")
+    path.write_text(content, encoding="utf-8")
     result = load_cash_flows("Rosa", CFG, CashFlowCache(path), now=NOW,
                              http_get=FakeHttp(send_ok(), statement({"amount": "5", "id": "1"})),
                              sleep=lambda s: None)
@@ -252,6 +307,15 @@ def test_check_report_lines_up_flows_with_nav_jumps():
     assert "2026-04-28  +1,000.00" in text
     assert "2026-04-29  權益 +100.0% → 業績 +1.0%（歸到這天的出入金 +1,000.00）" in text
     assert TOKEN not in text and "U1111111" not in text
+
+
+def test_check_report_matches_the_account_name_in_any_case():
+    import pandas as pd
+
+    accounts = [{"name": "Rosa", "flex_token": TOKEN, "flex_query_id": "777"}]
+    lines = ib_flex.check_report("rosa", accounts, pd.Series(dtype=float),
+                                 download=lambda t, q: statement())
+    assert lines[0] == "rosa：Flex 出入金 0 筆"
 
 
 def test_check_report_needs_the_flex_settings():

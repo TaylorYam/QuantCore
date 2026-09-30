@@ -60,9 +60,9 @@ def load_account_cash_flows(account_name: str):
     from datetime import datetime
 
     from account_utils import load_accounts
-    from ib_flex import CashFlowCache, load_cash_flows
+    from ib_flex import CashFlowCache, account_entry, load_cash_flows
 
-    cfg = next((a for a in load_accounts() if a["name"] == account_name), {})
+    cfg = account_entry(load_accounts(), account_name) or {}
     return load_cash_flows(account_name, cfg, CashFlowCache(), now=datetime.now())
 
 

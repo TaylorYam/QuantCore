@@ -170,7 +170,7 @@ Panel 正逐步換成 PySide6（[ADR-0012](docs/adr/0012-panel-pyside6-parallel-
     - 權益紀錄、策略設定、成交紀錄在背景讀：開啟時一次、按「重新讀取 IB」時再讀；某帳戶讀取失敗只影響它自己
     - 權益／業績切換（#166）：業績是排除出入金的累積報酬（同 IB 的 Performance），選區間時從區間起點 0% 算起；總覽卡片的「近 60 天」有出入金紀錄時也改算業績。出入金來自 IB Flex 報表（見下方設定），沒設定的帳戶只能看權益
 - 業績圖的出入金設定（每個帳戶各做一次）：
-  1. IB Client Portal → Performance & Reports → Flex Queries：新增一個 Activity Flex Query，勾 **Cash Transactions** 裡的 **Deposits & Withdrawals**，Period 選 **Last 365 Calendar Days**，Format 選 XML，記下 Query ID
+  1. IB Client Portal → Performance & Reports → Flex Queries：新增一個 Activity Flex Query，勾 **Cash Transactions** 裡的 **Deposits & Withdrawals**，欄位選 **Select All**（至少要有 reportDate、amount、currency、fxRateToBase、transactionID），Period 選 **Last 365 Calendar Days**，Format 選 XML，記下 Query ID（純數字，不是 U 開頭的帳號）
   2. 同一頁的 Flex Web Service Configuration：開啟並產生 token（有效期限最長一年，到期要重新產生）
   3. 在本機 `automation/accounts.json` 該帳戶加上 `"flex_token"`、`"flex_query_id"`（範本見 `accounts.example.json`）。token 是機密，不要貼到任何地方
   - 新 Panel 開啟時與按「重新讀取 IB」時下載，同一天成功下載過就不再下載；結果合併存在 `automation/flex_cash_flows.json`（gitignored，只有日期與金額），所以超過一年的舊出入金也會保留。Flex 走 IB 網站，不經過 Gateway、不佔 clientId、不下單

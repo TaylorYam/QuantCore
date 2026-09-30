@@ -1383,6 +1383,10 @@ def test_performance_without_flex_settings_explains_and_equity_still_works(make_
     assert "業績需要出入金紀錄" in chart.empty_text() and "flex_token" in chart.empty_text()
     assert chart.points() == []
     assert "Yvonne] 出入金讀取失敗" in w.dashboard.log_text()
+    # 沒設定 Flex 是常態：重新讀取不再重複記
+    qtbot.mouseClick(w.portfolio.refresh_button, Qt.LeftButton)
+    _wait_extras(w, qtbot)
+    assert w.dashboard.log_text().count("Yvonne] 出入金讀取失敗") == 1
     w.portfolio.select("Taylor")                                     # 其他帳戶的業績照常
     assert chart.points() and chart.empty_text() == ""
     w.portfolio.select("Yvonne")

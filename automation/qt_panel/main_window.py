@@ -42,6 +42,9 @@ from qt_panel.gateway_actions import (
     CredentialStore, Dialogs, GatewayStartFlow, PortsFactory, QtDialogs,
 )
 from qt_panel.broker_gate import PaperTarget, SendGate
+from qt_panel.live_trading import (
+    LIVE_TARGET_TEXT, LiveSync, LiveTakeover, account_telegram, live_manual_order_service,
+)
 from qt_panel.gateway_status import GatewaySource
 from qt_panel.mode import PanelMode
 from qt_panel.portfolio import EQUITY, FLOWS, PARAMS, TRADES, PortfolioPage
@@ -133,6 +136,7 @@ class MainWindow(QMainWindow):
         self._source = gateway_source
         self._watch_ports = watch_ports or WatchPorts()
         self._watch: QtWatch | None = None
+        self._manual_service = None          # 正式模式：手動單對帳在背景持續跑（同 Tk）
         self._credential_store = credential_store
         self._dialogs = dialogs if dialogs is not None else QtDialogs(self)
         self._read_data_date = read_data_date
@@ -240,8 +244,22 @@ class MainWindow(QMainWindow):
         supported = {n.casefold() for n in SUPPORTED_MANUAL_ACCOUNTS}
         names = [n for n in self._names if n.casefold() in supported]
         service, sync, takeover, problem, target_text = None, None, None, paper_problem, ""
-        # 正式模式（#154）才會接實盤帳戶；在那之前一律要有 paper 設定
-        if mode is PanelMode.PARALLEL and paper_target is not None:
+        load_ctx = account_ctx_loader or _load_account_ctx
+        if mode is PanelMode.PRODUCTION:
+            # 實盤：Panel 原有的帳戶身分與紀錄（同 Tk），連線仍經過送單閘門
+            factory = service_factory or live_manual_order_service(names)
+            try:
+                service = factory(ib_factory=self.send_gate.broker,
+                                  account_ctx_factory=load_ctx, notifier=account_telegram)
+                target_text = LIVE_TARGET_TEXT
+            except Exception as e:
+                problem = f"手動單服務無法啟動：{e}"
+            if service is not None:
+                sync = LiveSync(send_gate=self.send_gate, account_ctx_loader=load_ctx,
+                                log=self.log)
+                takeover = LiveTakeover(send_gate=self.send_gate, account_ctx_loader=load_ctx)
+            self._manual_service = service
+        elif paper_target is not None:      # 並行模式：一律只接 paper
             factory = service_factory or paper_manual_order_service(names, paper_files.orders)
             try:
                 service = factory(ib_factory=self.send_gate.broker,
@@ -252,12 +270,12 @@ class MainWindow(QMainWindow):
                 problem = f"手動單服務無法啟動：{e}"
             if service is not None:
                 paper = dict(target=paper_target, send_gate=self.send_gate, files=paper_files,
-                             account_ctx_loader=account_ctx_loader or _load_account_ctx)
+                             account_ctx_loader=load_ctx)
                 sync = PaperSync(**paper)
                 takeover = PaperTakeover(**paper)
         return TradingPage(names, service, unavailable=problem, target_text=target_text,
                            dialogs=self._dialogs, log=self.log, symbol_loader=symbol_loader,
-                           sync=sync, takeover=takeover)
+                           sync=sync, takeover=takeover, live=mode is PanelMode.PRODUCTION)
 
     def _manual_order_notice(self, account: str, message: str) -> bool:
         """手動單結案通知：paper 單只寫 Output Log，不發 Telegram。"""
@@ -276,6 +294,7 @@ class MainWindow(QMainWindow):
                                   refresh=self.recheck_gateways, now=self._taipei_now,
                                   parent=self)
             self._watch.start()
+            self._start_manual_order_tracking()
         self._reload()
         self._portfolio_loop.start()
         self.load_account_extras()
@@ -302,6 +321,9 @@ class MainWindow(QMainWindow):
         self._gateway_flow.stop()
         if self._watch is not None:
             self._watch.stop()
+        stop_tracking = getattr(self._manual_service, "stop_monitor", None)
+        if callable(stop_tracking):
+            stop_tracking()
         self._portfolio_loop.stop()
         self.trading.stop()
         self._source.stop()
@@ -344,6 +366,16 @@ class MainWindow(QMainWindow):
         self.tick_auto_recheck()
         self._update_watch()
         self._update_jobs()
+
+    def _start_manual_order_tracking(self) -> None:
+        """正式模式：手動單對帳與結案通知在背景持續跑，同 Tk 的 start_manual_order_tracking。"""
+        start = getattr(self._manual_service, "start_monitor", None)
+        if not callable(start):
+            return
+        try:
+            start()
+        except Exception as e:
+            self.log(f"[!] 手動單追蹤無法啟動：{e}")
 
     def _on_duty(self) -> bool:
         """正式模式：值班由這個 Panel 跑。"""

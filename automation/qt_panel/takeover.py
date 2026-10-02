@@ -31,7 +31,8 @@ SYMBOL_WIDTH = 140
 
 
 class PaperTakeover:
-    """paper 版交給策略接管的預覽與送單（不含畫面）。"""
+    """paper 版交給策略接管的預覽與送單（不含畫面）。實盤版是 live_trading.LiveTakeover。"""
+    venue = "paper"
 
     def __init__(self, *, target, send_gate, files, account_ctx_loader: Callable):
         self._target = target
@@ -79,7 +80,7 @@ class TakeoverPanel(QWidget):
         self._main = MainThread()
         self._generation = 0          # 計算的代號：放棄或重算後，舊的結果不採用
         self._computing = False
-        # 背景計算還連著 paper（同一個 clientId）：放棄後也要等它結束才能重算
+        # 背景計算還連著 IB（同一個 clientId）：放棄後也要等它結束才能重算
         self._worker_running = False
         self._sending = False
         self._closed = False
@@ -237,7 +238,7 @@ class TakeoverPanel(QWidget):
         if self._computing or self._sending:
             problem = "接管預覽還在計算或送單中，請等它結束再從 Sync Pos 進來。"
         elif self._worker_running:
-            problem = "上一次接管計算的 paper 連線還沒結束，請稍後再從 Sync Pos 進來。"
+            problem = "上一次接管計算的連線還沒結束，請稍後再從 Sync Pos 進來。"
         elif index < 0:
             problem = f"接管畫面沒有 {account} 這個帳戶。"
         else:
@@ -269,7 +270,7 @@ class TakeoverPanel(QWidget):
         self.progress.show()
         self._set_status(f"[{account}] {symbol} 計算中…（{self._takeover.target_text}）")
         self._update_buttons()
-        self._log(f"[>] 交給策略接管（paper）— [{account}] {symbol}，計算中...")
+        self._log(f"[>] 交給策略接管（{self._takeover.venue}）— [{account}] {symbol}，計算中...")
 
         def progress(msg: str) -> None:
             self._main.call.emit(lambda: self._progress(generation, msg))
@@ -384,7 +385,7 @@ class TakeoverPanel(QWidget):
         self._log(f"[{'OK' if ok else '!!'}] 接管 {preview.symbol}: {result.message}")
         try:
             for line in self._takeover.take_notices(preview.account_name):
-                self._log(f"[手動持倉·paper] [{preview.account_name}] {line}")
+                self._log(f"[手動持倉·{self._takeover.venue}] [{preview.account_name}] {line}")
         except Exception as e:
             self._log(f"[!] 接管結果通知失敗: {e}")
         self._reload_symbols(announce=False)

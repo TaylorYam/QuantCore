@@ -135,11 +135,8 @@ class PaperTarget:
         return f"paper 帳號 {self.account}（{self.host}:{self.port}）"
 
 
-def paper_records(send_gate, files):
-    """paper 的 IB 連線與本機紀錄（Sync Pos、交給策略接管共用）：連線走送單閘門、
-    歸屬與手動單紀錄用 paper 專用檔、SP500／SkewLS state 只讀不寫。"""
-    from sync_position import SyncRecords
-
+def gated_connect(send_gate):
+    """SyncRecords 的連線工廠：每條連線都經過送單閘門（Sync Pos、接管；paper 與實盤）。"""
     def connect(ctx):
         ib = send_gate.broker()
         try:
@@ -148,8 +145,15 @@ def paper_records(send_gate, files):
             ib.disconnect()            # 同 ib_fetcher.connect：連不上也要收掉 socket
             raise
         return ib
+    return connect
 
-    return SyncRecords(connect=connect, attribution_ledger=files.attribution,
+
+def paper_records(send_gate, files):
+    """paper 的 IB 連線與本機紀錄（Sync Pos、交給策略接管共用）：連線走送單閘門、
+    歸屬與手動單紀錄用 paper 專用檔、SP500／SkewLS state 只讀不寫。"""
+    from sync_position import SyncRecords
+
+    return SyncRecords(connect=gated_connect(send_gate), attribution_ledger=files.attribution,
                        manual_orders_store=files.orders, persist_strategy_state=False)
 
 

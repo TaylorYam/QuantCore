@@ -1335,10 +1335,10 @@ class ControlPanel(tk.Tk):
 
     def _sync_execute(self, plan):
         """背景執行緒：送出限價單 — S10 thin wrapper，實作在 sync_position.submit_sync_orders。
-        Panel 只負責 log marshalling、Excel 記錄、Telegram 通知、UI 刷新。"""
+        Panel 只負責 log marshalling、UI 刷新；Excel 記錄與 Telegram 通知在 sync_position
+        （與新 Panel 正式模式共用，#154）。"""
         try:
             import sync_position as sp
-            from excel_logger import append_trade_log
 
             # 進度 log 回主執行緒
             def progress(msg: str):
@@ -1346,19 +1346,8 @@ class ControlPanel(tk.Tk):
 
             placed, fill_results = sp.submit_sync_orders(plan, log_fn=progress)
 
-            ctx = plan.ctx
-            account_name = ctx.name
-            nav = plan.nav
-            sr_date = plan.sr_date
-            sp500_date = plan.sp500_date
-
             # Excel 交易記錄
-            for o in placed:
-                strat = o.get('strategy', 'Sync')
-                append_trade_log([o], fill_results,
-                                 f"SR:{sr_date} SP500:{sp500_date}",
-                                 'LMT', ctx.leverage, ctx.dry_run,
-                                 strategy=strat, account_name=account_name)
+            sp.log_sync_trades(plan, placed, fill_results)
 
             # Log 成交結果
             self.after(0, lambda n=len(placed): self._log(f"[OK] Placed {n} orders"))
@@ -1369,28 +1358,7 @@ class ControlPanel(tk.Tk):
                     f"{f['symbol']} @ ${f['avg_price']:.2f} [{f['status']}]"))
 
             # Telegram 通知
-            acct_tag = f"[{account_name}] "
-            lines = [
-                f"<b>{acct_tag}Sync Position — LMT</b>",
-                f"Date: {date.today()}",
-                f"NAV: <b>${nav:,.2f}</b>",
-                f"SR: {sr_date}  |  SP500: {sp500_date}",
-            ]
-            if not fill_results:
-                lines.append(f"\n<b>委託 ({len(placed)} 筆):</b>")
-                for o in placed:
-                    action_tag = "🔴 SELL" if o['action'] == 'SELL' else "🟢 BUY "
-                    lines.append(f"  {action_tag} {o['qty']}sh {o['symbol']}  [{o.get('strategy', '')}]")
-            else:
-                lines.append(f"\n<b>成交結果 ({len(fill_results)} 筆):</b>")
-                for f in fill_results:
-                    icon = "✅" if f['status'] == 'Filled' else "⚠️"
-                    action_tag = "🔴 SELL" if f['action'] == 'SELL' else "🟢 BUY "
-                    val = f['filled'] * f['avg_price']
-                    px_str = f"@ ${f['avg_price']:.2f}  ~${val:,.0f}" if f['filled'] > 0 else "未成交"
-                    lines.append(f"  {icon} {action_tag} {f['filled']}/{f['qty']}sh {f['symbol']}  {px_str}  [{f['status']}]")
-            from notify import tg_send as _tg
-            _tg("\n".join(lines), token=ctx.tg_token, chat_id=ctx.tg_chat_id)
+            sp.send_sync_result(plan, placed, fill_results)
 
             self.after(0, lambda: self._log("[OK] Sync complete — check Telegram"))
             self.after(0, lambda: self._refresh_ib_live())

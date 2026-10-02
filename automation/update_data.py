@@ -83,6 +83,8 @@ def main() -> list[str]:
         errors.append(f"Stocks: {e}")
 
     elapsed = (datetime.now() - start_ts).seconds
+    for e in errors:
+        log.warning(f"Update error: {e}")
 
     # ── 3. Telegram 通知（只在失敗時）──────────────────────────────────────
     msg = failure_message(errors, elapsed, date.today())

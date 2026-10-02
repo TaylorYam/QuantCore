@@ -124,6 +124,56 @@ def test_a_revised_last_bar_is_not_a_rescale():
     assert v["status"] == "consistent" and v["outliers"] == 1
 
 
+def revised_tail(factors, start=21.0, seed=0):
+    """SMN 2026-09 (#120): the daily update stored provisional bars of a thin
+    ETF; the provider later revised the latest ones (local / provider below)."""
+    value = walk(seed, start=start)
+    local = value.copy()
+    local[len(value) - len(factors):] *= np.asarray(factors, float)
+    return bars(local), bars(value, splits={})
+
+
+def test_provisional_recent_bars_revised_by_the_provider_are_replaced():
+    local, provider = revised_tail([20.40 / 20.34, 20.3349 / 20.43, 20.85 / 20.92])
+    v = pc.compare_history(local, provider)
+    assert v["status"] == "rescaled" and v["reasons"] == [] and v["steps"] == []
+    assert v["revised_bars"] == [str(d.date()) for d in DAYS[-3:]]
+    assert v["identity_mismatch"] is False
+
+
+def test_revised_recent_bars_beyond_a_thin_name_revision_are_refused():
+    local, provider = revised_tail([1.08, 1.09, 1.08])
+    v = pc.compare_history(local, provider)
+    assert v["status"] == "mismatch" and v["revised_bars"] == []
+
+
+def test_revision_deeper_than_the_recent_bars_is_still_a_step():
+    local, provider = revised_tail([1 / 1.005] * 8)
+    v = pc.compare_history(local, provider)
+    assert v["status"] == "mismatch" and v["revised_bars"] == []
+    assert "without a matching provider split record" in v["reasons"][0]
+
+
+def test_unrecorded_rescale_of_all_but_the_latest_bars_is_refused():
+    # the provider moved every bar before the last three (no split record):
+    # the history before the recent bars disagrees, so it is not a revision
+    value = walk()
+    raw = np.where(np.arange(len(value)) < len(value) - 3, value, value / 1.02)
+    v = pc.compare_history(bars(raw), bars(value / 1.02, splits={}))
+    assert v["status"] == "mismatch" and v["revised_bars"] == []
+
+
+def test_identity_doubt_only_on_identity_evidence():
+    other = pc.compare_history(bars(walk(0)), bars(walk(7, start=40.0), splits={}))
+    assert other["identity_mismatch"] is True
+    shorter = pc.compare_history(bars(walk()), bars(walk()[90:], days=DAYS[90:], splits={}))
+    assert shorter["identity_mismatch"] is True
+    local, provider = split_case(2.0, at=80)
+    provider[pc.SPLIT_COL] = 0.0
+    step = pc.compare_history(local, provider)
+    assert step["status"] == "mismatch" and step["identity_mismatch"] is False
+
+
 def test_local_adj_close_that_jumped_ahead_of_its_split_is_replaced():
     # BKNG 2026-03-24: appended Adj Close already /25 two weeks before the split
     value = walk(start=5000.0)
@@ -301,7 +351,7 @@ def test_update_refuses_a_symbol_that_now_points_at_another_security(updater, mo
     result = updater.update_stocks()[0]
     assert result["status"] == "invalid_response"
     assert result["ticker"] == "NFX"
-    assert "provider 歷史與本地檔核對不過" in result["detail"]
+    assert "provider 歷史與本地檔核對不過（可能已是別的證券）" in result["detail"]
     assert "provider lacks" in result["detail"]
     assert path.read_bytes() == before
 
@@ -359,6 +409,44 @@ def test_etf_small_adjusted_close_rebase_refreshes_full_provider_history(updater
     assert len(got) == len(provider)
     assert np.allclose(got["Close"], provider["Close"], atol=1e-6)
     assert np.allclose(got["Adj Close"], provider["Adj Close"], atol=1e-6)
+
+
+def test_etf_revised_provisional_bars_and_dividend_refresh_the_file(updater, monkeypatch):
+    # SMN 2026-09-29 (#120): a dividend re-based Adj Close (full check), and the
+    # provider had revised the last three stored bars
+    value = walk(start=21.0)
+    stored = value[:110].copy()
+    stored[-3:] *= [20.40 / 20.34, 20.3349 / 20.43, 20.85 / 20.92]
+    path = updater.ETF_DIR / "REW.csv"
+    write(path, bars(stored))
+    write(updater.ETF_DIR / "VIX.csv", bars(walk(5, start=17.0)))
+    provider = bars(value, adj=value * 0.993)
+    serve(monkeypatch, updater, {"REW": provider})
+
+    results = {result["ticker"]: result for result in updater.update_etfs()}
+
+    assert results["REW"]["status"] == "updated"
+    got = pc.read_csv(path)
+    assert len(got) == len(provider)
+    assert np.allclose(got["Close"], provider["Close"], atol=1e-6)
+    assert pc.compare_history(got, provider)["status"] == "consistent"
+
+
+def test_unexplained_step_is_refused_without_claiming_another_security(updater, monkeypatch):
+    local, provider = split_case(2.0, at=100)
+    provider[pc.SPLIT_COL] = 0.0
+    path = updater.STOCK_DIR / "STP.csv"
+    write(path, local.iloc[:110])
+    serve(monkeypatch, updater, {"STP": provider})
+    before = path.read_bytes()
+
+    result = updater.update_stocks()[0]
+
+    assert result["status"] == "invalid_response"
+    assert "provider 歷史與本地檔核對不過" in result["detail"]
+    assert "可能已是別的證券" not in result["detail"]
+    assert "without a matching provider split record" in result["detail"]
+    assert path.read_bytes() == before
 
 
 def test_etf_update_refuses_provider_history_without_adjusted_close(updater, monkeypatch):

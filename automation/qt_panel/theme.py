@@ -1,4 +1,8 @@
-"""顏色與樣式表（#145 原型定案：淺色、Noto Sans TC，見 #144 留言）。
+"""顏色與樣式表（#145 原型定案：淺色，見 #144 留言）。
+
+字體用 Windows 內建的微軟正黑體 UI（#178）：原本的 Noto Sans TC 在本機只有可變字型，
+10pt 小字的中文是灰階、沒對齊像素格，筆畫發糊不連續。正黑體只有一般／粗體兩種字重，
+font-weight 500 會顯示成一般、600 以上是粗體。
 
 淺灰頁面、白色卡片、深色字；Tk 版的深藍＋金色只當重點色。
 """
@@ -44,7 +48,7 @@ OWNER_COLOR = {"SR": BLUE, "SkewLS": "#7c3aed", "SP500": GREEN, "手動": TEXT_D
 JOB_COLOR = {"pending": TEXT_FAINT, "missing": RED, "unfinished": RED,
              "ok": GREEN, "problem": ORANGE, "ran": GREEN}
 
-UI_FONT = "Noto Sans TC"
+UI_FONT = "Microsoft JhengHei UI"
 MONO_FONT = "Consolas"
 
 STYLESHEET = f"""
@@ -85,7 +89,8 @@ QComboBox QAbstractItemView::item:selected {{ background: {SURFACE_HOVER}; color
 #BigNum {{ font-size: 18pt; font-weight: 700; }}
 #Card[clickable="true"]:hover {{ border-color: {BORDER_STRONG}; }}
 #Card[selected="true"] {{ border: 2px solid {ACCENT}; }}
-QPushButton#Chip {{ padding: 3px 12px; border-radius: 12px; font-size: 9pt; }}
+/* 圓角超過按鈕高度一半時 Qt 會整個不畫圓角；正黑體 9pt 的 Chip 約 23px 高（#178） */
+QPushButton#Chip {{ padding: 3px 12px; border-radius: 10px; font-size: 9pt; }}
 QPushButton#Chip:checked {{ background: {NAVY}; border-color: {NAVY}; color: #ffffff; }}
 QTableWidget {{
     background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 6px;

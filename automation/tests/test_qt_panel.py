@@ -1144,6 +1144,25 @@ def test_combo_box_dropdowns_have_an_opaque_theme_background(qtbot, style_name):
     combo.hidePopup()
 
 
+def test_chip_corner_radius_fits_the_chip_height(qtbot):
+    # 圓角超過高度一半時 Qt 整個不畫圓角（#178 換成正黑體後 Chip 變矮就踩到）
+    import re
+
+    from PySide6.QtGui import QFont
+    from PySide6.QtWidgets import QPushButton
+
+    from qt_panel import theme
+
+    radius = int(re.search(r"QPushButton#Chip \{[^}]*border-radius: (\d+)px",
+                           theme.STYLESHEET).group(1))
+    chip = QPushButton("1Y")
+    chip.setObjectName("Chip")
+    chip.setFont(QFont(theme.UI_FONT, 10))
+    chip.setStyleSheet(theme.STYLESHEET)
+    qtbot.addWidget(chip)
+    assert radius * 2 <= chip.sizeHint().height()
+
+
 def test_scroll_bars_are_slim_theme_bars_without_arrows(qtbot):
     """捲軸用主題的細圓角樣式（#171），不是 Windows 原生捲軸。"""
     from PySide6.QtWidgets import QLabel, QScrollArea, QStyleFactory

@@ -166,7 +166,7 @@ Panel 正逐步換成 PySide6（[ADR-0012](docs/adr/0012-panel-pyside6-parallel-
     - 值班：Rosa poll／TY check／Morning check 的下次時間，以及 Tk Panel 有沒有開（沒開 = 目前沒有人值班）；新 Panel 自己不值班、不發 Telegram
     - 今日排程（當日排程總結的畫面版，讀 `logs/run_status/`；21:31 成交回報只看它今天的 log 有沒有寫過）、資料日期（`SPY.csv` 最後一天）、最後更新時間與「重新整理」、Output Log
   - Portfolio：上方三帳戶總覽（權益、未平倉損益、Account Exposure／Cushion、讀數來源），點選後下方顯示該帳戶的指標卡、配置圓環與持倉表（歸屬 SR／SkewLS／SP500／手動；策略外持倉與碰撞進策略 Universe 的手動持倉都標手動，唯讀讀 `manual_attribution` 紀錄；可依歸屬篩選、點欄位排序）。讀取排程同 Tk（開啟時一次、美股盤中固定時間），「重新讀取 IB」手動讀，Gateway 一鍵登入後也會自動讀一次；某帳戶讀取失敗只影響它自己，有上次讀數就照樣顯示並標「快取」。查詢用新 Panel 自己的唯讀 clientId（Taylor 69／Rosa 79／Yvonne 89），不和心跳（29／39／49）、Tk、排程撞號。指標卡、持倉列、圓環資料與 Tk 共用 `automation/portfolio_display.py`
-    - 總覽卡片另有近 60 天權益小圖與報酬；單一帳戶頁有 pyqtgraph 權益曲線（滾輪縮放、拖曳平移時間軸，縱軸自動跟著區間；滑鼠移上去看日期、權益、距前高；1M／3M／YTD／1Y／全部 區間按鈕，預設 1Y）。資料同 Telegram 權益曲線（`equity_chart.load_equity_series`，`portfolio_tracker.xlsx` 的 Daily），Telegram 的圖仍用 matplotlib
+    - 總覽卡片另有近 60 天權益小圖與報酬；單一帳戶頁有 pyqtgraph 權益曲線（點一下圖後才可滾輪縮放、拖曳平移時間軸，游標離開圖即停用；縱軸自動跟著區間；滑鼠移上去看日期、權益、距前高；1M／3M／YTD／1Y／全部 區間按鈕，預設 1Y）。資料同 Telegram 權益曲線（`equity_chart.load_equity_series`，`portfolio_tracker.xlsx` 的 Daily），Telegram 的圖仍用 matplotlib
     - 策略參數：各 Strategy 的 Allocation 與合計 Leverage（`accounts.json`，唯讀；新 Panel 沒有寫入 accounts／config 的路徑，調整照舊用 Tk Panel）；最近成交：`trade_log.xlsx` 近 7 天（顯示完整日期時間）。兩者的顯示計算與 Tk 共用 `automation/strategy_params_display.py`、`automation/trades_display.py`
     - 權益紀錄、策略設定、成交紀錄在背景讀：開啟時一次、按「重新讀取 IB」時再讀；某帳戶讀取失敗只影響它自己
     - 權益／業績切換（#166）：業績是排除出入金的累積報酬（同 IB 的 Performance），選區間時從區間起點 0% 算起；總覽卡片的「近 60 天」有出入金紀錄時也改算業績。出入金來自 IB Flex 報表（見下方設定），沒設定的帳戶只能看權益

@@ -4,15 +4,18 @@
 和 Telegram 報表同一份）；這裡只畫圖，Telegram 報表仍用 matplotlib（ADR-0012）。
 業績 = 排除出入金的累積報酬（`performance`，出入金來自 IB Flex 報表 `ib_flex`）。
 互動圖只縮放、平移時間軸，縱軸跟著看得到的區間自動調整；滑鼠移上去顯示最近一天的
-日期與數值。
+日期與數值。滾輪縮放、拖曳平移要先點一下圖才啟用，游標離開圖就停用（#177），
+免得捲動頁面時誤觸。
 """
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 import pyqtgraph as pg
-from PySide6.QtCore import QPointF, Qt
-from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtWidgets import (
+    QButtonGroup, QHBoxLayout, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
+)
 
 from performance import growth_index, rebase
 from qt_panel import theme
@@ -21,7 +24,7 @@ from qt_panel.widgets import label
 RANGES = ("1M", "3M", "YTD", "1Y", "全部")
 DEFAULT_RANGE = "1Y"
 SPARKLINE_DAYS = 60
-CHART_HEIGHT = 280
+CHART_MIN_HEIGHT = 160      # 圖高跟著視窗伸縮（#177），這是最矮
 EQUITY_MODE, PERFORMANCE_MODE = "權益", "業績"
 MODES = (EQUITY_MODE, PERFORMANCE_MODE)
 MODE_TIPS = {EQUITY_MODE: "每日帳戶權益（NAV），含出入金",
@@ -133,8 +136,9 @@ class EquityChart(QWidget):
             bar.addWidget(button)
         bar.addSpacing(12)
         self._hover = label(name="Dim")
-        bar.addWidget(self._hover)
-        bar.addStretch(1)
+        # 提示文字不撐寬整排：視窗窄時截短，不讓 Portfolio 頁長出橫向捲軸（#177）
+        self._hover.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        bar.addWidget(self._hover, 1)
         self._range_group, self.range_buttons = _chips(RANGES, self.set_range)
         self._range_group.setParent(self)
         for button in self.range_buttons.values():
@@ -143,7 +147,7 @@ class EquityChart(QWidget):
 
         self.plot = pg.PlotWidget(axisItems={"bottom": _UtcDateAxis(orientation="bottom")},
                                   background=theme.SURFACE)
-        self.plot.setFixedHeight(CHART_HEIGHT)
+        self.plot.setMinimumHeight(CHART_MIN_HEIGHT)
         item = self.plot.getPlotItem()
         item.hideButtons()
         item.setMenuEnabled(False)
@@ -155,7 +159,11 @@ class EquityChart(QWidget):
         item.getAxis("left").setWidth(64)
         item.getAxis("left").tickStrings = self._ticks
         self.viewbox = item.getViewBox()
-        self.viewbox.setMouseEnabled(x=True, y=False)       # 滾輪／拖曳只動時間軸
+        # 滾輪／拖曳只動時間軸，而且要先點一下圖才啟用（#177）：游標只是經過時，
+        # 滾輪事件不吃掉，交給外層頁面捲動
+        self._armed = False
+        self.plot.setObjectName("EquityPlot")
+        self.plot.viewport().installEventFilter(self)
         self.viewbox.setAutoVisible(y=True)                 # 縱軸跟著看得到的區間
         self.viewbox.sigRangeChangedManually.connect(self._on_manual_range)
         self._zero = pg.InfiniteLine(pos=0, angle=0, movable=False,
@@ -168,7 +176,7 @@ class EquityChart(QWidget):
             extra.setVisible(False)
             self.plot.addItem(extra, ignoreBounds=True)
         self.plot.scene().sigMouseMoved.connect(self._on_mouse_moved)
-        lay.addWidget(self.plot)
+        lay.addWidget(self.plot, 1)
         self._empty = label(name="Dim")
         self._empty.setAlignment(Qt.AlignCenter)
         self._empty.setWordWrap(True)
@@ -187,6 +195,7 @@ class EquityChart(QWidget):
         self._y = pd.Series(dtype=float)
         self._x = np.array([])
         self.mode_buttons[self._mode].setChecked(True)
+        self._set_armed(False)
         self._redraw()
 
     def _ticks(self, values, scale, spacing):
@@ -295,6 +304,30 @@ class EquityChart(QWidget):
         self._check_range(None)
         self.viewbox.enableAutoRange(axis="y")
 
+    # ── 點一下才縮放 ─────────────────────────────────────────────────
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self.plot.viewport():
+            if event.type() == QEvent.MouseButtonPress:
+                self._set_armed(True)        # 按下就啟用，同一下拖曳也能平移
+            elif event.type() == QEvent.Leave:
+                self._set_armed(False)
+            elif event.type() == QEvent.Wheel and not self._armed:
+                event.ignore()               # 圖不處理，Qt 會把它往外層（頁面）送
+                return True
+        return False
+
+    def _set_armed(self, armed: bool) -> None:
+        self._armed = armed
+        self.viewbox.setMouseEnabled(x=armed, y=False)
+        border = theme.ACCENT if armed else "transparent"
+        self.plot.setStyleSheet(f"#EquityPlot {{ border: 1px solid {border}; border-radius: 4px; }}")
+        if not self._vline.isVisible():
+            self._hide_hover()
+
+    def zoom_enabled(self) -> bool:
+        return self._armed
+
     # ── 滑鼠看值 ─────────────────────────────────────────────────────
 
     def _on_mouse_moved(self, scene_pos) -> None:
@@ -323,7 +356,8 @@ class EquityChart(QWidget):
     def _hide_hover(self) -> None:
         self._vline.setVisible(False)
         self._marker.setVisible(False)
-        self._hover.setText("滑鼠移到圖上看數值；滾輪縮放、拖曳平移")
+        self._hover.setText("已啟用：滾輪縮放、拖曳平移；滑鼠移出圖外就停用" if self._armed
+                            else "滑鼠移到圖上看數值；點一下圖後可滾輪縮放、拖曳平移")
 
     # ── 讀取（測試與狀態檢查用）──
 

@@ -16,7 +16,7 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
-    QPushButton, QScrollArea, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 import portfolio_display as display
@@ -31,6 +31,28 @@ OWNER_FILTERS = ("全部", "SR", "SkewLS", "SP500", display.MANUAL)
 TABLE_COLUMNS = ("歸屬", "代號", "股數", "權重", "成本", "現價", "損益", "損益%", "名稱")
 # 主視窗在背景讀的帳戶資料（set_extra 的 kind）
 EQUITY, FLOWS, PARAMS, TRADES = "equity", "flows", "params", "trades"
+# 版面（#177）：卡片間距、右側兩欄寬度、表格列高
+GAP = 10
+SIDE_WIDTH = 240
+DONUT_WIDTH = 420
+ROW_HEIGHT = 26
+
+
+def _compact(card: Card) -> None:
+    card.body.setContentsMargins(14, 10, 14, 10)
+    card.body.setSpacing(6)
+
+
+def _table_rows(table: QTableWidget) -> None:
+    table.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
+
+
+class _FitLayout(QVBoxLayout):
+    """不回報 height-for-width：裡面有自動換行的文字時，QScrollArea 會改用「理想高度」
+    排版，視窗明明放得下也長出捲軸（#177）。關掉後只在小於最小高度時才捲動。"""
+
+    def hasHeightForWidth(self) -> bool:
+        return False
 
 
 def _time(state) -> str:
@@ -73,6 +95,8 @@ class OverviewCard(Card):
         self._on_click = on_click
         self.setProperty("clickable", True)
         self.setCursor(Qt.PointingHandCursor)
+        self.body.setContentsMargins(14, 10, 14, 10)
+        self.body.setSpacing(4)
         head = QHBoxLayout()
         head.setSpacing(8)
         head.addWidget(dot(theme.ACCOUNT_COLOR.get(name, theme.NAVY), 8))
@@ -82,24 +106,28 @@ class OverviewCard(Card):
         head.addWidget(self._source)
         self.body.addLayout(head)
 
+        # 權益｜近 60 天小圖｜未平倉損益 排同一列，卡片才不會太高（#177）
         grid = QGridLayout()
-        grid.setVerticalSpacing(2)
+        grid.setVerticalSpacing(0)
+        grid.setHorizontalSpacing(16)
         grid.addWidget(label("權益", name="Dim"), 0, 0)
-        grid.addWidget(label("未平倉損益", name="Dim"), 0, 1, Qt.AlignRight)
+        grid.addWidget(label("未平倉損益", name="Dim"), 0, 2, Qt.AlignRight)
         self._nav = label("$—", name="BigNum")
         self._upnl = label("$—", name="MedNum")
         grid.addWidget(self._nav, 1, 0)
-        grid.addWidget(self._upnl, 1, 1, Qt.AlignRight | Qt.AlignBottom)
-        self.body.addLayout(grid)
-        spark_row = QHBoxLayout()
-        spark_row.setSpacing(8)
+        grid.addWidget(self._upnl, 1, 2, Qt.AlignRight | Qt.AlignBottom)
         self.sparkline = Sparkline()
-        spark_row.addWidget(self.sparkline, 1)
-        self._spark_change = label(name="Faint")
-        spark_row.addWidget(self._spark_change, 0, Qt.AlignBottom)
-        self.body.addLayout(spark_row)
+        grid.addWidget(self.sparkline, 0, 1, 2, 1)
+        grid.setColumnStretch(1, 1)
+        self.body.addLayout(grid)
+        meta_row = QHBoxLayout()
+        meta_row.setSpacing(8)
         self._meta = label(name="Faint")
-        self.body.addWidget(self._meta)
+        meta_row.addWidget(self._meta)
+        meta_row.addStretch(1)
+        self._spark_change = label(name="Faint")
+        meta_row.addWidget(self._spark_change)
+        self.body.addLayout(meta_row)
         self._status = label(name="Faint")
         self._status.setWordWrap(True)
         self.body.addWidget(self._status)
@@ -145,7 +173,8 @@ class DonutWidget(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setMinimumSize(180, 180)
+        self.setMinimumSize(140, 140)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._donut: display.Donut | None = None
 
     def set_donut(self, donut: display.Donut | None) -> None:
@@ -239,6 +268,7 @@ class HoldingsTable(QWidget):
         self.table = QTableWidget(0, len(TABLE_COLUMNS))
         self.table.setHorizontalHeaderLabels(TABLE_COLUMNS)
         self.table.verticalHeader().hide()
+        _table_rows(self.table)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
@@ -278,11 +308,20 @@ class HoldingsTable(QWidget):
 # ── 單一帳戶細節 ─────────────────────────────────────────────────────
 
 class AccountDetail(QWidget):
+    """單一帳戶細節。版面要在 1920×1080 最大化時一頁放得下（#177）：
+
+        標題列
+        指標列（標題和數值同一行）
+        權益／業績圖      │ 策略參數 │ 配置（圓環＋圖例並排）
+        持倉              │ 最近成交
+    圖和兩張表跟著視窗伸縮，表格列數多時在卡片內部捲動。
+    """
+
     def __init__(self):
         super().__init__()
-        lay = QVBoxLayout(self)
+        lay = _FitLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(12)
+        lay.setSpacing(GAP)
         head = QHBoxLayout()
         self._title = label(name="MedNum")
         head.addWidget(self._title)
@@ -295,41 +334,47 @@ class AccountDetail(QWidget):
         lay.addLayout(head)
 
         self._metrics_row = QHBoxLayout()
-        self._metrics_row.setSpacing(12)
+        self._metrics_row.setSpacing(GAP)
         lay.addLayout(self._metrics_row)
 
-        top = QHBoxLayout()
-        top.setSpacing(12)
+        grid = QGridLayout()
+        grid.setSpacing(GAP)
         equity = Card("權益／業績")
+        _compact(equity)
         self.equity = EquityChart()
         equity.body.addWidget(self.equity, 1)
-        top.addWidget(equity, 1)
+        grid.addWidget(equity, 0, 0)
         self.params = StrategyParamsCard()
-        self.params.setFixedWidth(300)
-        top.addWidget(self.params)
-        lay.addLayout(top)
-
-        body = QHBoxLayout()
-        body.setSpacing(12)
+        _compact(self.params)
+        self.params.setFixedWidth(SIDE_WIDTH)
+        grid.addWidget(self.params, 0, 1)
         chart = Card("配置")
+        _compact(chart)
+        donut_row = QHBoxLayout()
+        donut_row.setSpacing(12)
         self.donut = DonutWidget()
-        chart.body.addWidget(self.donut, 1)
+        donut_row.addWidget(self.donut, 1)
         self._legend = QGridLayout()
         self._legend.setHorizontalSpacing(10)
         self._legend.setVerticalSpacing(2)
-        chart.body.addLayout(self._legend)
-        chart.setFixedWidth(300)
-        body.addWidget(chart)
-        holdings = Card()
-        holdings.setMinimumHeight(320)
-        self.holdings = HoldingsTable()
-        holdings.body.addWidget(self.holdings, 1)
-        body.addWidget(holdings, 1)
-        lay.addLayout(body, 1)
+        donut_row.addLayout(self._legend)
+        chart.body.addLayout(donut_row, 1)
+        chart.setFixedWidth(DONUT_WIDTH)
+        grid.addWidget(chart, 0, 2)
         self._chart_card = chart
 
+        holdings = Card()
+        _compact(holdings)
+        self.holdings = HoldingsTable()
+        holdings.body.addWidget(self.holdings, 1)
+        grid.addWidget(holdings, 1, 0)
         self.trades = RecentTradesCard()
-        lay.addWidget(self.trades)
+        _compact(self.trades)
+        grid.addWidget(self.trades, 1, 1, 1, 2)
+        grid.setColumnStretch(0, 1)
+        grid.setRowStretch(0, 1)
+        grid.setRowStretch(1, 1)
+        lay.addLayout(grid, 1)
 
     def show_extras(self, extras: dict) -> None:
         """權益序列、策略參數、最近成交：{kind: (資料 或 None, 錯誤訊息)}；沒有的 kind 顯示載入中。"""
@@ -356,18 +401,23 @@ class AccountDetail(QWidget):
         clear_layout(self._metrics_row)
         for metric in display.metrics(pf):
             card = Card(metric.title)
+            card.body.setContentsMargins(14, 8, 14, 8)
             value = label(metric.text, name="MedNum", color=theme.color(metric.color))
-            card.body.addWidget(value, 0, Qt.AlignRight)
+            card.title_row.addWidget(value)
             self._metrics_row.addWidget(card, 1)
 
         donut = display.donut(pf)
         self.donut.set_donut(donut)
         clear_layout(self._legend)
-        for i, s in enumerate(donut.slices if donut else []):
-            self._legend.addWidget(dot(s.color, 8), i, 0)
-            self._legend.addWidget(label(s.label), i, 1)
-            self._legend.addWidget(label(f"{s.pct_of_nav:.0f}%", name="Dim"), i, 2, Qt.AlignRight)
-        self._legend.setColumnStretch(1, 1)
+        slices = donut.slices if donut else []
+        per_column = max(1, (len(slices) + 1) // 2)      # 圖例分兩欄，最多 15 項才不會撐高整排
+        for i, s in enumerate(slices):
+            row, col = i % per_column, (i // per_column) * 4
+            self._legend.addWidget(dot(s.color, 8), row, col)
+            self._legend.addWidget(label(s.label), row, col + 1)
+            self._legend.addWidget(label(f"{s.pct_of_nav:.0f}%", name="Dim"), row, col + 2,
+                                   Qt.AlignRight)
+        self._legend.setColumnMinimumWidth(3, 8)
 
         rows = display.all_holding_rows(pf)
         self.holdings.set_rows(rows, "沒有持倉" if pf.get("available") else "尚無讀數")
@@ -391,8 +441,8 @@ class PortfolioPage(QWidget):
         self._states: dict = {}
         self._extras: dict[str, dict] = {name: {} for name in accounts}
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 20, 24, 20)
-        root.setSpacing(16)
+        root.setContentsMargins(20, 12, 20, 12)
+        root.setSpacing(GAP)
 
         head = QHBoxLayout()
         head.addWidget(label("帳戶總覽", name="SectionTitle"))
@@ -405,7 +455,7 @@ class PortfolioPage(QWidget):
         root.addLayout(head)
 
         row = QHBoxLayout()
-        row.setSpacing(12)
+        row.setSpacing(GAP)
         self._cards: dict[str, OverviewCard] = {}
         for name in accounts:
             card = OverviewCard(name, self.select)
@@ -414,11 +464,12 @@ class PortfolioPage(QWidget):
         root.addLayout(row)
 
         self.detail = AccountDetail()
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setWidget(self.detail)
-        root.addWidget(scroll, 1)
+        # 視窗夠大時一頁放得下（#177）；比細節的最小尺寸還小才整頁捲動
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setWidget(self.detail)
+        root.addWidget(self.scroll, 1)
         self._selected = accounts[0] if accounts else ""
         for name in accounts:
             self._states[name] = None

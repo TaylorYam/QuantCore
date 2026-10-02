@@ -1197,25 +1197,85 @@ def test_range_buttons_set_the_visible_period(make_window, qtbot):
     assert chart.checked_range() == "全部"
 
 
-def test_wheel_zooms_the_time_axis_and_clears_the_range_button(make_window, qtbot):
+def _wheel(widget, steps=1):
     from PySide6.QtCore import QPoint, QPointF
     from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
+
+    pos = QPointF(widget.width() / 2, widget.height() / 2)
+    event = QWheelEvent(pos, widget.mapToGlobal(pos), QPoint(0, 0), QPoint(0, 120 * steps),
+                        Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
+    QApplication.sendEvent(widget, event)
+    return event
+
+
+def _span(chart):
+    x0, x1 = chart.viewbox.viewRange()[0]
+    return x1 - x0
+
+
+def test_wheel_zooms_the_time_axis_only_after_clicking_the_chart(make_window, qtbot):
+    w = make_window()
+    _wait_extras(w, qtbot)
+    w.nav_button("Portfolio").click()
+    chart = w.portfolio.detail.equity
+    qtbot.mouseClick(chart.range_buttons["全部"], Qt.LeftButton)
+    view = chart.plot.viewport()
+    before = _span(chart)
+    _wheel(view, 2)                                                     # 只是經過：不縮放（#177）
+    assert not chart.zoom_enabled()
+    assert _span(chart) == pytest.approx(before)
+    assert chart.checked_range() == "全部"
+    assert "點一下圖" in chart.hover_text()
+
+    qtbot.mouseClick(view, Qt.LeftButton)                               # 點一下才啟用
+    assert chart.zoom_enabled()
+    assert "已啟用" in chart.hover_text()
+    _wheel(view, 2)
+    assert _span(chart) < before * 0.9                                  # 放大了
+    assert chart.checked_range() is None
+
+
+def test_leaving_the_chart_turns_wheel_zoom_off_again(make_window, qtbot):
+    from PySide6.QtCore import QEvent
     from PySide6.QtWidgets import QApplication
 
     w = make_window()
     _wait_extras(w, qtbot)
     w.nav_button("Portfolio").click()
     chart = w.portfolio.detail.equity
-    qtbot.mouseClick(chart.range_buttons["全部"], Qt.LeftButton)
-    before = chart.viewbox.viewRange()[0]
     view = chart.plot.viewport()
-    pos = QPointF(view.width() / 2, view.height() / 2)
-    event = QWheelEvent(pos, view.mapToGlobal(pos), QPoint(0, 0), QPoint(0, 240),
-                        Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
-    QApplication.sendEvent(view, event)
-    after = chart.viewbox.viewRange()[0]
-    assert after[1] - after[0] < (before[1] - before[0]) * 0.9         # 放大了
-    assert chart.checked_range() is None
+    qtbot.mouseClick(view, Qt.LeftButton)
+    assert chart.zoom_enabled()
+    QApplication.sendEvent(view, QEvent(QEvent.Leave))
+    assert not chart.zoom_enabled()
+    before = _span(chart)
+    _wheel(view, 2)
+    assert _span(chart) == pytest.approx(before)
+
+
+def test_wheel_over_an_idle_chart_is_left_for_the_page_to_scroll(make_window, qtbot):
+    # 沒被接受的滾輪事件 Qt 會往外層送（頁面捲動）；測試送的是合成事件，Qt 不會自動
+    # 往外送，所以這裡只驗證圖沒有吃掉它
+    w = make_window()
+    _wait_extras(w, qtbot)
+    w.nav_button("Portfolio").click()
+    view = w.portfolio.detail.equity.plot.viewport()
+    assert not _wheel(view, -1).isAccepted()
+    qtbot.mouseClick(view, Qt.LeftButton)
+    assert _wheel(view, -1).isAccepted()
+
+
+def test_portfolio_page_fits_a_maximized_full_hd_window(make_window, qtbot):
+    w = make_window()
+    _wait_extras(w, qtbot)
+    w.nav_button("Portfolio").click()
+    w.resize(1915, 1020)                                                # 1920×1080 最大化（#177）
+    page = w.portfolio.scroll
+    qtbot.waitUntil(lambda: page.viewport().height() > 600, timeout=2000)
+    qtbot.wait(50)
+    assert page.verticalScrollBar().maximum() == 0
+    assert page.horizontalScrollBar().maximum() == 0
 
 
 def test_hovering_the_chart_shows_the_date_and_equity(make_window, qtbot, extras):

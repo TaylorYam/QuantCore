@@ -21,6 +21,8 @@ Telegram 在 control_panel。
   （manual_attribution）。拒單／取消 → 刪紀錄、維持暫停；逾時 → 紀錄留著，
   之後任何一次觀察對上就完成。
 - 不改訊號、Allocation、state；不觸發整個 Account 的 Sync Pos。
+- IB 連線與本機紀錄沿用 Sync Pos 的 `SyncRecords`：預設實盤；新 Panel 的 paper
+  接管（#153）換成送單閘門的連線與 paper 專用的歸屬／手動單紀錄。
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ import ib_fetcher
 import manual_attribution
 import rebalance_plan as plan
 import signals
+from sync_position import LIVE_RECORDS, SyncRecords
 
 log = logging.getLogger(__name__)
 
@@ -146,20 +149,23 @@ def _open_orders(ib, ctx: AccountCtx, symbol: str) -> list:
     return out
 
 
-def _compute(ib, ctx: AccountCtx, symbol: str, log_fn: Callable[[str], None]
-             ) -> tuple[TakeoverPreview, dict[str, float], set[str]]:
+def _compute(ib, ctx: AccountCtx, symbol: str, log_fn: Callable[[str], None],
+             records: SyncRecords) -> tuple[TakeoverPreview, dict[str, float], set[str]]:
     """同一條連線上的快照 → 預覽（或 TakeoverRefused）。回傳 (預覽, 持倉, Universe)。"""
     nav = ib_fetcher.get_nav(ib, ctx)
     positions = ib_fetcher.get_positions(ib, ctx)
     universe = signals.get_sp500_universe()
     split = plan.classify_holdings(positions, universe)
 
-    attribution = manual_attribution.evaluate(ctx.name, positions, universe)
+    attribution = manual_attribution.evaluate(
+        ctx.name, positions, universe, ledger_path=records.attribution_ledger,
+        manual_orders_path=records.manual_orders_store)
     if symbol in attribution.completed:
         raise TakeoverRefused(f"{symbol} 先前送出的接管單已成交並對上，接管已完成")
     if symbol not in attribution.paused:
         raise TakeoverRefused(f"{symbol} 目前沒有被手動持倉暫停，不需要接管")
-    unresolved = [f for f in manual_attribution.read_manual_fills(ctx.name)
+    unresolved = [f for f in manual_attribution.read_manual_fills(
+                      ctx.name, records.manual_orders_store)
                   if f.symbol == symbol and not f.resolved]
     if unresolved:
         raise TakeoverRefused(f"{symbol} 還有 {len(unresolved)} 筆未結案的 Panel "
@@ -224,14 +230,15 @@ def _logger(log_fn: Optional[Callable[[str], None]]) -> Callable[[str], None]:
 
 
 def build_preview(ctx: AccountCtx, symbol: str,
-                  log_fn: Optional[Callable[[str], None]] = None) -> TakeoverPreview:
+                  log_fn: Optional[Callable[[str], None]] = None, *,
+                  records: SyncRecords = LIVE_RECORDS) -> TakeoverPreview:
     """連 IB 取最新快照，算這一檔的接管預覽。不送單、不寫 state。"""
     _log = _logger(log_fn)
     _ensure_loop()
     _log(f"  Connecting to IB ({ctx.name})...")
-    ib = ib_fetcher.connect(ctx)
+    ib = records.open(ctx)
     try:
-        return _compute(ib, ctx, symbol, _log)[0]
+        return _compute(ib, ctx, symbol, _log, records)[0]
     finally:
         try:
             if ib.isConnected():
@@ -246,16 +253,17 @@ def _order_ref(account_name: str) -> str:
 
 
 def submit(preview: TakeoverPreview, ctx: AccountCtx,
-           log_fn: Optional[Callable[[str], None]] = None) -> TakeoverResult:
+           log_fn: Optional[Callable[[str], None]] = None, *,
+           records: SyncRecords = LIVE_RECORDS) -> TakeoverResult:
     """使用者確認後：同一條連線重算、核對，只送這一檔差額，等成交與對帳。"""
     _log = _logger(log_fn)
     if ctx.name != preview.account_name:
         raise TakeoverRefused("預覽與目前選的 Account 不同，請重新預覽")
     _ensure_loop()
     exec_ctx = replace(ctx, order_type="LMT", outside_rth=True)
-    ib = ib_fetcher.connect(exec_ctx)
+    ib = records.open(exec_ctx)
     try:
-        fresh, _positions, universe = _compute(ib, exec_ctx, preview.symbol, _log)
+        fresh, _positions, universe = _compute(ib, exec_ctx, preview.symbol, _log, records)
         if fresh != preview:
             raise TakeoverStale(fresh)
         sym = fresh.symbol
@@ -267,7 +275,7 @@ def submit(preview: TakeoverPreview, ctx: AccountCtx,
         manual_attribution.start_takeover(
             ctx.name, sym, action=fresh.action or "NONE", quantity=fresh.quantity,
             target=fresh.target, expected_after=fresh.expected_after,
-            order_ref=order_ref)
+            order_ref=order_ref, path=records.attribution_ledger)
 
         order_status = ""
         if fresh.quantity:
@@ -304,13 +312,16 @@ def submit(preview: TakeoverPreview, ctx: AccountCtx,
                     why += f"（{detail[-1]}）"
                 if filled > 0:
                     why += f"，已成交 {_fmt(filled)} 股"
-                manual_attribution.abandon_takeover(ctx.name, sym, why)
+                manual_attribution.abandon_takeover(ctx.name, sym, why,
+                                                    path=records.attribution_ledger)
                 return TakeoverResult("FAILED", f"{why}；這檔維持暫停", fresh, order_status)
 
         # 對帳：IB 股數＝接管後預計股數才完成（成交後持倉回報可能慢一點）
         for attempt in range(5):
             positions = ib_fetcher.get_positions(ib, exec_ctx)
-            att = manual_attribution.evaluate(ctx.name, positions, universe)
+            att = manual_attribution.evaluate(
+                ctx.name, positions, universe, ledger_path=records.attribution_ledger,
+                manual_orders_path=records.manual_orders_store)
             if sym in att.completed or sym not in att.paused:
                 return TakeoverResult(
                     "COMPLETED", f"接管完成：IB {_fmt(float(positions.get(sym, 0.0)))} 股，"

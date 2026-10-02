@@ -10,7 +10,8 @@ Tk Panel 是否值班的讀取、時鐘、系統匣工廠、叫回視窗的訊�
 
 送單（#151）：Trading 的所有送單連線都由這裡建的送單閘門（broker_gate.SendGate）
 產生；並行模式下只接 config.json `qt_panel_paper` 指定的 paper Gateway，三個帳戶
-名稱都導向那個 paper 帳號，手動單通知只寫 Output Log。
+名稱都導向那個 paper 帳號；手動單、Sync Pos（#152）、交給策略接管（#153）的
+通知只寫 Output Log。
 """
 from __future__ import annotations
 
@@ -41,6 +42,7 @@ from qt_panel.gateway_status import GatewaySource
 from qt_panel.mode import PanelMode
 from qt_panel.portfolio import EQUITY, FLOWS, PARAMS, TRADES, PortfolioPage
 from qt_panel.sync_pos import PaperSync
+from qt_panel.takeover import PaperTakeover
 from qt_panel.trading import PaperFiles, TradingPage, paper_manual_order_service
 from qt_panel.widgets import label, pill, visible_text
 
@@ -225,7 +227,7 @@ class MainWindow(QMainWindow):
         from manual_orders import SUPPORTED_MANUAL_ACCOUNTS
         supported = {n.casefold() for n in SUPPORTED_MANUAL_ACCOUNTS}
         names = [n for n in self._names if n.casefold() in supported]
-        service, sync, problem, target_text = None, None, paper_problem, ""
+        service, sync, takeover, problem, target_text = None, None, None, paper_problem, ""
         # 正式模式（#154）才會接實盤帳戶；在那之前一律要有 paper 設定
         if mode is PanelMode.PARALLEL and paper_target is not None:
             factory = service_factory or paper_manual_order_service(names, paper_files.orders)
@@ -237,12 +239,13 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 problem = f"手動單服務無法啟動：{e}"
             if service is not None:
-                sync = PaperSync(target=paper_target, send_gate=self.send_gate,
-                                 files=paper_files,
-                                 account_ctx_loader=account_ctx_loader or _load_account_ctx)
+                paper = dict(target=paper_target, send_gate=self.send_gate, files=paper_files,
+                             account_ctx_loader=account_ctx_loader or _load_account_ctx)
+                sync = PaperSync(**paper)
+                takeover = PaperTakeover(**paper)
         return TradingPage(names, service, unavailable=problem, target_text=target_text,
                            dialogs=self._dialogs, log=self.log, symbol_loader=symbol_loader,
-                           sync=sync)
+                           sync=sync, takeover=takeover)
 
     def _manual_order_notice(self, account: str, message: str) -> bool:
         """手動單結案通知：paper 單只寫 Output Log，不發 Telegram。"""

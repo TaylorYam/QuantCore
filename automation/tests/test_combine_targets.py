@@ -303,3 +303,62 @@ def test_skewls_wgt_none_omits_strategy():
     assert "XLK" in targets  # SR only
     assert targets["XLK"]["strategy"] == "SR"
     assert "REW" not in targets  # SkewLS not run
+
+
+# ── 各 Strategy 的整數股數（#184）──────────────────────────────────────
+
+def test_strategy_shares_use_each_strategys_rounding():
+    """SR floor、SP500／SkewLS round — 交出的就是加總前的那幾個整數。"""
+    from rebalance_ib import combine_targets
+    ctx = _make_ctx(alloc_sr=0.40, alloc_sp500=0.40, alloc_skewls=0.20)
+
+    targets = combine_targets(
+        nav=100_000,
+        sr_wgt={"XLK": 0.2665},          # 106.6 → floor 106
+        sp500_wgt={"AAPL": 0.2665},      # 106.6 → round 107
+        prices={"XLK": 100.0, "AAPL": 100.0, "XLC": 100.0},
+        ctx=ctx,
+        skewls_wgt={"XLC": -0.533},     # -106.6 → round -107
+    )
+
+    assert targets["XLK"]["strategy_shares"] == {"SR": 106}
+    assert targets["AAPL"]["strategy_shares"] == {"SP500": 107}
+    assert targets["XLC"]["strategy_shares"] == {"SkewLS": -107}
+
+
+def test_strategy_shares_sum_to_combined_shares_on_overlap():
+    from rebalance_ib import combine_targets
+    ctx = _make_ctx(alloc_sr=0.40, alloc_sp500=0.40, alloc_skewls=0.20)
+
+    targets = combine_targets(
+        nav=100_000,
+        sr_wgt={"XLK": 0.2665},          # 106
+        sp500_wgt={"XLK": 0.0101},       # 4.04 → 4
+        prices={"XLK": 100.0},
+        ctx=ctx,
+        skewls_wgt={"XLK": -0.533},     # -107
+    )
+
+    xlk = targets["XLK"]
+    assert xlk["strategy_shares"] == {"SR": 106, "SP500": 4, "SkewLS": -107}
+    assert list(xlk["strategy_shares"]) == ["SR", "SP500", "SkewLS"]
+    assert sum(xlk["strategy_shares"].values()) == xlk["shares"] == 3
+    assert xlk["strategy"] == "SR+SP500+SkewLS"
+
+
+def test_strategy_shares_omit_strategies_skipped_for_no_price():
+    from rebalance_ib import combine_targets
+    ctx = _make_ctx(alloc_sr=0.40, alloc_sp500=0.40, alloc_skewls=0.20)
+
+    targets = combine_targets(
+        nav=100_000,
+        sr_wgt={"XLK": 0.5, "XLE": 0.5},
+        sp500_wgt={},
+        prices={"XLK": 100.0, "XLE": float("nan")},
+        ctx=ctx,
+        skewls_wgt={"XLK": -0.1, "REW": 0.1},   # REW 沒報價
+    )
+
+    assert "XLE" not in targets
+    assert "REW" not in targets
+    assert targets["XLK"]["strategy_shares"] == {"SR": 200, "SkewLS": -20}

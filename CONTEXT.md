@@ -40,7 +40,7 @@ _Avoid_: Weight, Capital share, Position size
 _Avoid_: Gearing, Total exposure (作 derived 顯示時可以；作獨立欄位時不行)
 
 **Combine**:
-把多個 [[Strategy]] 的 target 在單一 [[Account]] 匯總成 per-ticker 目標股數的運算：每個 Strategy 先各自以 NAV × [[Allocation]] × weight ÷ price 取整成股數，再對同 ticker 加總（live 實作 = `automation/rebalance_plan.py::combine_targets`，`rebalance_ib.combine_targets` 為 re-export 舊路徑）。per-strategy 取整是 load-bearing，不可先合權重再取整（[ADR-0008](docs/adr/0008-live-combine-no-weight-level-extraction-rejected.md)）。與 backtest 的 return-level combine（`backtest/combo.py`）是不同層的運算，刻意不共用。
+把多個 [[Strategy]] 的 target 在單一 [[Account]] 匯總成 per-ticker 目標股數的運算：每個 Strategy 先各自以 NAV × [[Allocation]] × weight ÷ price 取整成股數，再對同 ticker 加總（live 實作 = `automation/rebalance_plan.py::combine_targets`，`rebalance_ib.combine_targets` 為 re-export 舊路徑）。per-strategy 取整是 load-bearing，不可先合權重再取整（[ADR-0008](docs/adr/0008-live-combine-no-weight-level-extraction-rejected.md)）。每檔結果同時交出各 Strategy 加總前的整數股數（`strategy_shares`），逐 Strategy 顯示股數的 caller（Sync Pos 預覽、接管預覽）讀這份，不自行重算取整（#184）。與 backtest 的 return-level combine（`backtest/combo.py`）是不同層的運算，刻意不共用。
 _Avoid_: Merge, Netting（sector-level netting 是被否決的另一提案，見 [ADR-0006](docs/adr/0006-sector-level-netting-rejected.md)）
 
 **Rebalance Plan (調倉計畫)**:

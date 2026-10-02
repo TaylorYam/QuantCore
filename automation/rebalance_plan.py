@@ -179,12 +179,18 @@ def combine_targets(nav: float, sr_wgt: dict, sp500_wgt: dict,
 
     三策略共用同一檔 ticker 時 target_shares **直接加總**
     (pure-function combine，CONTEXT.md 已釘住此約定)，IB 自動 net 多空。
+
+    每檔另帶 'strategy_shares'：各 Strategy 加總前的整數股數（依 SR → SP500
+    → SkewLS 順序；沒報價而略過的 Strategy 不出現）。逐 Strategy 顯示股數的
+    caller 讀這份，不要自己重算取整（#184）。
     """
     alloc_sr    = ctx.alloc_sr
     alloc_sp500 = ctx.alloc_sp500
     alloc_skewls = ctx.alloc_skewls
 
-    targets = {}  # symbol -> {'shares': int, 'strategy': str, 'alloc_w': float}
+    # symbol -> {'shares': int, 'strategy': str, 'alloc_w': float,
+    #            'strategy_shares': {strategy_tag: int}}
+    targets = {}
 
     def _valid_price(p) -> bool:
         return p is not None and np.isfinite(p) and p > 0
@@ -194,12 +200,14 @@ def combine_targets(nav: float, sr_wgt: dict, sp500_wgt: dict,
         if sym in targets:
             targets[sym]['shares']   += shares
             targets[sym]['alloc_w']  += alloc_w
+            targets[sym]['strategy_shares'][strategy_tag] = shares
             existing = targets[sym]['strategy'].split('+')
             if strategy_tag not in existing:
                 targets[sym]['strategy'] = '+'.join(existing + [strategy_tag])
         else:
             targets[sym] = {'shares': shares, 'strategy': strategy_tag,
-                            'alloc_w': alloc_w}
+                            'alloc_w': alloc_w,
+                            'strategy_shares': {strategy_tag: shares}}
 
     # SR 部位（ETF, long-only）
     for sym, w in sr_wgt.items():

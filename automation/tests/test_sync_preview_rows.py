@@ -24,8 +24,14 @@ def _plan(**changes):
         sp500_date="2026-09-26",
         prices={"AAPL": 100.0, "MSFT": 410.2, "XLK": 210.55, "XLE": 88.0, "SEF": 40.1,
                 "XLC": 95.5, "MAN": 7.0, "OLD": 5.0},
-        targets={"AAPL": {"shares": 250}, "MSFT": {"shares": 75}, "XLK": {"shares": -5},
-                 "XLE": {"shares": 252}, "SEF": {"shares": 30}, "XLC": {"shares": -40}},
+        # strategy_shares = Combine 加總前的各 Strategy 整數（SR floor、其餘 round）；
+        # shares 刻意與之不同，好讓 combined 註記出現
+        targets={"AAPL": {"shares": 250, "strategy_shares": {"SP500": 154}},
+                 "MSFT": {"shares": 75, "strategy_shares": {"SP500": 75}},
+                 "XLK": {"shares": -5, "strategy_shares": {"SR": 105}},
+                 "XLE": {"shares": 252, "strategy_shares": {"SR": 168}},
+                 "SEF": {"shares": 30, "strategy_shares": {"SkewLS": 31}},
+                 "XLC": {"shares": -40, "strategy_shares": {"SkewLS": -39}}},
         current_pos={"AAPL": 100.0, "XLK": 7.0, "SEF": 27.0, "XLC": -40.0, "MAN": 3.0,
                      "OLD": 2.0},
         current_other_holdings=["MAN"],
@@ -45,7 +51,7 @@ def test_target_sections_per_strategy_with_overlap_note():
     sr, sp, sk = rows.target_sections(_plan())
     assert (sr.strategy, sr.title, sr.color) == ("SR", "SR (30% of NAV)", "blue")
     assert sr.lines == [
-        "  XLK      60.0%  →   106sh  @ $210.55  = $22,318  [combined: -5sh]",
+        "  XLK      60.0%  →   105sh  @ $210.55  = $22,108  [combined: -5sh]",
         "  XLE      40.0%  →   168sh  @ $88.00  = $14,784  [combined: +252sh]",
     ]
     assert (sp.strategy, sp.title, sp.color) == ("SP500", "SP500 Momentum (50% of NAV)", "green")
@@ -112,7 +118,7 @@ def test_log_summary_lines():
     lines = rows.log_summary_lines(plan)
     assert lines[0] == lines[-1] == "─" * 40
     assert "  SR (30% of NAV):" in lines
-    assert "    XLK     60.0%  →  106sh @ $210.55  [combined w/ overlap: -5sh]" in lines
+    assert "    XLK     60.0%  →  105sh @ $210.55  [combined w/ overlap: -5sh]" in lines
     assert "    SHORT XLC    -15.0%  →  -39sh @ $95.50  [combined w/ overlap: -40sh]" in lines
     assert "    OLD       2sh @ $5.00 ← NOT in target" in lines
     assert "    MAN" not in "\n".join(lines)
@@ -122,3 +128,36 @@ def test_log_summary_lines():
     with_orders = rows.log_summary_lines(_plan())
     assert "    SELL   12sh XLK    (7→-5)  ~$2,527  [SR+SkewLS]" in with_orders
     assert "    Already on target" not in with_orders
+
+
+# ── 預覽股數 = Combine 用的股數（#184）─────────────────────────────────
+
+def _combined_plan(sr_wgt, skewls_wgt, prices, sk=0.0):
+    from rebalance_plan import combine_targets
+    ctx = _ctx(sr=0.4, sp=0.0, sk=sk)
+    targets = combine_targets(100_000, sr_wgt, {}, prices, ctx=ctx, skewls_wgt=skewls_wgt)
+    return _plan(ctx=ctx, nav=100_000, sr_wgt=sr_wgt, sp500_wgt={}, skewls_wgt=skewls_wgt,
+                 prices=prices, targets=targets, orders=[], current_pos={},
+                 current_other_holdings=[])
+
+
+def test_sr_preview_uses_combine_floor_without_false_combined_note():
+    """NAV 100k × 40% × 26.65% ÷ $100 = 106.6 股：Combine 對 SR 取 floor = 106。"""
+    plan = _combined_plan({"XLK": 0.2665}, {}, {"XLK": 100.0})
+    assert plan.targets["XLK"]["shares"] == 106
+    (sr,) = rows.target_sections(plan)
+    assert sr.lines == ["  XLK      26.7%  →   106sh  @ $100.00  = $10,600"]
+    assert "    XLK     26.7%  →  106sh @ $100.00" in rows.log_summary_lines(plan)
+
+
+def test_sr_skewls_overlap_shows_each_strategys_shares_and_combined_total():
+    plan = _combined_plan({"XLK": 0.2665}, {"XLK": -0.533}, {"XLK": 100.0}, sk=0.2)
+    assert plan.targets["XLK"]["shares"] == 106 - 107
+    sr, sk = rows.target_sections(plan)
+    assert sr.lines == ["  XLK      26.7%  →   106sh  @ $100.00  = $10,600  [combined: -1sh]"]
+    assert sk.lines == [
+        "  SHORT XLK     -53.3%  →  -107sh  @ $100.00  = $-10,700  [combined: -1sh]"]
+    summary = rows.log_summary_lines(plan)
+    assert "    XLK     26.7%  →  106sh @ $100.00  [combined w/ overlap: -1sh]" in summary
+    assert ("    SHORT XLK    -53.3%  → -107sh @ $100.00  [combined w/ overlap: -1sh]"
+            in summary)

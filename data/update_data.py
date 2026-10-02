@@ -145,11 +145,15 @@ def _store(path: Path, window: pd.DataFrame, errors: list[str], refetch: bool,
         events = [f"{s['date']} x{s['ratio']:g}" for s in verdict["steps"]]
         events += [f"{d} x{f:g}（待生效）" for d, f in verdict["pending_splits"]]
         events += [f"Adj Close {s['date']}" for s in verdict["adj_steps"]]
+        if verdict["revised_bars"]:
+            events.append(f"修訂最近 {len(verdict['revised_bars'])} 根 K 棒 "
+                          f"{verdict['revised_bars'][0]}~{verdict['revised_bars'][-1]}")
         odd = [f"{d} x{f:g}" for d, f in verdict["nonstandard_factors"]]
         print(f"    {tk}: provider 調整過歷史（{', '.join(events)}），已換成完整歷史 "
               f"{len(local)}→{len(new)} 列" + (f"；非整數比例待人工確認：{', '.join(odd)}" if odd else ""))
         return int((new.index > last).sum())
-    errors.append(f"{tk}: provider 歷史與本地檔核對不過（可能已是別的證券），已停止續寫"
+    doubt = "（可能已是別的證券）" if verdict["identity_mismatch"] else ""
+    errors.append(f"{tk}: provider 歷史與本地檔核對不過{doubt}，已停止續寫"
                   f"（{'; '.join(verdict['reasons']) or verdict['status']}）")
     return None
 

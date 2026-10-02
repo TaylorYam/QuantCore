@@ -13,10 +13,13 @@ one file.
     consistent  same security, nothing to re-adjust           -> append new bars
     rescaled    same security; every scale step between the
                 two series sits on a provider split record    -> replace the file with
-                (or local Adj Close was re-based)                the provider history
+                (or local Adj Close was re-based, or the         the provider history
+                provider revised the latest bars, #120)
     mismatch    not provably the same security: the provider
                 lacks local sessions, a step has no split
                 record, or too many bars differ               -> do not append; report
+                (`identity_mismatch` when the evidence points
+                at another security, not an unexplained step)
     no_data     the provider returned nothing
 
 `window_check(local, window)` is the cheap daily test on the bars downloaded
@@ -66,6 +69,8 @@ ADJ_DROP = 0.01          # provider Adj/Close may only rise over time (dividends
 OUTLIER_BIG = 0.02       # differing bars count against identity only beyond this (smaller = noise)
 OUTLIER_FRAC = 0.002     # large differing bars tolerated (bad ticks) ...
 OUTLIER_MIN = 3          # ... but always at least this many
+REVISED_BARS = 5         # latest bars a provider may still revise (thin ETFs: provisional bars, #120) ...
+REVISED_MAX = 0.05       # ... each by at most this log gap (see WINDOW_CLOSE_TOL)
 
 
 def sha256(content: bytes) -> str:
@@ -132,7 +137,8 @@ def compare_history(local: pd.DataFrame, provider: pd.DataFrame) -> dict:
     """Is `provider` (current full history) the same security as `local`, and
     does the local file have to be replaced to match its scale? See module doc."""
     out = {"status": None, "reasons": [], "steps": [], "adj_steps": [], "pending_splits": [],
-           "outliers": 0, "nonstandard_factors": [], "trailing_local_bars": 0}
+           "outliers": 0, "nonstandard_factors": [], "trailing_local_bars": 0,
+           "revised_bars": [], "identity_mismatch": False}
     local, provider = clean(local), (clean(provider) if len(provider) else provider)
     if provider is None or provider.empty:
         out["status"] = "no_data"
@@ -143,12 +149,14 @@ def compare_history(local: pd.DataFrame, provider: pd.DataFrame) -> dict:
     out["trailing_local_bars"] = len(local.index) - len(days)
     if len(days) < 2:
         out["status"] = "mismatch"
+        out["identity_mismatch"] = True
         out["reasons"].append(f"provider history ends {provider.index[-1].date()}, before the "
                               f"local file's bars")
         return out
     missing = days.difference(provider.index)
     if len(missing):
         out["status"] = "mismatch"
+        out["identity_mismatch"] = True
         out["reasons"].append(f"provider lacks {len(missing)} local sessions "
                               f"({missing[0].date()}..{missing[-1].date()})")
         return out
@@ -158,20 +166,34 @@ def compare_history(local: pd.DataFrame, provider: pd.DataFrame) -> dict:
     lr = np.log(provider.loc[days, "Close"].to_numpy(float) / lc)
     tol = BAR_TOL + TICK_TOL / np.minimum(lc[1:], lc[:-1])
     records = [(d, f) for d, f in split_records(provider) if d > days[0]]
+    # splits dated after the last local bar move every local bar
+    pending = [(d, f) for d, f in records if d > days[-1]]
+    expected_final = -float(sum(np.log(f) for _, f in pending))
     used: set[pd.Timestamp] = set()
-    step_at, large = [], 0
+    step_at, explained_at, large = [], [], 0
+    revised_from = len(lr)
     for g in _jumps(lr, tol, STEP_MIN):
         a, b = g["at"], g["at"] + g["bars"] - 1
+        if a >= revised_from:
+            continue
         lo, hi = days[max(0, a - 1 - SPLIT_SLACK)], days[min(len(days) - 1, b + SPLIT_SLACK)]
         near = [(d, f) for d, f in records if lo < d <= hi and d not in used]
         explained = bool(near) and abs(g["size"] - sum(np.log(f) for _, f in near)) <= SPLIT_TOL
         # a change seen on a single bar at either end is a revision unless a split explains it
         if g["level"] and (explained or min(g["before"], g["after"]) >= 2):
+            revised = None if explained else _revised_tail(lr, a, tol, expected_final)
+            if revised is not None:
+                # the provider revised the latest bars (provisional values of a
+                # thin name) and every bar before them agrees: take its values
+                revised_from = a
+                out["revised_bars"] = [str(days[i].date()) for i in revised]
+                continue
             out["steps"].append({"date": str(days[a].date()), "ratio": round(float(np.exp(g["size"])), 6),
                                  "split_records": [[str(d.date()), f] for d, f in near]})
             step_at.append(b)
             if explained:
                 used.update(d for d, _ in near)
+                explained_at.append((a, b))
             else:
                 out["reasons"].append(f"scale step on {days[a].date()} (x{np.exp(g['size']):.4f}) "
                                       f"without a matching provider split record")
@@ -179,15 +201,13 @@ def compare_history(local: pd.DataFrame, provider: pd.DataFrame) -> dict:
             out["outliers"] += g["bars"]
             large += g["bars"] if g["dev"] > OUTLIER_BIG else 0
 
-    pending = [(d, f) for d, f in records if d > days[-1] and d not in used]
     out["pending_splits"] = [[str(d.date()), f] for d, f in pending]
     if pending and out["trailing_local_bars"]:
         out["reasons"].append(f"{out['trailing_local_bars']} local bars are newer than the provider "
                               f"history and a split is pending; not rescaling them")
     used.update(d for d, _ in pending)
-    # level after the last step: 0, or the splits dated after the last local bar
-    final = float(np.median(lr[(step_at[-1] if step_at else 0):][-MEDIAN_BARS:]))
-    expected_final = -float(sum(np.log(f) for _, f in pending))
+    # level after the last step (before revised bars): 0, or the pending splits
+    final = float(np.median(lr[(step_at[-1] if step_at else 0):revised_from][-MEDIAN_BARS:]))
     if abs(final - expected_final) > SPLIT_TOL:
         out["reasons"].append(f"latest bars differ by x{np.exp(final):.4f} "
                               f"(provider split records explain x{np.exp(expected_final):.4f})")
@@ -212,7 +232,7 @@ def compare_history(local: pd.DataFrame, provider: pd.DataFrame) -> dict:
         if d in used and not _standard_factor(f):
             out["nonstandard_factors"].append([str(d.date()), f])
 
-    replace = out["steps"] or out["pending_splits"] or out["adj_steps"]
+    replace = out["steps"] or out["pending_splits"] or out["adj_steps"] or out["revised_bars"]
     if not out["reasons"] and replace and "Adj Close" in provider:
         # the replacement brings the provider's Adj Close: it may only rise over
         # time (dividend adjustment); a fall would import a jump of its own
@@ -225,11 +245,35 @@ def compare_history(local: pd.DataFrame, provider: pd.DataFrame) -> dict:
 
     if out["reasons"]:
         out["status"] = "mismatch"
-    elif out["steps"] or out["pending_splits"] or out["adj_steps"]:
+        # another security: many large bar-to-bar changes no split explains
+        # (one unexplained step is a provider event, not a different security)
+        big = np.abs(np.diff(lr)) > OUTLIER_BIG
+        for a, b in explained_at:
+            big[a - 1:b] = False
+        big[revised_from - 1:] = False
+        out["identity_mismatch"] = large > allowed or int(big.sum()) > allowed
+    elif replace:
         out["status"] = "rescaled"
     else:
         out["status"] = "consistent"
     return out
+
+
+def _revised_tail(lr: np.ndarray, at: int, tol: np.ndarray, level: float) -> np.ndarray | None:
+    """Indices of revised bars when the change from `at` on is the provider
+    revising recent bars, else None: the bars before `at` sit on the expected
+    `level`, every bar after the last one back on it (at most REVISED_BARS) is
+    off it, and no revised bar is further than REVISED_MAX from it. Revised
+    bars before that tail come back to the level (single-bar revisions)."""
+    dev = np.abs(lr[at:] - level)
+    off = dev > tol[at - 1:]
+    on = np.flatnonzero(~off)
+    tail = len(dev) - (on[-1] + 1 if len(on) else 0)
+    before = float(np.median(lr[max(0, at - MEDIAN_BARS):at]))
+    if (tail > REVISED_BARS or abs(before - level) > float(tol[at - 1])
+            or float(dev.max()) > REVISED_MAX):
+        return None
+    return at + np.flatnonzero(off)
 
 
 def _standard_factor(f: float) -> bool:
@@ -437,6 +481,7 @@ def stage(old: Path, new: Path, scan_dir: Path, exclude: list[str] = ()) -> dict
                         "rows": [len(local), len(repl)],
                         "range": [str(repl.index[0].date()), str(repl.index[-1].date())],
                         "steps": verdict["steps"], "adj_steps": verdict["adj_steps"],
+                        "revised_bars": verdict["revised_bars"],
                         "nonstandard_factors": verdict["nonstandard_factors"]})
     after = manifest(new)
     changed = sorted(k for k in before["files"].keys() & after["files"].keys()

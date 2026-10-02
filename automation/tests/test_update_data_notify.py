@@ -67,3 +67,22 @@ def test_main_failure_sends(monkeypatch):
     update_data.main()
     assert len(sent) == 1 and "ETF: yfinance down" in sent[0][0]
     assert sent[0][1:] == ("T", "C")
+
+
+def test_main_failure_writes_each_error_to_the_log(monkeypatch, caplog):
+    """#120：錯誤原本只送 Telegram，update_*.log 查不到是哪一檔。"""
+    import logging
+    import sys
+    import types
+    import update_data
+
+    fake = types.ModuleType("data.update_data")
+    fake.update_etfs = lambda: ["SMN: provider 歷史與本地檔核對不過，已停止續寫（scale step）"]
+    fake.update_stocks = lambda: None
+    monkeypatch.setitem(sys.modules, "data.update_data", fake)
+    monkeypatch.setattr(update_data, "_tg", lambda *a, **k: None)
+    monkeypatch.setattr(update_data, "_load_tg_config", lambda: ("T", "C"))
+    with caplog.at_level(logging.WARNING, logger=update_data.log.name):
+        update_data.main()
+    assert any("SMN: provider 歷史與本地檔核對不過" in r.getMessage() and r.levelno == logging.WARNING
+               for r in caplog.records)

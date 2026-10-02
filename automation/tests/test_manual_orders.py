@@ -12,9 +12,11 @@ from zoneinfo import ZoneInfo
 import sqlite3
 from decimal import Decimal
 from types import SimpleNamespace as NS
+import re
 
 import pytest
 
+import manual_orders
 from manual_orders import (
     ManualOrderMonitor, ManualOrderService, ManualOrderStore,
     BrokerQuote, whole_share_quantity,
@@ -2132,10 +2134,6 @@ def test_changed_close_does_not_invalidate_preview_or_get_reread_at_submit(tmp_p
 
 def test_unique_index_locks_exactly_the_active_statuses(tmp_path):
     """The Account/symbol lock lives in migration 1; it must match ACTIVE_STATUSES."""
-    import re
-
-    import manual_orders
-
     path = tmp_path / "manual_orders.sqlite3"
     ManualOrderStore(path)
     with sqlite3.connect(path) as conn:
@@ -2147,8 +2145,6 @@ def test_unique_index_locks_exactly_the_active_statuses(tmp_path):
 
 
 def test_every_status_is_either_active_or_terminal():
-    import manual_orders
-
     active = set(manual_orders.ACTIVE_STATUSES)
     terminal = set(manual_orders.TERMINAL_STATUSES)
     assert not active & terminal
@@ -2160,8 +2156,6 @@ def test_every_status_is_either_active_or_terminal():
 # ── Read-only fills query (#190) ───────────────────────────────────────
 
 def test_read_account_fills_missing_store_means_no_manual_orders(tmp_path):
-    import manual_orders
-
     path = tmp_path / "manual_orders.sqlite3"
     assert manual_orders.read_account_fills("Rosa", path) == []
     assert not path.exists()
@@ -2169,8 +2163,6 @@ def test_read_account_fills_missing_store_means_no_manual_orders(tmp_path):
 
 def test_read_account_fills_returns_one_accounts_orders_without_writing(tmp_path):
     """Read-only and migration-free: a pre-migration store is read as-is, byte for byte."""
-    import manual_orders
-
     path = tmp_path / "manual_orders.sqlite3"
     with sqlite3.connect(path) as conn:
         conn.execute(

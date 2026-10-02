@@ -20,6 +20,9 @@ from typing import Callable
 from PySide6.QtCore import QObject, QTimer
 
 ROSA_RECOVERY_DELAY_MS = 10 * 60 * 1000
+# 心跳開始後等一下再排值班（Tk 是 Gateway 監測 0.5 秒後、Rosa poll 1.5 秒後），
+# 窗內開啟時第一次 Rosa poll 才不會碰上還在連線中的心跳
+WATCH_START_DELAY_MS = 1500
 TY_CHECK_ACCOUNTS = ("Taylor", "Yvonne")
 
 
@@ -66,6 +69,7 @@ class WatchPorts:
     sleep: Callable[[float], None] = time.sleep
     spawn: Callable[[Callable[[], None]], None] = field(default=_spawn)
     recovery_delay_ms: int = ROSA_RECOVERY_DELAY_MS
+    start_delay_ms: int = WATCH_START_DELAY_MS
 
 
 class QtWatch(QObject):
@@ -94,17 +98,30 @@ class QtWatch(QObject):
         self.engine = me.MonitorEngine(self.env, schedule=self._schedule,
                                        cancel=self._cancel, spawn=ports.spawn)
         self._running = False
+        self._start_timer: QTimer | None = None
 
     def start(self) -> None:
+        self._running = True
+        if self._ports.start_delay_ms > 0:
+            self._start_timer = self._schedule(self._ports.start_delay_ms, self._start_specs)
+        else:
+            self._start_specs()
+
+    def _start_specs(self) -> None:
         import monitor_engine as me
 
-        self._running = True
+        self._start_timer = None
+        if not self._running:
+            return
         self.engine.start(me.rosa_poll_spec(self.env))
         self.engine.start(me.ty_check_spec(self.env, TY_CHECK_ACCOUNTS))
         self.engine.start(me.morning_check_spec(self.env))
 
     def stop(self) -> None:
         self._running = False
+        if self._start_timer is not None:
+            self._cancel(self._start_timer)
+            self._start_timer = None
         self.engine.stop_all()
 
     def rosa_went_offline(self) -> None:

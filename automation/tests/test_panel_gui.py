@@ -1263,7 +1263,6 @@ def test_tk_panel_default_keeps_watching_and_sending(fake_config, monkeypatch):
 
 def test_tk_portfolio_queries_swap_identity_only_in_production(fake_config, monkeypatch):
     """正式模式：ROLE_PANEL 交給新 Panel，Tk 的查詢改用新 Panel 並行期間的查詢號碼。"""
-    import account_utils
     import ib_fetcher
 
     module = load_panel_module(monkeypatch)
@@ -1271,9 +1270,35 @@ def test_tk_portfolio_queries_swap_identity_only_in_production(fake_config, monk
     monkeypatch.setattr(ib_fetcher, "fetch_portfolio",
                         lambda ctx, readonly: clients.append((ctx.client_id, readonly)) or {})
     module.fetch_ib_portfolio("Taylor")
-    monkeypatch.setattr(account_utils, "load_base_config",
-                        lambda: dict(fake_config[0], qt_panel_mode="production"))
-    monkeypatch.setattr(module, "load_base_config",
-                        lambda: dict(fake_config[0], qt_panel_mode="production"))
+    monkeypatch.setattr(module, "_VIEW_ONLY", True)     # ControlPanel 開啟時決定一次
     module.fetch_ib_portfolio("Taylor")
     assert clients == [(25, True), (69, True)]
+
+
+@own_process
+def test_tk_panel_stays_view_only_while_the_new_panel_holds_live_duty(
+        fake_config, monkeypatch):
+    """改回 parallel 卻沒先關正式模式的新 Panel：Tk 不搶值班與送單，說明要先關哪個。"""
+    import os
+    from qt_panel import mode
+
+    mode.LIVE_DUTY_LOCK.write_text(f"{os.getppid()}\n", encoding="utf-8")   # 活著的別人
+    module, panel, seen = _tk_with_switch(monkeypatch, fake_config, None)
+    try:
+        assert seen.watches == [] and len(seen.monitors) == 1
+        assert seen.monitors[0]["readonly"] is True
+        panel._open_manual_order()
+        assert len(seen.infos) == 1 and "新 Panel 正在值班" in seen.infos[0]
+    finally:
+        panel._quit_app()
+    assert mode.LIVE_DUTY_LOCK.exists()                    # 別人的鎖不能刪
+
+
+@own_process
+def test_tk_panel_releases_live_duty_on_exit(fake_config, monkeypatch):
+    from qt_panel import mode
+
+    module, panel, seen = _tk_with_switch(monkeypatch, fake_config, None)
+    assert mode.LIVE_DUTY_LOCK.exists()
+    panel._quit_app()
+    assert not mode.LIVE_DUTY_LOCK.exists()

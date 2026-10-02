@@ -5,7 +5,9 @@
   比對，切換前後必須相同）、Sync Pos ROLE_REBALANCE、接管 ROLE_TAKEOVER。
 - 紀錄：實盤的手動單紀錄、手動歸屬紀錄、SP500／SkewLS state、trade_log.xlsx。
 - 通知：手動單結案、Sync Pos 結果、新暫停、接管結果都發該帳戶的 Telegram。
-唯一和 Tk 不同：每條連線都經過送單閘門（正式模式放行實盤），維持單一判斷點。
+和 Tk 不同的只有兩處：每條連線都經過送單閘門（正式模式放行實盤），維持單一判斷點；
+Sync Pos 送出後 trade_log.xlsx 寫入失敗時仍會發 Telegram（Tk 會直接跳錯、不發），
+兩者的失敗都只寫進 Output Log——單已經送出，不能當成送單失敗。
 
 畫面在 trading／sync_pos／takeover，這裡只有不含畫面的 adapter，介面與 paper 版
 （PaperSync／PaperTakeover）相同。並行模式不會建立這些物件。

@@ -67,7 +67,7 @@ def prod_window(make_window, watch_source, telegram):
         kw.setdefault("gateway_source", watch_source)
         kw.setdefault("taipei_now", TickingClock(now))
         kw.setdefault("watch_ports", WatchPorts(
-            telegram=telegram.append, cold_connect=cold, sleep=lambda s: None,
+            telegram=telegram.append, cold_connect=cold, sleep=lambda s: None, start_delay_ms=0,
             recovery_delay_ms=kw.pop("recovery_delay_ms", 10 * 60 * 1000)))
         return make_window(**kw)
     return make
@@ -215,3 +215,90 @@ def test_production_portfolio_queries_use_the_panel_identity(monkeypatch):
 def _ctx(name, client_id):
     from types import SimpleNamespace
     return SimpleNamespace(name=name, client_id=client_id)
+
+
+# ── 值班與實盤送單只歸一邊（切換開關＋值班鎖）────────────────────────
+
+def test_new_panel_takes_duty_only_when_it_gets_the_lock():
+    from qt_panel.mode import PanelMode, qt_panel_duty
+
+    prod = {"qt_panel_mode": "production"}
+    assert qt_panel_duty(prod, claim=lambda: True) == (PanelMode.PRODUCTION, "")
+    mode, note = qt_panel_duty(prod, claim=lambda: False)        # Tk 還在值班
+    assert mode is PanelMode.PARALLEL and "Tk Panel" in note and "重開" in note
+    claimed = []
+    assert qt_panel_duty({}, claim=lambda: claimed.append(1) or True) == (PanelMode.PARALLEL, "")
+    assert claimed == []                                          # 並行模式不拿鎖
+
+
+def test_tk_panel_watches_only_when_switch_and_lock_allow():
+    from qt_panel.mode import tk_panel_duty
+
+    assert tk_panel_duty({}, claim=lambda: True) == (False, "")    # 預設：照舊值班
+    view_only, why = tk_panel_duty({"qt_panel_mode": "production"},
+                                   claim=lambda: (_ for _ in ()).throw(AssertionError))
+    assert view_only and "qt_panel_mode" in why                    # 正式模式：不拿鎖、只看
+    view_only, why = tk_panel_duty({}, claim=lambda: False)        # 新 Panel 還在正式模式
+    assert view_only and "新 Panel" in why and "重開" in why
+
+
+def test_duty_lock_is_held_by_one_live_process(tmp_path):
+    import os
+    from qt_panel.mode import claim_live_duty, release_live_duty
+
+    lock = tmp_path / "duty.lock"
+    assert claim_live_duty(lock)
+    lock.write_text(f"{os.getppid()}\n", encoding="utf-8")         # 另一個活著的行程拿著
+    assert not claim_live_duty(lock)
+    release_live_duty(lock, held=False)                            # 沒拿到就不能刪別人的
+    assert lock.exists()
+    lock.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    release_live_duty(lock, held=True)
+    assert not lock.exists()
+
+
+def test_rosa_state_recolours_the_tray(prod_window, watch_source, qtbot):
+    states = []
+
+    class StateTray:
+        def __init__(self, on_show, on_quit):
+            pass
+
+        def show(self):
+            pass
+
+        def hide(self):
+            pass
+
+        def update_state(self, state, when):
+            states.append(state)
+
+    prod_window(datetime(2026, 9, 29, 15, 0), tray_factory=StateTray)
+    watch_source.on_state("Rosa", "online", "")
+    watch_source.on_state("Taylor", "offline", "x")
+    watch_source.on_state("Rosa", "offline", "timeout")
+    assert states == ["online", "offline"]
+
+
+def test_real_tray_shows_rosa_state_in_colour_and_tooltip(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtGui import QIcon
+    from qt_panel import tray
+
+    made = []
+    monkeypatch.setattr(tray, "_state_icon", lambda color: made.append(color) or QIcon())
+    t = tray.QtTray(on_show=lambda: None, on_quit=lambda: None, icon=QIcon(),
+                    tooltip="QuantCore Panel")
+    t.update_state("offline", datetime(2026, 9, 29, 21, 5))
+    t.update_state("weird", datetime(2026, 9, 29, 21, 6))
+    assert made == ["red", "gray"]
+    assert t._icon.toolTip() == "QuantCore Panel\nRosa: WEIRD (last 21:06)"
+
+
+def test_watch_starts_a_moment_after_the_heartbeat_like_tk(prod_window, qtbot):
+    from qt_panel.watch import WatchPorts
+
+    w = prod_window(datetime(2026, 9, 29, 21, 10), watch_ports=WatchPorts(
+        telegram=lambda m: None, cold_connect=lambda n: None, sleep=lambda s: None,
+        start_delay_ms=300))
+    assert "Rosa poll" not in w.dashboard.log_text()
+    wait_log(qtbot, w, "Rosa poll 21:10 → ok")

@@ -82,7 +82,7 @@ def main() -> int:
         from qt_panel.broker_gate import load_paper_target
         from qt_panel.gateway_status import gateway_source_for
         from qt_panel.main_window import MainWindow
-        from qt_panel.mode import PanelMode, resolve_mode
+        from qt_panel.mode import PanelMode, qt_panel_duty, release_live_duty
         from qt_panel.portfolio_source import (
             load_account_cash_flows, load_equity, portfolio_fetch_for, read_recent_trades,
             read_strategy_allocations,
@@ -90,7 +90,9 @@ def main() -> int:
         from qt_panel.tray import tray_factory_for
 
         config = load_base_config()
-        mode, note = resolve_mode(config)
+        # 正式模式要拿得到值班鎖（Tk Panel 還在值班就退回並行模式並說明）
+        mode, note = qt_panel_duty(config)
+        has_duty = mode is PanelMode.PRODUCTION
         accounts = [{"name": a["name"], "port": a.get("port")} for a in load_accounts()]
         paper_target, paper_problem = load_paper_target(config, accounts)
 
@@ -128,5 +130,6 @@ def main() -> int:
             return app.exec()
         finally:
             window.shutdown()
+            release_live_duty(held=has_duty)
     finally:
         release_lock(lock)

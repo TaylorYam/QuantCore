@@ -57,7 +57,7 @@ def prod(make_window, qtbot):
         kw.setdefault("gateway_source", WatchSource())
         kw.setdefault("watch_ports", WatchPorts(telegram=lambda m: None,
                                                 cold_connect=lambda n: None,
-                                                sleep=lambda s: None))
+                                                sleep=lambda s: None, start_delay_ms=0))
         kw.setdefault("account_ctx_loader", live_ctx)
         kw.setdefault("symbol_loader", FakeSymbols)
         w = make_window(**kw)

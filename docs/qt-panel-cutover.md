@@ -12,8 +12,13 @@
 | `parallel`（預設，沒寫也是） | 只看；Trading 只接 paper；不值班 | 照舊：值班、實盤送單 |
 | `production` | 值班（Rosa poll／TY check／Morning check）＋實盤送單 | 只看：不值班、不能送單，視窗標題寫「只看」 |
 
-兩個 Panel 讀同一個設定，所以不會出現兩邊同時值班或都沒人值班。改設定後要**重開**
-兩個 Panel 才會生效（它們只在開啟時讀一次）。
+兩個 Panel 讀同一個設定，只在**開啟時**讀一次，改設定後要重開才生效。
+
+如果改了設定卻沒按順序重開（例如 Tk 還開著就開了正式模式的新 Panel），靠「值班鎖」
+保護：要值班的那一邊開啟時先拿鎖，另一個 Panel 正拿著就**這次不值班、不送實盤單**，
+畫面說明要先關哪一個（新 Panel 會以並行模式執行並在標題列寫原因；Tk 會只看並在
+Output Log 寫原因）。先值班的那一邊繼續值班，所以不會兩邊同時值班，也不會都沒人值班。
+看到這種說明時，照說明把兩個 Panel 都關掉，再只開要值班的那一個。
 
 正式模式下新 Panel 改用 Tk 原有的 IB 連線身分（clientId role），Tk 則改用新 Panel
 並行期間的唯讀身分，兩邊同時開也不會搶號：
@@ -61,7 +66,8 @@ Telegram。切換前 Tk 送出、還沒結案的手動單，切換後由新 Pane
    ```
    其他欄位（`alloc_*`、`leverage`、`port`、`account` 等）一律不動。
 4. 開新 Panel，確認：
-   - 標題列顯示「正式模式 · 值班＋實盤送單」
+   - 標題列顯示「正式模式 · 值班＋實盤送單」（如果顯示並行模式並寫「Tk Panel 還在值班」，
+     代表 Tk 沒關乾淨：兩個都關掉再重開新 Panel）
    - Dashboard 值班卡寫「新 Panel 值班中」
    - Output Log 有 `[GW] Rosa poll: …`、`[GW] TY check: next at …`、`[GW] Morning check: next at …`
    - 三個 Gateway 連上（心跳用的是 Tk 原本的號碼，Tk 已關所以不會撞）
@@ -81,7 +87,8 @@ Telegram。切換前 Tk 送出、還沒結案的手動單，切換後由新 Pane
 
 新 Panel 出問題、要改回 Tk 值班與下單時：
 
-1. 新 Panel：系統匣 → 離開。
+1. 新 Panel：系統匣 → 離開。Tk Panel 如果開著（只看狀態）也離開——它只在開啟時讀設定，
+   不重開會一直只看。
 2. `automation/config.json` 的 `qt_panel_mode` 改回 `"parallel"`（或刪掉這一行）。
 3. 用舊捷徑或 `automation/QuantCore_Panel.vbs` 開 Tk Panel（捷徑不見了就跑
    `python automation/create_shortcut.py` 重建「QuantCore — Taylor」）。

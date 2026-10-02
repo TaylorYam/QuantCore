@@ -400,9 +400,12 @@ class MainWindow(QMainWindow):
     def _on_gateway_state(self, name: str, state: str, detail: str) -> None:
         previous = self.dashboard.gateway_states().get(name)
         self.dashboard.set_gateway_state(name, state, detail)
-        if (self._watch is not None and name == "Rosa" and state == "offline"
-                and previous != "offline"):
-            self._watch.rosa_went_offline()
+        if name == "Rosa" and state != previous:
+            update_tray = getattr(self._tray, "update_state", None)
+            if callable(update_tray):
+                update_tray(state, self._clock())       # 系統匣顏色跟著 Rosa（同 Tk）
+            if self._watch is not None and state == "offline":
+                self._watch.rosa_went_offline()
         if previous is None or state == previous:
             return
         if state == "offline":

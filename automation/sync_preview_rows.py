@@ -54,7 +54,7 @@ def plan_subtitle(plan: SyncPlan) -> str:
     return text
 
 
-def _strategy_shares(plan: SyncPlan, strategy: str, sym: str) -> int:
+def _pre_combine_shares(plan: SyncPlan, strategy: str, sym: str) -> int:
     """Strategy-only target shares (pre-combine): the integer [[Combine]]
     summed for this strategy, so the preview never re-rounds it (#184).
     0 when Combine skipped the symbol (no price)."""
@@ -77,7 +77,7 @@ def target_sections(plan: SyncPlan) -> list[TargetSection]:
         lines = []
         for sym, w in sorted(plan.sr_wgt.items(), key=lambda x: -x[1]):
             px = prices.get(sym, 0)
-            t_shares = _strategy_shares(plan, "SR", sym)
+            t_shares = _pre_combine_shares(plan, "SR", sym)
             t_val = t_shares * px
             lines.append(
                 f"  {sym:<6s}  {w*100:5.1f}%  →  {t_shares:4d}sh  @ ${px:.2f}  = ${t_val:,.0f}"
@@ -88,7 +88,7 @@ def target_sections(plan: SyncPlan) -> list[TargetSection]:
         lines = []
         for sym, w in sorted(plan.sp500_wgt.items(), key=lambda x: -x[1]):
             px = prices.get(sym, 0)
-            t_shares = _strategy_shares(plan, "SP500", sym)
+            t_shares = _pre_combine_shares(plan, "SP500", sym)
             t_val = t_shares * px
             lines.append(
                 f"  {sym:<6s}  {w*100:5.1f}%  →  {t_shares:4d}sh  @ ${px:.2f}  = ${t_val:,.0f}"
@@ -100,7 +100,7 @@ def target_sections(plan: SyncPlan) -> list[TargetSection]:
         lines = []
         for sym, w in sorted(plan.skewls_wgt.items(), key=lambda x: -abs(x[1])):
             px = prices.get(sym, 0)
-            t_shares = _strategy_shares(plan, "SkewLS", sym)
+            t_shares = _pre_combine_shares(plan, "SkewLS", sym)
             t_val = t_shares * px
             direction = "SHORT" if w < 0 else "LONG "
             lines.append(
@@ -219,21 +219,21 @@ def log_summary_lines(plan: SyncPlan) -> list[str]:
         lines.append(f"  SR ({ctx.alloc_sr:.0%} of NAV):")
         for sym, w in sorted(plan.sr_wgt.items(), key=lambda x: -x[1]):
             px = prices.get(sym, 0)
-            t_sh = _strategy_shares(plan, "SR", sym)
+            t_sh = _pre_combine_shares(plan, "SR", sym)
             lines.append(f"    {sym:<6s} {w*100:5.1f}%  → {t_sh:4d}sh @ ${px:.2f}"
                          f"{note(sym, t_sh)}")
     if plan.sp500_wgt:
         lines.append(f"  SP500 ({ctx.alloc_sp500:.0%} of NAV):")
         for sym, w in sorted(plan.sp500_wgt.items(), key=lambda x: -x[1]):
             px = prices.get(sym, 0)
-            t_sh = _strategy_shares(plan, "SP500", sym)
+            t_sh = _pre_combine_shares(plan, "SP500", sym)
             lines.append(f"    {sym:<6s} {w*100:5.1f}%  → {t_sh:4d}sh @ ${px:.2f}"
                          f"{note(sym, t_sh)}")
     if plan.skewls_wgt:
         lines.append(f"  SkewLS ({ctx.alloc_skewls:.0%} of NAV):")
         for sym, w in sorted(plan.skewls_wgt.items(), key=lambda x: -abs(x[1])):
             px = prices.get(sym, 0)
-            t_sh = _strategy_shares(plan, "SkewLS", sym)
+            t_sh = _pre_combine_shares(plan, "SkewLS", sym)
             direction = "SHORT" if w < 0 else "LONG "
             lines.append(f"    {direction} {sym:<6s} {w*100:+5.1f}%  → {t_sh:+4d}sh @ ${px:.2f}"
                          f"{note(sym, t_sh)}")

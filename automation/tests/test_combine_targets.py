@@ -7,6 +7,7 @@ Coverage:
   - Invalid price handling (zero, negative, NaN, None)
   - SR / SP500 universe separation
   - Overlap (same symbol in both strategies)
+  - Per-Strategy integer shares (strategy_shares, #184)
 """
 
 from __future__ import annotations

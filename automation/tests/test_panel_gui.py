@@ -1171,3 +1171,109 @@ def test_monitor_alert_uses_shared_telegram_settings(fake_config, monkeypatch):
     module.ControlPanel._tg_notify(SimpleNamespace(), "Rosa offline")
 
     assert sent.get(timeout=5) == ("Rosa offline", {"token": "FAKE_TOKEN", "chat_id": "FAKE_CHAT"})
+
+
+# ── 切換開關（#154）：qt_panel_mode = production 時 Tk 只看 ─────────────
+
+def _tk_with_switch(monkeypatch, fake_config, mode):
+    """Tk Panel with the real watch scheduling and Gateway-monitor wiring, but fake
+    monitors / watch specs / manual-order service that only record what was started."""
+    import account_utils
+    import gateway_monitor
+    import manual_orders
+
+    config = dict(fake_config[0])
+    if mode is not None:
+        config["qt_panel_mode"] = mode
+    monkeypatch.setattr(account_utils, "load_base_config", lambda: dict(config))
+    warm_matplotlib()
+    module = load_panel_module(monkeypatch)
+    real_start_monitors = module.ControlPanel._start_gateway_monitors
+    panel_type = offline_panel_type(monkeypatch, module)
+    monkeypatch.setattr(module, "fetch_ib_portfolio",
+                        lambda name: {"available": False, "error": "offline test"})
+    seen = SimpleNamespace(watches=[], monitors=[], services=[], infos=[])
+    for name in ("_start_rosa_watch", "_start_ty_watch", "_start_morning_watch"):
+        monkeypatch.setattr(panel_type, name, lambda self, n=name: seen.watches.append(n))
+    monkeypatch.setattr(panel_type, "_start_gateway_monitors", real_start_monitors)
+
+    class FakeMonitor:
+        def __init__(self, account_names, on_state_change=None, on_connected=None,
+                     on_disconnected=None, **identity):
+            seen.monitors.append(identity)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(gateway_monitor, "GatewayMonitor", FakeMonitor)
+
+    class FakeService:
+        def __init__(self, **kwargs):
+            seen.services.append(kwargs)
+
+        def start_monitor(self):
+            return None
+
+    monkeypatch.setattr(manual_orders, "ManualOrderService", FakeService)
+    monkeypatch.setattr(module.messagebox, "showinfo",
+                        lambda title, body, **kw: seen.infos.append(body))
+    panel = panel_type()
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        panel.update()
+        time.sleep(0.02)
+    return module, panel, seen
+
+
+@own_process
+def test_tk_panel_hands_watch_and_live_orders_to_the_new_panel_in_production(
+        fake_config, monkeypatch):
+    import account_picker
+    from account_utils import ROLE_PANEL_READONLY
+
+    monkeypatch.setattr(account_picker, "AccountPicker", forbidden)
+    module, panel, seen = _tk_with_switch(monkeypatch, fake_config, "production")
+    try:
+        assert seen.watches == []                                   # 不值班
+        assert seen.monitors == [{"role": ROLE_PANEL_READONLY, "readonly": True}]
+        assert "只看" in panel.title()
+        assert panel.start_manual_order_tracking() is None and seen.services == []
+
+        panel._open_manual_order()                                  # 不能送實盤單
+        panel._sync_position()
+        assert getattr(panel, "_manual_order_window", None) is None
+        assert len(seen.infos) == 2 and all("新 Panel" in i for i in seen.infos)
+    finally:
+        panel._quit_app()
+
+
+@own_process
+def test_tk_panel_default_keeps_watching_and_sending(fake_config, monkeypatch):
+    module, panel, seen = _tk_with_switch(monkeypatch, fake_config, None)
+    try:
+        assert seen.watches == ["_start_rosa_watch", "_start_ty_watch", "_start_morning_watch"]
+        assert seen.monitors == [{}]                                # 預設 ROLE_MONITOR，同改動前
+        assert panel.title() == "QuantCore"
+        panel.start_manual_order_tracking()
+        assert len(seen.services) == 1
+        assert seen.infos == []
+    finally:
+        panel._quit_app()
+
+
+def test_tk_portfolio_queries_swap_identity_only_in_production(fake_config, monkeypatch):
+    """正式模式：ROLE_PANEL 交給新 Panel，Tk 的查詢改用新 Panel 並行期間的查詢號碼。"""
+    import account_utils
+    import ib_fetcher
+
+    module = load_panel_module(monkeypatch)
+    clients = []
+    monkeypatch.setattr(ib_fetcher, "fetch_portfolio",
+                        lambda ctx, readonly: clients.append((ctx.client_id, readonly)) or {})
+    module.fetch_ib_portfolio("Taylor")
+    monkeypatch.setattr(account_utils, "load_base_config",
+                        lambda: dict(fake_config[0], qt_panel_mode="production"))
+    monkeypatch.setattr(module, "load_base_config",
+                        lambda: dict(fake_config[0], qt_panel_mode="production"))
+    module.fetch_ib_portfolio("Taylor")
+    assert clients == [(25, True), (69, True)]

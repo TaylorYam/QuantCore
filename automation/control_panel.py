@@ -177,6 +177,11 @@ def fetch_ib_portfolio(account_name: str = "") -> dict:
         }
 
     ctx = AccountCtx.from_name(account_name, ROLE_PANEL)
+    if _qt_panel_owns_live():
+        # 正式模式（#154）：ROLE_PANEL 交給新 Panel，這裡改用新 Panel 並行期間的查詢號碼
+        from dataclasses import replace
+        from account_utils import get_qt_panel_query_client_id
+        ctx = replace(ctx, client_id=get_qt_panel_query_client_id(account_name))
     return _if.fetch_portfolio(ctx, readonly=True)
 
 
@@ -231,6 +236,21 @@ def _ps(cmd: str) -> str:
 # Config 工具
 # ════════════════════════════════════════════════════════════
 
+QT_PANEL_OWNS_LIVE_TEXT = (
+    "正式模式（config.json qt_panel_mode = production）：值班與實盤送單已交給新 Panel，"
+    "Tk Panel 只看、不值班、不能送單。要改回 Tk，把 qt_panel_mode 改回 parallel "
+    "後重開 Tk Panel（見 docs/qt-panel-cutover.md 的回退步驟）。")
+
+
+def _qt_panel_owns_live() -> bool:
+    """切換開關（#154）：qt_panel_mode = production 時值班與實盤送單歸新 Panel。
+    讀不到設定 = 沒切換，Tk 照舊（預設行為不變）。"""
+    try:
+        from qt_panel.mode import qt_panel_owns_live
+        return qt_panel_owns_live(load_base_config())
+    except Exception:
+        return False
+
 
 
 # ════════════════════════════════════════════════════════════
@@ -262,8 +282,11 @@ class ControlPanel(tk.Tk):
         self.font_big_num = tkfont.Font(family="Segoe UI", size=16, weight="bold")
         self.font_med_num = tkfont.Font(family="Segoe UI", size=11, weight="bold")
 
+        # 切換開關（#154）：正式模式下值班與實盤送單歸新 Panel，這裡只看
+        self._qt_owns_live = _qt_panel_owns_live()
         self._build_ui()
-        self.title("QuantCore")
+        self.title("QuantCore（只看 — 值班與送單在新 Panel）" if self._qt_owns_live
+                   else "QuantCore")
         from portfolio_queries import PortfolioQueries, PortfolioRefreshLoop
         self.portfolio_queries = PortfolioQueries(
             [a["name"] for a in self._accounts_meta], fetch_ib_portfolio)
@@ -277,12 +300,16 @@ class ControlPanel(tk.Tk):
         # 值班監控（排程+派工在 monitor_engine，panel 只供 Tk adapter）。
         # 引擎物件先建好 — gateway 斷線事件（500ms 起）隨時可能 schedule_once。
         self._mon_engine = self._build_monitor_engine()
-        # ROSA 市場時段斷線輪詢（與持久監測平行；只對齊 21:00–05:00 台北窗口）
-        self.after(1500, self._start_rosa_watch)
-        # TAYLOR / YVONNE 週二/三 20:05 台北驗證手動登入（一次性、各發一封）
-        self.after(2000, self._start_ty_watch)
-        # 每平日（NYSE 交易日）07:00 台北自動 Check Now — 刷新所有 Gateway 連線
-        self.after(2200, self._start_morning_watch)
+        if self._qt_owns_live:
+            # 正式模式（#154）：值班由新 Panel 跑，這裡一個都不排，避免兩邊同時值班
+            self._log(f"[i] {QT_PANEL_OWNS_LIVE_TEXT}")
+        else:
+            # ROSA 市場時段斷線輪詢（與持久監測平行；只對齊 21:00–05:00 台北窗口）
+            self.after(1500, self._start_rosa_watch)
+            # TAYLOR / YVONNE 週二/三 20:05 台北驗證手動登入（一次性、各發一封）
+            self.after(2000, self._start_ty_watch)
+            # 每平日（NYSE 交易日）07:00 台北自動 Check Now — 刷新所有 Gateway 連線
+            self.after(2200, self._start_morning_watch)
         # System tray icon — 點 X 不殺 app，縮到 tray 繼續跑監控
         self.after(2500, self._start_tray)
         # Watchdog: tray 消失時自動還原視窗 + 監聽重複啟動信號
@@ -771,18 +798,26 @@ class ControlPanel(tk.Tk):
             # ROSA: 排一次性 recovery 嘗試 — 涵蓋 06:00 台北自動重啟（窗口
             # 外、rosa_poll 不會跑）等情境。10 分鐘給 IB Gateway 完成重啟
             # 的緩衝；成功後 on_connected → on_state → tray 自動翻綠。
-            if name == "Rosa":
+            # 正式模式（#154）由新 Panel 值班，這裡不排。
+            if name == "Rosa" and not self._qt_owns_live:
                 import monitor_engine as me
                 self._mon_engine.schedule_once(
                     10 * 60 * 1000,
                     me.rosa_recovery_worker(self._monitor_env,
                                             self._monitor_spawn))
 
+        # 正式模式（#154）：值班心跳的 clientId（ROLE_MONITOR）交給新 Panel，
+        # 這裡改用新 Panel 並行期間的唯讀身分，只顯示狀態
+        identity = {}
+        if self._qt_owns_live:
+            from account_utils import ROLE_PANEL_READONLY
+            identity = {"role": ROLE_PANEL_READONLY, "readonly": True}
         self._gw_monitor = GatewayMonitor(
             account_names=account_names,
             on_state_change=on_state,
             on_connected=on_connected,
             on_disconnected=on_disconnected,
+            **identity,
         )
         self._gw_monitor.start()
 
@@ -1111,8 +1146,18 @@ class ControlPanel(tk.Tk):
 
     # ── Sync Position ─────────────────────────────────────
 
+    def _live_orders_moved(self) -> bool:
+        """正式模式（#154）：實盤送單在新 Panel；按了送單按鈕就說明，不開視窗。"""
+        if not self._qt_owns_live:
+            return False
+        messagebox.showinfo("QuantCore", QT_PANEL_OWNS_LIVE_TEXT, parent=self)
+        return True
+
     def start_manual_order_tracking(self):
         """Start durable manual-order reconciliation for the app lifetime."""
+        if self._qt_owns_live:
+            # 正式模式（#154）：手動單對帳與結案通知由新 Panel 跑（同一個 clientId）
+            return None
         service = getattr(self, "_manual_order_service", None)
         if service is None:
             from manual_orders import ManualOrderService, SUPPORTED_MANUAL_ACCOUNTS
@@ -1134,6 +1179,8 @@ class ControlPanel(tk.Tk):
 
     def _open_manual_order(self):
         """Open the per-order preview and confirmation flow."""
+        if self._live_orders_moved():
+            return
         existing = getattr(self, "_manual_order_window", None)
         if existing is not None:
             try:
@@ -1171,6 +1218,8 @@ class ControlPanel(tk.Tk):
 
     def _sync_position(self):
         """Sync Pos 按鈕：先選帳戶（#35），選好才開始計算"""
+        if self._live_orders_moved():
+            return
         from account_picker import AccountPicker
         AccountPicker(
             parent=self,

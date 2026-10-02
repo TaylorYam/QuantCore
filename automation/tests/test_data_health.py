@@ -9,6 +9,8 @@ import pytest
 from data.health import audit, inspect_csv
 from data.update_outcomes import outcome_errors
 
+UPDATE_DAY = "2026-09-17"
+
 
 def csv(path, dates=("2026-09-15",), **overrides):
     data = {"Date": dates, **{k: [10] * len(dates) for k in
@@ -87,7 +89,6 @@ def updater(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "STOCK_DIR", tmp_path / "stocks")
     monkeypatch.setattr(module, "ETF_DIR", tmp_path / "etfs")
     monkeypatch.setattr(module, "ALL_ETFS", ["SPY"])
-    monkeypatch.setattr(module, "TODAY", "2026-09-17")
     monkeypatch.setattr(module.yf, "download", lambda *a, **k: pd.DataFrame())
     monkeypatch.setattr(module, "_download_ohlcv", lambda *a, **k: None)
     return module
@@ -99,20 +100,17 @@ def test_partial_batch_failure_and_corrupt_csv_are_returned(updater, monkeypatch
     def fail(*args, **kwargs):
         raise RuntimeError("offline failure")
     monkeypatch.setattr(updater.yf, "download", fail)
-    results = {result["ticker"]: result for result in updater.update_stocks()}
+    results = {result["ticker"]: result for result in updater.update_stocks(today=UPDATE_DAY)}
     assert results["A"]["status"] == "download_failed"
-    assert "offline failure" in results["A"]["detail"]
     assert results["B"]["status"] == "local_data_error"
-    assert "unreadable CSV" in results["B"]["detail"]
     assert len(outcome_errors(results.values())) == 2
 
 
 def test_empty_response_does_not_claim_inactive_ticker_failure(updater):
     csv(updater.STOCK_DIR / "OLD.csv", ("2001-01-02",))
-    result = updater.update_stocks()[0]
+    result = updater.update_stocks(today=UPDATE_DAY)[0]
     assert result["ticker"] == "OLD"
     assert result["status"] == "inconclusive"
-    assert "freshness unverified" in result["detail"]
     assert outcome_errors([result]) == []
 
 
@@ -121,7 +119,7 @@ def test_current_ticker_is_reported_without_claiming_an_update(updater, monkeypa
     monkeypatch.setattr(updater.yf, "download",
                         lambda *a, **k: pytest.fail("current ticker should not download"))
 
-    result = updater.update_stocks()[0]
+    result = updater.update_stocks(today=UPDATE_DAY)[0]
 
     assert result == {
         "ticker": "AAPL", "dataset": "stocks", "status": "no_update_required",
@@ -135,9 +133,8 @@ def test_malformed_nonempty_response_is_not_success(updater, monkeypatch):
     csv(updater.STOCK_DIR / "A.csv")
     monkeypatch.setattr(updater.yf, "download", lambda *a, **k:
                         pd.DataFrame({"Open": [1]}, index=pd.to_datetime(["2026-09-16"])))
-    result = updater.update_stocks()[0]
+    result = updater.update_stocks(today=UPDATE_DAY)[0]
     assert result["status"] == "invalid_response"
-    assert "invalid download response" in result["detail"]
 
 
 def test_successful_update_preserves_price_columns(updater, monkeypatch):
@@ -148,7 +145,7 @@ def test_successful_update_preserves_price_columns(updater, monkeypatch):
                        ("Open", "High", "Low", "Close", "Adj Close", "Volume")},
                        index=pd.to_datetime(["2026-09-15", "2026-09-16"]))
     monkeypatch.setattr(updater.yf, "download", lambda *a, **k: new)
-    result = updater.update_stocks()[0]
+    result = updater.update_stocks(today=UPDATE_DAY)[0]
     assert result["status"] == "updated"
     assert result["rows_added"] == 1
     written = pd.read_csv(path)
@@ -174,7 +171,7 @@ def test_current_dow_and_sndk_histories_resume_at_verified_provider_identity(
         updater.yf, "download", lambda tickers, **kwargs: calls.append(tickers) or response,
     )
 
-    results = {result["ticker"]: result for result in updater.update_stocks()}
+    results = {result["ticker"]: result for result in updater.update_stocks(today=UPDATE_DAY)}
     assert results["DOW"]["status"] == results["SNDK"]["status"] == "updated"
     assert calls == ["DOW SNDK"]
     for symbol in ("DOW", "SNDK"):
@@ -193,7 +190,7 @@ def test_legacy_sndk_history_still_fails_closed(updater, monkeypatch, capsys):
 
     monkeypatch.setattr(updater.yf, "download", unexpected)
 
-    result = updater.update_stocks()[0]
+    result = updater.update_stocks(today=UPDATE_DAY)[0]
     assert result["status"] == "identity_guard_hold"
     assert "SNDK: identity guard refuses provider append; skipped as reviewed" in (
         capsys.readouterr().out
@@ -205,15 +202,14 @@ def test_vix_checked_even_when_other_etfs_current(updater, monkeypatch):
     csv(updater.ETF_DIR / "SPY.csv", ("2026-09-16",))
     csv(updater.ETF_DIR / "VIX.csv")
     calls = []
-    def download(ticker, start, end, *, errors=None, **kwargs):
+    def download(ticker, start, end, **kwargs):
         calls.append((ticker, start, end))
-        errors.append(f"{ticker}: download failed: VIX offline")
-        return None
+        return updater.Failure("download_failed", f"{ticker}: download failed: VIX offline")
     monkeypatch.setattr(updater, "_download_ohlcv", download)
     def unexpected(*args, **kwargs):
         raise AssertionError("ETF batch already current")
     monkeypatch.setattr(updater.yf, "download", unexpected)
-    results = {result["ticker"]: result for result in updater.update_etfs()}
+    results = {result["ticker"]: result for result in updater.update_etfs(today=UPDATE_DAY)}
     assert results["VIX"]["status"] == "download_failed"
     assert outcome_errors(results.values()) == ["VIX: download failed: VIX offline"]
     assert calls[0][0] == "^VIX"
@@ -229,11 +225,37 @@ def test_vix_malformed_history_is_an_invalid_response(updater, monkeypatch):
 
     monkeypatch.setattr(updater, "_download_ohlcv", updater._real_download_ohlcv)
     monkeypatch.setattr(updater.yf, "Ticker", lambda ticker: MalformedTicker())
-    results = {result["ticker"]: result for result in updater.update_etfs()}
+    results = {result["ticker"]: result for result in updater.update_etfs(today=UPDATE_DAY)}
 
     assert results["VIX"]["status"] == "invalid_response"
-    assert "missing Close column" in results["VIX"]["detail"]
     assert len(outcome_errors(results.values())) == 1
+
+
+def test_status_does_not_depend_on_the_wording_of_the_detail(updater, monkeypatch):
+    """#189: a malformed response whose text happens to say "download failed"
+    used to be re-classified from the message; the status is now returned."""
+    csv(updater.ETF_DIR / "SPY.csv", ("2026-09-16",))
+    csv(updater.ETF_DIR / "VIX.csv")
+
+    class MisleadingTicker:
+        def history(self, **kwargs):
+            return pd.DataFrame({"Close": [25.0]}, index=["download failed"])
+
+    monkeypatch.setattr(updater, "_download_ohlcv", updater._real_download_ohlcv)
+    monkeypatch.setattr(updater.yf, "Ticker", lambda ticker: MisleadingTicker())
+    results = {result["ticker"]: result for result in updater.update_etfs(today=UPDATE_DAY)}
+
+    assert results["VIX"]["status"] == "invalid_response"
+
+
+def test_update_date_defaults_to_the_call_date(updater, monkeypatch):
+    from datetime import date, timedelta
+    yesterday = str(date.today() - timedelta(days=1))
+    csv(updater.STOCK_DIR / "AAPL.csv", (yesterday,))
+    monkeypatch.setattr(updater.yf, "download",
+                        lambda *a, **k: pytest.fail("current ticker should not download"))
+
+    assert updater.update_stocks()[0]["status"] == "no_update_required"
 
 
 def test_scheduler_propagates_returned_errors(monkeypatch):

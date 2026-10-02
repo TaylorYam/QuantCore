@@ -235,7 +235,6 @@ def updater(tmp_path, monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "STOCK_DIR", tmp_path / "stocks")
-    monkeypatch.setattr(module, "TODAY", "2026-09-17")
     monkeypatch.setattr(module, "_download_ohlcv",
                         lambda *a, **k: pytest.fail("offline test reached the network (#53 refetch)"))
     return module
@@ -268,7 +267,7 @@ def test_updater_silently_refuses_guarded_append_and_updates_unlisted_symbol(
     nfx_before = (updater.STOCK_DIR / "NFX.csv").read_bytes()
     csra_before = (updater.STOCK_DIR / "CSRA.csv").read_bytes()
     results = {result["ticker"]: result
-               for result in updater.update_stocks(batch_size=1)}
+               for result in updater.update_stocks(batch_size=1, today="2026-09-17")}
 
     assert results["NFX"]["status"] == "identity_guard_hold"
     assert results["CSRA"]["status"] == "identity_guard_hold"

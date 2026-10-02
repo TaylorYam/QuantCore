@@ -50,7 +50,7 @@ def _run(monkeypatch, cushion, snapshot=lambda *a, **k: None):
     monkeypatch.setattr(daily_report, "get_positions_detail", lambda ib, ctx: [])
     monkeypatch.setattr(daily_report, "append_daily_snapshot", snapshot)
     ctx = NS(name="Taylor", account="U1", host="127.0.0.1", port=4001, client_id=1,
-             tg_token="T", tg_chat_id="C")
+             tg_token="T", tg_chat_id="C", alloc_sr=0.0, alloc_skewls=1.0)
     d = Digest("每日報告 2026-09-15", icon="📊")
     daily_report.main(ctx, digest=d)
     return d
@@ -58,8 +58,9 @@ def _run(monkeypatch, cushion, snapshot=lambda *a, **k: None):
 
 def test_main_writes_snapshot_and_stays_silent_when_healthy(monkeypatch):
     written = []
-    d = _run(monkeypatch, 64.6, snapshot=lambda *a, **k: written.append(k["account_name"]))
-    assert written == ["Taylor"], "Excel 快照照寫"
+    d = _run(monkeypatch, 64.6,
+             snapshot=lambda *a, **k: written.append((k["account_name"], k["strategy_alloc"])))
+    assert written == [("Taylor", (0.0, 1.0))], "Excel 快照照寫，並帶 Allocation 判斷歸屬（#181）"
     assert d.render() is None, "持倉報告不再推播"
 
 

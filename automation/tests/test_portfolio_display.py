@@ -138,6 +138,17 @@ def test_owner_follows_strategy_buckets():
     assert [r.owner for r in rows] == ["SkewLS", "手動"]
 
 
+def test_long_sector_etfs_belong_to_skewls_when_sr_is_off():
+    """#181：SR 0% 時做多的類股 ETF 是 SkewLS 多方腿，不是 SR。"""
+    assert owner_of("XLC", 60, "etf", alloc=(0.0, 1.0)) == "SkewLS"
+    assert owner_of("XLC", 60, "etf", alloc=(0.5, 0.3)) == "SR+SkewLS"
+    assert owner_of("AAPL", 3, "stock", alloc=(0.0, 1.0)) == "SP500"
+    assert owner_of("XLC", 60, "etf", {"XLC"}, alloc=(0.0, 1.0)) == "手動"
+    data = pf(etf=[h("XLC", 60, 113.55, 110.23), h("SIJ", 61, 18.93, 18.32)],
+              strategy_alloc=(0.0, 1.0))
+    assert [r.owner for r in all_holding_rows(data)] == ["SkewLS", "SkewLS"]
+
+
 def test_manual_holdings_that_collided_with_a_universe_are_manual():
     """CONTEXT「手動持倉」：策略外持倉之外，碰撞進策略 Universe 的手動持倉也算手動。"""
     assert owner_of("AAPL", 3, "stock", {"AAPL"}) == "手動"

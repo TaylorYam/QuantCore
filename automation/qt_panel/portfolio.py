@@ -26,6 +26,7 @@ from qt_panel import theme
 from qt_panel.account_panels import RecentTradesCard, StrategyParamsCard
 from qt_panel.equity import EquityChart, Sparkline, recent_change
 from qt_panel.widgets import Card, all_text, clear_layout, dot, label
+from strategy_owner import includes
 
 OWNER_FILTERS = ("全部", "SR", "SkewLS", "SP500", display.MANUAL)
 TABLE_COLUMNS = ("歸屬", "代號", "股數", "權重", "成本", "現價", "損益", "損益%", "名稱")
@@ -298,7 +299,8 @@ class HoldingsTable(QWidget):
     def _apply_filter(self) -> None:
         for r in range(self.table.rowCount()):
             owner = self.table.item(r, 0).text()
-            self.table.setRowHidden(r, self._filter not in ("全部", owner))
+            shown = self._filter == "全部" or includes(owner, self._filter)
+            self.table.setRowHidden(r, not shown)
 
     def visible_rows(self) -> list[tuple[str, ...]]:
         return [tuple(self.table.item(r, c).text() for c in range(self.table.columnCount()))

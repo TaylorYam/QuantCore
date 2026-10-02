@@ -25,11 +25,8 @@ def fetch_panel_portfolio(account_name: str) -> dict:
     from account_ctx import AccountCtx
     from account_utils import ROLE_PANEL
 
-    result = ib_fetcher.fetch_portfolio(AccountCtx.from_name(account_name, ROLE_PANEL),
-                                        readonly=True)
-    if result.get("available"):
-        result.update(read_manual_symbols(account_name))
-    return result
+    ctx = AccountCtx.from_name(account_name, ROLE_PANEL)
+    return _with_attribution(ib_fetcher.fetch_portfolio(ctx, readonly=True), ctx)
 
 
 def fetch_readonly_portfolio(account_name: str) -> dict:
@@ -39,9 +36,15 @@ def fetch_readonly_portfolio(account_name: str) -> dict:
 
     ctx = replace(AccountCtx.from_name(account_name, ROLE_PANEL),
                   client_id=get_qt_panel_query_client_id(account_name))
-    result = ib_fetcher.fetch_portfolio(ctx, readonly=True)
+    return _with_attribution(ib_fetcher.fetch_portfolio(ctx, readonly=True), ctx)
+
+
+def _with_attribution(result: dict, ctx) -> dict:
+    """持倉歸屬要的額外資料：碰撞的手動持倉，和 Allocation（決定做多類股 ETF 歸 SR
+    還是 SkewLS，#181）。"""
     if result.get("available"):
-        result.update(read_manual_symbols(account_name))
+        result.update(read_manual_symbols(ctx.name))
+        result["strategy_alloc"] = (ctx.alloc_sr, ctx.alloc_skewls)
     return result
 
 

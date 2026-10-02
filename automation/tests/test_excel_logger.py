@@ -124,3 +124,20 @@ def test_first_use_import_and_export_failure_recovery(monkeypatch, tmp_path):
                                       {'XLK': 120}, account_name='Taylor',
                                       capture_id='next')
     assert len(sqlite_store._query(db, 'portfolio_snapshots')) == 2
+
+
+def test_daily_snapshot_attributes_long_sector_etfs_by_allocation(monkeypatch):
+    """#181：SR 0% 時，做多的類股 ETF 在快照的 Strategy 欄是 SkewLS。"""
+    written = []
+    monkeypatch.setattr(excel_logger, "_append_rows",
+                        lambda sheet, rows, identities: written.extend(rows))
+    positions = [Position("XLC", 60, 113.55), Position("SIJ", 61, 18.93),
+                 Position("AAPL", 3, 150.0)]
+    prices = {"XLC": 110.23, "SIJ": 18.32, "AAPL": 160.0}
+    excel_logger.append_daily_snapshot(15_000.0, positions, prices, account_name="Rosa",
+                                       strategy_alloc=(0.0, 1.0))
+    assert {r["Symbol"]: r["Strategy"] for r in written} == {
+        "XLC": "SkewLS", "SIJ": "SkewLS", "AAPL": ""}
+    written.clear()
+    excel_logger.append_daily_snapshot(15_000.0, positions[:1], prices, account_name="Rosa")
+    assert written[0]["Strategy"] == "SR"                  # 沒給 Allocation：維持舊規則

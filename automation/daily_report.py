@@ -128,7 +128,8 @@ def main(ctx: AccountCtx, digest: Digest | None = None):
 
         append_daily_snapshot(nav, pos_detail, prices,
                               cushion_pct=cushion, excess_liq=excess_liq,
-                              account_name=acct_name)
+                              account_name=acct_name,
+                              strategy_alloc=(ctx.alloc_sr, ctx.alloc_skewls))
         log.info(f"Excel snapshot written -> portfolio_tracker.xlsx")
 
     except Exception as e:

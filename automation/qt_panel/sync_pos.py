@@ -6,6 +6,7 @@
 並行模式只接 paper（`PaperSync`）：連線走送單閘門；手動歸屬紀錄與手動單紀錄用
 paper 專用檔；SP500／SkewLS state 只讀不寫；不寫 trade_log.xlsx、不發 Telegram，
 結果與暫停通知只寫 Output Log。計算中按「放棄」或關掉 Panel，算完的結果直接丟掉。
+暫停列的「交給策略接管」（#153）同 Tk：這份 Sync 預覽作廢，改開該標的的接管預覽。
 """
 from __future__ import annotations
 
@@ -14,16 +15,17 @@ from typing import Callable
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QHBoxLayout, QHeaderView, QPlainTextEdit, QPushButton,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QHBoxLayout, QHeaderView, QLabel, QPlainTextEdit,
+    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 import manual_attribution
 import sync_preview_rows as preview_rows
 
 from qt_panel import theme
+from qt_panel.broker_gate import paper_records
 from qt_panel.trading_common import MainThread, background
-from qt_panel.widgets import Card, clear_layout, label
+from qt_panel.widgets import Card, clear_layout, label, mono as _mono
 
 FIELD_WIDTH = 240
 
@@ -38,20 +40,8 @@ class PaperSync:
         self._load_ctx = account_ctx_loader
         self.target_text = target.describe()
 
-    def _connect(self, ctx):
-        ib = self._gate.broker()
-        try:
-            ib.connect(ctx.host, ctx.port, clientId=ctx.client_id, timeout=20)
-        except BaseException:
-            ib.disconnect()            # 同 ib_fetcher.connect：連不上也要收掉 socket
-            raise
-        return ib
-
     def records(self):
-        from sync_position import SyncRecords
-        return SyncRecords(connect=self._connect, attribution_ledger=self._files.attribution,
-                           manual_orders_store=self._files.orders,
-                           persist_strategy_state=False)
+        return paper_records(self._gate, self._files)
 
     def compute(self, account: str, log_fn: Callable[[str], None]):
         from account_utils import ROLE_REBALANCE
@@ -73,19 +63,14 @@ class PaperSync:
         return sync_position.submit_sync_orders(plan, log_fn=log_fn)
 
 
-def _mono(text: str = "", color_key: str = "text") -> QWidget:
-    lbl = label(text)
-    lbl.setStyleSheet(f"font-family: '{theme.MONO_FONT}'; font-size: 9pt; "
-                      f"color: {theme.color(color_key)};")
-    lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
-    return lbl
-
-
 class SyncPosPanel(QWidget):
     def __init__(self, account_names: list[str], sync: PaperSync, *, dialogs,
-                 log: Callable[[str], None]):
+                 log: Callable[[str], None],
+                 on_takeover: Callable[[str, str], str] | None = None):
         super().__init__()
         self._sync = sync
+        self._on_takeover = on_takeover
+        self.takeover_buttons: dict[str, QPushButton] = {}
         self._dialogs = dialogs
         self._log = log
         self._main = MainThread()
@@ -247,6 +232,20 @@ class SyncPosPanel(QWidget):
             self._set_status("帳戶已變更，請重新計算。")
             self._update_buttons()
 
+    def _hand_over(self, account: str, symbol: str) -> None:
+        """交給策略接管（#153）：改開單一標的接管預覽，開得成這份 Sync 預覽才作廢。"""
+        if self._computing or self._sending:
+            return
+        problem = self._on_takeover(account, symbol)
+        if problem:
+            self._set_status(f"不能交給策略接管：{problem}", "red")
+            return
+        self._plan = None
+        self.preview.hide()
+        self._set_status(f"[{account}] {symbol} 改為交給策略接管；這份 Sync 預覽已作廢，"
+                         "要 Sync 請重新計算。")
+        self._update_buttons()
+
     def discard(self) -> None:
         if not self._computing:
             return
@@ -279,12 +278,24 @@ class SyncPosPanel(QWidget):
         others = preview_rows.other_holding_lines(plan)
         if others:
             section("Other（不在 Sync 範圍）", "text_dim", [(line, "text_dim") for line in others])
+        self.takeover_buttons = {}
         paused = preview_rows.paused_rows(plan)
         if paused:
-            lines = []
+            section("手動持倉暫停（這些標的的策略單不會送出）", "yellow", [])
             for p in paused:
-                lines += [(p.text, "text"), (p.reason, "text_dim")]
-            section("手動持倉暫停（這些標的的策略單不會送出）", "yellow", lines)
+                row = QWidget()
+                line = QHBoxLayout(row)
+                line.setContentsMargins(0, 0, 0, 0)
+                line.addWidget(_mono(p.text))
+                line.addStretch(1)
+                if self._on_takeover is not None:
+                    button = QPushButton("交給策略接管")
+                    button.clicked.connect(
+                        lambda _=False, a=plan.ctx.name, s=p.symbol: self._hand_over(a, s))
+                    line.addWidget(button)
+                    self.takeover_buttons[p.symbol] = button
+                self._sections.addWidget(row)
+                self._sections.addWidget(_mono(p.reason, "text_dim"))
 
         self.trades_heading.setText(preview_rows.trades_heading(plan))
         self.trades.setRowCount(0)
@@ -365,8 +376,10 @@ class SyncPosPanel(QWidget):
         texts = [self.subtitle.text()]
         for i in range(self._sections.count()):
             widget = self._sections.itemAt(i).widget()
-            if widget is not None:
+            if isinstance(widget, QLabel):
                 texts.append(widget.text())
+            elif widget is not None:          # 暫停列：文字＋接管按鈕
+                texts += [lbl.text() for lbl in widget.findChildren(QLabel)]
         texts += [self.trades_heading.text(), self.totals.text()]
         return "\n".join(texts)
 

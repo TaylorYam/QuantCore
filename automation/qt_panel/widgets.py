@@ -1,7 +1,10 @@
 """新 Panel 共用的小元件。"""
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLayout, QVBoxLayout
+
+from qt_panel import theme
 
 
 class Card(QFrame):
@@ -26,6 +29,16 @@ def label(text: str = "", *, name: str | None = None, color: str | None = None) 
         lbl.setObjectName(name)
     if color:
         lbl.setStyleSheet(f"color: {color};")
+    return lbl
+
+
+def mono(text: str = "", color_key: str = "text", *, wrap: bool = False) -> QLabel:
+    """等寬字的預覽行（Sync Pos／接管），可選取複製。"""
+    lbl = label(text)
+    lbl.setWordWrap(wrap)
+    lbl.setStyleSheet(f"font-family: '{theme.MONO_FONT}'; font-size: 9pt; "
+                      f"color: {theme.color(color_key)};")
+    lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
     return lbl
 
 

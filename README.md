@@ -180,7 +180,9 @@ Panel 正逐步換成 PySide6（[ADR-0012](docs/adr/0012-panel-pyside6-parallel-
     - paper 單另存 `automation/qt_panel_paper_orders.sqlite3`（gitignored），不混進 Tk 的 `manual_orders.sqlite3`；結案通知只寫 Output Log，不發 Telegram
   - Trading 的 Sync Pos（#152）：上方切換「手動單／Sync Pos」。選帳戶 → 計算（顯示進度）→ 預覽理論持倉、實際持倉、手動持倉暫停原因、交易清單 → 確認視窗才送 LMT；計算中按「放棄」或關掉 Panel，結果直接丟掉不送。預覽文字與 Tk 共用 `automation/sync_preview_rows.py`，計算與送單沿用 `sync_position`
     - **paper 不寫任何實盤紀錄**：理論持倉用所選帳戶的策略設定（Allocation）乘上 paper 帳戶的權益；連線走送單閘門（paper clientId = `client_id` + 1，預設 93）；SP500／SkewLS state 只讀不寫；手動持倉歸屬用 `automation/qt_panel_paper_attribution.sqlite3`（gitignored，手動單成交讀 paper 單紀錄）；不寫 `trade_log.xlsx`、不發 Telegram，結果與暫停通知只寫 Output Log；不向實盤 Gateway 借報價
-    - paper 限制：三個帳戶名稱都送到同一個 paper 帳號，但手動歸屬按帳戶名稱記錄；在 paper 上測碰撞暫停時，手動單和 Sync Pos 請選同一個帳戶名稱。暫停列的「交給策略接管」在 #153 補上
+    - paper 限制：三個帳戶名稱都送到同一個 paper 帳號，但手動歸屬按帳戶名稱記錄；在 paper 上測碰撞暫停時，手動單、Sync Pos、接管請選同一個帳戶名稱
+  - Trading 的交給策略接管（#153）：上方切換的第三個「交給策略接管」，或在 Sync Pos 預覽的暫停列按「交給策略接管」直接帶入（同 Tk，該份 Sync 預覽作廢）。選帳戶與被暫停的標的 → 計算預覽（顯示進度）→ 手動紀錄／IB 現有股數、策略整數目標與差額 → 確認視窗才送這一檔的 LMT。不能接管（未結案手動單、IB 上還有掛單、沒有被暫停等）在狀態列說明原因；確認時資料已變動 → 換上新預覽並標出原因，要再確認一次。預覽與送單沿用 `strategy_takeover`，按鈕與確認文字和 Tk 共用 `automation/takeover_preview_text.py`
+    - paper 同 Sync Pos：連線走送單閘門（paper clientId = `client_id` + 2，預設 94，與 Sync Pos 分開，比照 Tk 的接管 clientId）；歸屬與手動單紀錄用 paper 專用檔；不寫 state、不發 Telegram，接管結果只寫 Output Log
 - 模式由 `config.json` 的 `qt_panel_mode` 決定，預設並行模式；正式模式在切換工單 #154 才提供
 
 ---

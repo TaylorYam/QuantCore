@@ -1,6 +1,6 @@
 """新 Panel 的送單閘門與 paper 連線設定（#151，ADR-0012）。
 
-**送單閘門**：新 Panel 所有會送單的路徑（手動單、之後的 Sync Pos、交給策略接管）
+**送單閘門**：新 Panel 所有會送單的路徑（手動單、Sync Pos、交給策略接管）
 都用 `SendGate.broker()` 建 IB 連線，這是唯一的判斷點。連上 Gateway 後先讀它
 管理的帳號；並行模式下只要有一個不是 paper（DU/DF 開頭）就立刻斷線並拒絕，
 沒通過檢查的連線一律不能送單／撤單。做法沿用 `paper_verify_manual_orders` 的
@@ -31,6 +31,8 @@ DEFAULT_PAPER_HOST = "127.0.0.1"
 DEFAULT_PAPER_CLIENT_ID = 92
 # Sync Pos 在 paper 上用下一個 clientId：和手動單的對帳連線同時存在也不會互踢
 SYNC_CLIENT_OFFSET = 1
+# 交給策略接管再下一個（#153）：比照 Tk 的 ROLE_TAKEOVER，和 Sync Pos 分開
+TAKEOVER_CLIENT_OFFSET = 2
 
 
 class SendRefused(ManualOrderError):
@@ -118,12 +120,37 @@ class PaperTarget:
     def sync_ctx(self, base):
         """Sync Pos 的 AccountCtx：策略設定（Allocation 等）沿用該帳戶，
         連線改到 paper；不去實盤 Gateway 借報價、不帶 Telegram 設定、一定真的送（paper）。"""
+        return self._strategy_ctx(base, SYNC_CLIENT_OFFSET)
+
+    def takeover_ctx(self, base):
+        """交給策略接管的 AccountCtx（#153）：同 sync_ctx，只是 clientId 不同。"""
+        return self._strategy_ctx(base, TAKEOVER_CLIENT_OFFSET)
+
+    def _strategy_ctx(self, base, client_offset: int):
         return replace(base, host=self.host, port=self.port, account=self.account,
-                       client_id=self.client_id + SYNC_CLIENT_OFFSET, price_feed_port=None,
+                       client_id=self.client_id + client_offset, price_feed_port=None,
                        dry_run=False, tg_token="", tg_chat_id="")
 
     def describe(self) -> str:
         return f"paper 帳號 {self.account}（{self.host}:{self.port}）"
+
+
+def paper_records(send_gate, files):
+    """paper 的 IB 連線與本機紀錄（Sync Pos、交給策略接管共用）：連線走送單閘門、
+    歸屬與手動單紀錄用 paper 專用檔、SP500／SkewLS state 只讀不寫。"""
+    from sync_position import SyncRecords
+
+    def connect(ctx):
+        ib = send_gate.broker()
+        try:
+            ib.connect(ctx.host, ctx.port, clientId=ctx.client_id, timeout=20)
+        except BaseException:
+            ib.disconnect()            # 同 ib_fetcher.connect：連不上也要收掉 socket
+            raise
+        return ib
+
+    return SyncRecords(connect=connect, attribution_ledger=files.attribution,
+                       manual_orders_store=files.orders, persist_strategy_state=False)
 
 
 def load_paper_target(config: Mapping, accounts: Iterable[Mapping]

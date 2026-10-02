@@ -307,6 +307,53 @@ def test_dry_run_changes_nothing(env):
     assert ma.pending_takeover("Rosa", "XYZ") is None and "XYZ" in ma.paused_symbols("Rosa")
 
 
+def test_other_records_keep_the_live_ledger_untouched(env, tmp_path, monkeypatch):
+    """新 Panel 的 paper 接管（#153）：連線、歸屬紀錄、手動單紀錄都用傳進來的那一組。"""
+    import ib_fetcher
+    from sync_position import SyncRecords
+
+    def no_live(*_a, **_k):
+        raise AssertionError("不該連實盤")
+
+    monkeypatch.setattr(ib_fetcher, "connect", no_live)
+    live_ledger = tmp_path / "ledger.sqlite3"
+    live_before = live_ledger.read_bytes()
+    paper = NS(ledger=tmp_path / "paper_ledger.sqlite3",
+               orders=tmp_path / "paper_orders.sqlite3", connects=[])
+    _manual_order(paper.orders, "M:9", "Rosa", "ABC", "BUY", 0, "ACCEPTED")
+
+    def connect(ctx):
+        paper.connects.append(ctx.client_id)
+        return FakeIB(env)
+
+    records = SyncRecords(connect=connect, attribution_ledger=paper.ledger,
+                          manual_orders_store=paper.orders, persist_strategy_state=False)
+    ma.evaluate("Rosa", dict(env.positions), UNIVERSE, ledger_path=paper.ledger,
+                manual_orders_path=paper.orders)
+    ma.evaluate("Rosa", dict(env.positions), JOINED, ledger_path=paper.ledger,
+                manual_orders_path=paper.orders)
+    with pytest.raises(st.TakeoverRefused, match="未結案"):     # 讀 paper 的手動單紀錄
+        st.build_preview(_ctx(), "ABC", records=records)
+
+    env.behavior = "reject"
+    result = st.submit(st.build_preview(_ctx(), "XYZ", records=records), _ctx(),
+                       records=records)
+    assert result.status == "FAILED"
+    assert "XYZ" in ma.paused_symbols("Rosa", path=paper.ledger)
+    assert [n.line for n in ma.pending_notices("Rosa", path=paper.ledger)
+            if n.key.startswith("event:")] == [
+        "❌ XYZ 接管未完成：IB 拒單（Order rejected - reason: margin）；維持暫停"]
+
+    env.behavior = "fill"
+    result = st.submit(st.build_preview(_ctx(), "XYZ", records=records), _ctx(),
+                       records=records)
+    assert result.status == "COMPLETED", result.message
+    assert "XYZ" not in ma.paused_symbols("Rosa", path=paper.ledger)
+    assert paper.connects == [98] * 5
+    assert live_ledger.read_bytes() == live_before              # 實盤紀錄一個 byte 都沒動
+    assert ma.pending_takeover("Rosa", "XYZ") is None
+
+
 def test_takeover_orders_survive_strategy_cancel_all():
     takeover = NS(order=NS(orderRef="QUANTCORE_TAKEOVER:ROSA:abc"))
     strategy = NS(order=NS(orderRef=""))

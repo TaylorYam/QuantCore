@@ -139,7 +139,10 @@ def test_ty_check_at_20_05_cold_connects_offline_accounts_and_alerts(
         raise ConnectionRefusedError("no gateway")
 
     watch_source.online["Yvonne"] = False
-    w = prod_window(datetime(2026, 9, 29, 20, 4, 59, 900_000), cold_connect=cold)
+    clock = MutableClock(datetime(2026, 9, 29, 20, 4, 59, 500_000))
+    w = prod_window(None, cold_connect=cold, taipei_now=clock)
+    # 計時器已排好（0.5 秒後）；事件迴圈跑起來前把時鐘撥過 20:05，觸發後排的是明天
+    clock.now = datetime(2026, 9, 29, 20, 5, 1)
     wait_log(qtbot, w, "TY check Yvonne → ALERT")
     wait_log(qtbot, w, "TY check Taylor → ok")
     assert tried == ["Yvonne"]                       # 心跳在線的不冷連線
@@ -152,7 +155,9 @@ def test_morning_check_rechecks_gateways_and_alerts_offline_accounts(
 
     monkeypatch.setattr(morning_check, "constituents_staleness_warning", lambda *a: None)
     watch_source.online["Taylor"] = False
-    w = prod_window(datetime(2026, 9, 30, 6, 59, 59, 900_000))    # 週三（交易日）
+    clock = MutableClock(datetime(2026, 9, 30, 6, 59, 59, 500_000))   # 週三（交易日）
+    w = prod_window(None, taipei_now=clock)
+    clock.now = datetime(2026, 9, 30, 7, 0, 1)
     wait_log(qtbot, w, "Morning check → ALERT")
     assert watch_source.rechecks == 1                # Check Now 等效重新探測
     assert len(telegram) == 1 and "Taylor" in telegram[0]
@@ -172,8 +177,10 @@ def test_rosa_going_offline_schedules_a_one_shot_recovery(
 
 def test_shutdown_stops_the_watch(prod_window, telegram, watch_source, qtbot):
     watch_source.online["Yvonne"] = False
-    w = prod_window(datetime(2026, 9, 29, 20, 4, 59, 700_000),
+    clock = MutableClock(datetime(2026, 9, 29, 20, 4, 59, 700_000))
+    w = prod_window(None, taipei_now=clock,
                     cold_connect=lambda name: (_ for _ in ()).throw(OSError("down")))
+    clock.now = datetime(2026, 9, 29, 20, 5, 1)
     w.shutdown()
     qtbot.wait(600)
     assert telegram == [] and "TY check Yvonne" not in w.dashboard.log_text()

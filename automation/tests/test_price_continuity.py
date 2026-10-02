@@ -141,6 +141,14 @@ def test_provisional_recent_bars_revised_by_the_provider_are_replaced():
     assert v["identity_mismatch"] is False
 
 
+def test_an_earlier_revised_bar_next_to_the_revised_tail_is_still_a_revision():
+    # thin ETFs revise several provisional bars close together
+    local, provider = revised_tail([1.004, 1, 1, 1, 20.40 / 20.34, 20.3349 / 20.43, 20.85 / 20.92])
+    v = pc.compare_history(local, provider)
+    assert v["status"] == "rescaled" and v["reasons"] == []
+    assert v["revised_bars"] == [str(d.date()) for d in (DAYS[-7], *DAYS[-3:])]
+
+
 def test_revised_recent_bars_beyond_a_thin_name_revision_are_refused():
     local, provider = revised_tail([1.08, 1.09, 1.08])
     v = pc.compare_history(local, provider)

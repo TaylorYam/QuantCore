@@ -181,11 +181,12 @@ def compare_history(local: pd.DataFrame, provider: pd.DataFrame) -> dict:
         explained = bool(near) and abs(g["size"] - sum(np.log(f) for _, f in near)) <= SPLIT_TOL
         # a change seen on a single bar at either end is a revision unless a split explains it
         if g["level"] and (explained or min(g["before"], g["after"]) >= 2):
-            if not explained and _revised_tail(lr, a, tol, expected_final):
+            revised = None if explained else _revised_tail(lr, a, tol, expected_final)
+            if revised is not None:
                 # the provider revised the latest bars (provisional values of a
                 # thin name) and every bar before them agrees: take its values
                 revised_from = a
-                out["revised_bars"] = [str(d.date()) for d in days[a:]]
+                out["revised_bars"] = [str(days[i].date()) for i in revised]
                 continue
             out["steps"].append({"date": str(days[a].date()), "ratio": round(float(np.exp(g["size"])), 6),
                                  "split_records": [[str(d.date()), f] for d, f in near]})
@@ -258,15 +259,21 @@ def compare_history(local: pd.DataFrame, provider: pd.DataFrame) -> dict:
     return out
 
 
-def _revised_tail(lr: np.ndarray, at: int, tol: np.ndarray, level: float) -> bool:
-    """Bars from `at` on are the provider revising the latest REVISED_BARS bars:
-    the bars before them sit on the expected `level`, and none of the revised
-    ones is further than REVISED_MAX from it."""
-    if len(lr) - at > REVISED_BARS:
-        return False
+def _revised_tail(lr: np.ndarray, at: int, tol: np.ndarray, level: float) -> np.ndarray | None:
+    """Indices of revised bars when the change from `at` on is the provider
+    revising recent bars, else None: the bars before `at` sit on the expected
+    `level`, every bar after the last one back on it (at most REVISED_BARS) is
+    off it, and no revised bar is further than REVISED_MAX from it. Revised
+    bars before that tail come back to the level (single-bar revisions)."""
+    dev = np.abs(lr[at:] - level)
+    off = dev > tol[at - 1:]
+    on = np.flatnonzero(~off)
+    tail = len(dev) - (on[-1] + 1 if len(on) else 0)
     before = float(np.median(lr[max(0, at - MEDIAN_BARS):at]))
-    return (abs(before - level) <= float(tol[at - 1])
-            and float(np.max(np.abs(lr[at:] - level))) <= REVISED_MAX)
+    if (tail > REVISED_BARS or abs(before - level) > float(tol[at - 1])
+            or float(dev.max()) > REVISED_MAX):
+        return None
+    return at + np.flatnonzero(off)
 
 
 def _standard_factor(f: float) -> bool:

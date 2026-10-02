@@ -449,7 +449,7 @@ def test_new_panel_has_no_path_to_watch_telegram_or_strategy_orders():
     strategy_takeover，連線一律經過送單閘門（見 test_qt_trading、test_qt_sync_pos、
     test_qt_takeover）；接管結果的 Telegram（deliver_notices／strategy_takeover.notify）不用。"""
     forbidden = {"monitor_engine", "notify", "rebalance_ib", "excel_logger"}
-    telegram_calls = {"deliver_notices", "notify"}
+    telegram_calls = {"deliver_notices"}
     package = Path(__file__).resolve().parents[1] / "qt_panel"
     imported, attributes = set(), set()
     for path in package.glob("*.py"):
@@ -460,8 +460,12 @@ def test_new_panel_has_no_path_to_watch_telegram_or_strategy_orders():
                 imported.add(node.module.split(".")[0])
             elif isinstance(node, ast.Attribute):
                 attributes.add(node.attr)
+                if isinstance(node.value, ast.Name) and node.attr == "notify":
+                    attributes.add(f"{node.value.id}.notify")
+            if isinstance(node, ast.ImportFrom) and node.module == "strategy_takeover":
+                attributes |= {f"strategy_takeover.{a.name}" for a in node.names}
     assert not imported & forbidden
-    assert not attributes & telegram_calls
+    assert not attributes & (telegram_calls | {"strategy_takeover.notify"})
 
 
 def test_new_panel_has_no_path_that_writes_accounts_or_config():

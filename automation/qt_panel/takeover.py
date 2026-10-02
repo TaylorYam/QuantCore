@@ -22,9 +22,9 @@ import manual_attribution
 import takeover_preview_text as preview_text
 
 from qt_panel import theme
-from qt_panel.sync_pos import paper_records
+from qt_panel.broker_gate import paper_records
 from qt_panel.trading_common import MainThread, background
-from qt_panel.widgets import Card, clear_layout, label
+from qt_panel.widgets import Card, clear_layout, label, mono
 
 FIELD_WIDTH = 240
 SYMBOL_WIDTH = 140
@@ -67,15 +67,6 @@ class PaperTakeover:
         notices = manual_attribution.pending_notices(account, path=path)
         manual_attribution.mark_notified(account, [n.key for n in notices], path=path)
         return manual_attribution.pause_notice_lines(notices)
-
-
-def _mono(text: str = "", color_key: str = "text") -> QWidget:
-    lbl = label(text)
-    lbl.setWordWrap(True)
-    lbl.setStyleSheet(f"font-family: '{theme.MONO_FONT}'; font-size: 9pt; "
-                      f"color: {theme.color(color_key)};")
-    lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
-    return lbl
 
 
 class TakeoverPanel(QWidget):
@@ -239,17 +230,27 @@ class TakeoverPanel(QWidget):
             self._set_status("標的已變更，請重新計算預覽。")
             self._update_buttons()
 
-    def start_for(self, account: str, symbol: str) -> None:
-        """從 Sync Pos 的暫停列進來：選好帳戶與標的，直接開始算預覽。"""
+    def start_for(self, account: str, symbol: str) -> str:
+        """從 Sync Pos 的暫停列進來：選好帳戶與標的，直接開始算預覽。
+        回傳不能開始的原因（空字串 = 已開始計算）。"""
+        index = self.account_box.findText(account, Qt.MatchFixedString)  # 不分大小寫
         if self._computing or self._sending:
-            self._set_status("接管預覽還在計算或送單中，請等它結束再從 Sync Pos 進來。", "red")
-            return
-        self.account_box.setCurrentText(account)
+            problem = "接管預覽還在計算或送單中，請等它結束再從 Sync Pos 進來。"
+        elif self._worker_running:
+            problem = "上一次接管計算的 paper 連線還沒結束，請稍後再從 Sync Pos 進來。"
+        elif index < 0:
+            problem = f"接管畫面沒有 {account} 這個帳戶。"
+        else:
+            problem = ""
+        if problem:
+            self._set_status(problem, "red")
+            return problem
+        self.account_box.setCurrentIndex(index)
         if symbol not in self.symbols():
             self.symbol_box.addItem(symbol)      # 讓 strategy_takeover 說明為何不能接管
         self.symbol_box.setCurrentText(symbol)
-        if not self.compute():
-            self._set_status("上一次計算的 paper 連線還沒結束，請稍後再按「計算預覽」。", "red")
+        self.compute()
+        return ""
 
     # ── 計算 ─────────────────────────────────────────────────────────
 
@@ -317,7 +318,7 @@ class TakeoverPanel(QWidget):
         self.note.setVisible(bool(note))
         clear_layout(self._lines)
         for line in preview.lines():
-            self._lines.addWidget(_mono(line))
+            self._lines.addWidget(mono(line, wrap=True))
         self.confirm_button.setText(preview_text.confirm_label(preview))
         self.confirm_button.show()
         self.cancel_button.show()

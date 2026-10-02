@@ -261,6 +261,35 @@ def test_sync_pos_paused_row_hands_over_to_the_takeover_preview(
     assert "標的：XYZ" in panel.preview_text()
 
 
+def test_busy_takeover_keeps_the_sync_preview(takeover_window, broker, qtbot):
+    w = takeover_window()
+    sync, panel = w.trading.sync, w.trading.takeover
+    qtbot.mouseClick(w.trading.sync_tab, Qt.LeftButton)
+    qtbot.mouseClick(sync.compute_button, Qt.LeftButton)
+    qtbot.waitUntil(lambda: not sync.computing(), timeout=5000)
+    broker.gate = threading.Event()
+    qtbot.mouseClick(panel.compute_button, Qt.LeftButton)  # 接管還在算
+    assert panel.computing()
+
+    qtbot.mouseClick(sync.takeover_buttons["XYZ"], Qt.LeftButton)
+    assert sync.confirm_button.isEnabled()               # Sync 預覽沒被丟掉
+    assert "接管預覽還在計算" in sync.status_text()
+    broker.gate.set()
+    qtbot.waitUntil(lambda: not panel.computing(), timeout=5000)
+
+
+def test_hand_over_matches_the_account_name_case_insensitively(takeover_window, qtbot):
+    w = takeover_window()
+    panel = w.trading.takeover
+    panel.account_box.setCurrentText("Rosa")
+    assert w.trading.open_takeover("taylor", "XYZ") == ""
+    qtbot.waitUntil(lambda: not panel.computing(), timeout=5000)
+    assert panel.account_box.currentText() == "Taylor"
+    assert "Account：Taylor" in panel.preview_text()
+    assert "Nobody" in w.trading.open_takeover("Nobody", "XYZ")
+    assert "Nobody" in panel.status_text()
+
+
 # ── 沒人在等的結果 ───────────────────────────────────────────────────
 
 def test_discarded_computation_is_dropped(takeover_window, broker, qtbot):

@@ -805,11 +805,14 @@ class TradingPage(QWidget):
         lay.addLayout(tabs)
         lay.addWidget(stack, 1)
 
-    def open_takeover(self, account: str, symbol: str) -> None:
-        """Sync Pos 暫停列的「交給策略接管」：切到接管畫面並開始算該標的的預覽。"""
-        self.takeover_tab.setChecked(True)
-        self._stack.setCurrentWidget(self.takeover)
-        self.takeover.start_for(account, symbol)
+    def open_takeover(self, account: str, symbol: str) -> str:
+        """Sync Pos 暫停列的「交給策略接管」：切到接管畫面並開始算該標的的預覽。
+        回傳不能開始的原因（空字串 = 已開始），不能開始就留在原畫面。"""
+        problem = self.takeover.start_for(account, symbol)
+        if not problem:
+            self.takeover_tab.setChecked(True)
+            self._stack.setCurrentWidget(self.takeover)
+        return problem
 
     def start(self) -> None:
         if self.manual is not None:

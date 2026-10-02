@@ -135,6 +135,24 @@ class PaperTarget:
         return f"paper 帳號 {self.account}（{self.host}:{self.port}）"
 
 
+def paper_records(send_gate, files):
+    """paper 的 IB 連線與本機紀錄（Sync Pos、交給策略接管共用）：連線走送單閘門、
+    歸屬與手動單紀錄用 paper 專用檔、SP500／SkewLS state 只讀不寫。"""
+    from sync_position import SyncRecords
+
+    def connect(ctx):
+        ib = send_gate.broker()
+        try:
+            ib.connect(ctx.host, ctx.port, clientId=ctx.client_id, timeout=20)
+        except BaseException:
+            ib.disconnect()            # 同 ib_fetcher.connect：連不上也要收掉 socket
+            raise
+        return ib
+
+    return SyncRecords(connect=connect, attribution_ledger=files.attribution,
+                       manual_orders_store=files.orders, persist_strategy_state=False)
+
+
 def load_paper_target(config: Mapping, accounts: Iterable[Mapping]
                       ) -> tuple[PaperTarget | None, str]:
     """讀 config.json 的 qt_panel_paper；回傳 (設定, 問題說明)，有問題時設定為 None。"""

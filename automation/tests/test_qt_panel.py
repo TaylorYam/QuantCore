@@ -313,14 +313,6 @@ def test_mode_defaults_to_parallel():
     assert resolve_mode({"qt_panel_mode": "parallel"}) == (PanelMode.PARALLEL, "")
 
 
-def test_production_mode_is_not_available_yet_and_stays_parallel():
-    from qt_panel.mode import PanelMode, resolve_mode
-
-    mode, note = resolve_mode({"qt_panel_mode": "production"})
-    assert mode is PanelMode.PARALLEL
-    assert "正式模式" in note
-
-
 def test_unknown_mode_value_stays_parallel():
     from qt_panel.mode import PanelMode, resolve_mode
 
@@ -443,29 +435,35 @@ def test_dashboard_says_watch_runs_in_the_tk_panel(make_window):
     assert "Tk Panel" in make_window().dashboard.watch_note()
 
 
-def test_new_panel_has_no_path_to_watch_telegram_or_strategy_orders():
-    """並行模式不值班、不發 Telegram（ADR-0012）：qt_panel 完全不 import 這些模組。
-    手動單（#151）走 manual_orders、Sync Pos（#152）走 sync_position、接管（#153）走
-    strategy_takeover，連線一律經過送單閘門（見 test_qt_trading、test_qt_sync_pos、
-    test_qt_takeover）；接管結果的 Telegram（deliver_notices／strategy_takeover.notify）不用。"""
+def test_watch_telegram_and_trade_log_live_only_in_production_modules():
+    """並行模式不值班、不發 Telegram（ADR-0012）：值班、Telegram、trade_log、策略送單
+    的模組只能出現在正式模式（#154）才建立的 watch.py／live_trading.py；paper 的手動單、
+    Sync Pos、接管路徑碰不到（行為面見 test_parallel_mode_runs_no_watch_worker 與
+    test_qt_production）。"""
     forbidden = {"monitor_engine", "notify", "rebalance_ib", "excel_logger"}
-    telegram_calls = {"deliver_notices"}
+    telegram_calls = {"deliver_notices", "notify_new_pauses", "strategy_takeover.notify"}
+    production_only = {"watch.py", "live_trading.py"}
     package = Path(__file__).resolve().parents[1] / "qt_panel"
-    imported, attributes = set(), set()
+    offenders = {}
     for path in package.glob("*.py"):
+        if path.name in production_only:
+            continue
+        found = set()
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Import):
-                imported |= {a.name.split(".")[0] for a in node.names}
+                found |= {a.name.split(".")[0] for a in node.names} & forbidden
             elif isinstance(node, ast.ImportFrom) and node.module:
-                imported.add(node.module.split(".")[0])
+                found |= {node.module.split(".")[0]} & forbidden
+                if node.module == "strategy_takeover":
+                    found |= {f"strategy_takeover.{a.name}" for a in node.names} & telegram_calls
             elif isinstance(node, ast.Attribute):
-                attributes.add(node.attr)
+                name = node.attr
                 if isinstance(node.value, ast.Name) and node.attr == "notify":
-                    attributes.add(f"{node.value.id}.notify")
-            if isinstance(node, ast.ImportFrom) and node.module == "strategy_takeover":
-                attributes |= {f"strategy_takeover.{a.name}" for a in node.names}
-    assert not imported & forbidden
-    assert not attributes & (telegram_calls | {"strategy_takeover.notify"})
+                    name = f"{node.value.id}.notify"
+                found |= {name} & telegram_calls
+        if found:
+            offenders[path.name] = found
+    assert offenders == {}
 
 
 def test_new_panel_has_no_path_that_writes_accounts_or_config():

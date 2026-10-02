@@ -5,12 +5,15 @@ on_state(name, state, detail)，state ∈ init／connecting／online／offline�
 回呼可能來自背景 thread，主視窗負責轉回 Qt 主執行緒。recheck() 對應 Tk 的
 Check Now：心跳斷了不會自己重連（2026-04-15 事故，見 gateway_monitor），要
 重新偵測就得有人按。
+
+正式模式（#154）的值班另外要問心跳狀態與重連（is_online／restart），同 Tk 的
+GatewayMonitor 用法。
 """
 from __future__ import annotations
 
 from typing import Callable, Protocol
 
-from account_utils import ROLE_PANEL_READONLY
+from account_utils import ROLE_MONITOR, ROLE_PANEL_READONLY
 from gateway_monitor import GatewayMonitor
 
 from qt_panel.mode import PanelMode
@@ -51,6 +54,18 @@ class MonitorGatewaySource:
         if self._monitor is not None:
             self._monitor.stop()
 
+    # ── 值班用（正式模式）────────────────────────────────────────────
+
+    def ready(self) -> bool:
+        return self._monitor is not None
+
+    def is_online(self, name: str) -> bool:
+        return self._monitor is not None and self._monitor.is_online(name)
+
+    def restart(self, name: str) -> bool:
+        """重開一個帳戶的心跳；已經連著或正在連的不動（GatewayMonitor 自己判斷）。"""
+        return self._monitor is not None and self._monitor.restart_account_thread(name)
+
     def recheck(self) -> None:
         """已斷的帳戶各重連一次；還連著或正在連的不動（同 Tk Check Now）。"""
         if self._monitor is None:
@@ -63,8 +78,12 @@ class MonitorGatewaySource:
 
 def gateway_source_for(mode: PanelMode, account_names: list[str], *,
                        monitor_cls=GatewayMonitor) -> MonitorGatewaySource:
-    """並行模式：唯讀身分（ROLE_PANEL_READONLY）＋唯讀連線，不和 Tk Panel 搶 clientId。"""
+    """並行模式：唯讀身分（ROLE_PANEL_READONLY）＋唯讀連線，不和 Tk Panel 搶 clientId。
+    正式模式：接手 Tk Panel 的值班心跳身分（ROLE_MONITOR），Tk 則改用唯讀身分。"""
     if mode is PanelMode.PARALLEL:
         return MonitorGatewaySource(account_names, role=ROLE_PANEL_READONLY,
                                     readonly=True, monitor_cls=monitor_cls)
+    if mode is PanelMode.PRODUCTION:
+        return MonitorGatewaySource(account_names, role=ROLE_MONITOR,
+                                    readonly=False, monitor_cls=monitor_cls)
     raise ValueError(f"unsupported panel mode: {mode}")

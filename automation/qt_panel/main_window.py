@@ -6,7 +6,9 @@ Tk Panel 是否值班的讀取、時鐘、系統匣工廠、叫回視窗的訊�
 不連 IB、不讀真實檔案。
 
 並行模式不值班（ADR-0012）：值班只顯示下次時間與 Tk Panel 有沒有開，這裡
-不建任何值班 worker、不發 Telegram。
+不建任何值班 worker、不發 Telegram。正式模式（#154）由 `qt_panel.watch` 值班
+（Rosa poll／TY check／Morning check，既有的 MonitorEngine），Gateway 心跳與
+查詢改用 Tk Panel 原有的 clientId role。
 
 送單（#151）：Trading 的所有送單連線都由這裡建的送單閘門（broker_gate.SendGate）
 產生；並行模式下只接 config.json `qt_panel_paper` 指定的 paper Gateway，三個帳戶
@@ -32,7 +34,9 @@ from morning_check import next_morning_check_time
 from portfolio_queries import PortfolioQueries, PortfolioRefreshLoop
 
 from qt_panel import dashboard_data, theme
-from qt_panel.dashboard import Dashboard
+from qt_panel.dashboard import (
+    PRODUCTION_OWNER_TEXT, PRODUCTION_WATCH_NOTE, WATCH_NOTE, WATCH_OWNER_TEXT, Dashboard,
+)
 from qt_panel.dashboard_data import JobRow
 from qt_panel.gateway_actions import (
     CredentialStore, Dialogs, GatewayStartFlow, PortsFactory, QtDialogs,
@@ -44,6 +48,7 @@ from qt_panel.portfolio import EQUITY, FLOWS, PARAMS, TRADES, PortfolioPage
 from qt_panel.sync_pos import PaperSync
 from qt_panel.takeover import PaperTakeover
 from qt_panel.trading import PaperFiles, TradingPage, paper_manual_order_service
+from qt_panel.watch import QtWatch, WatchPorts
 from qt_panel.widgets import label, pill, visible_text
 
 PAGES = ["Dashboard", "Portfolio", "Trading"]
@@ -75,6 +80,8 @@ class _Header(QFrame):
         lay.addSpacing(8)
         if mode is PanelMode.PARALLEL:
             lay.addWidget(pill("並行模式 · 只看不下單", theme.WARN_TEXT, theme.WARN_BG))
+        elif mode is PanelMode.PRODUCTION:
+            lay.addWidget(pill("正式模式 · 值班＋實盤送單", theme.WARN_TEXT, theme.WARN_BG))
         if mode_note:
             lay.addWidget(label(mode_note, name="Faint"))
         lay.addStretch(1)
@@ -119,9 +126,13 @@ class MainWindow(QMainWindow):
                  manual_order_service: Callable[..., object] | None = None,
                  symbol_loader: Callable | None = None,
                  paper_files: PaperFiles = PaperFiles(),
-                 account_ctx_loader: Callable | None = None):
+                 account_ctx_loader: Callable | None = None,
+                 watch_ports: WatchPorts | None = None):
         super().__init__()
+        self._mode = mode
         self._source = gateway_source
+        self._watch_ports = watch_ports or WatchPorts()
+        self._watch: QtWatch | None = None
         self._credential_store = credential_store
         self._dialogs = dialogs if dialogs is not None else QtDialogs(self)
         self._read_data_date = read_data_date
@@ -167,7 +178,8 @@ class MainWindow(QMainWindow):
             accounts, on_recheck=self.recheck_gateways,
             on_start_gateways=self.start_gateways,
             on_edit_credentials=self.edit_gateway_credentials,
-            credential_accounts=LIVE_ACCOUNTS, on_refresh=self.refresh)
+            credential_accounts=LIVE_ACCOUNTS, on_refresh=self.refresh,
+            watch_note=PRODUCTION_WATCH_NOTE if self._on_duty() else WATCH_NOTE)
         self.portfolio = PortfolioPage(names, on_refresh=self.refresh_portfolio)
         # 送單閘門：Trading 每一條 IB 連線都從這裡建，並行模式只放行 paper
         self.send_gate = SendGate(mode, broker_factory)
@@ -258,6 +270,12 @@ class MainWindow(QMainWindow):
     def start(self) -> None:
         self._running = True
         self._source.start(self._bridge.gateway_changed.emit)
+        if self._on_duty():
+            self._watch = QtWatch(source=self._source, account_names=self._names,
+                                  ports=self._watch_ports, log=self.log,
+                                  refresh=self.recheck_gateways, now=self._taipei_now,
+                                  parent=self)
+            self._watch.start()
         self._reload()
         self._portfolio_loop.start()
         self.load_account_extras()
@@ -282,6 +300,8 @@ class MainWindow(QMainWindow):
         self._signal_timer.stop()
         self._minute_timer.stop()
         self._gateway_flow.stop()
+        if self._watch is not None:
+            self._watch.stop()
         self._portfolio_loop.stop()
         self.trading.stop()
         self._source.stop()
@@ -325,8 +345,13 @@ class MainWindow(QMainWindow):
         self._update_watch()
         self._update_jobs()
 
+    def _on_duty(self) -> bool:
+        """正式模式：值班由這個 Panel 跑。"""
+        return self._mode is PanelMode.PRODUCTION
+
     def tick_auto_recheck(self) -> None:
-        if not self._running:
+        # 正式模式由 Morning check 在 07:00 重新檢查（同 Tk），這裡不重複做
+        if not self._running or self._on_duty():
             return
         now = self._taipei_now()
         if now < self._next_recheck:
@@ -343,6 +368,9 @@ class MainWindow(QMainWindow):
     def _on_gateway_state(self, name: str, state: str, detail: str) -> None:
         previous = self.dashboard.gateway_states().get(name)
         self.dashboard.set_gateway_state(name, state, detail)
+        if (self._watch is not None and name == "Rosa" and state == "offline"
+                and previous != "offline"):
+            self._watch.rosa_went_offline()
         if previous is None or state == previous:
             return
         if state == "offline":
@@ -498,7 +526,11 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.log(f"[X] 值班時間計算失敗：{e}")
             return
-        self.dashboard.set_watch(items, now, self._tk_panel_running())
+        if self._on_duty():
+            self.dashboard.set_watch(items, now, PRODUCTION_OWNER_TEXT, True)
+        else:
+            tk_running = self._tk_panel_running()
+            self.dashboard.set_watch(items, now, WATCH_OWNER_TEXT[tk_running], tk_running)
 
     def _update_jobs(self) -> None:
         try:

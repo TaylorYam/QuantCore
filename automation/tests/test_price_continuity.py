@@ -437,7 +437,7 @@ def test_etf_revised_provisional_bars_and_dividend_refresh_the_file(updater, mon
     assert pc.compare_history(got, provider)["status"] == "consistent"
 
 
-def test_unexplained_step_is_refused_without_claiming_another_security(updater, monkeypatch):
+def test_unexplained_step_is_refused(updater, monkeypatch):
     local, provider = split_case(2.0, at=100)
     provider[pc.SPLIT_COL] = 0.0
     path = updater.STOCK_DIR / "STP.csv"

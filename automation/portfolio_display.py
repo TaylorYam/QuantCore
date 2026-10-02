@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ib_fetcher import ETF_TICKERS, SKEWLS_INVERSE_TICKERS, SR_ETFS
+from ib_fetcher import ETF_TICKERS
+from strategy_owner import etf_owner
 
 TICKER_NAMES: dict[str, str] = {
     "XLK": "Technology",      "XLF": "Financials",
@@ -135,21 +136,21 @@ def fmt_dollar(val: float) -> str:
 
 
 def owner_of(symbol: str, shares: float, group: str,
-             manual: frozenset | set | dict = frozenset()) -> str:
+             manual: frozenset | set | dict = frozenset(),
+             alloc: tuple[float, float] | None = None) -> str:
     """Which Strategy a holding belongs to (CONTEXT「手動持倉」).
 
     Holdings outside every Strategy (the "other" bucket) are manual, and so are
     `manual` symbols: manual holdings that collided with a Strategy Universe
-    (`manual_attribution.paused_symbols`). Otherwise the bucket decides, with the
-    daily snapshot's heuristic (`excel_logger._classify_strategy`): inverse ETFs
-    and short sector ETFs are SkewLS, other sector ETFs SR, Universe stocks SP500.
+    (`manual_attribution.paused_symbols`). ETFs follow `strategy_owner.etf_owner`
+    (same rule as the daily snapshot): long sector ETFs go by the account's
+    (alloc_sr, alloc_skewls), since SkewLS's long leg buys them too (#181).
+    Universe stocks are SP500.
     """
     if group == "other" or symbol in manual:
         return MANUAL
     if group == "etf":
-        if symbol in SKEWLS_INVERSE_TICKERS or (symbol in SR_ETFS and shares < 0):
-            return "SkewLS"
-        return "SR"
+        return etf_owner(symbol, shares, alloc) or "SR"
     return "SP500"
 
 
@@ -184,17 +185,19 @@ class HoldingRow:
 
 
 def holding_rows(holdings: list, nav: float, group: str,
-                 manual: dict[str, str] | None = None) -> list[HoldingRow]:
+                 manual: dict[str, str] | None = None,
+                 alloc: tuple[float, float] | None = None) -> list[HoldingRow]:
     """One group's rows, largest |market value| first.
 
     manual: collided manual holdings, symbol → pause reason (see owner_of).
+    alloc: the account's (alloc_sr, alloc_skewls); None keeps long sector ETFs as SR.
     """
     manual = manual or {}
     rows = []
     for h in sorted(holdings, key=lambda x: -abs(x["mkt_val"])):
         rows.append(HoldingRow(
             group=group,
-            owner=owner_of(h["symbol"], h["shares"], group, manual),
+            owner=owner_of(h["symbol"], h["shares"], group, manual, alloc),
             symbol=h["symbol"],
             shares=h["shares"],
             weight_pct=h["mkt_val"] / nav * 100 if nav > 0 else 0,
@@ -214,8 +217,10 @@ def all_holding_rows(pf: dict) -> list[HoldingRow]:
         return []
     nav = pf["nav"]
     manual = pf.get("manual_symbols") or {}
+    alloc = pf.get("strategy_alloc")
     return [row for group, key in HOLDING_GROUPS
-            for row in holding_rows(pf.get(key, []), nav, group, manual)]
+            for row in holding_rows(pf.get(key, []), nav, group, manual,
+                                    tuple(alloc) if alloc else None)]
 
 
 def holdings_text(rows: list[HoldingRow]) -> tuple[str, str]:

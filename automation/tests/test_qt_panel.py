@@ -1065,6 +1065,46 @@ def test_manual_holdings_that_collided_with_a_universe_show_as_manual(make_windo
     assert "碰撞" in table.item(aapl, 0).toolTip()
 
 
+def test_long_sector_etfs_show_as_skewls_when_sr_is_off(make_window, qtbot, portfolio):
+    """#181：SR 0% 時做多的類股 ETF 歸 SkewLS，篩選 SR 是空的。"""
+    portfolio.results["Taylor"]["strategy_alloc"] = (0.0, 1.0)
+    w = make_window()
+    _wait_portfolio(w, qtbot)
+    holdings = w.portfolio.detail.holdings
+    rows = {r[1]: r[0] for r in holdings.visible_rows()}
+    assert rows["XLK"] == "SkewLS" and rows["SIJ"] == "SkewLS" and rows["AAPL"] == "SP500"
+    holdings.set_filter("SR")
+    assert holdings.visible_rows() == []
+    holdings.set_filter("SkewLS")
+    assert {r[1] for r in holdings.visible_rows()} == {"XLK", "SIJ"}
+
+
+def test_shared_sector_etfs_match_both_strategy_filters(make_window, qtbot, portfolio):
+    portfolio.results["Taylor"]["strategy_alloc"] = (0.5, 0.3)
+    w = make_window()
+    _wait_portfolio(w, qtbot)
+    holdings = w.portfolio.detail.holdings
+    for key in ("SR", "SkewLS"):
+        holdings.set_filter(key)
+        assert ("SR+SkewLS", "XLK") in {r[:2] for r in holdings.visible_rows()}
+
+
+def test_portfolio_reads_carry_the_accounts_allocation(fake_config, monkeypatch):
+    import ib_fetcher
+    from account_ctx import AccountCtx
+    from account_utils import ROLE_PANEL
+    from qt_panel import portfolio_source
+
+    monkeypatch.setattr(ib_fetcher, "fetch_portfolio",
+                        lambda ctx, readonly=False: {"available": True})
+    monkeypatch.setattr(portfolio_source, "read_manual_symbols",
+                        lambda name: {"manual_symbols": {}})
+    ctx = AccountCtx.from_name("Rosa", ROLE_PANEL)
+    expected = (ctx.alloc_sr, ctx.alloc_skewls)
+    assert portfolio_source.fetch_readonly_portfolio("Rosa")["strategy_alloc"] == expected
+    assert portfolio_source.fetch_panel_portfolio("Rosa")["strategy_alloc"] == expected
+
+
 def test_manual_attribution_read_failure_is_flagged_not_fatal(make_window, qtbot, portfolio):
     portfolio.results["Taylor"]["manual_error"] = "手動歸屬紀錄讀取失敗：locked"
     w = make_window()

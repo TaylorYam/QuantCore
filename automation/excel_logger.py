@@ -17,39 +17,21 @@ SQLITE_FILE    = BASE_DIR / 'quantcore_logs.sqlite3'
 PORT_SHEET     = 'Daily'
 TRADE_SHEET    = 'Trades'
 
-# Strategy classification 用 (與 daily_report 對齊)
-_SR_ETFS = {'XLK', 'XLF', 'XLV', 'XLE', 'XLI', 'XLY', 'XLB',
-            'XLP', 'XLU', 'XLC', 'XLRE'}
-# 確保 strategies 套件可 import — 即使 excel_logger 被獨立 import
-import sys as _sys
-_ROOT_DIR = BASE_DIR.parent
-if str(_ROOT_DIR) not in _sys.path:
-    _sys.path.insert(0, str(_ROOT_DIR))
-try:
-    from strategies.sector_skew_ls import config as _skewls_cfg
-    _SKEWLS_INVERSE_TICKERS = set(_skewls_cfg.INVERSE_TICKERS)
-except Exception:
-    _SKEWLS_INVERSE_TICKERS = set()
-
 from symbol_contract import canonical_symbol
 
 
-def _classify_strategy(symbol: str, position: float) -> str:
+def _classify_strategy(symbol: str, position: float,
+                       alloc: tuple[float, float] | None = None) -> str:
     """
     依 symbol + 部位方向猜策略歸屬（用於 daily snapshot Strategy 欄位）。
-      - INVERSE_TICKERS (REW/SEF/...) → SkewLS
-      - SR_ETF 且 position<0 → SkewLS (sector short, 如 XLC)
-      - SR_ETF 且 position>0 → SR (可能含 SkewLS overlap, 但 SR 為主要歸屬)
+    規則與新 Panel 持倉表共用 `strategy_owner.etf_owner`（#181）：
+      - 反向 ETF、做空的類股 ETF → SkewLS
+      - 做多的類股 ETF → 依 alloc=(alloc_sr, alloc_skewls)：SR 0% → SkewLS；
+        兩個都開 → SR+SkewLS；沒給 alloc → SR（舊規則）
       - 其他 → '' (空字串；由 caller 視情況補 'SP500' 或 'Other')
     """
-    symbol = canonical_symbol(symbol)
-    if symbol in _SKEWLS_INVERSE_TICKERS:
-        return "SkewLS"
-    if symbol in _SR_ETFS and position < 0:
-        return "SkewLS"
-    if symbol in _SR_ETFS:
-        return "SR"
-    return ""    # caller 自行決定 SP500 / Other
+    from strategy_owner import etf_owner
+    return etf_owner(canonical_symbol(symbol), position, alloc)
 
 
 # ── 通用：附加到 Excel ────────────────────────────────────────────────────────
@@ -148,7 +130,9 @@ def _append_rows(sheet: str, rows: list, identities: list[str]) -> None:
 def append_daily_snapshot(nav: float, pos_detail: list, prices: dict,
                           cushion_pct: float = 0.0, excess_liq: float = 0.0,
                           account_name: str = "",
-                          capture_id: str | None = None) -> None:
+                          capture_id: str | None = None,
+                          strategy_alloc: tuple[float, float] | None = None) -> None:
+    """strategy_alloc: 帳戶的 (alloc_sr, alloc_skewls)，決定做多類股 ETF 歸屬（#181）。"""
     today = date.today().isoformat()
     rows = []
     for p in pos_detail:
@@ -167,7 +151,7 @@ def append_daily_snapshot(nav: float, pos_detail: list, prices: dict,
             'Cushion%':   round(cushion_pct, 2),
             'ExcessLiq':  round(excess_liq, 2),
             'Symbol':     sym,
-            'Strategy':   _classify_strategy(sym, pos),    # S21: heuristic 歸屬
+            'Strategy':   _classify_strategy(sym, pos, strategy_alloc),  # heuristic 歸屬
             'Shares':     round(pos, 4),
             'AvgCost':    round(avg_cost, 4),
             'MktPx':      round(mkt_px, 4),

@@ -100,6 +100,24 @@ def _manual_attribution_outside_live(tmp_path_factory):
         yield
 
 
+@pytest.fixture(scope="session")
+def _live_duty_dir(tmp_path_factory):
+    return tmp_path_factory.mktemp("live_duty")
+
+
+@pytest.fixture(autouse=True)
+def _live_duty_lock_outside_live(_live_duty_dir, request, monkeypatch):
+    """Panel 的值班鎖（#154）指到暫存目錄，每個測試一個檔名（不建目錄）。
+
+    預設在系統暫存資料夾：測試若拿了或刪了它，會把正在跑的 live Tk Panel 擠成
+    只看，或讓它和新 Panel 同時值班。
+    """
+    import re
+    from qt_panel import mode
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", request.node.name)[:120]
+    monkeypatch.setattr(mode, "LIVE_DUTY_LOCK", _live_duty_dir / f"{name}.lock")
+
+
 @pytest.fixture
 def run_status_dir(tmp_path, monkeypatch):
     """需要乾淨紀錄目錄的測試用（每個測試各自一份，還沒建立）。"""

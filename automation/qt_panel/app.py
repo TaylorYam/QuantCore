@@ -1,7 +1,8 @@
 """新 Panel 的啟動流程：管理員權限 → 單一實例 → 讀設定 → 開主視窗（#147）。
 
 和 Tk Panel 並存：單一實例鎖、叫回視窗的訊號檔、Windows AppUserModelID 都用
-自己的名字，兩個 Panel 可以同時開；IB 連線用唯讀身分（見 gateway_status）。
+自己的名字，兩個 Panel 可以同時開。並行模式 IB 連線用唯讀身分；正式模式（#154）
+接手 Tk Panel 的值班與 clientId role（見 gateway_status、portfolio_source）。
 """
 from __future__ import annotations
 
@@ -81,15 +82,17 @@ def main() -> int:
         from qt_panel.broker_gate import load_paper_target
         from qt_panel.gateway_status import gateway_source_for
         from qt_panel.main_window import MainWindow
-        from qt_panel.mode import resolve_mode
+        from qt_panel.mode import PanelMode, qt_panel_duty, release_live_duty
         from qt_panel.portfolio_source import (
-            fetch_readonly_portfolio, load_account_cash_flows, load_equity, read_recent_trades,
+            load_account_cash_flows, load_equity, portfolio_fetch_for, read_recent_trades,
             read_strategy_allocations,
         )
         from qt_panel.tray import tray_factory_for
 
         config = load_base_config()
-        mode, note = resolve_mode(config)
+        # 正式模式要拿得到值班鎖（Tk Panel 還在值班就退回並行模式並說明）
+        mode, note = qt_panel_duty(config)
+        has_duty = mode is PanelMode.PRODUCTION
         accounts = [{"name": a["name"], "port": a.get("port")} for a in load_accounts()]
         paper_target, paper_problem = load_paper_target(config, accounts)
 
@@ -107,12 +110,14 @@ def main() -> int:
             gateway_source=gateway_source_for(mode, [a["name"] for a in accounts]),
             gateway_ports_factory=lambda ask: gateway_start_win.WindowsPorts(ask_credentials=ask),
             credential_store=WindowsCredentialStore(),
-            portfolio_fetch=fetch_readonly_portfolio,
+            portfolio_fetch=portfolio_fetch_for(mode),
             equity_fetch=load_equity,
             cash_flows_fetch=load_account_cash_flows,
             strategy_config_fetch=read_strategy_allocations,
             trades_fetch=read_recent_trades,
-            tray_factory=tray_factory_for(icon, "QuantCore Panel（PySide6・並行模式）"),
+            tray_factory=tray_factory_for(icon, "QuantCore Panel（PySide6・正式模式）"
+                                          if mode is PanelMode.PRODUCTION
+                                          else "QuantCore Panel（PySide6・並行模式）"),
             show_signal=show_signal_path(),
             paper_target=paper_target,
             paper_problem=paper_problem,
@@ -125,5 +130,6 @@ def main() -> int:
             return app.exec()
         finally:
             window.shutdown()
+            release_live_duty(held=has_duty)
     finally:
         release_lock(lock)

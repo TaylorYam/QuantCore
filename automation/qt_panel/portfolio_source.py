@@ -13,6 +13,25 @@ from __future__ import annotations
 from dataclasses import replace
 
 
+def portfolio_fetch_for(mode):
+    """並行模式用新 Panel 自己的查詢 clientId；正式模式（#154）接手 Tk Panel 的
+    ROLE_PANEL（Tk 那時改用新 Panel 的查詢號碼，見 control_panel.fetch_ib_portfolio）。"""
+    from qt_panel.mode import PanelMode
+    return fetch_panel_portfolio if mode is PanelMode.PRODUCTION else fetch_readonly_portfolio
+
+
+def fetch_panel_portfolio(account_name: str) -> dict:
+    import ib_fetcher
+    from account_ctx import AccountCtx
+    from account_utils import ROLE_PANEL
+
+    result = ib_fetcher.fetch_portfolio(AccountCtx.from_name(account_name, ROLE_PANEL),
+                                        readonly=True)
+    if result.get("available"):
+        result.update(read_manual_symbols(account_name))
+    return result
+
+
 def fetch_readonly_portfolio(account_name: str) -> dict:
     import ib_fetcher
     from account_ctx import AccountCtx

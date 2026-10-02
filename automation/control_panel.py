@@ -177,6 +177,11 @@ def fetch_ib_portfolio(account_name: str = "") -> dict:
         }
 
     ctx = AccountCtx.from_name(account_name, ROLE_PANEL)
+    if _VIEW_ONLY:
+        # 正式模式（#154）：ROLE_PANEL 交給新 Panel，這裡改用新 Panel 並行期間的查詢號碼
+        from dataclasses import replace
+        from account_utils import get_qt_panel_query_client_id
+        ctx = replace(ctx, client_id=get_qt_panel_query_client_id(account_name))
     return _if.fetch_portfolio(ctx, readonly=True)
 
 
@@ -231,6 +236,22 @@ def _ps(cmd: str) -> str:
 # Config 工具
 # ════════════════════════════════════════════════════════════
 
+# 這個行程的 Tk Panel 是否只看（#154）；ControlPanel 開啟時決定一次，之後不變。
+# fetch_ib_portfolio 據此換查詢用的 clientId。
+_VIEW_ONLY = False
+
+
+def _decide_view_only() -> tuple[bool, str]:
+    """切換開關（#154）：(只看, 原因)。qt_panel_mode = production → 值班與實盤送單歸
+    新 Panel；並行模式還要拿得到值班鎖（新 Panel 若仍以正式模式開著就只看）。
+    讀不到設定 = 沒切換，照舊拿鎖值班（預設行為不變）。"""
+    from qt_panel.mode import tk_panel_duty
+    try:
+        config = load_base_config()
+    except Exception:
+        config = {}
+    return tk_panel_duty(config)
+
 
 
 # ════════════════════════════════════════════════════════════
@@ -262,8 +283,14 @@ class ControlPanel(tk.Tk):
         self.font_big_num = tkfont.Font(family="Segoe UI", size=16, weight="bold")
         self.font_med_num = tkfont.Font(family="Segoe UI", size=11, weight="bold")
 
+        # 切換開關（#154）：值班與實盤送單歸新 Panel 時，這裡只看（開啟時決定一次）
+        global _VIEW_ONLY
+        self._view_only, self._view_only_reason = _decide_view_only()
+        self._holds_duty = not self._view_only      # 只看就沒拿值班鎖
+        _VIEW_ONLY = self._view_only
         self._build_ui()
-        self.title("QuantCore")
+        self.title("QuantCore（只看 — 值班與送單在新 Panel）" if self._view_only
+                   else "QuantCore")
         from portfolio_queries import PortfolioQueries, PortfolioRefreshLoop
         self.portfolio_queries = PortfolioQueries(
             [a["name"] for a in self._accounts_meta], fetch_ib_portfolio)
@@ -277,12 +304,16 @@ class ControlPanel(tk.Tk):
         # 值班監控（排程+派工在 monitor_engine，panel 只供 Tk adapter）。
         # 引擎物件先建好 — gateway 斷線事件（500ms 起）隨時可能 schedule_once。
         self._mon_engine = self._build_monitor_engine()
-        # ROSA 市場時段斷線輪詢（與持久監測平行；只對齊 21:00–05:00 台北窗口）
-        self.after(1500, self._start_rosa_watch)
-        # TAYLOR / YVONNE 週二/三 20:05 台北驗證手動登入（一次性、各發一封）
-        self.after(2000, self._start_ty_watch)
-        # 每平日（NYSE 交易日）07:00 台北自動 Check Now — 刷新所有 Gateway 連線
-        self.after(2200, self._start_morning_watch)
+        if self._view_only:
+            # 值班由新 Panel 跑（#154），這裡一個都不排，避免兩邊同時值班
+            self._log(f"[i] {self._view_only_reason}")
+        else:
+            # ROSA 市場時段斷線輪詢（與持久監測平行；只對齊 21:00–05:00 台北窗口）
+            self.after(1500, self._start_rosa_watch)
+            # TAYLOR / YVONNE 週二/三 20:05 台北驗證手動登入（一次性、各發一封）
+            self.after(2000, self._start_ty_watch)
+            # 每平日（NYSE 交易日）07:00 台北自動 Check Now — 刷新所有 Gateway 連線
+            self.after(2200, self._start_morning_watch)
         # System tray icon — 點 X 不殺 app，縮到 tray 繼續跑監控
         self.after(2500, self._start_tray)
         # Watchdog: tray 消失時自動還原視窗 + 監聽重複啟動信號
@@ -341,6 +372,11 @@ class ControlPanel(tk.Tk):
             tray = getattr(self, "_tray", None)
             if tray is not None:
                 tray.stop()
+        except Exception:
+            pass
+        try:
+            from qt_panel.mode import release_live_duty
+            release_live_duty(held=getattr(self, "_holds_duty", False))
         except Exception:
             pass
         try:
@@ -771,18 +807,26 @@ class ControlPanel(tk.Tk):
             # ROSA: 排一次性 recovery 嘗試 — 涵蓋 06:00 台北自動重啟（窗口
             # 外、rosa_poll 不會跑）等情境。10 分鐘給 IB Gateway 完成重啟
             # 的緩衝；成功後 on_connected → on_state → tray 自動翻綠。
-            if name == "Rosa":
+            # 正式模式（#154）由新 Panel 值班，這裡不排。
+            if name == "Rosa" and not self._view_only:
                 import monitor_engine as me
                 self._mon_engine.schedule_once(
                     10 * 60 * 1000,
                     me.rosa_recovery_worker(self._monitor_env,
                                             self._monitor_spawn))
 
+        # 正式模式（#154）：值班心跳的 clientId（ROLE_MONITOR）交給新 Panel，
+        # 這裡改用新 Panel 並行期間的唯讀身分，只顯示狀態
+        identity = {}
+        if self._view_only:
+            from account_utils import ROLE_PANEL_READONLY
+            identity = {"role": ROLE_PANEL_READONLY, "readonly": True}
         self._gw_monitor = GatewayMonitor(
             account_names=account_names,
             on_state_change=on_state,
             on_connected=on_connected,
             on_disconnected=on_disconnected,
+            **identity,
         )
         self._gw_monitor.start()
 
@@ -1111,8 +1155,18 @@ class ControlPanel(tk.Tk):
 
     # ── Sync Position ─────────────────────────────────────
 
+    def _live_orders_moved(self) -> bool:
+        """正式模式（#154）：實盤送單在新 Panel；按了送單按鈕就說明，不開視窗。"""
+        if not self._view_only:
+            return False
+        messagebox.showinfo("QuantCore", self._view_only_reason, parent=self)
+        return True
+
     def start_manual_order_tracking(self):
         """Start durable manual-order reconciliation for the app lifetime."""
+        if self._view_only:
+            # 只看（#154）：手動單對帳與結案通知由新 Panel 跑（同一個 clientId）
+            return None
         service = getattr(self, "_manual_order_service", None)
         if service is None:
             from manual_orders import ManualOrderService, SUPPORTED_MANUAL_ACCOUNTS
@@ -1134,6 +1188,8 @@ class ControlPanel(tk.Tk):
 
     def _open_manual_order(self):
         """Open the per-order preview and confirmation flow."""
+        if self._live_orders_moved():
+            return
         existing = getattr(self, "_manual_order_window", None)
         if existing is not None:
             try:
@@ -1171,6 +1227,8 @@ class ControlPanel(tk.Tk):
 
     def _sync_position(self):
         """Sync Pos 按鈕：先選帳戶（#35），選好才開始計算"""
+        if self._live_orders_moved():
+            return
         from account_picker import AccountPicker
         AccountPicker(
             parent=self,
@@ -1335,10 +1393,10 @@ class ControlPanel(tk.Tk):
 
     def _sync_execute(self, plan):
         """背景執行緒：送出限價單 — S10 thin wrapper，實作在 sync_position.submit_sync_orders。
-        Panel 只負責 log marshalling、Excel 記錄、Telegram 通知、UI 刷新。"""
+        Panel 只負責 log marshalling、UI 刷新；Excel 記錄與 Telegram 通知在 sync_position
+        （與新 Panel 正式模式共用，#154）。"""
         try:
             import sync_position as sp
-            from excel_logger import append_trade_log
 
             # 進度 log 回主執行緒
             def progress(msg: str):
@@ -1346,19 +1404,8 @@ class ControlPanel(tk.Tk):
 
             placed, fill_results = sp.submit_sync_orders(plan, log_fn=progress)
 
-            ctx = plan.ctx
-            account_name = ctx.name
-            nav = plan.nav
-            sr_date = plan.sr_date
-            sp500_date = plan.sp500_date
-
             # Excel 交易記錄
-            for o in placed:
-                strat = o.get('strategy', 'Sync')
-                append_trade_log([o], fill_results,
-                                 f"SR:{sr_date} SP500:{sp500_date}",
-                                 'LMT', ctx.leverage, ctx.dry_run,
-                                 strategy=strat, account_name=account_name)
+            sp.log_sync_trades(plan, placed, fill_results)
 
             # Log 成交結果
             self.after(0, lambda n=len(placed): self._log(f"[OK] Placed {n} orders"))
@@ -1369,28 +1416,7 @@ class ControlPanel(tk.Tk):
                     f"{f['symbol']} @ ${f['avg_price']:.2f} [{f['status']}]"))
 
             # Telegram 通知
-            acct_tag = f"[{account_name}] "
-            lines = [
-                f"<b>{acct_tag}Sync Position — LMT</b>",
-                f"Date: {date.today()}",
-                f"NAV: <b>${nav:,.2f}</b>",
-                f"SR: {sr_date}  |  SP500: {sp500_date}",
-            ]
-            if not fill_results:
-                lines.append(f"\n<b>委託 ({len(placed)} 筆):</b>")
-                for o in placed:
-                    action_tag = "🔴 SELL" if o['action'] == 'SELL' else "🟢 BUY "
-                    lines.append(f"  {action_tag} {o['qty']}sh {o['symbol']}  [{o.get('strategy', '')}]")
-            else:
-                lines.append(f"\n<b>成交結果 ({len(fill_results)} 筆):</b>")
-                for f in fill_results:
-                    icon = "✅" if f['status'] == 'Filled' else "⚠️"
-                    action_tag = "🔴 SELL" if f['action'] == 'SELL' else "🟢 BUY "
-                    val = f['filled'] * f['avg_price']
-                    px_str = f"@ ${f['avg_price']:.2f}  ~${val:,.0f}" if f['filled'] > 0 else "未成交"
-                    lines.append(f"  {icon} {action_tag} {f['filled']}/{f['qty']}sh {f['symbol']}  {px_str}  [{f['status']}]")
-            from notify import tg_send as _tg
-            _tg("\n".join(lines), token=ctx.tg_token, chat_id=ctx.tg_chat_id)
+            sp.send_sync_result(plan, placed, fill_results)
 
             self.after(0, lambda: self._log("[OK] Sync complete — check Telegram"))
             self.after(0, lambda: self._refresh_ib_live())

@@ -17,7 +17,9 @@ from qt_panel.dashboard_data import JOB_STATE_TEXT, JobRow, WatchItem, format_ne
 from qt_panel.widgets import Card, all_text, clear_layout, dot, label, set_dot_color, visible_text
 
 WATCH_NOTE = "並行模式：值班由 Tk Panel 執行，新 Panel 只顯示、不值班"
+PRODUCTION_WATCH_NOTE = "正式模式：值班由新 Panel 執行（Tk Panel 不值班）"
 WATCH_OWNER_TEXT = {True: "Tk Panel 值班中", False: "Tk Panel 沒開 — 目前沒有人值班"}
+PRODUCTION_OWNER_TEXT = "新 Panel 值班中"
 LOG_MAX_LINES = 5000
 
 
@@ -59,7 +61,7 @@ class Dashboard(QWidget):
                  on_start_gateways: Callable[[], None],
                  on_edit_credentials: Callable[[str], None],
                  credential_accounts: Sequence[str],
-                 on_refresh: Callable[[], None]):
+                 on_refresh: Callable[[], None], watch_note: str = WATCH_NOTE):
         super().__init__()
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 20, 24, 20)
@@ -106,7 +108,7 @@ class Dashboard(QWidget):
         mid.setSpacing(12)
 
         self._watch_card = Card("值班")
-        self._watch_note = label(WATCH_NOTE, name="Faint")
+        self._watch_note = label(watch_note, name="Faint")
         self._watch_note.setWordWrap(True)
         self._watch_card.body.addWidget(self._watch_note)
         owner_row = QHBoxLayout()
@@ -175,10 +177,11 @@ class Dashboard(QWidget):
 
     # ── 值班 ──
 
-    def set_watch(self, items: list[WatchItem], now: datetime, tk_running: bool) -> None:
-        color = theme.GREEN if tk_running else theme.RED
+    def set_watch(self, items: list[WatchItem], now: datetime, owner: str, on_duty: bool) -> None:
+        """owner = 誰在值班的說明；on_duty = 有人在值班（綠）或沒有（紅）。"""
+        color = theme.GREEN if on_duty else theme.RED
         set_dot_color(self._owner_dot, color)
-        self._owner.setText(WATCH_OWNER_TEXT[tk_running])
+        self._owner.setText(owner)
         self._owner.setStyleSheet(f"color: {color};")
         clear_layout(self._watch_grid)
         for i, item in enumerate(items):

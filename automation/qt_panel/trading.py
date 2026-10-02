@@ -1,4 +1,5 @@
 """新 Panel 的 Trading 分頁：手動單（#151）、Sync Pos（#152）、交給策略接管（#153）。
+並行模式只接 paper；正式模式（#154）送實盤，見 live_trading。
 
 流程和 Tk 的 `manual_order_view.ManualOrderWindow` 一樣：填欄位 → 預覽 → 再次核對
 （重新向 IB 檢查）→ 確認視窗 → 送出 → 狀態追蹤（部分成交、撤單、過期、修改）。
@@ -728,12 +729,12 @@ class ManualOrderPanel(QWidget):
 
 class TradingPage(QWidget):
     """Trading 分頁：送單目標說明＋手動單／Sync Pos／交給策略接管切換。
-    沒有可用的 paper 連線時只顯示原因。"""
+    沒有可用的送單服務時只顯示原因。live = 正式模式（送實盤）。"""
 
     def __init__(self, account_names: list[str], service, *, unavailable: str = "",
                  target_text: str = "", dialogs, log: Callable[[str], None],
                  symbol_loader: Callable | None = None, sync: PaperSync | None = None,
-                 takeover: PaperTakeover | None = None):
+                 takeover: PaperTakeover | None = None, live: bool = False):
         super().__init__()
         # 內容放進捲動區：確認內容很多行時可以捲，不會撐大主視窗被螢幕切掉（#171）
         outer = QVBoxLayout(self)
@@ -749,8 +750,14 @@ class TradingPage(QWidget):
         lay.setSpacing(12)
         banner = Card()
         if service is None:
-            title = "並行模式：Trading 只接 paper Gateway，目前不能送單"
+            title = ("正式模式：Trading 目前不能送單" if live
+                     else "並行模式：Trading 只接 paper Gateway，目前不能送單")
             detail = unavailable
+        elif live:
+            title = "正式模式：手動單、Sync Pos、接管送到實盤帳戶"
+            detail = ("每個帳戶送到自己的 Gateway，送出前一律跳確認視窗。帳戶、連線身分、"
+                      "紀錄（手動單、手動歸屬、state、trade_log.xlsx）與 Telegram 通知都和 "
+                      "Tk Panel 相同；正式模式下 Tk Panel 不能送單。")
         else:
             title = f"並行模式：手動單、Sync Pos、接管一律送往 {target_text}，不會送到實盤"
             detail = ("帳戶選單照列三個帳戶，但全部導向這個 paper 帳號。"

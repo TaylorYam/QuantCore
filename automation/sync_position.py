@@ -470,3 +470,53 @@ def submit_sync_orders(
             pass
 
     return placed, fill_results
+
+
+# ── 送出後：交易紀錄與 Telegram（Tk Panel 與新 Panel 正式模式共用，#154）──
+
+def log_sync_trades(plan: SyncPlan, placed: list[dict], fill_results: list[dict]) -> None:
+    """trade_log.xlsx：每筆送出的單一列（自 control_panel._sync_execute 抽出，逐字相同）。"""
+    from excel_logger import append_trade_log
+
+    ctx = plan.ctx
+    for o in placed:
+        strat = o.get('strategy', 'Sync')
+        append_trade_log([o], fill_results,
+                         f"SR:{plan.sr_date} SP500:{plan.sp500_date}",
+                         'LMT', ctx.leverage, ctx.dry_run,
+                         strategy=strat, account_name=ctx.name)
+
+
+def sync_result_text(plan: SyncPlan, placed: list[dict], fill_results: list[dict], *,
+                     today=None) -> str:
+    """送出結果的 Telegram 內容（HTML）；沒有成交回報時列委託。"""
+    from datetime import date as _date
+
+    lines = [
+        f"<b>[{plan.ctx.name}] Sync Position — LMT</b>",
+        f"Date: {today or _date.today()}",
+        f"NAV: <b>${plan.nav:,.2f}</b>",
+        f"SR: {plan.sr_date}  |  SP500: {plan.sp500_date}",
+    ]
+    if not fill_results:
+        lines.append(f"\n<b>委託 ({len(placed)} 筆):</b>")
+        for o in placed:
+            action_tag = "🔴 SELL" if o['action'] == 'SELL' else "🟢 BUY "
+            lines.append(f"  {action_tag} {o['qty']}sh {o['symbol']}  [{o.get('strategy', '')}]")
+    else:
+        lines.append(f"\n<b>成交結果 ({len(fill_results)} 筆):</b>")
+        for f in fill_results:
+            icon = "✅" if f['status'] == 'Filled' else "⚠️"
+            action_tag = "🔴 SELL" if f['action'] == 'SELL' else "🟢 BUY "
+            val = f['filled'] * f['avg_price']
+            px_str = f"@ ${f['avg_price']:.2f}  ~${val:,.0f}" if f['filled'] > 0 else "未成交"
+            lines.append(f"  {icon} {action_tag} {f['filled']}/{f['qty']}sh {f['symbol']}  "
+                         f"{px_str}  [{f['status']}]")
+    return "\n".join(lines)
+
+
+def send_sync_result(plan: SyncPlan, placed: list[dict], fill_results: list[dict]) -> None:
+    """送出結果發到該帳戶的 Telegram。"""
+    from notify import tg_send
+    tg_send(sync_result_text(plan, placed, fill_results),
+            token=plan.ctx.tg_token, chat_id=plan.ctx.tg_chat_id)

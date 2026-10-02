@@ -144,6 +144,7 @@ Leverage = alloc_sr + alloc_sp500 + alloc_skewls
 
 Tkinter GUI 儀表板（`automation/QuantCore_Panel.vbs` 靜默啟動；同時只會開一個，重複啟動會叫出既有視窗）：
 
+- **切換到新 Panel 後只看**：`config.json` 的 `qt_panel_mode` 為 `production` 時，Tk Panel 不值班、不能送單（手動下單／Sync Pos 只跳說明），視窗標題寫「只看」；改回 `parallel` 後重開即恢復（[docs/qt-panel-cutover.md](docs/qt-panel-cutover.md)，#154）
 - **三帳戶並列**：Taylor / Rosa / Yvonne 各一欄，顯示 Net Asset Value、Unrealized P&L、Margin Cushion、Strategy Exposure、Account Exposure，持倉圓餅圖（小部位合併成「+N more」），以及依 ETF / 個股 / 手動分組的持倉表（UL、SH、Wt%、Cost、Price、P&L、P&L%）
 - **Strategy Parameters**：每帳戶的 ETF / Stocks / SkewLS 配置滑桿，按 Save 確認後寫回 `accounts.json`
 - **操作列**：`Sync Pos`（先選帳戶，視窗立刻出現並顯示計算進度，算完換成該帳戶理論持倉與 IB 實際持倉的差額預覽，確認後送限價單）、`Refresh IB`（手動刷新三帳戶）、`Log`（輸出紀錄彈窗）；右側顯示資料日期
@@ -152,9 +153,9 @@ Tkinter GUI 儀表板（`automation/QuantCore_Panel.vbs` 靜默啟動；同時�
 - **Gateway 監控**：Gateway Status 列顯示三帳戶連線狀態，`Check Now` 重新探測；Rosa poll、TY check、Morning check 三個定時監控只在異常時發 Telegram
 - **系統匣**：關閉視窗只會縮到系統匣，監控照常運作；圖示顏色顯示 Rosa Gateway 狀態（綠 / 紅 / 灰），從系統匣選「離開」才會結束
 
-### 新 Panel（PySide6，並行中）
+### 新 Panel（PySide6）
 
-Panel 正逐步換成 PySide6（[ADR-0012](docs/adr/0012-panel-pyside6-parallel-cutover.md)，spec #144）。切換前新舊並存：新 Panel **對實盤只看不下單、不值班**（Trading 只接 paper），IB 連線用自己的唯讀 clientId（`ROLE_PANEL_READONLY`），和 Tk Panel 同時開不互搶。
+Panel 正逐步換成 PySide6（[ADR-0012](docs/adr/0012-panel-pyside6-parallel-cutover.md)，spec #144）。切換前新舊並存：新 Panel **對實盤只看不下單、不值班**（Trading 只接 paper），IB 連線用自己的唯讀 clientId（`ROLE_PANEL_READONLY`），和 Tk Panel 同時開不互搶。切換（正式模式）、檢查清單與回退步驟見 [docs/qt-panel-cutover.md](docs/qt-panel-cutover.md)；下面描述的是並行模式。
 
 - 安裝：`pip install -r requirements.txt`（含 `PySide6-Essentials`、`pyqtgraph`）
 - 建捷徑：`python automation/create_shortcut.py --qt`（桌面「QuantCore Qt — Taylor」，走 `automation/QuantCore_QtPanel.vbs`）
@@ -183,7 +184,7 @@ Panel 正逐步換成 PySide6（[ADR-0012](docs/adr/0012-panel-pyside6-parallel-
     - paper 限制：三個帳戶名稱都送到同一個 paper 帳號，但手動歸屬按帳戶名稱記錄；在 paper 上測碰撞暫停時，手動單、Sync Pos、接管請選同一個帳戶名稱
   - Trading 的交給策略接管（#153）：上方切換的第三個「交給策略接管」，或在 Sync Pos 預覽的暫停列按「交給策略接管」直接帶入（同 Tk，該份 Sync 預覽作廢）。選帳戶與被暫停的標的 → 計算預覽（顯示進度）→ 手動紀錄／IB 現有股數、策略整數目標與差額 → 確認視窗才送這一檔的 LMT。不能接管（未結案手動單、IB 上還有掛單、沒有被暫停等）在狀態列說明原因；確認時資料已變動 → 換上新預覽並標出原因，要再確認一次。預覽與送單沿用 `strategy_takeover`，按鈕與確認文字和 Tk 共用 `automation/takeover_preview_text.py`
     - paper 同 Sync Pos：連線走送單閘門（paper clientId = `client_id` + 2，預設 94，與 Sync Pos 分開，比照 Tk 的接管 clientId）；歸屬與手動單紀錄用 paper 專用檔；不寫 state、不發 Telegram，接管結果只寫 Output Log
-- 模式由 `config.json` 的 `qt_panel_mode` 決定，預設並行模式；正式模式在切換工單 #154 才提供
+- 模式由 `config.json` 的 `qt_panel_mode` 決定，預設並行模式（`parallel`）。改成 `production`（#154）＝新 Panel 值班（Rosa poll／TY check／Morning check，同一套 `monitor_engine`）並送實盤單，改用 Tk 原有的 clientId role、紀錄與 Telegram；Tk Panel 讀同一個設定，自動不值班、不能送單、改用唯讀身分。兩個 Panel 都要重開才生效。步驟見 [docs/qt-panel-cutover.md](docs/qt-panel-cutover.md)
 
 ---
 

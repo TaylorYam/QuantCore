@@ -31,7 +31,11 @@ FIELD_WIDTH = 240
 
 
 class PaperSync:
-    """paper 版 Sync Pos 的計算與送單（不含畫面）。"""
+    """paper 版 Sync Pos 的計算與送單（不含畫面）。實盤版是 live_trading.LiveSync。"""
+    venue = "paper"
+    helper_text = ("計算：讀 paper 帳戶的權益與持倉，依該帳戶的策略設定算理論持倉與差額；"
+                   "確認後以 LMT（ask×1.003／bid×0.997、outside RTH）送出。"
+                   "手動持倉暫停中的標的不送。")
 
     def __init__(self, *, target, send_gate, files, account_ctx_loader: Callable):
         self._target = target
@@ -76,7 +80,7 @@ class SyncPosPanel(QWidget):
         self._main = MainThread()
         self._generation = 0          # 計算的代號：放棄或重算後，舊的結果不採用
         self._computing = False
-        # 背景計算還連著 paper（同一個 clientId）：放棄後也要等它結束才能重算
+        # 背景計算還連著 IB（同一個 clientId）：放棄後也要等它結束才能重算
         self._worker_running = False
         self._sending = False
         self._closed = False
@@ -104,9 +108,7 @@ class SyncPosPanel(QWidget):
         row.addWidget(self.discard_button)
         row.addStretch(1)
         card.body.addLayout(row)
-        helper = label("計算：讀 paper 帳戶的權益與持倉，依該帳戶的策略設定算理論持倉與差額；"
-                       "確認後以 LMT（ask×1.003／bid×0.997、outside RTH）送出。"
-                       "手動持倉暫停中的標的不送。", name="Faint")
+        helper = label(sync.helper_text, name="Faint")
         helper.setWordWrap(True)
         card.body.addWidget(helper)
         self.status = label(name="Dim")
@@ -188,7 +190,7 @@ class SyncPosPanel(QWidget):
         self.progress.show()
         self._set_status(f"[{account}] 計算中…（{self._sync.target_text}）")
         self._update_buttons()
-        self._log(f"[>] Sync Position（paper）— computing targets for [{account}]...")
+        self._log(f"[>] Sync Position（{self._sync.venue}）— computing targets for [{account}]...")
 
         def progress(msg: str) -> None:
             self._main.call.emit(lambda: self._progress(generation, msg))
@@ -218,7 +220,7 @@ class SyncPosPanel(QWidget):
             self._log(line)
         try:
             for line in self._sync.take_notices(plan):
-                self._log(f"[手動持倉·paper] [{plan.ctx.name}] {line}")
+                self._log(f"[手動持倉·{self._sync.venue}] [{plan.ctx.name}] {line}")
         except Exception as e:
             self._log(f"[!] 手動持倉暫停通知失敗: {e}")
         self._show_plan(plan)
@@ -361,7 +363,7 @@ class SyncPosPanel(QWidget):
             icon = "OK" if f["status"] == "Filled" else "!!"
             self._log(f"  [{icon}] {f['action']} {f['filled']}/{f['qty']}sh "
                       f"{f['symbol']} @ ${f['avg_price']:.2f} [{f['status']}]")
-        self._set_status(f"[{plan.ctx.name}] 已送出 {len(placed)} 筆限價單（paper），"
+        self._set_status(f"[{plan.ctx.name}] 已送出 {len(placed)} 筆限價單（{self._sync.venue}），"
                          "成交請看 Output Log 與 IB。", "green")
 
     # ── 讀取（測試用）───────────────────────────────────────────────

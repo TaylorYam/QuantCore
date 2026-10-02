@@ -2126,3 +2126,73 @@ def test_changed_close_does_not_invalidate_preview_or_get_reread_at_submit(tmp_p
 
     assert len(state.history_requests) == 2      # preview + validate, not submit
     assert state.placed[0].order.lmtPrice == 120
+
+
+# ── Status vocabulary (#190) ───────────────────────────────────────────
+
+def test_unique_index_locks_exactly_the_active_statuses(tmp_path):
+    """The Account/symbol lock lives in migration 1; it must match ACTIVE_STATUSES."""
+    import re
+
+    import manual_orders
+
+    path = tmp_path / "manual_orders.sqlite3"
+    ManualOrderStore(path)
+    with sqlite3.connect(path) as conn:
+        (sql,) = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='uq_manual_active_account_symbol'"
+        ).fetchone()
+    in_list = re.search(r"status IN \(([^)]*)\)", sql).group(1)
+    assert set(re.findall(r"'([A-Z_]+)'", in_list)) == set(manual_orders.ACTIVE_STATUSES)
+
+
+def test_every_status_is_either_active_or_terminal():
+    import manual_orders
+
+    active = set(manual_orders.ACTIVE_STATUSES)
+    terminal = set(manual_orders.TERMINAL_STATUSES)
+    assert not active & terminal
+    assert active | terminal == set(manual_orders._STATUS_LABELS)
+    assert set(manual_orders.UNCONFIRMED_STATUSES) == {
+        "CANCEL_UNKNOWN", "IB_UNKNOWN", "SUBMISSION_UNKNOWN"}
+
+
+# ── Read-only fills query (#190) ───────────────────────────────────────
+
+def test_read_account_fills_missing_store_means_no_manual_orders(tmp_path):
+    import manual_orders
+
+    path = tmp_path / "manual_orders.sqlite3"
+    assert manual_orders.read_account_fills("Rosa", path) == []
+    assert not path.exists()
+
+
+def test_read_account_fills_returns_one_accounts_orders_without_writing(tmp_path):
+    """Read-only and migration-free: a pre-migration store is read as-is, byte for byte."""
+    import manual_orders
+
+    path = tmp_path / "manual_orders.sqlite3"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """CREATE TABLE manual_orders (
+                   order_ref TEXT PRIMARY KEY, account_name TEXT NOT NULL,
+                   symbol TEXT NOT NULL, action TEXT NOT NULL,
+                   filled_quantity INTEGER NOT NULL DEFAULT 0,
+                   status TEXT NOT NULL, created_at TEXT NOT NULL)""")
+        conn.executemany(
+            "INSERT INTO manual_orders VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [("M:2", "Rosa", "XYZ", "SELL_SHORT", 3, "PARTIAL", "2026-09-28T00:00:02"),
+             ("M:1", "Rosa", "BTC", "BUY", 5, "FILLED", "2026-09-28T00:00:01"),
+             ("M:3", "Taylor", "BTC", "BUY", 7, "FILLED", "2026-09-28T00:00:00")])
+    conn.close()
+    before = path.read_bytes()
+
+    fills = manual_orders.read_account_fills("Rosa", path)
+
+    assert fills == [
+        {"order_ref": "M:1", "symbol": "BTC", "action": "BUY",
+         "filled_quantity": 5, "status": "FILLED"},
+        {"order_ref": "M:2", "symbol": "XYZ", "action": "SELL_SHORT",
+         "filled_quantity": 3, "status": "PARTIAL"},
+    ]
+    assert path.read_bytes() == before

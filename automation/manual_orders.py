@@ -10,7 +10,7 @@ explicit confirmation before calling submit().
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import ROUND_DOWN, Decimal, InvalidOperation
@@ -32,11 +32,17 @@ from market_calendar import NYSE_EARLY_CLOSES, official_sessions
 MANUAL_ORDER_REF_PREFIX = "QUANTCORE_MANUAL:"
 DEFAULT_STORE_PATH = Path(__file__).parent / "manual_orders.sqlite3"
 SUPPORTED_MANUAL_ACCOUNTS = ("Taylor", "Rosa", "Yvonne")
-_ACTIVE_STATUSES = (
+# Manual-order status vocabulary, defined only here (manual_order_form and
+# manual_attribution import it).  Every status is either active or terminal.
+# Active: the order may still fill; at most one per Account/symbol (the
+# migration-1 unique index repeats this list — a test keeps them equal).
+ACTIVE_STATUSES = (
     "SENDING", "SENT", "ACCEPTED", "PARTIAL", "CANCEL_PENDING",
     "CANCEL_UNKNOWN", "IB_UNKNOWN", "SUBMISSION_UNKNOWN",
 )
-_TERMINAL_STATUSES = frozenset({"FILLED", "REJECTED", "CANCELLED", "EXPIRED"})
+TERMINAL_STATUSES = frozenset({"FILLED", "REJECTED", "CANCELLED", "EXPIRED"})
+# Active statuses whose IB outcome is unconfirmed: each episode raises an alert.
+UNCONFIRMED_STATUSES = frozenset({"CANCEL_UNKNOWN", "IB_UNKNOWN", "SUBMISSION_UNKNOWN"})
 _STATUS_LABELS = {
     "SENDING": "送出中",
     "SENT": "已送出，等待 IB 回覆",
@@ -498,6 +504,32 @@ def _default_universe_loader() -> set[str]:
     return {canonical_symbol(symbol) for symbol in symbols}
 
 
+def read_account_fills(account_name: str, path: str | Path | None = None
+                       ) -> list[dict]:
+    """One Account's manual orders as fills and status, oldest first.
+
+    The narrow read-only view for manual attribution: SQLite opens in
+    read-only mode, a missing store means no manual orders were ever placed
+    (returns [] without creating the file), and the store migrations never
+    run.  Read failures propagate as sqlite3.Error for the caller to handle.
+    """
+    path = Path(path or DEFAULT_STORE_PATH)
+    if not path.exists():
+        return []
+    uri = path.resolve().as_uri() + "?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True, timeout=5.0)) as conn:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        rows = conn.execute(
+            """SELECT order_ref, symbol, action, filled_quantity, status
+               FROM manual_orders WHERE account_name=?
+               ORDER BY created_at, rowid""",
+            (account_name,),
+        ).fetchall()
+    return [{"order_ref": str(r[0]), "symbol": str(r[1]), "action": str(r[2]),
+             "filled_quantity": int(r[3] or 0), "status": str(r[4])}
+            for r in rows]
+
+
 class ManualOrderStore:
     """SQLite record of manual orders, including their last observed IB state."""
 
@@ -727,7 +759,7 @@ class ManualOrderStore:
                 conn.rollback()
                 return None
             # An old open-order snapshot must not reopen a terminal order.
-            if current["status"] in _TERMINAL_STATUSES and updates.get("status") in _ACTIVE_STATUSES:
+            if current["status"] in TERMINAL_STATUSES and updates.get("status") in ACTIVE_STATUSES:
                 conn.rollback()
                 return dict(current)
             if current["status"] == "REJECTED" and updates.get("status") == "CANCELLED":
@@ -751,7 +783,7 @@ class ManualOrderStore:
             row = conn.execute(
                 "SELECT * FROM manual_orders WHERE order_ref=?", (order_ref,)
             ).fetchone()
-            if row["status"] in _TERMINAL_STATUSES:
+            if row["status"] in TERMINAL_STATUSES:
                 conn.execute(
                     """INSERT INTO manual_order_notifications (
                            order_ref, terminal_status, created_at
@@ -761,9 +793,7 @@ class ManualOrderStore:
                        WHERE manual_order_notifications.delivered_at IS NULL""",
                     (order_ref, row["status"], _utc_now()),
                 )
-            elif row["status"] in {
-                "CANCEL_UNKNOWN", "IB_UNKNOWN", "SUBMISSION_UNKNOWN",
-            }:
+            elif row["status"] in UNCONFIRMED_STATUSES:
                 conn.execute(
                     """INSERT INTO manual_order_alerts (
                            event_key, order_ref, status, created_at
@@ -808,9 +838,9 @@ class ManualOrderStore:
         return [dict(row) for row in rows]
 
     def list_active(self, account_name: str | None = None) -> list[dict]:
-        marks = ",".join("?" for _ in _ACTIVE_STATUSES)
+        marks = ",".join("?" for _ in ACTIVE_STATUSES)
         sql = f"SELECT * FROM manual_orders WHERE status IN ({marks})"
-        params: list[object] = list(_ACTIVE_STATUSES)
+        params: list[object] = list(ACTIVE_STATUSES)
         if account_name:
             sql += " AND account_name=?"
             params.append(account_name)
@@ -1856,7 +1886,7 @@ class ManualOrderService:
         while IB still reports the order working (see _enforce_session_routing).
         """
         row = self.store.get(order_ref)
-        if row is None or row["status"] in _TERMINAL_STATUSES:
+        if row is None or row["status"] in TERMINAL_STATUSES:
             return
         requested = f"{reason}；已要求取消，不會改以一般時段成交"
         self.store.update(
@@ -1873,7 +1903,7 @@ class ManualOrderService:
             )
             return
         status, message, filled, avg_price = _status_from_trade(trade)
-        if status in _TERMINAL_STATUSES:
+        if status in TERMINAL_STATUSES:
             self.store.update(
                 order_ref, status=status, status_message=f"{message}；{requested}",
                 filled_quantity=filled, avg_fill_price=avg_price,
@@ -1933,7 +1963,7 @@ class ManualOrderService:
             if (row is None or not str(order_ref or "").startswith(
                     MANUAL_ORDER_REF_PREFIX)):
                 raise ManualOrderError("找不到這筆手動委託；未送出取消要求")
-            if row["status"] in _TERMINAL_STATUSES:
+            if row["status"] in TERMINAL_STATUSES:
                 return self._with_status_label(row)
             if row["status"] in {"CANCEL_PENDING", "CANCEL_UNKNOWN"}:
                 return self._with_status_label(row)
@@ -1951,7 +1981,7 @@ class ManualOrderService:
                         )
                     open_trades = self._sync_trades(ib, ctx)
                     row = self.store.get(order_ref) or row
-                    if row["status"] in _TERMINAL_STATUSES:
+                    if row["status"] in TERMINAL_STATUSES:
                         result = row
                     else:
                         trade = _find_manual_trade(open_trades, order_ref, ctx.account)
@@ -1980,7 +2010,7 @@ class ManualOrderService:
                             result = self.store.get(order_ref) or pending
             except Exception as exc:
                 row = self.store.get(order_ref) or row
-                if row["status"] not in _TERMINAL_STATUSES:
+                if row["status"] not in TERMINAL_STATUSES:
                     row = self.store.update(
                         order_ref, status="CANCEL_UNKNOWN",
                         status_message=f"取消結果待確認：{exc}",

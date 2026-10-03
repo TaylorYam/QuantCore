@@ -23,7 +23,8 @@ import sync_preview_rows as preview_rows
 
 from qt_panel import theme
 from qt_panel.order_target import SyncOperations
-from qt_panel.trading_common import MainThread, background
+from qt_panel.trading_common import MainThread, QtRunner, background
+from qt_panel.trading_flow import CancellableJob
 from qt_panel.widgets import Card, clear_layout, label, mono as _mono
 
 FIELD_WIDTH = 240
@@ -40,10 +41,9 @@ class SyncPosPanel(QWidget):
         self._dialogs = dialogs
         self._log = log
         self._main = MainThread()
-        self._generation = 0          # 計算的代號：放棄或重算後，舊的結果不採用
-        self._computing = False
-        # 背景計算還連著 IB（同一個 clientId）：放棄後也要等它結束才能重算
-        self._worker_running = False
+        # 可取消計算（trading_flow）：放棄或重算後舊結果不採用；背景還連著 IB
+        # （同一個 clientId）時，放棄後也要等它結束才能重算
+        self._job = CancellableJob(QtRunner(self._main, "qt-panel-sync-compute"))
         self._sending = False
         self._closed = False
         self._plan = None
@@ -117,10 +117,10 @@ class SyncPosPanel(QWidget):
 
     def stop(self) -> None:
         self._closed = True
-        self._generation += 1
+        self._job.close()
 
     def computing(self) -> bool:
-        return self._computing
+        return self._job.computing
 
     def sending(self) -> bool:
         return self._sending
@@ -130,48 +130,33 @@ class SyncPosPanel(QWidget):
         self.status.setStyleSheet(f"color: {theme.color(key)};")
 
     def _update_buttons(self) -> None:
-        idle = not self._computing and not self._sending
-        self.compute_button.setEnabled(idle and not self._worker_running)
+        idle = not self._job.computing and not self._sending
+        self.compute_button.setEnabled(idle and not self._job.worker_running)
         self.account_box.setEnabled(idle)
-        self.discard_button.setEnabled(self._computing)
+        self.discard_button.setEnabled(self._job.computing)
         self.confirm_button.setEnabled(idle and self._plan is not None)
 
     # ── 計算 ─────────────────────────────────────────────────────────
 
     def compute(self) -> None:
-        if self._computing or self._sending or self._worker_running or self._closed:
+        if self._sending or not self._job.can_start:
             return
         account = self.account_box.currentText()
-        self._generation += 1
-        generation = self._generation
-        self._computing = True
-        self._worker_running = True
         self._plan = None
         self.preview.hide()
         self.progress.clear()
         self.progress.show()
         self._set_status(f"[{account}] 計算中…（{self._sync.target_text}）")
-        self._update_buttons()
         self._log(f"[>] Sync Position（{self._sync.venue}）— computing targets for [{account}]...")
+        self._job.start(lambda progress: self._sync.compute(account, progress),
+                        self._progress, self._computed, on_settled=self._update_buttons)
+        self._update_buttons()
 
-        def progress(msg: str) -> None:
-            self._main.call.emit(lambda: self._progress(generation, msg))
+    def _progress(self, msg: str) -> None:
+        self.progress.appendPlainText(msg.strip())
+        self._log(msg)
 
-        background(self._main, lambda: self._sync.compute(account, progress),
-                   lambda plan, error: self._computed(generation, plan, error),
-                   name="qt-panel-sync-compute")
-
-    def _progress(self, generation: int, msg: str) -> None:
-        if generation == self._generation and not self._closed:
-            self.progress.appendPlainText(msg.strip())
-            self._log(msg)
-
-    def _computed(self, generation: int, plan, error) -> None:
-        self._worker_running = False
-        if generation != self._generation or self._closed:
-            self._update_buttons()
-            return          # 已放棄或已重算：沒人在等這份結果，不顯示、不送
-        self._computing = False
+    def _computed(self, plan, error) -> None:
         if error:
             self._set_status(f"計算失敗：{error}", "red")
             self._log(f"[X] Sync compute failed: {error}")
@@ -198,7 +183,7 @@ class SyncPosPanel(QWidget):
 
     def _hand_over(self, account: str, symbol: str) -> None:
         """交給策略接管（#153）：改開單一標的接管預覽，開得成這份 Sync 預覽才作廢。"""
-        if self._computing or self._sending:
+        if self._job.computing or self._sending:
             return
         problem = self._on_takeover(account, symbol)
         if problem:
@@ -211,10 +196,8 @@ class SyncPosPanel(QWidget):
         self._update_buttons()
 
     def discard(self) -> None:
-        if not self._computing:
+        if not self._job.discard():
             return
-        self._generation += 1
-        self._computing = False
         self._set_status("已放棄這次計算；結果不會顯示、不會送出（背景連線結束後可重新計算）。")
         self._log("[i] Sync Pos 計算已放棄")
         self._update_buttons()
@@ -290,7 +273,7 @@ class SyncPosPanel(QWidget):
 
     def confirm(self) -> None:
         plan = self._plan
-        if plan is None or self._computing or self._sending:
+        if plan is None or self._job.computing or self._sending:
             return
         prompt = (preview_rows.confirm_prompt(plan)
                   + f"\n\n送往：{self._sync.target_text}")

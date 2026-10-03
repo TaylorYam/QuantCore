@@ -4,7 +4,9 @@
 流程和 Tk 的 `manual_order_view.ManualOrderWindow` 一樣：填欄位 → 預覽 → 再次核對
 （重新向 IB 檢查）→ 確認視窗 → 送出 → 狀態追蹤（部分成交、撤單、過期、修改）。
 欄位解析、預覽與狀態列文字共用 `manual_order_form`（#146），帳戶、合約、送單的
-判斷全在 `manual_orders.ManualOrderService`；這裡只做 Qt 那一側。
+判斷全在 `manual_orders.ManualOrderService`；流程（各步驟、修改＝先撤再送、刷新）
+在不含 Qt 的 `trading_flow.ManualOrderFlow`（#188）。這裡只做 Qt 那一側：畫面依
+流程狀態（FlowView）更新。
 
 手動單 service、Sync Pos、接管操作都由送單目標提供，送單連線一律經過送單閘門
 （`broker_gate.SendGate`）。IB 在背景執行緒跑，結果排回主執行緒更新畫面。
@@ -28,7 +30,8 @@ from qt_panel import theme
 from qt_panel.order_target import SyncOperations, TakeoverOperations
 from qt_panel.sync_pos import SyncPosPanel
 from qt_panel.takeover import TakeoverPanel
-from qt_panel.trading_common import MainThread, background
+from qt_panel.trading_common import MainThread, QtRunner
+from qt_panel.trading_flow import FlowView, ManualOrderFlow
 from qt_panel.widgets import Card, label
 
 POLL_INTERVAL_MS = 10_000
@@ -69,21 +72,20 @@ class ManualOrderPanel(QWidget):
         self.service = service
         self._dialogs = dialogs
         self._log = log
-        self._target_text = target_text
         self._main = MainThread()
-        self._preview = None
-        self._preview_request = None
-        self._busy = False
-        self._refreshing = False
+        self._runner = QtRunner(self._main, "qt-panel-manual-order")
         self._closed = False
-        self._order_rows: dict[str, dict] = {}
-        self._replacement_order_ref = None
-        self._replacement_request = None
+        self._rendered_orders = None
         # None = 載入中；False = 取不到清單（只少提示，不影響下單）
         self._symbols = None
         self._suggested: list[str] = []
+        # 流程（預覽／核對／送出／撤單／修改／刷新）在 trading_flow，這裡只畫畫面
+        self.flow = ManualOrderFlow(service, runner=self._runner, dialogs=dialogs,
+                                    read_form=self.form, load_form=self.load_form,
+                                    log=log, on_change=self._render,
+                                    target_text=target_text)
         self._build(account_names)
-        self._poll = QTimer(self, interval=POLL_INTERVAL_MS, timeout=self._poll_status)
+        self._poll = QTimer(self, interval=POLL_INTERVAL_MS, timeout=self.flow.poll)
         self._load_symbols(symbol_loader)
 
     # ── 版面 ─────────────────────────────────────────────────────────
@@ -248,27 +250,18 @@ class ManualOrderPanel(QWidget):
 
     def start(self) -> None:
         self._closed = False
-        self._render_orders(self._active_orders())
-        if self._has_work():
-            self.refresh_status()
+        self.flow.start()
         self._poll.start()
 
     def stop(self) -> None:
         self._closed = True
+        self.flow.stop()
         self._poll.stop()
-
-    def _has_work(self) -> bool:
-        return self.service.has_active_orders() or self.service.has_pending_notifications()
-
-    def _poll_status(self) -> None:
-        if not self._closed and not self._refreshing and self._has_work():
-            self.refresh_status()
 
     def _background(self, work: Callable[[], object],
                     done: Callable[[object, str | None], None]) -> None:
-        background(self._main, work,
-                   lambda result, error: None if self._closed else done(result, error),
-                   name="qt-panel-manual-order")
+        self._runner.run(work, lambda result, error: None if self._closed
+                         else done(result, error))
 
     # ── 代號建議 ─────────────────────────────────────────────────────
 
@@ -403,20 +396,13 @@ class ManualOrderPanel(QWidget):
         target.setStyleSheet(f"color: {theme.color(key)};")
 
     def _form_changed(self, *_args) -> None:
-        if self._preview is not None:
-            self._clear_preview()
-            self._set_preview_text("欄位已變更，請重新預覽委託。")
-
-    def _clear_preview(self) -> None:
-        self._preview = None
-        self._preview_request = None
-        self.confirm_button.setEnabled(False)
+        self.flow.form_changed()
 
     def _action_changed(self, *_args) -> None:
         is_sell = self.action_box.currentText() == "賣出"
         if not is_sell:
             self.allow_short_check.setChecked(False)
-        self.allow_short_check.setEnabled(is_sell and not self._busy)
+        self.allow_short_check.setEnabled(is_sell and not self.busy())
 
     def _input_mode_changed(self, *_args) -> None:
         mode = self.input_mode_box.currentText()
@@ -434,131 +420,57 @@ class ManualOrderPanel(QWidget):
         for widget, value in ((self.quantity_edit, order_form.SHARES_MODE),
                               (self.amount_edit, order_form.CASH_MODE),
                               (self.percent_box, order_form.PERCENT_MODE)):
-            widget.setEnabled(mode == value and not self._busy)
+            widget.setEnabled(mode == value and not self.busy())
 
     def _order_type_changed(self, *_args) -> None:
         if self.order_type_box.currentText() == "MKT":
             self.price_edit.clear()
-        self.price_edit.setEnabled(self.order_type_box.currentText() == "LMT" and not self._busy)
-
-    def _set_busy(self, value: bool) -> None:
-        self._busy = value
-        for widget in (self.preview_button, self.refresh_button, self.account_box,
-                       self.symbol_edit, self.input_mode_box, self.order_type_box,
-                       self.session_box, self.action_box):
-            widget.setEnabled(not value)
-        if value:
-            self.hide_suggestions()
-        self._apply_input_mode_state()
-        self.price_edit.setEnabled(not value and self.order_type_box.currentText() == "LMT")
-        self.allow_short_check.setEnabled(not value and self.action_box.currentText() == "賣出")
-        self.confirm_button.setEnabled(not value and self._preview is not None)
-        self._update_selection_actions()
+        self.price_edit.setEnabled(self.order_type_box.currentText() == "LMT" and not self.busy())
 
     def busy(self) -> bool:
-        return self._busy
+        return self.flow.view.busy
 
-    # ── 預覽 → 再次核對 → 確認 → 送出 ─────────────────────────────────
+    def refreshing(self) -> bool:
+        return self.flow.view.refreshing
+
+    # ── 畫面跟著流程狀態 ─────────────────────────────────────────────
+
+    def _render(self, view: FlowView) -> None:
+        busy = view.busy
+        for widget in (self.preview_button, self.account_box, self.symbol_edit,
+                       self.input_mode_box, self.order_type_box, self.session_box,
+                       self.action_box):
+            widget.setEnabled(not busy)
+        self.refresh_button.setEnabled(not busy and not view.refreshing)
+        if busy:
+            self.hide_suggestions()
+        self._apply_input_mode_state()
+        self.price_edit.setEnabled(not busy and self.order_type_box.currentText() == "LMT")
+        self.allow_short_check.setEnabled(not busy and self.action_box.currentText() == "賣出")
+        self.confirm_button.setEnabled(view.can_confirm)
+        self._set_status(self.form_status, view.form_status.text, view.form_status.key)
+        self._set_preview_text(view.preview.text, view.preview.key)
+        self._set_status(self.order_status, view.order_status.text, view.order_status.key)
+        if view.orders is not self._rendered_orders:
+            self._render_orders(view.orders)
+        self._update_selection_actions()
+
+    # ── 預覽 → 再次核對 → 確認 → 送出（流程在 trading_flow）──────────────
 
     def preview_order(self) -> None:
-        if self._busy:
-            return
-        try:
-            request = order_form.parse_request(self.form())
-        except ValueError as exc:
-            self._dialogs.show_message("手動下單", str(exc), error=True)
-            return
-        self._set_busy(True)
-        self._set_status(self.form_status, "正在檢查 Account、Universe 與 IB 合約…")
-        service = self.service
-
-        def work():
-            return service.preview(request.account_name, request.symbol,
-                                   request.quantity, request.limit_price,
-                                   **order_form.preview_kwargs(request))
-
-        self._background(work, lambda result, error: self._preview_done(request, result, error))
-
-    def _preview_done(self, request, preview, error) -> None:
-        self._set_busy(False)
-        if error:
-            self._clear_preview()
-            self._set_status(self.form_status, "無法預覽")
-            self._set_preview_text(error, "red")
-            return
-        self._preview = preview
-        self._preview_request = request
-        self._set_status(self.form_status, f"IB 合約已確認：{preview.primary_exchange}")
-        self._set_preview_text(preview.confirmation_text,
-                               "yellow" if preview.price_warning else "text")
-        self.confirm_button.setEnabled(True)
+        self.flow.preview()
 
     def confirm_order(self) -> None:
-        if self._busy or self._preview is None:
-            return
-        try:
-            current = order_form.parse_request(self.form())
-        except ValueError as exc:
-            self._dialogs.show_message("手動下單", str(exc), error=True)
-            return
-        if current != self._preview_request:
-            self._form_changed()
-            return
-        preview = self._preview
-        self._set_busy(True)
-        self._set_status(self.form_status, "正在重新檢查持倉與委託…")
-        self._background(lambda: self.service.validate_preview(preview),
-                         lambda fresh, error: self._validated(preview, current, fresh, error))
-
-    def _validated(self, preview, request, fresh, error) -> None:
-        self._set_busy(False)
-        if error or fresh != preview:
-            self._clear_preview()
-            self._set_status(self.form_status, "預覽已失效，請重新預覽")
-            self._set_preview_text(error or "資料在預覽後變更，請重新預覽", "red")
-            return
-        try:
-            unchanged = (self._preview == preview
-                         and order_form.parse_request(self.form()) == request)
-        except ValueError:
-            unchanged = False
-        if not unchanged:
-            self._form_changed()
-            return
-        prompt = fresh.confirmation_text
-        if self._target_text:
-            prompt += f"\n\n送往：{self._target_text}"
-        if not self._dialogs.confirm("再次核對委託", prompt + "\n\n確認送出這筆委託？",
-                                     warning=bool(fresh.price_warning)):
-            return
-        self._set_busy(True)
-        self._set_status(self.form_status, "送單中…")
-        self._background(lambda: self.service.submit(preview), self._submitted)
-
-    def _submitted(self, result, error) -> None:
-        self._set_busy(False)
-        self._clear_preview()
-        if error:
-            self._set_status(self.form_status, "送單前重新檢查未通過")
-            self._set_preview_text(error, "red")
-            return
-        self._set_status(self.form_status, order_form.submit_status_text(result),
-                         "red" if order_form.needs_attention(result) else "green")
-        self._log(order_form.submit_log_line(result))
-        self._render_orders(self._active_orders())
-        self.refresh_status()
+        self.flow.confirm()
 
     # ── 委託狀態 ─────────────────────────────────────────────────────
-
-    def _active_orders(self) -> list[dict]:
-        return self.service.list_orders(active_only=True)
 
     def selected_order(self) -> dict | None:
         rows = self.orders.selectionModel().selectedRows() if self.orders.selectionModel() else []
         if not rows:
             return None
         item = self.orders.item(rows[0].row(), 0)
-        return self._order_rows.get(item.data(Qt.UserRole)) if item else None
+        return self.flow.row(item.data(Qt.UserRole)) if item else None
 
     def select_order(self, order_ref: str) -> None:
         for row in range(self.orders.rowCount()):
@@ -572,123 +484,24 @@ class ManualOrderPanel(QWidget):
 
     def _update_selection_actions(self, *_args) -> None:
         row = self.selected_order()
-        self.cancel_button.setEnabled(not self._busy and order_form.can_cancel(row))
-        self.modify_button.setEnabled(not self._busy and order_form.can_modify(row))
+        self.cancel_button.setEnabled(self.flow.can_cancel(row))
+        self.modify_button.setEnabled(self.flow.can_modify(row))
 
     def cancel_selected(self) -> None:
-        row = self.selected_order()
-        if row is None or self._busy:
-            return
-        if not self._dialogs.confirm("取消手動委託", order_form.cancel_prompt(row)):
-            return
-        self._request_cancel(row["order_ref"], None)
+        self.flow.cancel(self.selected_order())
 
     def modify_selected(self) -> None:
-        row = self.selected_order()
-        if row is None or self._busy or row.get("order_type", "LMT") == "MKT":
-            return
-        if not order_form.form_matches_row(self.form(), row):
-            self.load_form(order_form.form_from_row(row))
-            self._set_status(self.form_status, "已載入選定委託；調整價格或股數後再次按修改。")
-            self._set_preview_text("修改流程會先等待 IB 確認取消，再提供新委託預覽。")
-            return
-        try:
-            request = order_form.parse_request(self.form())
-            quantity = order_form.modify_quantity(request)
-            order_form.check_modify(row, request, quantity)
-        except ValueError as exc:
-            self._dialogs.show_message("修改手動委託", str(exc), error=True)
-            return
-        if not self._dialogs.confirm("取消後修改手動委託",
-                                     order_form.modify_prompt(row, request, quantity)):
-            return
-        self._request_cancel(row["order_ref"], request)
-
-    def _request_cancel(self, order_ref: str, replacement_request) -> None:
-        row = self._order_rows.get(order_ref)
-        if row is not None:
-            pending = order_form.cancel_pending_row(row)
-            self._order_rows[order_ref] = pending
-            for r in range(self.orders.rowCount()):
-                if self.orders.item(r, 0).data(Qt.UserRole) == order_ref:
-                    self.orders.item(r, STATUS_COLUMN).setText(pending["status_label"])
-        self._set_busy(True)
-        self._set_status(self.order_status, "已記錄取消要求，等待 IB 確認…")
-        self._background(
-            lambda: self.service.cancel(order_ref),
-            lambda result, error: self._cancelled(order_ref, replacement_request, result, error))
-
-    def _cancelled(self, order_ref, replacement_request, result, error) -> None:
-        self._set_busy(False)
-        if error:
-            self._set_status(self.order_status, f"取消結果待確認：{error}", "red")
-            self._render_orders(self._active_orders())
-            return
-        status = result["status"]
-        if replacement_request is not None:
-            self._replacement_order_ref = order_ref
-            self._replacement_request = replacement_request
-        if status in {"CANCEL_PENDING", "CANCEL_UNKNOWN", "SUBMISSION_UNKNOWN"}:
-            self._set_status(self.order_status,
-                             result.get("status_message") or "取消結果待確認；委託仍保持未結案",
-                             "red")
-            self.refresh_status()
-        else:
-            self._set_status(self.order_status, result.get("status_label", status))
-            self._finish_replacement_if_ready(result)
-            self._render_orders(self._active_orders())
-
-    def _finish_replacement_if_ready(self, row: dict) -> None:
-        if (self._replacement_order_ref is None
-                or row.get("order_ref") != self._replacement_order_ref):
-            return
-        request = self._replacement_request
-        self._replacement_order_ref = None
-        self._replacement_request = None
-        replacement = order_form.replacement_after_cancel(row, request)
-        if replacement.form is None:
-            self._set_preview_text(replacement.message)
-            return
-        self.load_form(replacement.form)
-        self._clear_preview()
-        self._set_status(self.form_status, "IB 已確認取消；請預覽並再次確認新委託。")
-        self._set_preview_text(replacement.message)
+        self.flow.modify(self.selected_order())
 
     def refresh_status(self) -> None:
-        if self._closed or self._refreshing:
-            return
-        self._refreshing = True
-        self.refresh_button.setEnabled(False)
-        self._set_status(self.order_status, "正在向 IB 查詢手動委託狀態…")
-        self._background(self.service.refresh_status, self._refreshed)
+        self.flow.refresh()
 
-    def refreshing(self) -> bool:
-        return self._refreshing
-
-    def _refreshed(self, result, error) -> None:
-        self._refreshing = False
-        self.refresh_button.setEnabled(not self._busy)
-        if error:
-            self._set_status(self.order_status, f"IB 狀態查詢失敗：{error}", "red")
-            self._render_orders(self._active_orders())
-            return
-        self._render_orders(result["orders"])
-        if self._replacement_order_ref is not None:
-            previous = next((row for row in self.service.list_orders()
-                             if row.get("order_ref") == self._replacement_order_ref), None)
-            if previous and not order_form.replacement_waiting(previous):
-                self._finish_replacement_if_ready(previous)
-        errors = result.get("errors", [])
-        self._set_status(self.order_status, "；".join(errors) if errors else "狀態已刷新",
-                         "red" if errors else "text_dim")
-
-    def _render_orders(self, rows) -> None:
+    def _render_orders(self, orders) -> None:
         selected = self.selected_order()
+        self._rendered_orders = orders
         self.orders.setRowCount(0)
-        self._order_rows = {}
-        for row in order_form.open_orders(rows):
+        for row in orders:
             ref = row["order_ref"]
-            self._order_rows[ref] = row
             r = self.orders.rowCount()
             self.orders.insertRow(r)
             for c, value in enumerate(order_form.order_row_values(row)):
@@ -699,7 +512,6 @@ class ManualOrderPanel(QWidget):
                 self.orders.setItem(r, c, item)
         if selected is not None:
             self.select_order(selected["order_ref"])
-        self._update_selection_actions()
 
 
 class TradingPage(QWidget):

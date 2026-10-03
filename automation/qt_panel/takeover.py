@@ -22,7 +22,8 @@ import takeover_preview_text as preview_text
 
 from qt_panel import theme
 from qt_panel.order_target import TakeoverOperations
-from qt_panel.trading_common import MainThread, background
+from qt_panel.trading_common import MainThread, QtRunner, background
+from qt_panel.trading_flow import CancellableJob
 from qt_panel.widgets import Card, clear_layout, label, mono
 
 FIELD_WIDTH = 240
@@ -37,10 +38,9 @@ class TakeoverPanel(QWidget):
         self._dialogs = dialogs
         self._log = log
         self._main = MainThread()
-        self._generation = 0          # 計算的代號：放棄或重算後，舊的結果不採用
-        self._computing = False
-        # 背景計算還連著 IB（同一個 clientId）：放棄後也要等它結束才能重算
-        self._worker_running = False
+        # 可取消計算（trading_flow）：放棄或重算後舊結果不採用；背景還連著 IB
+        # （同一個 clientId）時，放棄後也要等它結束才能重算
+        self._job = CancellableJob(QtRunner(self._main, "qt-panel-takeover-compute"))
         self._sending = False
         self._closed = False
         self._preview = None
@@ -119,10 +119,10 @@ class TakeoverPanel(QWidget):
 
     def stop(self) -> None:
         self._closed = True
-        self._generation += 1
+        self._job.close()
 
     def computing(self) -> bool:
-        return self._computing
+        return self._job.computing
 
     def sending(self) -> bool:
         return self._sending
@@ -130,7 +130,7 @@ class TakeoverPanel(QWidget):
     def showEvent(self, event) -> None:
         # Sync Pos 剛發現新的暫停時，切過來就看得到
         super().showEvent(event)
-        if not self._computing and not self._sending and self._preview is None:
+        if not self._job.computing and not self._sending and self._preview is None:
             self._reload_symbols(announce=False)
 
     def _set_status(self, text: str, key: str = "text_dim") -> None:
@@ -138,12 +138,12 @@ class TakeoverPanel(QWidget):
         self.status.setStyleSheet(f"color: {theme.color(key)};")
 
     def _update_buttons(self) -> None:
-        idle = not self._computing and not self._sending
-        self.compute_button.setEnabled(idle and not self._worker_running
+        idle = not self._job.computing and not self._sending
+        self.compute_button.setEnabled(idle and not self._job.worker_running
                                        and self.symbol_box.count() > 0)
         self.account_box.setEnabled(idle)
         self.symbol_box.setEnabled(idle)
-        self.discard_button.setEnabled(self._computing)
+        self.discard_button.setEnabled(self._job.computing)
         ready = idle and self._preview is not None
         self.confirm_button.setEnabled(ready)
         self.cancel_button.setEnabled(ready)
@@ -194,9 +194,9 @@ class TakeoverPanel(QWidget):
         """從 Sync Pos 的暫停列進來：選好帳戶與標的，直接開始算預覽。
         回傳不能開始的原因（空字串 = 已開始計算）。"""
         index = self.account_box.findText(account, Qt.MatchFixedString)  # 不分大小寫
-        if self._computing or self._sending:
+        if self._job.computing or self._sending:
             problem = "接管預覽還在計算或送單中，請等它結束再從 Sync Pos 進來。"
-        elif self._worker_running:
+        elif self._job.worker_running:
             problem = "上一次接管計算的連線還沒結束，請稍後再從 Sync Pos 進來。"
         elif index < 0:
             problem = f"接管畫面沒有 {account} 這個帳戶。"
@@ -215,41 +215,25 @@ class TakeoverPanel(QWidget):
     # ── 計算 ─────────────────────────────────────────────────────────
 
     def compute(self) -> bool:
-        if (self._computing or self._sending or self._worker_running or self._closed
-                or not self.symbol_box.currentText()):
+        if self._sending or not self._job.can_start or not self.symbol_box.currentText():
             return False
         account = self.account_box.currentText()
         symbol = self.symbol_box.currentText()
-        self._generation += 1
-        generation = self._generation
-        self._computing = True
-        self._worker_running = True
         self._clear_preview()
         self.progress.clear()
         self.progress.show()
         self._set_status(f"[{account}] {symbol} 計算中…（{self._takeover.target_text}）")
-        self._update_buttons()
         self._log(f"[>] 交給策略接管（{self._takeover.venue}）— [{account}] {symbol}，計算中...")
-
-        def progress(msg: str) -> None:
-            self._main.call.emit(lambda: self._progress(generation, msg))
-
-        background(self._main, lambda: self._takeover.preview(account, symbol, progress),
-                   lambda preview, error: self._computed(generation, preview, error),
-                   name="qt-panel-takeover-compute")
+        self._job.start(lambda progress: self._takeover.preview(account, symbol, progress),
+                        self._progress, self._computed, on_settled=self._update_buttons)
+        self._update_buttons()
         return True
 
-    def _progress(self, generation: int, msg: str) -> None:
-        if generation == self._generation and not self._closed:
-            self.progress.appendPlainText(msg.strip())
-            self._log(msg)
+    def _progress(self, msg: str) -> None:
+        self.progress.appendPlainText(msg.strip())
+        self._log(msg)
 
-    def _computed(self, generation: int, preview, error) -> None:
-        self._worker_running = False
-        if generation != self._generation or self._closed:
-            self._update_buttons()
-            return          # 已放棄或已重算：沒人在等這份結果，不顯示、不送
-        self._computing = False
+    def _computed(self, preview, error) -> None:
         if error:
             self._set_status(f"不能接管：{error}", "red")
             self._log(f"[X] 接管預覽失敗: {error}")
@@ -261,10 +245,8 @@ class TakeoverPanel(QWidget):
         self._update_buttons()
 
     def discard(self) -> None:
-        if not self._computing:
+        if not self._job.discard():
             return
-        self._generation += 1
-        self._computing = False
         self._set_status("已放棄這次計算；結果不會顯示、不會送出（背景連線結束後可重新計算）。")
         self._log("[i] 交給策略接管的計算已放棄")
         self._update_buttons()
@@ -295,7 +277,7 @@ class TakeoverPanel(QWidget):
 
     def confirm(self) -> None:
         p = self._preview
-        if p is None or self._computing or self._sending:
+        if p is None or self._job.computing or self._sending:
             return
         prompt = (preview_text.confirm_prompt(p)
                   + f"\n\n送往：{self._takeover.target_text}")

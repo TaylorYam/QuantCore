@@ -32,8 +32,7 @@ def fetch_panel_portfolio(account_name: str) -> dict:
 def fetch_readonly_portfolio(account_name: str) -> dict:
     import ib_fetcher
     from account_ctx import AccountCtx
-    from account_utils import ROLE_PANEL
-    from broker import panel_query_client_id
+    from broker import ROLE_PANEL, panel_query_client_id
 
     ctx = replace(AccountCtx.from_name(account_name, ROLE_PANEL),
                   client_id=panel_query_client_id(account_name))

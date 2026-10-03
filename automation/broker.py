@@ -203,6 +203,7 @@ class Connection:
     def prices(self, symbols: list[str]) -> dict[str, float]:
         """參考價（多層 fallback：本連線即時 → 報價 feed port → 延遲報價 → 本地 CSV）。"""
         import ib_fetcher
+        # 呼叫方式和 #185 之前逐字相同：一般連線不帶 readonly（借報價的 clientId 用 99）
         if self.readonly:
             return ib_fetcher.get_prices(self._ib, symbols, self.ctx, readonly=True)
         return ib_fetcher.get_prices(self._ib, symbols, self.ctx)
@@ -367,9 +368,12 @@ class Connection:
             pass
 
 
-def as_connection(ib_or_connection, ctx) -> Connection:
+def as_connection(ib_or_connection, ctx):
     """排程入口（21:00 調倉、16:00 日度風控）還拿著 ib_insync 本體呼叫共用的送單函式；
-    第二階段排程改走 Broker 後刪除。"""
-    if isinstance(ib_or_connection, Connection) or hasattr(ib_or_connection, "place"):
+    第二階段排程改走 Broker 後刪除。
+
+    已經是 Broker 的連線（Connection 或測試的 FakeConnection，都有 place）就原樣交回；
+    ib_insync 本體只有 placeOrder，包成 Connection。"""
+    if hasattr(ib_or_connection, "place"):
         return ib_or_connection
     return Connection(ib_or_connection, ctx)

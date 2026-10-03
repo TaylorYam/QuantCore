@@ -40,7 +40,7 @@ from notify import Digest
 # ── AccountCtx（S6：ctx 為必要參數）────────────────────────────────────
 from account_ctx import AccountCtx
 
-# ── IB 連線 helper（S8：統一由 ib_fetcher 提供）────────────────────────
+# ── IB 連線（#185：ib_fetcher.connect 經 Broker，讀數在 broker.Connection 上）
 import ib_fetcher
 from symbol_contract import contract_symbol
 
@@ -236,7 +236,7 @@ def main(ctx: AccountCtx, digest: Digest | None = None):
     log.info(f"{'='*60}")
 
     try:
-        ib = ib_fetcher.connect(ctx)
+        conn = ib_fetcher.connect(ctx)
     except Exception as e:
         log.error(f"IB connect failed: {e}")
         digest.add(ctx.name, "❌ IB 連線失敗", [html.escape(str(e)[:300])],
@@ -247,17 +247,13 @@ def main(ctx: AccountCtx, digest: Digest | None = None):
 
     try:
         # 今日 MOO 委託（MKT + OPG）；completed order 也在 ib.trades() 裡
-        moo_trades = [t for t in ib.trades()
+        moo_trades = [t for t in conn.trades()
                       if t.order.orderType == 'MKT' and t.order.tif == 'OPG']
-        fills = ib.fills()
+        fills = conn.fills()
 
         # post-fill 部位（判斷 SHORT / COVER 方向）
         try:
-            positions_after = {}
-            for p in ib.positions(ctx.account):
-                if p.contract.secType == 'STK':
-                    sym = contract_symbol(p.contract)
-                    positions_after[sym] = positions_after.get(sym, 0.0) + float(p.position)
+            positions_after = conn.positions()
         except Exception as e:
             log.warning(f"Failed to fetch post-fill positions: {e}")
             positions_after = None
@@ -288,7 +284,7 @@ def main(ctx: AccountCtx, digest: Digest | None = None):
                    "error", **dest)
 
     finally:
-        ib.disconnect()
+        conn.close()
         log.info("Disconnected from IB Gateway.")
         if own_digest:
             digest.send()

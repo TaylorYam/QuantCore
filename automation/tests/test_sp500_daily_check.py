@@ -149,10 +149,10 @@ def test_daily_report_marks_at_reference_close_then_ib_fallback(monkeypatch):
     # CIEN present in CSV (official close), STX absent → must fall back to IB
     monkeypatch.setattr(price_utils, "load_csv_close",
                         lambda s: {"CIEN": 488.21}.get(s, 0.0))
-    monkeypatch.setattr(daily_report, "get_prices",
-                        lambda ib, syms, ctx=None: {"STX": 912.0})
-    marks = daily_report.mark_at_reference_close(
-        ib=None, symbols=["CIEN", "STX"], ctx=None)
+    asked = []
+    conn = NS(prices=lambda syms: asked.append(list(syms)) or {"STX": 912.0})
+    marks = daily_report.mark_at_reference_close(conn, ["CIEN", "STX"])
+    assert asked == [["STX"]]         # 只有 CSV 缺的才問 IB
     assert marks["CIEN"] == 488.21    # official close, NOT a stale weekend tick
     assert marks["STX"] == 912.0      # CSV missing → IB fallback
 

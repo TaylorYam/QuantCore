@@ -82,7 +82,9 @@ def robust_get_prices(ib, symbols: list,
     -------
     dict: {sym: price (float > 0)} 或 {sym: 0} 如果全部 fallback 都失敗
     """
-    from ib_insync import IB
+    from types import SimpleNamespace
+
+    from broker import Broker
     from symbol_contract import canonical_symbol, ib_stock
 
     def _log(msg):
@@ -113,14 +115,13 @@ def robust_get_prices(ib, symbols: list,
     # Step 2: 透過 PRICE_FEED_PORT 另開連線
     if need_feed and price_feed_port and price_feed_port != ib.client.port:
         _log(f"  {len(need_feed)} symbols no live price, trying price feed port {price_feed_port}...")
-        feed_ib = IB()
+        feed = None
         try:
-            if readonly:
-                feed_ib.RequestTimeout = 20
-                feed_ib.connect(host, price_feed_port, clientId=feed_client_id,
-                                timeout=10, readonly=True)
-            else:
-                feed_ib.connect(host, price_feed_port, clientId=feed_client_id, timeout=10)
+            # 經 Broker 連報價 feed port（#185）：只為借報價，不指定帳戶
+            feed = Broker().connect(
+                SimpleNamespace(host=host, port=price_feed_port, client_id=feed_client_id,
+                                account=""), timeout=10, readonly=readonly)
+            feed_ib = feed.ib
             feed_contracts = [ib_stock(s) for s in need_feed]
             feed_ib.qualifyContracts(*feed_contracts)
             feed_tickers = feed_ib.reqTickers(*feed_contracts)
@@ -136,8 +137,8 @@ def robust_get_prices(ib, symbols: list,
         except Exception as e:
             _log(f"  price feed connect failed: {e}")
         finally:
-            if feed_ib.isConnected():
-                feed_ib.disconnect()
+            if feed is not None:
+                feed.close()
 
     # Step 3: 本連線 delayed 報價
     if need_feed:

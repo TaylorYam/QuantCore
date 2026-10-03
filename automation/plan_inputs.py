@@ -24,10 +24,10 @@ persist_state：SP500 訊號要不要寫回 state，以及 SkewLS 調倉後要�
 False 時不寫，並在 skipped_state_writes 記下「本來會寫哪個 state」（預演報表揭露用）。
 
 帳戶快照來源是 adapter（nav() / positions() / prices(symbols)）：Broker 的連線
-（broker.Connection：Sync Pos、接管）、IbAccount（21:00 調倉還拿著 ib_insync 本體，
-#185 第二階段改走 Broker 後刪除）與預演的 preview_rebalance.SnapshotAccount（給定
-NAV／持倉＋本地收盤價）。進度文字由各入口的 Narrator 決定，module 本身不寫
-log — 21:00 調倉 log 與 Panel 進度文字維持原樣。
+（broker.Connection：21:00 調倉、Sync Pos、接管）與預演的
+preview_rebalance.SnapshotAccount（給定 NAV／持倉＋本地收盤價）。
+進度文字由各入口的 Narrator 決定，module 本身不寫 log — 21:00 調倉 log 與
+Panel 進度文字維持原樣。
 """
 from __future__ import annotations
 
@@ -58,27 +58,6 @@ class Narrator:
     def skewls(self, step: str) -> None: ...
     def skewls_gate(self, decision: plan.SkewlsDecision) -> None: ...
     def prices(self, symbols: list[str]) -> None: ...
-
-
-class IbAccount:
-    """IB 連線上的帳戶快照（NAV、持倉、報價）。21:00 調倉專用；#185 第二階段換成
-    broker.Connection 後刪除。"""
-
-    def __init__(self, ib, ctx):
-        self._ib = ib
-        self._ctx = ctx
-
-    def nav(self) -> float:
-        import ib_fetcher
-        return ib_fetcher.get_nav(self._ib, self._ctx)
-
-    def positions(self) -> dict[str, float]:
-        import ib_fetcher
-        return ib_fetcher.get_positions(self._ib, self._ctx)
-
-    def prices(self, symbols: list[str]) -> dict[str, float]:
-        import ib_fetcher
-        return ib_fetcher.get_prices(self._ib, symbols, self._ctx)
 
 
 @dataclass

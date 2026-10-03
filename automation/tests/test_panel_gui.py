@@ -325,8 +325,9 @@ def test_sync_pos_asks_for_account_and_previews_that_account(fake_config, monkey
     connected, sp500_accounts, plans = [], [], []
 
     def connect(ctx, *args, **kwargs):
+        from tests.fake_broker import FakeBroker
         connected.append((ctx.name, ctx.account, ctx.port))
-        return SimpleNamespace(isConnected=lambda: False, disconnect=lambda: None)
+        return FakeBroker(managed=[ctx.account], nav=navs[ctx.account]).connect(ctx)
 
     def sp500_weights(holdings, account_name):
         sp500_accounts.append(account_name)
@@ -352,9 +353,6 @@ def test_sync_pos_asks_for_account_and_previews_that_account(fake_config, monkey
         return plan
 
     monkeypatch.setattr(ib_fetcher, "connect", connect)
-    monkeypatch.setattr(ib_fetcher, "get_nav", lambda ib, ctx: navs[ctx.account])
-    monkeypatch.setattr(ib_fetcher, "get_positions", lambda ib, ctx: {})
-    monkeypatch.setattr(ib_fetcher, "get_prices", lambda ib, syms, ctx: {s: 100.0 for s in syms})
     monkeypatch.setattr(signals, "get_sr_weights", sr_weights)
     monkeypatch.setattr(signals, "get_skewls_weights", lambda: ({"SEF": 1.0}, "FAKE"))
     monkeypatch.setattr(signals, "get_sp500_weights", sp500_weights)
@@ -672,11 +670,9 @@ def test_sync_window_shows_failure_and_drops_a_plan_nobody_is_waiting_for(fake_c
         computed.append(plan)
         return show_plan(self, plan)
 
-    monkeypatch.setattr(ib_fetcher, "connect", lambda ctx, *a, **kw: SimpleNamespace(
-        isConnected=lambda: False, disconnect=lambda: None))
-    monkeypatch.setattr(ib_fetcher, "get_nav", lambda ib, ctx: 100_000)
-    monkeypatch.setattr(ib_fetcher, "get_positions", lambda ib, ctx: {})
-    monkeypatch.setattr(ib_fetcher, "get_prices", lambda ib, syms, ctx: {s: 100.0 for s in syms})
+    from tests.fake_broker import FakeBroker
+    monkeypatch.setattr(ib_fetcher, "connect", lambda ctx, *a, **kw: FakeBroker(
+        managed=[ctx.account], nav=100_000).connect(ctx))
     monkeypatch.setattr(signals, "get_sr_weights", sr_weights)
     monkeypatch.setattr(signals, "get_sp500_weights", lambda holdings, name: ({"AAPL": 1.0}, "FAKE"))
     monkeypatch.setattr(sync_preview_window.SyncPreviewWindow, "show_plan", traced_show_plan)

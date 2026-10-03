@@ -266,51 +266,22 @@ def test_tg_section_sent_for_new_pause_only():
 
 # ── 送單入口：fake IB 走真實流程 ─────────────────────────────────────
 
-class FakeIB:
-    """記錄下單／取消；持倉、NAV、報價都是固定值。21:00 調倉與 16:00 日度風控還拿著
-    ib_insync 本體（#185 第二階段改走 Broker）；Sync Pos 用 tests/fake_broker.py。"""
+def _sent(broker):
+    return [(p.symbol, p.action, p.qty) for p in broker.placed]
 
-    def __init__(self, positions, open_trades=()):
-        self._positions = positions
-        self._open = list(open_trades)
-        self.placed: list[tuple[str, str, int]] = []
-        self.cancelled: list[int] = []
 
-    def accountValues(self, account):
-        return [NS(tag="NetLiquidation", currency="USD", value="100000")]
+def _cancelled(broker):
+    return [o.orderId for o in broker.cancelled]
 
-    def positions(self, account=""):
-        from ib_insync import Stock
-        return [NS(account=account, contract=Stock(s, "SMART", "USD"),
-                   position=q, avgCost=1.0) for s, q in self._positions.items()]
 
-    def openTrades(self):
-        return list(self._open)
-
-    def cancelOrder(self, order):
-        self.cancelled.append(order.orderId)
-
-    def qualifyContracts(self, *contracts):
-        return list(contracts)
-
-    def reqTickers(self, *contracts):
-        return [NS(contract=c, bid=99.9, ask=100.1, last=100.0, close=100.0,
-                   midpoint=lambda: 100.0) for c in contracts]
-
-    def placeOrder(self, contract, order):
-        order.orderId = 1000 + len(self.placed)
-        self.placed.append((contract.symbol, order.action, int(order.totalQuantity)))
-        return NS(order=order, contract=contract, fills=[],
-                  orderStatus=NS(status="Submitted"))
-
-    def sleep(self, *_):
-        pass
-
-    def isConnected(self):
-        return True
-
-    def disconnect(self):
-        pass
+def _fake_broker(positions, behavior="fill"):
+    """每條連線一個 in-memory Broker：手動單 7 與策略單 8 掛在 Gateway 上。
+    behavior="working"：送出的單一直掛著、沒有成交（MOO 開盤前的樣子）。"""
+    from tests.fake_broker import FakeBroker
+    fake = FakeBroker(managed=["U00000001"], positions=positions, behavior=behavior)
+    fake.open_orders = [MANUAL_OPEN, STRATEGY_OPEN]
+    fake.detail = []
+    return fake
 
 
 MANUAL_OPEN = NS(order=NS(orderId=7, orderRef="QUANTCORE_MANUAL:ROSA:abc"),
@@ -335,7 +306,7 @@ def rebalance_env(paths, monkeypatch):
     import rebalance_ib
     import signals
 
-    env = NS(sp500_calls=[], ib=None, positions={"AAPL": 100.0, "XYZ": 10.0, "BTC": 1.5},
+    env = NS(sp500_calls=[], broker=None, positions={"AAPL": 100.0, "XYZ": 10.0, "BTC": 1.5},
              sent=[], tg_ok=True)
 
     def tg_send(msg, *, token, chat_id):
@@ -344,19 +315,16 @@ def rebalance_env(paths, monkeypatch):
 
     monkeypatch.setattr(notify, "tg_send", tg_send)
 
-    def connect(ctx):
-        env.ib = FakeIB(env.positions, [MANUAL_OPEN, STRATEGY_OPEN])
-        return env.ib
+    def connect(ctx, **_kw):
+        env.broker = _fake_broker(env.positions, behavior="working")
+        return env.broker.connect(ctx)
 
     def sp500_weights(holdings, account_name, persist=True):
         env.sp500_calls.append(list(holdings))
         return {"AAPL": 0.5, "XYZ": 0.5}, "2026-09-23"
 
     import ib_fetcher
-    monkeypatch.setattr(rebalance_ib, "connect_ib", connect)
-    monkeypatch.setattr(ib_fetcher, "get_prices",
-                        lambda ib, syms, ctx: {s: 100.0 for s in syms})
-    monkeypatch.setattr(rebalance_ib, "get_positions_detail", lambda ib, ctx: [])
+    monkeypatch.setattr(ib_fetcher, "connect", connect)
     monkeypatch.setattr(rebalance_ib, "append_trade_log", lambda *a, **k: None)
     monkeypatch.setattr(signals, "get_sr_weights", lambda: ({}, "N/A"))
     monkeypatch.setattr(signals, "get_sp500_weights", sp500_weights)
@@ -380,8 +348,8 @@ def test_rebalance_holds_only_the_paused_symbol(rebalance_env, caplog):
     caplog.set_level("INFO")
     digest = _run_rebalance()
 
-    assert rebalance_env.ib.placed == [("AAPL", "BUY", 150)]      # XYZ +240 被擋
-    assert rebalance_env.ib.cancelled == [8]                       # 手動單 7 沒被取消
+    assert _sent(rebalance_env.broker) == [("AAPL", "BUY", 150)]      # XYZ +240 被擋
+    assert _cancelled(rebalance_env.broker) == [8]                       # 手動單 7 沒被取消
     assert rebalance_env.sp500_calls == [["AAPL", "XYZ"]]          # 訊號輸入不變
     text = digest.render()
     assert "⏸ XYZ 策略單暫停：手動持倉 10 股已進入 SP500 Universe" in text
@@ -393,7 +361,7 @@ def test_rebalance_holds_only_the_paused_symbol(rebalance_env, caplog):
     # 同一次暫停只通知一次；AAPL 之後已對齊 → 安靜日沒有訊息
     rebalance_env.positions["AAPL"] = 250.0
     assert _run_rebalance().render() is None
-    assert rebalance_env.ib.placed == [] and len(rebalance_env.sent) == 1
+    assert _sent(rebalance_env.broker) == [] and len(rebalance_env.sent) == 1
 
 
 def test_rebalance_pause_notice_retried_when_telegram_fails(rebalance_env):
@@ -410,7 +378,7 @@ def test_rebalance_pause_notice_retried_when_telegram_fails(rebalance_env):
 def test_rebalance_without_manual_record_is_unchanged(rebalance_env):
     """沒有手動紀錄的帳戶：XYZ 是策略持股，照常送單（啟用當下就在 Universe 內）。"""
     _run_rebalance("Taylor")
-    assert rebalance_env.ib.placed == [("AAPL", "BUY", 150), ("XYZ", "BUY", 240)]
+    assert _sent(rebalance_env.broker) == [("AAPL", "BUY", 150), ("XYZ", "BUY", 240)]
 
 
 def test_rebalance_unreadable_ledger_stops_account_before_state(rebalance_env, paths):
@@ -420,7 +388,7 @@ def test_rebalance_unreadable_ledger_stops_account_before_state(rebalance_env, p
     digest = Digest("調倉 T", icon="📤")
     with pytest.raises(ma.ManualAttributionError):
         rebalance_ib.main(mode="sp500", ctx=_ctx(), digest=digest)
-    assert rebalance_env.ib.placed == [] and rebalance_env.sp500_calls == []
+    assert _sent(rebalance_env.broker) == [] and rebalance_env.sp500_calls == []
     assert digest.outcomes(["Rosa"])["Rosa"][0] == "error"
 
 
@@ -428,24 +396,12 @@ def test_place_orders_gate_holds_persisted_pause_even_if_caller_forgot(paths):
     import rebalance_ib
     ma.evaluate("Rosa", {"XYZ": 10.0}, UNIVERSE)
     ma.evaluate("Rosa", {"XYZ": 10.0}, JOINED)
-    ib = FakeIB({})
+    fake = _fake_broker({})
     placed, _ = rebalance_ib.place_orders(
-        ib, [{"symbol": "XYZ", "action": "SELL", "qty": 10},
-             {"symbol": "AAPL", "action": "BUY", "qty": 1}], _ctx())
+        fake.connect(_ctx()), [{"symbol": "XYZ", "action": "SELL", "qty": 10},
+                               {"symbol": "AAPL", "action": "BUY", "qty": 1}], _ctx())
     assert [o["symbol"] for o in placed] == ["AAPL"]
-    assert ib.placed == [("AAPL", "BUY", 1)]
-
-
-def _sent(broker):
-    return [(p.symbol, p.action, p.qty) for p in broker.placed]
-
-
-def _fake_broker(positions):
-    """每條連線一個 in-memory Broker：手動單 7 與策略單 8 掛在 Gateway 上。"""
-    from tests.fake_broker import FakeBroker
-    fake = FakeBroker(managed=["U00000001"], positions=positions)
-    fake.open_orders = [MANUAL_OPEN, STRATEGY_OPEN]
-    return fake
+    assert _sent(fake) == [("AAPL", "BUY", 1)]
 
 
 @pytest.fixture
@@ -655,7 +611,7 @@ def dip_env(paths, fake_config, monkeypatch, tmp_path):
     import sp500_state
     from strategies.sp500_momentum import utils
 
-    env = NS(ib=None)
+    env = NS(broker=None)
     monkeypatch.setattr(sp500_state, "STATE_DIR", tmp_path)
     monkeypatch.setattr(sp500_daily_check, "date", _Tue0915)
     monkeypatch.setattr(utils, "load_benchmark", lambda path: pd.DataFrame(
@@ -664,14 +620,11 @@ def dip_env(paths, fake_config, monkeypatch, tmp_path):
         "SPY_Close": 500.0, "SPY_MA200": 600.0, "SPY_DD": -0.16})
     monkeypatch.setattr(signals, "get_sp500_universe", lambda historical=True: set(UNIVERSE))
 
-    def connect(ctx, *a, **k):
-        env.ib = FakeIB({"AAPL": 10.0}, [MANUAL_OPEN, STRATEGY_OPEN])
-        return env.ib
+    def connect(ctx, **_kw):
+        env.broker = _fake_broker({"AAPL": 10.0}, behavior="working")
+        return env.broker.connect(ctx)
 
     monkeypatch.setattr(ib_fetcher, "connect", connect)
-    monkeypatch.setattr(ib_fetcher, "get_prices",
-                        lambda ib, syms, ctx, **k: {s: 100.0 for s in syms})
-    monkeypatch.setattr(ib_fetcher, "get_positions_detail", lambda ib, ctx: [])
     env.state_file = tmp_path / "sp500_state_Taylor.json"
     return env
 
@@ -694,8 +647,8 @@ def dip_ctx(monkeypatch):
 def test_daily_check_dip_buy_keeps_manual_orders(dip_env, dip_ctx):
     from strategies.sp500_momentum import config as sp_cfg
     _daily()
-    assert dip_env.ib.cancelled == [8]                            # 手動單 7 沒被取消
-    assert [p[0] for p in dip_env.ib.placed] == [sp_cfg.DIP_BUY_TICKER]
+    assert _cancelled(dip_env.broker) == [8]                      # 手動單 7 沒被取消
+    assert [p[0] for p in _sent(dip_env.broker)] == [sp_cfg.DIP_BUY_TICKER]
     assert dip_env.state_file.exists()
 
 
@@ -704,5 +657,5 @@ def test_daily_check_unreadable_ledger_keeps_dip_trigger_for_tomorrow(
     paths.ledger.write_bytes(b"corrupt" * 100)
     with pytest.raises(ma.ManualAttributionError):
         _daily()
-    assert dip_env.ib.placed == [] and dip_env.ib.cancelled == []
+    assert _sent(dip_env.broker) == [] and _cancelled(dip_env.broker) == []
     assert not dip_env.state_file.exists()                        # dip 觸發沒被消耗

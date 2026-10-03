@@ -15,6 +15,7 @@ import threading
 import time
 
 from account_ctx import AccountCtx
+from broker import acceptance_check_client_id, price_feed_client_id
 from portfolio_queries import PortfolioQueries
 
 
@@ -26,7 +27,7 @@ def load_contexts(source_root):
         name=a["name"], account=a.get("account", base.get("account", "")),
         host=a.get("host", base.get("host", "127.0.0.1")),
         port=int(a.get("port", base.get("port", 4001))),
-        client_id=16025 + i * 10,
+        client_id=acceptance_check_client_id(i),
         dry_run=True, order_type="MOO", outside_rth=False, wait_fill_sec=0,
         alloc_sr=0, alloc_sp500=0, alloc_skewls=0,
         price_feed_port=int(base.get("price_feed_port", 4002)),
@@ -83,7 +84,8 @@ def main(argv=None):
             state = queries.snapshot(name)
             data = state.portfolio or {}
             report[name] = {
-                "client_id": ctx.client_id, "feed_client_id": 1000 + ctx.client_id,
+                "client_id": ctx.client_id,
+                "feed_client_id": price_feed_client_id(ctx.client_id, readonly=True),
                 "success": state.portfolio is not None and state.error is None,
                 "still_running": state.running,
                 "nav_present": bool(data.get("nav")),

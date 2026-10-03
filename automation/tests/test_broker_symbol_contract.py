@@ -122,8 +122,9 @@ def test_order_path_uses_broker_symbol_in_mock_ib():
         wait_fill_sec=0, alloc_sr=0.0, alloc_sp500=0.5, alloc_skewls=0.0,
         price_feed_port=None, tg_token="", tg_chat_id="",
     )
+    from broker import Connection
     placed, trades = rebalance_ib.place_orders(
-        FakeIB(), [{"symbol": "BRK.B", "action": "BUY", "qty": 2}], ctx,
+        Connection(FakeIB(), ctx), [{"symbol": "BRK.B", "action": "BUY", "qty": 2}], ctx,
     )
     assert trades == []
     assert [o["symbol"] for o in placed] == ["BRK.B"]

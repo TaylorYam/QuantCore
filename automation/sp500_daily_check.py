@@ -61,7 +61,7 @@ def run_daily_check(account_name: str, digest: Digest):
     Telegram 內容加進 digest，由 run_all() 三帳戶合併發送（#26）。
     """
     import rebalance_ib as reb     # 仍需要：place_orders, check_fills
-    import ib_fetcher               # S8：IB 連線/查詢 helpers
+    import ib_fetcher               # #185：經 Broker 開連線（讀數、送單在 Connection 上）
     import manual_attribution       # #106：手動持倉暫停閘門
     from strategy_owner import SECTOR_ETFS   # #187：類股 ETF 清單唯一來源
     from symbol_contract import canonical_symbol
@@ -143,7 +143,7 @@ def run_daily_check(account_name: str, digest: Digest):
 
     # ── 連線 IB ────────────────────────────────────────────────────
     try:
-        ib = ib_fetcher.connect(ctx)
+        conn = ib_fetcher.connect(ctx)
     except Exception as e:
         log.error(f"IB connect failed: {e}")
         digest.add(account_name, "❌ IB 連線失敗", [html.escape(str(e)[:300])],
@@ -152,7 +152,7 @@ def run_daily_check(account_name: str, digest: Digest):
 
     try:
         # 取得當前持倉
-        current_pos = ib_fetcher.get_positions(ib, ctx)
+        current_pos = conn.positions()
         log.info(f"  Current positions: {current_pos or '(none)'}")
 
         if not current_pos:
@@ -169,10 +169,10 @@ def run_daily_check(account_name: str, digest: Digest):
 
         # 取得報價（包括持倉 + 潛在 dip-buy 標的）
         quote_syms = list(set(sp500_holdings + [sp_cfg.DIP_BUY_TICKER]))
-        prices = ib_fetcher.get_prices(ib, quote_syms, ctx) if quote_syms else {}
+        prices = conn.prices(quote_syms) if quote_syms else {}
 
         # 取得持倉成本
-        pos_detail = ib_fetcher.get_positions_detail(ib, ctx)
+        pos_detail = conn.positions_detail()
         avg_costs = {canonical_symbol(p.contract.symbol): float(p.avgCost)
                      for p in pos_detail}
 
@@ -195,7 +195,7 @@ def run_daily_check(account_name: str, digest: Digest):
 
             if newly_triggered:
                 # 計算 dip-buy 股數：alloc × NAV × alloc_sp500 / price
-                nav = ib_fetcher.get_nav(ib, ctx)
+                nav = conn.nav()
                 dip_ticker = sp_cfg.DIP_BUY_TICKER
                 dip_price = prices.get(dip_ticker, 0)
                 if dip_price > 0:
@@ -235,30 +235,23 @@ def run_daily_check(account_name: str, digest: Digest):
         orders = dedup_orders
 
         # 取消該帳戶既有的掛單（避免新單與舊單衝突；Panel 手動單除外，#106）
-        open_trades = manual_attribution.strategy_open_trades(ib.openTrades())
+        open_trades = manual_attribution.strategy_open_trades(conn.open_orders())
         if open_trades:
             log.info(f"  Cancelling {len(open_trades)} existing open orders...")
             for t in open_trades:
-                ib.cancelOrder(t.order)
-            ib.sleep(2)
+                conn.cancel(t.order)
+            conn.wait(2)
 
         log.info(f"  Placing {len(orders)} LMT orders...")
 
         # 取得即時報價以計算 LMT 價格
-        from symbol_contract import ib_stock
-        import numpy as np
-        from price_utils import robust_get_prices
         order_syms = list({o['symbol'] for o in orders})
 
-        # 先抓本連線的 bid/ask（用於 LMT 精準 buffer）
-        contracts = [ib_stock(s) for s in order_syms]
-        ib.qualifyContracts(*contracts)
-        tickers = ib.reqTickers(*contracts)
+        # 先抓本連線的 bid/ask（用於 LMT 精準 buffer）。錯亂／價差過大的判斷與
+        # 限價規則第三階段（#185）併進 Broker 的送單報價與統一限價。
         quotes = {}
-        for t in tickers:
-            sym = canonical_symbol(t.contract.symbol)
-            bid = t.bid if (t.bid and t.bid > 0 and np.isfinite(t.bid)) else None
-            ask = t.ask if (t.ask and t.ask > 0 and np.isfinite(t.ask)) else None
+        for sym, q in conn.quotes(order_syms).items():
+            bid, ask = q['bid'], q['ask']
             if bid and ask:
                 if bid > ask:
                     log.warning(f"  {sym}: crossed quote bid={bid} > ask={ask}")
@@ -267,16 +260,11 @@ def run_daily_check(account_name: str, digest: Digest):
                     log.warning(f"  {sym}: wide spread bid={bid} ask={ask}")
             quotes[sym] = {'bid': bid, 'ask': ask}
 
-        # 對於缺 bid/ask 的 symbol，用 robust_get_prices fallback 到 feed/CSV
+        # 對於缺 bid/ask 的 symbol，用參考價（feed／延遲報價／CSV 後備）
         missing = [s for s in order_syms
                    if not (quotes[s].get('bid') and quotes[s].get('ask'))]
         if missing:
-            fallback = robust_get_prices(
-                ib, missing,
-                host=ctx.host,
-                price_feed_port=ctx.price_feed_port,
-                verbose_log=lambda m: log.info(m),
-            )
+            fallback = conn.prices(missing)
             for sym in missing:
                 p = fallback.get(sym, 0)
                 if p > 0 and not quotes[sym].get('bid'):
@@ -308,7 +296,7 @@ def run_daily_check(account_name: str, digest: Digest):
             log.info(f"    LMT {o['action']} {o['qty']}sh {sym} @ ${lmt:.2f}  ({o['reason']})")
 
         if ib_orders and not ctx.dry_run:
-            placed, trades = reb.place_orders(ib, ib_orders, ctx=place_ctx)
+            placed, trades = reb.place_orders(conn, ib_orders, ctx=place_ctx)
             fill_results = reb.check_fills(trades) if trades else []
 
             # Telegram 通知（main() 合併發送）
@@ -320,7 +308,7 @@ def run_daily_check(account_name: str, digest: Digest):
             log.info("  [DRY RUN] orders not sent")
 
     finally:
-        ib.disconnect()
+        conn.close()
         log.info("Disconnected")
 
 

@@ -1,7 +1,7 @@
 """
 每日報告保證金警示（#26：daily_report 不再推播持倉報告，只在 cushion 過低時警示）.
 
-No IB, no network.
+No IB, no network: IB 這一側是 tests/fake_broker.py 的 in-memory Broker。
 """
 
 from __future__ import annotations
@@ -11,6 +11,8 @@ from types import SimpleNamespace as NS
 import pytest
 
 pytest.importorskip("ib_insync")
+
+from tests.fake_broker import FakeBroker, install
 
 
 def test_healthy_cushion_is_silent():
@@ -33,26 +35,22 @@ def test_missing_account_data_is_not_a_zero_cushion_alarm():
     assert cushion_alert(nav=0.0, cushion_pct=0.0, excess_liq=0.0) is None
 
 
-class FakeIB:
-    def connect(self, *a, **k):
-        pass
-
-    def disconnect(self):
-        self.disconnected = True
+def _broker(monkeypatch, cushion=60.0):
+    fake = install(monkeypatch, FakeBroker(managed=["U1"], nav=15_000.0))
+    fake.cushion_pct, fake.excess_liq = cushion, 3_000.0
+    return fake
 
 
 def _run(monkeypatch, cushion, snapshot=lambda *a, **k: None):
     import daily_report
     from notify import Digest
-    monkeypatch.setattr(daily_report, "IB", FakeIB)
-    monkeypatch.setattr(daily_report, "get_account_info", lambda ib, ctx: {
-        "nav": 15_000.0, "cushion_pct": cushion, "excess_liq": 3_000.0, "maint_margin": 0.0})
-    monkeypatch.setattr(daily_report, "get_positions_detail", lambda ib, ctx: [])
+    fake = _broker(monkeypatch, cushion)
     monkeypatch.setattr(daily_report, "append_daily_snapshot", snapshot)
     ctx = NS(name="Taylor", account="U1", host="127.0.0.1", port=4001, client_id=1,
              tg_token="T", tg_chat_id="C", alloc_sr=0.0, alloc_skewls=1.0)
     d = Digest("每日報告 2026-09-15", icon="📊")
     daily_report.main(ctx, digest=d)
+    assert fake.connects == [("127.0.0.1", 4001, 1)] and fake.closed == 1
     return d
 
 
@@ -83,12 +81,7 @@ def test_main_failure_section_content(monkeypatch):
     import daily_report
     from notify import Digest
 
-    monkeypatch.setattr(daily_report, "IB", FakeIB)
-
-    def boom(ib, ctx):
-        raise RuntimeError("no <account> data")
-
-    monkeypatch.setattr(daily_report, "get_account_info", boom)
+    _broker(monkeypatch).fail["account_info"] = RuntimeError("no <account> data")
     ctx = NS(name="Rosa", account="U2", host="127.0.0.1", port=4002, client_id=1,
              tg_token="T", tg_chat_id="C")
     d = Digest("每日報告", icon="📊")
@@ -100,14 +93,6 @@ def test_main_failure_section_content(monkeypatch):
 
 
 # ── run_all()：連不上 IB 以前只寫 log（#38）────────────────────────────
-
-class RefusedIB:
-    def connect(self, *a, **k):
-        raise ConnectionRefusedError("[WinError 1225] refused")
-
-    def disconnect(self):
-        pass
-
 
 def _capture(monkeypatch):
     import notify
@@ -122,7 +107,7 @@ def test_run_all_gateway_down_is_reported(fake_config, monkeypatch):
     import daily_report
     from notify import Digest
     sent = _capture(monkeypatch)
-    monkeypatch.setattr(daily_report, "IB", RefusedIB)
+    _broker(monkeypatch).connect_error = ConnectionRefusedError("[WinError 1225] refused")
     d = Digest("每日報告 2026-08-10", icon="📊")
     failures = daily_report.run_all(["Taylor", "Rosa", "Yvonne"], d)
     assert [n for n, _ in failures] == ["Taylor", "Rosa", "Yvonne"]
@@ -139,12 +124,7 @@ def test_run_all_does_not_duplicate_main_failure_section(fake_config, monkeypatc
     import daily_report
     from notify import Digest
     sent = _capture(monkeypatch)
-    monkeypatch.setattr(daily_report, "IB", FakeIB)
-
-    def boom(ib, ctx):
-        raise RuntimeError("no <account> data")
-
-    monkeypatch.setattr(daily_report, "get_account_info", boom)
+    _broker(monkeypatch).fail["account_info"] = RuntimeError("no <account> data")
     daily_report.run_all(["Taylor"], Digest("每日報告", icon="📊"))
     assert sent[0][0].count("❌ 每日報告失敗") == 1
 
@@ -153,10 +133,7 @@ def test_run_all_healthy_accounts_stay_silent(fake_config, monkeypatch):
     import daily_report
     from notify import Digest
     sent = _capture(monkeypatch)
-    monkeypatch.setattr(daily_report, "IB", FakeIB)
-    monkeypatch.setattr(daily_report, "get_account_info", lambda ib, ctx: {
-        "nav": 15_000.0, "cushion_pct": 60.0, "excess_liq": 9_000.0, "maint_margin": 0.0})
-    monkeypatch.setattr(daily_report, "get_positions_detail", lambda ib, ctx: [])
+    _broker(monkeypatch, 60.0)
     monkeypatch.setattr(daily_report, "append_daily_snapshot", lambda *a, **k: None)
     assert daily_report.run_all(["Taylor", "Rosa"], Digest("每日報告", icon="📊")) == []
     assert sent == []

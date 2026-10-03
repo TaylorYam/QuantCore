@@ -6,8 +6,11 @@ QuantCore — IB Gateway data-fetching helpers（S8 統一入口）
 
 核心函式
 ────────
-低階 helper（需要外部提供 IB 連線）：
-  connect(ctx)                     → 建立並回傳 IB 連線
+連線：
+  connect(ctx)                     → 經 Broker 開連線並記一行 log，回傳 broker.Connection
+                                     （排程入口用；讀數與送單都在 Connection 上）
+
+低階 helper（Connection 的讀數實作，需要 ib_insync 本體）：
   get_nav(ib, ctx)                 → 取得 NAV（USD）
   get_account_info(ib, ctx)        → 取得 NAV + cushion + excess_liq + maint_margin
   get_positions(ib, ctx)           → {symbol: qty} dict
@@ -44,22 +47,13 @@ from strategy_owner import STRATEGY_ETFS as ETF_TICKERS  # noqa: E402
 
 # ── 低階：IB 連線 + 單項查詢 ────────────────────────────────────────────
 
-def connect(ctx: AccountCtx, timeout: float = 20.0, *, readonly: bool = False) -> IB:
-    """連線指定帳戶的 IB Gateway。"""
-    ib = IB()
-    try:
-        if readonly:
-            ib.RequestTimeout = 20
-            ib.connect(ctx.host, ctx.port, clientId=ctx.client_id, timeout=timeout,
-                       readonly=True, account=ctx.account)
-        else:
-            ib.connect(ctx.host, ctx.port, clientId=ctx.client_id, timeout=timeout)
-    except BaseException:
-        ib.disconnect()
-        raise
+def connect(ctx: AccountCtx, timeout: float = 20.0, *, readonly: bool = False):
+    """經 Broker 連線指定帳戶的 IB Gateway，回傳 broker.Connection。"""
+    from broker import Broker
+    conn = Broker().connect(ctx, timeout=timeout, readonly=readonly)
     log.info(f"Connected  host={ctx.host} port={ctx.port} "
              f"clientId={ctx.client_id} account={ctx.account}")
-    return ib
+    return conn
 
 
 def get_nav(ib: IB, ctx: AccountCtx) -> float:
@@ -162,10 +156,7 @@ def fetch_portfolio(ctx: AccountCtx, *, readonly: bool = False) -> dict:
     conn = None
     readings: dict = {}
     try:
-        from broker import Broker
-        conn = Broker().connect(ctx, timeout=15, readonly=readonly)
-        log.info(f"Connected  host={ctx.host} port={ctx.port} "
-                 f"clientId={ctx.client_id} account={ctx.account}")
+        conn = connect(ctx, timeout=15, readonly=readonly)
         conn.portfolio_readings(readings)
         positions = readings["positions"]
 

@@ -12,13 +12,17 @@
 seam 兩側各一個 adapter：本模組（ib_insync，實盤與 paper）與
 `tests/fake_broker.py`（in-memory fake，測試用）。
 
-第一階段（#185）只有新 Panel 的送單路徑與 Portfolio 讀數改走 Broker；讀數照搬
-`ib_fetcher`，數字不變。21:00／16:00／04:40／21:31 排程第二階段才改走 Broker，
-權益、送單報價、限價統一在第三階段。
+新 Panel（手動單、Sync Pos、接管、Portfolio）與 21:00 調倉、16:00 日度風控、
+04:40 每日報告、21:31 成交回報都向 Broker 要連線（#185 第一、二階段）。讀數照搬
+`ib_fetcher`，數字不變；權益、送單報價、限價統一在第三階段。
+Gateway 心跳（`gateway_monitor`）是長駐連線、不讀數不送單，仍自己建 ib_insync 連線。
 
-ManualOrderService 的業務規則（盤後路由、成交對帳等）用到很多 IB 細節，#185 決定
-只換它底下的連線：它向 Broker 要連線，再從 `Connection.ib` 用 ib_insync 本體。
-`Connection.ib` 只給它用。
+`Connection.ib`（ib_insync 本體）只給三個地方用：
+- ManualOrderService：業務規則（盤後路由、成交對帳等）用到很多 IB 細節，#185 決定
+  只換它底下的連線。
+- `price_utils.robust_get_prices` 向報價 feed port 借價的那條連線：參考價的多層
+  fallback 第三階段才搬進 Broker。
+- `paper_verify_manual_orders`：paper 驗證要直接核對 IB 自己的委託紀錄。
 
 不 import ib_insync（用到時才載入）：純 clientId 規則在離線工具與測試也能用。
 """
@@ -63,6 +67,8 @@ _PRICE_FEED_CLIENT_ID = 99
 # clientId 撤自己的單，所以手動單固定用基準號。paper 驗證腳本預設 91，錯開才能同時開。
 PAPER_CLIENT_ID = 92
 PAPER_VERIFY_CLIENT_ID = 91
+# 多帳戶唯讀驗收工具（check_portfolio_queries）：16025／16035／16045，遠離所有用途
+_ACCEPTANCE_CHECK_CLIENT_ID_BASE = 16025
 _PAPER_OFFSETS = {ROLE_MANUAL_ORDER: 0, ROLE_REBALANCE: 1, ROLE_TAKEOVER: 2}
 
 
@@ -108,6 +114,11 @@ def price_feed_client_id(connection_client_id: int, *, readonly: bool) -> int:
     if readonly:
         return _PRICE_FEED_OFFSET + int(connection_client_id)
     return _PRICE_FEED_CLIENT_ID
+
+
+def acceptance_check_client_id(account_index: int) -> int:
+    """唯讀驗收工具（check_portfolio_queries）第 account_index 個帳戶的 clientId。"""
+    return _ACCEPTANCE_CHECK_CLIENT_ID_BASE + int(account_index) * _CLIENT_ID_STEP
 
 
 def paper_client_id(base: int, role: int) -> int:
@@ -182,7 +193,7 @@ class Connection:
 
     @property
     def ib(self):
-        """ib_insync 本體 — 只給 ManualOrderService 用（見模組說明）。"""
+        """ib_insync 本體 — 只給模組說明列的三個地方用。"""
         return self._ib
 
     def managed_accounts(self) -> list[str]:
@@ -199,6 +210,16 @@ class Connection:
         """{標的: 股數}，只算股票。"""
         import ib_fetcher
         return ib_fetcher.get_positions(self._ib, self.ctx)
+
+    def positions_detail(self) -> list:
+        """非零股票持倉的 Position（含成本），標的是 constituents 寫法。"""
+        import ib_fetcher
+        return ib_fetcher.get_positions_detail(self._ib, self.ctx)
+
+    def account_info(self) -> dict:
+        """nav／cushion_pct／excess_liq／maint_margin；權益讀不到拋 RuntimeError。"""
+        import ib_fetcher
+        return ib_fetcher.get_account_info(self._ib, self.ctx)
 
     def prices(self, symbols: list[str]) -> dict[str, float]:
         """參考價（多層 fallback：本連線即時 → 報價 feed port → 延遲報價 → 本地 CSV）。"""
@@ -339,6 +360,14 @@ class Connection:
             return list(self._ib.reqAllOpenOrders() or [])
         return list(self._ib.openTrades() or [])
 
+    def trades(self) -> list:
+        """這條連線這次看到的委託（ib_insync Trade，含今天已結束的）。"""
+        return list(self._ib.trades())
+
+    def fills(self) -> list:
+        """這條連線這次看到的成交（ib_insync Fill）。"""
+        return list(self._ib.fills())
+
     def cancel(self, order) -> None:
         """撤單；IB 只允許撤這個 clientId 自己的單。"""
         self._ib.cancelOrder(order)
@@ -366,14 +395,3 @@ class Connection:
                 self._ib.disconnect()
         except Exception:
             pass
-
-
-def as_connection(ib_or_connection, ctx):
-    """排程入口（21:00 調倉、16:00 日度風控）還拿著 ib_insync 本體呼叫共用的送單函式；
-    第二階段排程改走 Broker 後刪除。
-
-    已經是 Broker 的連線（Connection 或測試的 FakeConnection，都有 place）就原樣交回；
-    ib_insync 本體只有 placeOrder，包成 Connection。"""
-    if hasattr(ib_or_connection, "place"):
-        return ib_or_connection
-    return Connection(ib_or_connection, ctx)

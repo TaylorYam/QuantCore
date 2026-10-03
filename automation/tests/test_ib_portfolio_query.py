@@ -114,7 +114,8 @@ def test_readonly_connect_is_bounded_and_cleanup_on_failure(fake_config, monkeyp
         def disconnect(self):
             calls.append("disconnect")
 
-    monkeypatch.setattr(ib_fetcher, "IB", FakeIB)
+    import broker
+    monkeypatch.setattr(broker, "_default_ib", FakeIB)
     with pytest.raises(TimeoutError):
         ib_fetcher.connect(ctx, readonly=True)
     assert calls[0]["readonly"] is True and calls[0]["account"] == ctx.account

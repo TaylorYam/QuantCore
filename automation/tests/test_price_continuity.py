@@ -482,6 +482,34 @@ def test_vix_full_refresh_uses_close_when_provider_omits_adjusted_close(updater,
     assert np.allclose(stored["Adj Close"], stored["Close"], atol=1e-6)
 
 
+def test_vix_full_history_check_asks_the_provider_for_the_index_symbol(updater, monkeypatch):
+    # #194: the full-history check used the file name; "VIX" is not the CBOE index
+    value = walk(start=17.0)
+    path = updater.ETF_DIR / "VIX.csv"
+    write(path, bars(value[:110], volume=0))
+    write(updater.ETF_DIR / "REW.csv", bars(walk()))                     # ETFs already current
+    window = bars(value, adj=value * 1.002, volume=0)                   # re-based Adj Close → full check
+    full = bars(value, volume=0).drop(columns=["Adj Close"])
+    requested = []
+
+    def download(symbol, start, end, **kwargs):
+        requested.append(symbol)
+        if symbol != "^VIX":
+            return None
+        frame = full if start == str(DAYS[0].date()) else window
+        return frame[frame.index >= pd.Timestamp(start)].copy()
+    monkeypatch.setattr(updater, "_download_ohlcv", download)
+
+    results = {result["ticker"]: result for result in updater.update_etfs(today=UPDATE_DAY)}
+
+    assert requested == ["^VIX", "^VIX"]
+    assert results["VIX"]["status"] == "updated"
+    stored = pc.read_csv(path)
+    assert len(stored) == len(value)
+    assert np.allclose(stored["Close"], value, atol=1e-6)
+    assert np.allclose(stored["Adj Close"], stored["Close"], atol=1e-6)
+
+
 # ── scan → classify → stage → apply (one-time repair) ────────────────────────
 
 def test_scan_stage_apply_round_trip(tmp_path, monkeypatch):

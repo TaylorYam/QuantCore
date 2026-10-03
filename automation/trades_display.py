@@ -1,7 +1,8 @@
 """Recent Trades shared by the Tk and Qt Panels (#150).
 
-`read_latest_trades` reads the last 7 days of trade_log.xlsx (moved unchanged
-from control_panel so the new Panel can use it without importing the Tk Panel).
+`read_latest_trades` reads the last 7 days of trade_log.xlsx (moved from
+control_panel so the new Panel can use it without importing the Tk Panel);
+`read_account_trades` is what both Panels call, with the account's Allocation.
 `trade_row` formats one trade the way the Tk TradesView shows it. Sector and
 inverse ETF trades are labelled with the same rule as the Portfolio
 (`strategy_owner`, #187). No GUI imports;

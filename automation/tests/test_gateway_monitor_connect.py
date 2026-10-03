@@ -38,7 +38,7 @@ def _run_once(mon, name):
 
 
 def test_default_monitor_keeps_the_watch_identity(fake_ib):
-    from account_utils import ROLE_MONITOR, get_client_id
+    from broker import ROLE_MONITOR, client_id as get_client_id
     from gateway_monitor import GatewayMonitor
 
     call = _run_once(GatewayMonitor(["Taylor"]), "Taylor")
@@ -48,7 +48,7 @@ def test_default_monitor_keeps_the_watch_identity(fake_ib):
 
 
 def test_monitor_can_connect_with_a_readonly_identity(fake_ib):
-    from account_utils import ROLE_PANEL_READONLY, get_client_id
+    from broker import ROLE_PANEL_READONLY, client_id as get_client_id
     from gateway_monitor import GatewayMonitor
 
     mon = GatewayMonitor(["Rosa"], role=ROLE_PANEL_READONLY, readonly=True)

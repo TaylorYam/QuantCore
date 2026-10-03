@@ -31,11 +31,9 @@ from typing import Callable
 
 import manual_attribution
 import manual_orders
-from account_utils import ROLE_REBALANCE, ROLE_TAKEOVER
+from broker import ROLE_REBALANCE, ROLE_TAKEOVER, paper_client_id
 
-from qt_panel.broker_gate import (
-    SYNC_CLIENT_OFFSET, TAKEOVER_CLIENT_OFFSET, PaperTarget, SendGate, gated_connect,
-)
+from qt_panel.broker_gate import PaperTarget, SendGate
 from qt_panel.mode import PanelMode
 
 AUTOMATION_DIR = Path(__file__).resolve().parent.parent
@@ -104,7 +102,7 @@ class OrderTarget:
         """Sync Pos 與接管的 IB 連線與本機紀錄（SyncRecords）：連線一律經過送單閘門。"""
         from sync_position import SyncRecords
 
-        return SyncRecords(connect=gated_connect(self._gate),
+        return SyncRecords(connect=self._gate.connect,
                            attribution_ledger=self.files.attribution,
                            manual_orders_store=self.files.orders,
                            persist_strategy_state=self.persist_strategy_state)
@@ -129,13 +127,14 @@ class OrderTarget:
 
     def manual_order_service(self, account_names: list[str],
                              factory: Callable[..., object] | None = None):
-        """手動單 service：連線向送單閘門要，帳戶身分、紀錄檔、結案通知由送單目標給。
-        factory 只給測試換掉 ManualOrderService 用。"""
+        """手動單 service：連線向送單閘門要（timeout 10 秒，同 #185 之前），帳戶身分、
+        紀錄檔、結案通知由送單目標給。factory 只給測試換掉 ManualOrderService 用。"""
         if factory is None:
             def factory(**kwargs):
                 return manual_orders.ManualOrderService(account_names=account_names,
                                                         **kwargs)
-        return factory(ib_factory=self._gate.broker, account_ctx_factory=self.manual_ctx,
+        return factory(connect=lambda ctx: self._gate.connect(ctx, timeout=10),
+                       account_ctx_factory=self.manual_ctx,
                        notifier=self.manual_order_notice,
                        store=manual_orders.ManualOrderStore(self.files.orders))
 
@@ -187,8 +186,6 @@ class PaperOrderTarget(OrderTarget):
                         "確認後以 LMT（ask×1.003／bid×0.997、outside RTH）送出。"
                         "手動持倉暫停中的標的不送。")
 
-    _CLIENT_OFFSETS = {ROLE_REBALANCE: SYNC_CLIENT_OFFSET, ROLE_TAKEOVER: TAKEOVER_CLIENT_OFFSET}
-
     def __init__(self, paper: PaperTarget, **kwargs):
         super().__init__(**kwargs)
         self._paper = paper
@@ -199,14 +196,14 @@ class PaperOrderTarget(OrderTarget):
         不帶 Telegram 設定、一定真的送（paper）。"""
         p = self._paper
         return replace(self._load_ctx(account, role), host=p.host, port=p.port,
-                       account=p.account, client_id=p.client_id + self._CLIENT_OFFSETS[role],
+                       account=p.account, client_id=paper_client_id(p.client_id, role),
                        price_feed_port=None, dry_run=False, tg_token="", tg_chat_id="")
 
-    def manual_ctx(self, account: str, _role: int):
+    def manual_ctx(self, account: str, role: int):
         # IB 只允許同一個 clientId 撤自己的單，所以手動單固定用 paper 基準號
         p = self._paper
         return SimpleNamespace(name=account, account=p.account, host=p.host, port=p.port,
-                               client_id=p.client_id)
+                               client_id=paper_client_id(p.client_id, role))
 
     def notice_sender(self):
         # 通知行由呼叫端寫進 Output Log；這裡只在 paper 歸屬紀錄記已通知

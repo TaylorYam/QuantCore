@@ -2,8 +2,9 @@
 
 只從送單目標的 interface 操作（手動單 service、Sync Pos 的計算／通知／送出、接管的
 暫停／預覽／送出／通知），經過真的送單閘門，跑真的 manual_orders、sync_position、
-strategy_takeover、manual_attribution；IB 換成假的 broker、訊號換成固定值、紀錄檔
-放 tmp_path、Telegram 用假的。不需要 QApplication。
+strategy_takeover、manual_attribution；IB 換成 tests/fake_broker.py 的 in-memory
+Broker（手動單用 ib_insync 本體，改接真的 broker.Broker＋test_manual_orders 的假 IB）、
+訊號換成固定值、紀錄檔放 tmp_path、Telegram 用假的。不需要 QApplication。
 
 斷言看得到的結果：連到哪個 host／port／clientId、閘門有沒有拒絕、哪份紀錄檔多了
 資料或根本沒被建立、state 有沒有寫、假 Telegram 收到什麼、Output Log 回傳哪些行、
@@ -18,9 +19,11 @@ from types import SimpleNamespace as NS
 import pandas as pd
 import pytest
 
-from tests.test_manual_orders import FakeIB, FakeIBState
+from tests.fake_broker import FakeBroker
+from tests.test_manual_orders import FakeIB, FakeIBState, fake_ib_connect
 
 from account_utils import ROLE_MANUAL_ORDER, ROLE_REBALANCE, ROLE_TAKEOVER
+from broker import Broker
 from manual_orders import ManualOrderService, ManualOrderStore
 from qt_panel.broker_gate import PaperTarget, SendGate, SendRefused
 from qt_panel.mode import PanelMode
@@ -58,75 +61,17 @@ def live_ctx(name, role):
     return replace(base_ctx(name, role), dry_run=False)
 
 
-class SyncBroker:
-    """假的 IB：記下連線與送單；帳號、持倉、報價由 state 決定。"""
-
-    def __init__(self, state):
-        self.state = state
-        self.connected = False
-        self.client = NS(port=4013)
-        state.instances.append(self)
-
-    def connect(self, host, port, *, clientId, timeout):
-        self.connected = True
-        self.state.connects.append((host, port, clientId))
-
-    def managedAccounts(self):
-        return list(self.state.managed)
-
-    def disconnect(self):
-        self.connected = False
-
-    def isConnected(self):
-        return self.connected
-
-    def openTrades(self):
-        return []
-
-    def qualifyContracts(self, *contracts):
-        return list(contracts)
-
-    def reqTickers(self, *contracts):
-        return [NS(contract=c, bid=99.9, ask=100.1, last=100.0, close=100.0,
-                   midpoint=lambda: 100.0) for c in contracts]
-
-    def placeOrder(self, contract, order):
-        order.orderId = 500 + len(self.state.placed)
-        self.state.placed.append((contract.symbol, order.action, int(order.totalQuantity),
-                                  order.orderType, order.account))
-        return NS(order=order, contract=contract, fills=[], orderStatus=NS(status="Submitted"))
-
-    def sleep(self, *_):
-        pass
-
-
-class TakeoverBroker(SyncBroker):
-    """SyncBroker 加上掛單清單與成交行為（fill／reject／working）。"""
-
-    def reqAllOpenOrders(self):
-        return list(self.state.open_orders)
-
-    def placeOrder(self, contract, order):
-        trade = super().placeOrder(contract, order)
-        trade.log = []
-        trade.orderStatus = NS(status="Submitted", filled=0)
-        sign = 1 if order.action == "BUY" else -1
-        qty = int(order.totalQuantity)
-        if self.state.behavior == "fill":
-            trade.orderStatus = NS(status="Filled", filled=qty)
-            self.state.positions[contract.symbol] = (
-                self.state.positions.get(contract.symbol, 0.0) + sign * qty)
-        elif self.state.behavior == "reject":
-            trade.orderStatus = NS(status="Inactive", filled=0)
-            trade.log.append(NS(message="Order rejected - reason: margin"))
-        return trade
+def sent(broker):
+    """送出的單：(標的, 方向, 股數, 單別, 帳號)。"""
+    return [(p.symbol, p.action, p.qty, p.order_type, p.account) for p in broker.placed]
 
 
 @pytest.fixture
 def broker():
-    return NS(managed=["DU001"], positions={"AAPL": 100.0, "XYZ": 10.0}, instances=[],
-              connects=[], placed=[], ctxs=[], persist=[], gate=None, open_orders=[],
-              behavior="fill", sp500_states=[])
+    """in-memory Broker；persist／gate／sp500_states 是這裡的訊號替身記錄用的。"""
+    fake = FakeBroker(managed=["DU001"], positions={"AAPL": 100.0, "XYZ": 10.0})
+    fake.persist, fake.gate, fake.sp500_states = [], None, []
+    return fake
 
 
 @pytest.fixture
@@ -143,12 +88,11 @@ def live_files(tmp_path):
 
 @pytest.fixture
 def sync_env(broker, live_files, monkeypatch):
-    """固定訊號與 IB 讀數；sync_position、rebalance_plan、manual_attribution 用真的。
+    """固定訊號；IB 讀數來自 in-memory Broker；sync_position、rebalance_plan、
+    manual_attribution 用真的。
     manual_attribution 的預設檔也指到 tmp 的實盤檔：萬一有路徑沒指定，寫進去的資料
     會被下面「實盤紀錄沒被建立」的斷言抓到，而且碰不到真的檔案。"""
-    import ib_fetcher
     import manual_attribution as ma
-    import rebalance_ib
     import signals
 
     monkeypatch.setattr(ma, "DEFAULT_LEDGER_PATH", live_files.attribution)
@@ -163,18 +107,9 @@ def sync_env(broker, live_files, monkeypatch):
         broker.persist.append(persist)
         return {"AAPL": 0.5, "XYZ": 0.5}, "2026-09-29"
 
-    def nav(ib, ctx):
-        broker.ctxs.append(ctx)
-        return 100_000.0
-
     monkeypatch.setattr(signals, "get_sr_weights", sr_weights)
     monkeypatch.setattr(signals, "get_sp500_weights", sp500_weights)
     monkeypatch.setattr(signals, "get_sp500_universe", lambda historical=False: set(JOINED))
-    monkeypatch.setattr(ib_fetcher, "get_nav", nav)
-    monkeypatch.setattr(ib_fetcher, "get_positions", lambda ib, ctx: dict(broker.positions))
-    monkeypatch.setattr(ib_fetcher, "get_prices",
-                        lambda ib, syms, ctx, **k: {s: 100.0 for s in syms})
-    monkeypatch.setattr(rebalance_ib, "check_fills", lambda trades: [])
     return live_files
 
 
@@ -229,10 +164,10 @@ def trade_log(monkeypatch):
     return rows
 
 
-def make_target(mode, broker_factory, *, paper_files, live_files, logs, loader=None,
+def make_target(mode, broker, *, paper_files, live_files, logs, loader=None,
                 paper_target=PAPER):
     target, problem = order_target_for(
-        mode, send_gate=SendGate(mode, broker_factory), paper_target=paper_target,
+        mode, send_gate=SendGate(mode, broker), paper_target=paper_target,
         paper_problem="尚未設定 paper 連線",
         account_ctx_loader=loader or (live_ctx if mode is PanelMode.PRODUCTION else base_ctx),
         log=logs.append, paper_files=paper_files, live_files=live_files)
@@ -247,21 +182,21 @@ def logs():
 
 @pytest.fixture
 def paper(broker, paper_files, live_files, logs):
-    return make_target(PanelMode.PARALLEL, lambda: TakeoverBroker(broker),
+    return make_target(PanelMode.PARALLEL, broker,
                        paper_files=paper_files, live_files=live_files, logs=logs)
 
 
 @pytest.fixture
 def live(broker, paper_files, live_files, logs):
     broker.managed = ["U001"]
-    return make_target(PanelMode.PRODUCTION, lambda: TakeoverBroker(broker),
+    return make_target(PanelMode.PRODUCTION, broker,
                        paper_files=paper_files, live_files=live_files, logs=logs)
 
 
 # ── 哪個模式拿到哪個送單目標 ─────────────────────────────────────────
 
 def test_mode_decides_the_order_target(paper_files, live_files):
-    common = dict(send_gate=SendGate(PanelMode.PARALLEL, object), paper_problem="缺 paper",
+    common = dict(send_gate=SendGate(PanelMode.PARALLEL, FakeBroker()), paper_problem="缺 paper",
                   account_ctx_loader=base_ctx, log=print, paper_files=paper_files,
                   live_files=live_files)
     live_target, _ = order_target_for(PanelMode.PRODUCTION, paper_target=PAPER, **common)
@@ -278,7 +213,7 @@ def test_live_files_default_to_the_attribution_defaults_at_build_time():
     import manual_attribution as ma
 
     target, _ = order_target_for(
-        PanelMode.PRODUCTION, send_gate=SendGate(PanelMode.PRODUCTION, object),
+        PanelMode.PRODUCTION, send_gate=SendGate(PanelMode.PRODUCTION, FakeBroker()),
         paper_target=None, paper_problem="", account_ctx_loader=live_ctx, log=print)
     assert target.files == OrderFiles(orders=ma.DEFAULT_MANUAL_ORDERS_PATH,
                                       attribution=ma.DEFAULT_LEDGER_PATH)
@@ -297,14 +232,14 @@ def test_paper_target_refuses_a_live_gateway_before_anything_is_read(
         else:
             paper.takeover().preview("Taylor", "XYZ", lambda m: None)
     assert broker.ctxs == [] and broker.placed == []
-    assert all(not ib.connected for ib in broker.instances)
+    assert broker.refused == 1 and broker.closed == len(broker.connects) == 1
 
 
 def test_paper_manual_orders_are_refused_on_a_live_gateway(
         broker, paper_files, live_files, logs):
     ib = FakeIBState()
     ib.managed = ["U001"]
-    target = make_target(PanelMode.PARALLEL, lambda: FakeIB(ib), paper_files=paper_files,
+    target = make_target(PanelMode.PARALLEL, Broker(lambda: FakeIB(ib)), paper_files=paper_files,
                          live_files=live_files, logs=logs)
     service = target.manual_order_service(NAMES, _service_factory)
     with pytest.raises(SendRefused, match="U001"):
@@ -343,7 +278,7 @@ def _cancel_and_close(service, state):
 def test_paper_manual_orders_use_the_paper_account_store_and_output_log(
         paper_files, live_files, logs, telegram):
     ib = _ib("DU001")
-    target = make_target(PanelMode.PARALLEL, lambda: FakeIB(ib), paper_files=paper_files,
+    target = make_target(PanelMode.PARALLEL, Broker(lambda: FakeIB(ib)), paper_files=paper_files,
                          live_files=live_files, logs=logs)
     service = target.manual_order_service(NAMES, _service_factory)
     trade = _cancel_and_close(service, ib)
@@ -363,12 +298,12 @@ def test_live_manual_orders_keep_the_tk_identity_store_and_telegram(
     ib = _ib("U001")
     # 切換前 Tk Panel 送出的單：同一個實盤紀錄檔、同一個 clientId role
     tk = _service_factory(store=ManualOrderStore(live_files.orders),
-                          ib_factory=lambda: FakeIB(ib), account_ctx_factory=live_ctx,
+                          connect=fake_ib_connect(ib), account_ctx_factory=live_ctx,
                           notifier=lambda *a: True)
     tk_order = tk.submit(tk.preview("Taylor", "ZZZZ", 4, 100.0))
     tk_trade = ib.open_trades.pop()
 
-    target = make_target(PanelMode.PRODUCTION, lambda: FakeIB(ib), paper_files=paper_files,
+    target = make_target(PanelMode.PRODUCTION, Broker(lambda: FakeIB(ib)), paper_files=paper_files,
                          live_files=live_files, logs=logs)
     service = target.manual_order_service(NAMES, _service_factory)
     assert service.store.path == live_files.orders
@@ -421,7 +356,7 @@ def test_paper_sync_uses_the_paper_account_and_writes_no_live_record(
     assert sync.take_notices(sync.compute("Rosa", lambda m: None)) == []   # paper 紀錄記已通知
 
     placed, _fills = sync.submit(plan, lambda m: None)
-    assert ("SH", "BUY", 40, "LMT", "DU001") in broker.placed   # 20% × SkewLS 20% × $100k ÷ $100
+    assert ("SH", "BUY", 40, "LMT", "DU001") in sent(broker)   # 20% × SkewLS 20% × $100k ÷ $100
     assert [p["symbol"] for p in placed if p["symbol"] == "XYZ"] == []   # 暫停中的不送
     assert {c[1:] for c in broker.connects} == {(4013, 93)}
     assert skew_saves == [] and trade_log == [] and telegram.messages == []
@@ -456,7 +391,7 @@ def test_live_sync_uses_the_rebalance_identity_and_reports_like_tk(
 
     telegram.messages.clear()
     placed, _fills = sync.submit(plan, lambda m: None)
-    assert broker.placed == [("AAPL", "BUY", 150, "LMT", "U001")]
+    assert sent(broker) == [("AAPL", "BUY", 150, "LMT", "U001")]
     assert [r["account_name"] for r in trade_log] == ["Taylor"]
     [(msg, dest)] = telegram.messages
     assert "[Taylor] Sync Position — LMT" in msg and dest == LIVE_DEST
@@ -503,7 +438,7 @@ def test_paper_takeover_uses_the_paper_ledger_and_only_the_output_log(
     assert ctx.price_feed_port is None and ctx.dry_run is False and ctx.tg_token == ""
     result = takeover.submit(preview, lambda m: None)
     assert result.status == "COMPLETED", result.message
-    assert broker.placed == [("XYZ", "BUY", 240, "LMT", "DU001")]
+    assert sent(broker) == [("XYZ", "BUY", 240, "LMT", "DU001")]
     assert {c[2] for c in broker.connects} == {94}
 
     lines = takeover.take_notices("Taylor")
@@ -528,7 +463,7 @@ def test_live_takeover_uses_the_takeover_identity_and_telegram(
     assert (broker.ctxs[0].account, broker.ctxs[0].client_id) == ("U001", 20 + ROLE_TAKEOVER)
     result = takeover.submit(preview, lambda m: None)
     assert result.status == "COMPLETED", result.message
-    assert broker.placed == [("XYZ", "BUY", 240, "LMT", "U001")]
+    assert sent(broker) == [("XYZ", "BUY", 240, "LMT", "U001")]
     assert "XYZ" not in ma.paused_symbols("Taylor", path=live_files.attribution)
 
     telegram.ok = False                                  # 沒送到：Output Log 照樣顯示，下次再發

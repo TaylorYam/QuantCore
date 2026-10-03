@@ -1,4 +1,7 @@
-"""Read-only query isolation and legacy portfolio characterization, all fake IB."""
+"""Read-only query isolation and legacy portfolio characterization, all fake IB.
+
+fetch_portfolio 經 Broker 開連線（#185）：假 IB 接在 broker 的 ib_insync 工廠上，
+測的是 adapter 自己的讀法（Connection.portfolio_readings 的多層 fallback）。"""
 from datetime import date
 import json
 from pathlib import Path
@@ -17,6 +20,11 @@ SCENARIOS = ("empty", "mixed", "foreign", "fallback", "timeout")
 def configure_fake(monkeypatch, module, ctx, scenario):
     class FakeIB:
         disconnected = False
+        RequestTimeout = 0
+
+        def connect(self, *args, **kwargs):
+            if scenario == "timeout":
+                raise TimeoutError("test timeout")
 
         def managedAccounts(self):
             return [ctx.account]
@@ -51,14 +59,10 @@ def configure_fake(monkeypatch, module, ctx, scenario):
 
     fake = FakeIB()
 
-    def connect(*args, **kwargs):
-        if scenario == "timeout":
-            raise TimeoutError("test timeout")
-        return fake
-
+    import broker
     import signals
     monkeypatch.setattr(signals, "get_sp500_universe", lambda: {"AAPL"})
-    monkeypatch.setattr(module, "connect", connect)
+    monkeypatch.setattr(broker, "_default_ib", lambda: fake)
     monkeypatch.setattr(module, "get_prices", lambda *a, **kw: {"XLK": 110, "AAPL": 120, "ZZZ": 90})
     return fake
 
@@ -126,7 +130,8 @@ def test_readonly_price_feed_ids_are_independent(fake_config, monkeypatch):
     assert len({kw["feed_client_id"] for kw in options}) == 3
     assert all(kw["readonly"] for kw in options)
     ib_fetcher.get_prices(None, ["XLK"], AccountCtx.from_name("Taylor", ROLE_PANEL))
-    assert "readonly" not in options[-1] and "feed_client_id" not in options[-1]
+    # 一般連線借報價用固定的 99（同 price_utils 原本的預設），規則在 broker（#185）
+    assert options[-1]["readonly"] is False and options[-1]["feed_client_id"] == 99
 
 
 def test_feed_connection_receives_unique_id_and_closes(monkeypatch):

@@ -31,6 +31,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import manual_orders as mo  # noqa: E402
+from broker import PAPER_VERIFY_CLIENT_ID, Broker  # noqa: E402
 
 PAPER_PREFIXES = ("DU", "DF")
 PROBE_REF = "QUANTCORE_PAPER_PROBE"
@@ -143,7 +144,8 @@ def build_service(args, timeline: Timeline, ib_factory=None) -> mo.ManualOrderSe
         account_names=[LABEL],
         store=mo.ManualOrderStore(args.store),
         account_ctx_factory=account_ctx,
-        ib_factory=ib_factory or (lambda: paper_ib(timeline)),
+        connect=lambda ctx: Broker(ib_factory or (lambda: paper_ib(timeline))).connect(
+            ctx, timeout=10),
         # A paper account runs no Strategy; SPY/SSO keep the guard non-empty.
         universe_loader=lambda: {"SPY", "SSO"},
         notifier=notifier,
@@ -419,7 +421,7 @@ def main(argv=None) -> None:
     # No default: on this machine 4002 is a live Gateway (tests/conftest.py).
     parser.add_argument("--port", type=int, required=True,
                         help="paper Gateway 的 API port（必填；不可用 live Gateway 的 port）")
-    parser.add_argument("--client-id", type=int, default=91,
+    parser.add_argument("--client-id", type=int, default=PAPER_VERIFY_CLIENT_ID,
                         help="每次都用同一個；IB 只允許同 clientId 取消自己的委託")
     parser.add_argument("--store", type=Path, default=DEFAULT_STORE)
     parser.add_argument("--log", type=Path, default=DEFAULT_LOG,

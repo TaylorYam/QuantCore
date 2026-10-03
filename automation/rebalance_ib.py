@@ -53,7 +53,7 @@ log = logging.getLogger(__name__)
 
 # ── IB 連線工具 ───────────────────────────────────────────────────────────────
 from ib_insync import IB, MarketOrder, LimitOrder, Order, util
-from symbol_contract import canonical_symbol, ib_stock
+from symbol_contract import canonical_symbol
 
 
 # ── Telegram 通知（統一由 notify.py 提供；三帳戶合併一則，#26）──────────
@@ -104,14 +104,19 @@ def make_order(action: str, qty: int, lmt_price: float,
     return o
 
 
-def place_orders(ib: IB, order_list: list, ctx: AccountCtx, *,
+def place_orders(ib, order_list: list, ctx: AccountCtx, *,
                  attribution_path=None) -> tuple:
     """先 SELL 再 BUY。回傳 (placed_list, trades_list)
+
+    ib = broker.Connection（新 Panel 的 Sync Pos）或 ib_insync 本體（21:00 調倉、
+    16:00 日度風控；第二階段改走 Broker 前由 as_connection 包起來，行為相同）。
 
     策略送單的最終閘門（#106）：手動持倉暫停中的標的不送；讀不到暫停
     紀錄時拋 ManualAttributionError，一張都不送。attribution_path = 暫停紀錄檔，
     None = 實盤預設（新 Panel 的 paper Sync Pos 用自己的檔，#152）。
     """
+    from broker import as_connection
+    conn = as_connection(ib, ctx)
     order_list, _held = manual_attribution.gate_orders(ctx.name, order_list,
                                                        path=attribution_path)
     sells = [o for o in order_list if o['action'] == 'SELL']
@@ -124,15 +129,14 @@ def place_orders(ib: IB, order_list: list, ctx: AccountCtx, *,
         if qty == 0:
             continue
 
-        contract = ib_stock(sym)
-        ib.qualifyContracts(contract)
+        contract = conn.contract(sym)
         order = make_order(o['action'], qty, o.get('lmt_price', 0), ctx=ctx)
 
         if ctx.dry_run:
             log.info(f"  [DRY RUN] {ctx.order_type} {o['action']:4s} {qty:5d} {sym}"
                      f"  ({o.get('strategy', '')})")
         else:
-            trade = ib.placeOrder(contract, order)
+            trade = conn.place(contract, order)
             trades.append(trade)
             # Preserve the broker identity for an idempotent SQLite log write.
             # Excel output remains unchanged because this is metadata on the
@@ -145,7 +149,7 @@ def place_orders(ib: IB, order_list: list, ctx: AccountCtx, *,
 
     if not ctx.dry_run and placed:
         log.info(f"Waiting {ctx.wait_fill_sec}s for fills...")
-        ib.sleep(ctx.wait_fill_sec)
+        conn.wait(ctx.wait_fill_sec)
 
     return placed, trades
 

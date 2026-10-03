@@ -17,7 +17,7 @@ from tests.test_qt_panel import (  # noqa: F401  fixtures
     dialogs, extras, make_window, portfolio, ports, source,
 )
 from tests.test_qt_order_target import (  # noqa: F401  fixtures
-    PAPER, SyncBroker, base_ctx, broker, live_files, paper_files, pause_xyz,
+    PAPER, base_ctx, broker, live_files, paper_files, pause_xyz, sent,
     sync_env,
 )
 
@@ -28,7 +28,7 @@ from PySide6.QtCore import Qt
 def sync_window(make_window, broker, sync_env, paper_files, qtbot):
     def make(**kw):
         kw.setdefault("paper_target", PAPER)
-        kw.setdefault("broker_factory", lambda: SyncBroker(broker))
+        kw.setdefault("broker", broker)
         kw.setdefault("paper_files", paper_files)
         kw.setdefault("account_ctx_loader", base_ctx)
         kw.setdefault("manual_order_service", lambda **_kw: NS(
@@ -101,7 +101,7 @@ def test_paper_sync_previews_then_sends_limit_orders_to_the_paper_account(
     [(title, prompt, _warning)] = dialogs.confirms
     assert "確定送出 2 筆限價單到 [Taylor]" in prompt
     assert "paper 帳號 DU001" in prompt
-    assert broker.placed == [("AAPL", "BUY", 150, "LMT", "DU001"),
+    assert sent(broker) == [("AAPL", "BUY", 150, "LMT", "DU001"),
                              ("XYZ", "BUY", 250, "LMT", "DU001")]
     qtbot.waitUntil(lambda: "Placed 2 orders" in w.dashboard.log_text(), timeout=2000)
     assert not sync.confirm_button.isVisible()           # 同一份預覽不能再送一次

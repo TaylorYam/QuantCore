@@ -27,7 +27,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from account_utils import get_account_config, get_client_id
+from account_utils import get_account_config
+from broker import client_id as broker_client_id
 
 
 @dataclass(frozen=True)
@@ -99,7 +100,7 @@ class AccountCtx:
             account        = cfg.get('account', ''),
             host           = cfg.get('host', '127.0.0.1'),
             port           = int(cfg.get('port', 4001)),
-            client_id      = get_client_id(name, role),
+            client_id      = broker_client_id(name, role),
             dry_run        = bool(cfg.get('dry_run', True)),
             order_type     = cfg.get('order_type', 'MOO'),
             outside_rth    = bool(cfg.get('outside_rth', False)),

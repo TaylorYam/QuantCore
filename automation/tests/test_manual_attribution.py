@@ -267,7 +267,8 @@ def test_tg_section_sent_for_new_pause_only():
 # ── 送單入口：fake IB 走真實流程 ─────────────────────────────────────
 
 class FakeIB:
-    """記錄下單／取消；持倉、NAV、報價都是固定值。"""
+    """記錄下單／取消；持倉、NAV、報價都是固定值。21:00 調倉與 16:00 日度風控還拿著
+    ib_insync 本體（#185 第二階段改走 Broker）；Sync Pos 用 tests/fake_broker.py。"""
 
     def __init__(self, positions, open_trades=()):
         self._positions = positions
@@ -435,29 +436,34 @@ def test_place_orders_gate_holds_persisted_pause_even_if_caller_forgot(paths):
     assert ib.placed == [("AAPL", "BUY", 1)]
 
 
+def _sent(broker):
+    return [(p.symbol, p.action, p.qty) for p in broker.placed]
+
+
+def _fake_broker(positions):
+    """每條連線一個 in-memory Broker：手動單 7 與策略單 8 掛在 Gateway 上。"""
+    from tests.fake_broker import FakeBroker
+    fake = FakeBroker(managed=["U00000001"], positions=positions)
+    fake.open_orders = [MANUAL_OPEN, STRATEGY_OPEN]
+    return fake
+
+
 @pytest.fixture
 def sync_env(paths, monkeypatch):
-    import ib_fetcher
     import signals
 
     import sync_position
 
-    env = NS(ib=None, positions={"AAPL": 100.0, "XYZ": 10.0}, sent=[])
+    env = NS(broker=None, positions={"AAPL": 100.0, "XYZ": 10.0}, sent=[])
 
-    def connect(ctx, *a, **k):
-        env.ib = FakeIB(env.positions, [MANUAL_OPEN, STRATEGY_OPEN])
-        return env.ib
+    def connect(ctx):
+        env.broker = _fake_broker(env.positions)
+        return env.broker.connect(ctx)
 
-    def no_default(*_a, **_k):
-        raise AssertionError("Sync Pos 不該走 ib_fetcher.connect 的預設連線")
-
-    monkeypatch.setattr(ib_fetcher, "connect", no_default)
     # 實盤送單目標給的連線與紀錄（#183：沒有預設，一律明確給）
     env.records = sync_position.SyncRecords(
         connect=connect, attribution_ledger=paths.ledger, manual_orders_store=paths.orders,
         persist_strategy_state=True)
-    monkeypatch.setattr(ib_fetcher, "get_prices",
-                        lambda ib, syms, ctx, **k: {s: 100.0 for s in syms})
     monkeypatch.setattr(signals, "get_sr_weights", lambda: ({}, "N/A"))
     monkeypatch.setattr(signals, "get_sp500_weights",
                         lambda holdings, name: ({"AAPL": 0.5, "XYZ": 0.5}, "2026-09-23"))
@@ -480,8 +486,8 @@ def test_sync_pos_previews_paused_orders_and_never_sends_them(sync_env):
 
     placed, _ = sync_position.submit_sync_orders(plan)          # 沿用計算時的連線與紀錄
     assert [o["symbol"] for o in placed] == ["AAPL"]
-    assert sync_env.ib.placed == [("AAPL", "BUY", 150)]
-    assert sync_env.ib.cancelled == [8]
+    assert _sent(sync_env.broker) == [("AAPL", "BUY", 150)]
+    assert [o.orderId for o in sync_env.broker.cancelled] == [8]
 
 
 
@@ -506,8 +512,8 @@ def test_paper_sync_records_never_touch_live_records(sync_env, paths, tmp_path, 
     monkeypatch.setattr(skewls_state, "save_state", lambda *a: skew_saves.append(a))
 
     def paper_connect(ctx):
-        paper_ibs.append(FakeIB({"AAPL": 100.0, "XYZ": 10.0}))
-        return paper_ibs[-1]
+        paper_ibs.append(_fake_broker({"AAPL": 100.0, "XYZ": 10.0}))
+        return paper_ibs[-1].connect(ctx)
 
     records = sync_position.SyncRecords(
         connect=paper_connect, attribution_ledger=tmp_path / "paper_attribution.sqlite3",
@@ -517,8 +523,8 @@ def test_paper_sync_records_never_touch_live_records(sync_env, paths, tmp_path, 
     placed, _ = sync_position.submit_sync_orders(plan)
 
     assert {o["symbol"] for o in placed} >= {"XYZ"}
-    assert ("XYZ", "BUY", 240) in paper_ibs[-1].placed
-    assert sync_env.ib is None                  # 沒有經過實盤連線
+    assert ("XYZ", "BUY", 240) in _sent(paper_ibs[-1])
+    assert sync_env.broker is None              # 沒有經過實盤連線
     assert persist_args == [False] and skew_saves == []
     assert paths.ledger.read_bytes() == live_before
     assert (tmp_path / "paper_attribution.sqlite3").exists()
@@ -609,7 +615,7 @@ def test_sync_pos_without_records_refuses_before_connecting(sync_env):
     with pytest.raises(TypeError, match="SyncRecords"):
         sync_position.compute_sync_plan(_ctx(), records=None)
     plan = sync_position.compute_sync_plan(_ctx(), records=sync_env.records)
-    sync_env.ib = None
+    sync_env.broker = None
     unrecorded = replace(plan, records=None)
     with pytest.raises(TypeError, match="SyncRecords"):
         sync_position.submit_sync_orders(unrecorded)
@@ -617,7 +623,7 @@ def test_sync_pos_without_records_refuses_before_connecting(sync_env):
         sync_position.submit_sync_orders(replace(unrecorded, orders=[]))
     with pytest.raises(TypeError, match="SyncRecords"):
         sync_position.notify_new_pauses(unrecorded, send=lambda m: True)
-    assert sync_env.ib is None                  # 一條連線都沒開
+    assert sync_env.broker is None              # 一條連線都沒開
 
 
 def test_deliver_notices_marks_the_ledger_it_was_given(paths, tmp_path):

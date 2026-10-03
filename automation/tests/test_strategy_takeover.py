@@ -1,7 +1,7 @@
 """
 單一標的交給策略接管（#107）。
 
-以 fake IB 走 strategy_takeover 的真實流程：預覽（Account、標的、現有股數、
+以 in-memory Broker（tests/fake_broker.py）走 strategy_takeover 的真實流程：預覽（Account、標的、現有股數、
 策略整數目標、差額與方向；目標 0 = 賣出現有股數）、取消、未結案手動單與
 掛單的拒絕、確認前重算讓舊預覽失效、成功、拒單、部分成交、逾時後重啟再
 完成、per-Strategy 取整，以及其他 Account／標的不受影響。Panel 的兩個視窗
@@ -24,72 +24,10 @@ import pytest
 import manual_attribution as ma
 import strategy_takeover as st
 from sync_position import SyncRecords
+from tests.fake_broker import FakeBroker
 
 UNIVERSE = {"AAPL", "MSFT", "SPY", "SSO"}
 JOINED = UNIVERSE | {"XYZ", "ABC"}          # XYZ、ABC 之後被加入 S&P 500
-
-
-class FakeIB:
-    """持倉、掛單、成交行為可設定；記錄每一筆送單。"""
-
-    def __init__(self, env):
-        self.env = env
-        self.connected = True
-
-    def accountValues(self, account):
-        return [NS(tag="NetLiquidation", currency="USD", value=str(self.env.nav))]
-
-    def positions(self, account=""):
-        from ib_insync import Stock
-        return [NS(account=account, contract=Stock(s, "SMART", "USD"),
-                   position=q, avgCost=1.0) for s, q in self.env.positions.items()]
-
-    def reqAllOpenOrders(self):
-        return list(self.env.open_orders)
-
-    def qualifyContracts(self, *contracts):
-        return list(contracts)
-
-    def reqTickers(self, *contracts):
-        return [NS(contract=c, bid=99.9, ask=100.1, last=100.0, close=100.0,
-                   midpoint=lambda: 100.0) for c in contracts]
-
-    def placeOrder(self, contract, order):
-        behavior = self.env.behavior
-        if behavior == "raise":
-            raise ConnectionError("socket closed")
-        self.env.placed.append(NS(symbol=contract.symbol, action=order.action,
-                                  qty=int(order.totalQuantity), lmt=order.lmtPrice,
-                                  ref=order.orderRef, outside_rth=order.outsideRth,
-                                  account=order.account))
-        trade = NS(order=order, contract=contract, log=[],
-                   orderStatus=NS(status="PreSubmitted", filled=0))
-        self.env.trade = trade
-        return trade
-
-    def sleep(self, *_):
-        trade, env = self.env.trade, self.env
-        if trade is None or trade.orderStatus.status != "PreSubmitted":
-            return
-        sym, qty = trade.contract.symbol, int(trade.order.totalQuantity)
-        sign = 1 if trade.order.action == "BUY" else -1
-        if env.behavior == "fill":
-            trade.orderStatus.status, trade.orderStatus.filled = "Filled", qty
-            env.positions[sym] = env.positions.get(sym, 0.0) + sign * qty
-        elif env.behavior == "reject":
-            trade.orderStatus.status = "Inactive"
-            trade.log.append(NS(message="Order rejected - reason: margin"))
-        elif env.behavior == "partial":
-            trade.orderStatus.status, trade.orderStatus.filled = "Submitted", 100
-            env.positions[sym] = env.positions.get(sym, 0.0) + sign * 100
-        elif env.behavior == "working":
-            trade.orderStatus.status = "Submitted"
-
-    def isConnected(self):
-        return self.connected
-
-    def disconnect(self):
-        self.connected = False
 
 
 def _ctx(name="Rosa", dry_run=False, alloc=(0.0, 0.5, 0.0)):
@@ -118,29 +56,23 @@ def _manual_order(path, ref, account, symbol, action, filled, status, quantity=1
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """Rosa 手動持有 XYZ 10 股、ABC 5 股，兩檔之後都進了 SP500 Universe。"""
-    import ib_fetcher
     import signals
     import sp500_state
     from strategies.sp500_momentum import signal as sp_signal
 
-    env = NS(nav=100_000.0, positions={"AAPL": 100.0, "XYZ": 10.0, "ABC": 5.0},
-             open_orders=[], placed=[], trade=None, behavior="fill",
-             sp500={"AAPL": 0.5, "XYZ": 0.5}, sr={}, skewls={},
-             state_dir=tmp_path / "state", orders=tmp_path / "manual_orders.sqlite3")
+    # IB 這一側是 in-memory Broker：權益、持倉、掛單、送單行為直接設在 env 上
+    env = FakeBroker(managed=["U2"], nav=100_000.0,
+                     positions={"AAPL": 100.0, "XYZ": 10.0, "ABC": 5.0})
+    env.sp500, env.sr, env.skewls = {"AAPL": 0.5, "XYZ": 0.5}, {}, {}
+    env.state_dir, env.orders = tmp_path / "state", tmp_path / "manual_orders.sqlite3"
     env.state_dir.mkdir()
     monkeypatch.setattr(ma, "DEFAULT_LEDGER_PATH", tmp_path / "ledger.sqlite3")
     monkeypatch.setattr(ma, "DEFAULT_MANUAL_ORDERS_PATH", env.orders)
     monkeypatch.setattr(sp500_state, "STATE_DIR", env.state_dir)
-    def no_default(*_a, **_k):
-        raise AssertionError("接管不該走 ib_fetcher.connect 的預設連線")
-
-    monkeypatch.setattr(ib_fetcher, "connect", no_default)
     # 實盤送單目標給的連線與紀錄（#183：沒有預設，一律明確給）
-    env.records = SyncRecords(connect=lambda ctx: FakeIB(env),
+    env.records = SyncRecords(connect=env.connect,
                               attribution_ledger=tmp_path / "ledger.sqlite3",
                               manual_orders_store=env.orders, persist_strategy_state=True)
-    monkeypatch.setattr(ib_fetcher, "get_prices",
-                        lambda ib, syms, ctx, **k: {s: 100.0 for s in syms})
     monkeypatch.setattr(signals, "get_sp500_universe", lambda historical=True: set(JOINED))
     monkeypatch.setattr(signals, "get_sr_weights", lambda: (dict(env.sr), "2026-09-28"))
     monkeypatch.setattr(signals, "get_skewls_weights",
@@ -341,12 +273,6 @@ def test_dry_run_changes_nothing(env):
 
 def test_other_records_keep_the_live_ledger_untouched(env, tmp_path, monkeypatch):
     """新 Panel 的 paper 接管（#153）：連線、歸屬紀錄、手動單紀錄都用傳進來的那一組。"""
-    import ib_fetcher
-
-    def no_live(*_a, **_k):
-        raise AssertionError("不該連實盤")
-
-    monkeypatch.setattr(ib_fetcher, "connect", no_live)
     live_ledger = tmp_path / "ledger.sqlite3"
     live_before = live_ledger.read_bytes()
     paper = NS(ledger=tmp_path / "paper_ledger.sqlite3",
@@ -355,7 +281,7 @@ def test_other_records_keep_the_live_ledger_untouched(env, tmp_path, monkeypatch
 
     def connect(ctx):
         paper.connects.append(ctx.client_id)
-        return FakeIB(env)
+        return env.connect(ctx)
 
     records = SyncRecords(connect=connect, attribution_ledger=paper.ledger,
                           manual_orders_store=paper.orders, persist_strategy_state=False)

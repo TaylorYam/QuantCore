@@ -18,6 +18,7 @@ from tests.test_qt_order_target import NOW, PAPER, order_factory
 
 from PySide6.QtCore import Qt
 
+from broker import Broker
 from manual_orders import ManualOrderService
 
 
@@ -64,7 +65,8 @@ def services():
 def trading_window(make_window, ib_state, services, qtbot):
     def make(**kw):
         kw.setdefault("paper_target", PAPER)
-        kw.setdefault("broker_factory", lambda: FakeIB(ib_state))
+        # 手動單用 ib_insync 本體：真的 Broker 接在 test_manual_orders 的假 IB 上
+        kw.setdefault("broker", Broker(lambda: FakeIB(ib_state)))
         kw.setdefault("manual_order_service", services)
         kw.setdefault("symbol_loader", FakeSymbols)
         w = make_window(**kw)

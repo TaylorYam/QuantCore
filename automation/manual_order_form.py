@@ -11,6 +11,8 @@ import math
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
+from manual_orders import ACTIVE_STATUSES, TERMINAL_STATUSES, UNCONFIRMED_STATUSES
+
 SHARES_MODE = "整股股數"
 CASH_MODE = "美元金額"
 PERCENT_MODE = "帳戶權益 %"
@@ -32,16 +34,8 @@ STORED_SESSION_LABELS = {
     "OVERNIGHT": "隔夜 OVERNIGHT",
 }
 
-TERMINAL_STATUSES = frozenset({"FILLED", "REJECTED", "CANCELLED", "EXPIRED"})
 # Rows whose IB state is unsettled: no cancel or modify until it resolves.
-_UNSETTLED_STATUSES = frozenset({
-    "CANCEL_PENDING", "CANCEL_UNKNOWN", "IB_UNKNOWN", "SUBMISSION_UNKNOWN",
-})
-# The original order may still fill; a replacement waits until it leaves these.
-_REPLACEMENT_WAIT_STATUSES = frozenset({
-    "SENDING", "SENT", "ACCEPTED", "PARTIAL", "CANCEL_PENDING",
-    "CANCEL_UNKNOWN", "IB_UNKNOWN", "SUBMISSION_UNKNOWN",
-})
+_UNSETTLED_STATUSES = UNCONFIRMED_STATUSES | {"CANCEL_PENDING"}
 _OK_SUBMIT_STATUSES = frozenset({"SENT", "ACCEPTED", "PARTIAL", "FILLED"})
 
 
@@ -246,7 +240,8 @@ def cancel_pending_row(row: dict) -> dict:
 
 
 def replacement_waiting(row: dict) -> bool:
-    return row.get("status") in _REPLACEMENT_WAIT_STATUSES
+    # The original order may still fill; a replacement waits while it is active.
+    return row.get("status") in ACTIVE_STATUSES
 
 
 # ── Submit result ──────────────────────────────────────────────────────

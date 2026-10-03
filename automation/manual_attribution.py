@@ -55,9 +55,6 @@ log = logging.getLogger(__name__)
 DEFAULT_LEDGER_PATH = Path(__file__).parent / "manual_attribution.sqlite3"
 DEFAULT_MANUAL_ORDERS_PATH = manual_orders.DEFAULT_STORE_PATH
 
-# manual_orders 的結案狀態。其他狀態（含日後新增、本模組不認得的）一律
-# 視為「結果未確認」— 保守暫停。
-_TERMINAL_STATUSES = frozenset({"FILLED", "REJECTED", "CANCELLED", "EXPIRED"})
 _ACTION_SIGN = {"BUY": 1, "COVER": 1, "SELL": -1, "SELL_SHORT": -1}
 _EPS = 1e-6
 
@@ -77,7 +74,10 @@ class ManualFill:
 
     @property
     def resolved(self) -> bool:
-        return self.status in _TERMINAL_STATUSES and self.action in _ACTION_SIGN
+        # 只有 manual_orders 的結案狀態算結案；其他狀態（含日後新增、本模組
+        # 不認得的）一律視為「結果未確認」— 保守暫停。
+        return (self.status in manual_orders.TERMINAL_STATUSES
+                and self.action in _ACTION_SIGN)
 
 
 @dataclass(frozen=True)
@@ -126,25 +126,15 @@ def read_manual_fills(account_name: str, path: str | Path | None = None
                       ) -> list[ManualFill]:
     """讀 Panel 手動單的成交與狀態；資料庫不存在 = 從未下過手動單。
 
-    以 SQLite 唯讀模式開啟，不會建立檔案、不參與 manual_orders 的 migration。
+    由 `manual_orders.read_account_fills` 提供：唯讀開檔、不建立檔案、
+    不參與 manual_orders 的 migration。
     """
-    path = Path(path or DEFAULT_MANUAL_ORDERS_PATH)
-    if not path.exists():
-        return []
     try:
-        uri = path.resolve().as_uri() + "?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True, timeout=5.0)) as conn:
-            conn.execute("PRAGMA busy_timeout = 5000")
-            rows = conn.execute(
-                """SELECT order_ref, symbol, action, filled_quantity, status
-                   FROM manual_orders WHERE account_name=?
-                   ORDER BY created_at, rowid""",
-                (account_name,),
-            ).fetchall()
+        rows = manual_orders.read_account_fills(
+            account_name, path or DEFAULT_MANUAL_ORDERS_PATH)
     except sqlite3.Error as exc:
         raise ManualAttributionError(f"Panel 手動單資料庫讀取失敗：{exc}") from exc
-    return [ManualFill(str(r[0]), str(r[1]), str(r[2]), int(r[3] or 0), str(r[4]))
-            for r in rows]
+    return [ManualFill(**row) for row in rows]
 
 
 # ── 歸屬紀錄 ──────────────────────────────────────────────────────────

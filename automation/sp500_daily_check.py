@@ -63,6 +63,7 @@ def run_daily_check(account_name: str, digest: Digest):
     import rebalance_ib as reb     # 仍需要：place_orders, check_fills
     import ib_fetcher               # S8：IB 連線/查詢 helpers
     import manual_attribution       # #106：手動持倉暫停閘門
+    from strategy_owner import SECTOR_ETFS   # #187：類股 ETF 清單唯一來源
     from symbol_contract import canonical_symbol
     from account_ctx import AccountCtx
     from account_utils import ROLE_MOO_CHECK
@@ -163,7 +164,7 @@ def run_daily_check(account_name: str, digest: Digest):
         sp500_universe = get_sp500_universe()
 
         sp500_holdings = [s for s in current_pos
-                          if s not in ib_fetcher.SR_ETFS and s in sp500_universe]
+                          if s not in SECTOR_ETFS and s in sp500_universe]
         log.info(f"  SP500 holdings: {sp500_holdings or '(none)'}")
 
         # 取得報價（包括持倉 + 潛在 dip-buy 標的）

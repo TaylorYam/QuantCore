@@ -34,16 +34,19 @@ from data.update_outcomes import UpdateOutcome, outcome  # noqa: E402
 from data.price_continuity import (OVERLAP_DAYS, PRICE_COLS, SPLIT_COL,  # noqa: E402
                                    atomic_write, compare_history, frame_bytes,
                                    replacement, window_check)
+from strategies.sector_rotation import config as _sr_config  # noqa: E402
+from strategies.sector_skew_ls import config as _skewls_config  # noqa: E402
 
 ROOT      = Path(__file__).resolve().parent.parent / "data"
 ETF_DIR   = ROOT / "etfs"
 STOCK_DIR = ROOT / "stocks"
 IDENTITY_MANIFEST_PATH = ROOT / "identity_dispositions.json"
 
-SECTOR_ETFS = ["XLK","XLF","XLV","XLE","XLI","XLY","XLB","XLP","XLU","XLC","XLRE"]
+# 類股／反向 ETF 清單的唯一來源是策略設定（#187）；複製成自己的 list，不改到設定
+SECTOR_ETFS = list(_sr_config.SECTOR_TICKERS)
 BENCHMARKS  = ["SPY","SSO","QQQ"]
 # Skew LS 用：9 檔 ProShares UltraShort (2x) + SEF/REK (1x)，XLC 直接放空無 inverse ETF
-INVERSE_ETFS = ["REW","SEF","RXD","ERY","SIJ","SCC","SMN","SZK","SDP","REK"]
+INVERSE_ETFS = list(_skewls_config.INVERSE_TICKERS)
 ALL_ETFS    = SECTOR_ETFS + BENCHMARKS + INVERSE_ETFS
 VIX_TICKER  = "^VIX"
 

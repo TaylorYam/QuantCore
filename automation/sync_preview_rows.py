@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ib_fetcher import SR_ETFS, SKEWLS_INVERSE_TICKERS
+from strategy_owner import SKEWLS, SR, etf_owner
 from sync_position import SyncPlan
 
 TRADE_COLUMNS = ("Action", "Symbol", "Qty", "Current", "Target",
@@ -115,20 +115,21 @@ def _strategy_symbols(plan: SyncPlan) -> list[str]:
     return [s for s in plan.current_pos if s not in plan.current_other_holdings]
 
 
+# SR+SkewLS（兩邊都可能有）不屬於單一 Strategy，用一般文字色
+_TAG_COLOR = {SR: "blue", SKEWLS: "red", "SP500": "green"}
+
+
 def current_holding_rows(plan: SyncPlan) -> list[HoldingRow]:
     """Current Holdings (實際持倉) managed by the strategies."""
+    alloc = (plan.ctx.alloc_sr, plan.ctx.alloc_skewls)
     rows = []
     for sym in sorted(_strategy_symbols(plan)):
         shares = int(plan.current_pos[sym])
         px = plan.prices.get(sym, 0)
         val = shares * px
-        # 三策略分類：inverse ETF 或 sector ETF 負部位 → SkewLS
-        if sym in SKEWLS_INVERSE_TICKERS or (sym in SR_ETFS and shares < 0):
-            tag, tag_color = "SkewLS", "red"
-        elif sym in SR_ETFS:
-            tag, tag_color = "SR", "blue"
-        else:
-            tag, tag_color = "SP500", "green"
+        # 歸屬規則與 Portfolio 相同（strategy_owner.etf_owner，#187）；其餘是 SP500
+        tag = etf_owner(sym, shares, alloc) or "SP500"
+        tag_color = _TAG_COLOR.get(tag, "text")
         in_target = sym in plan.targets
         rows.append(HoldingRow(
             text=f"  {sym:<6s}  {shares:4d}sh  @ ${px:.2f}  = ${val:,.0f}",

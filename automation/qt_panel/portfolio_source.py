@@ -89,5 +89,5 @@ def load_account_cash_flows(account_name: str):
 
 
 def read_recent_trades(account_name: str) -> list:
-    from trades_display import read_latest_trades
-    return read_latest_trades(account_name)
+    from trades_display import read_account_trades
+    return read_account_trades(account_name)

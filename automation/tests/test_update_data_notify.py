@@ -86,3 +86,20 @@ def test_main_failure_writes_each_error_to_the_log(monkeypatch, caplog):
         update_data.main()
     assert any("SMN: provider 歷史與本地檔核對不過" in r.getMessage() and r.levelno == logging.WARNING
                for r in caplog.records)
+
+
+def test_etf_download_list_comes_from_the_strategy_configs():
+    """#187：類股／反向 ETF 清單 import 自策略設定；下載清單（含 benchmark、順序）不變。"""
+    import data.update_data as data_update
+    from strategies.sector_rotation import config as sr_config
+    from strategies.sector_skew_ls import config as skewls_config
+
+    assert data_update.SECTOR_ETFS == sr_config.SECTOR_TICKERS
+    assert data_update.INVERSE_ETFS == skewls_config.INVERSE_TICKERS
+    assert data_update.ALL_ETFS == [
+        "XLK", "XLF", "XLV", "XLE", "XLI", "XLY", "XLB", "XLP", "XLU", "XLC", "XLRE",
+        "SPY", "SSO", "QQQ",
+        "REW", "SEF", "RXD", "ERY", "SIJ", "SCC", "SMN", "SZK", "SDP", "REK"]
+    # 下載清單是自己的 list，不會改到策略設定
+    assert data_update.SECTOR_ETFS is not sr_config.SECTOR_TICKERS
+    assert data_update.INVERSE_ETFS is not skewls_config.INVERSE_TICKERS

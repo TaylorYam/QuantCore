@@ -74,9 +74,26 @@ def test_current_holdings_tag_strategy_and_flag_untargeted():
         ("  OLD        2sh  @ $5.00  = $10", "SP500", "green", "  ← not in target", "red"),
         ("  SEF       27sh  @ $40.10  = $1,083", "SkewLS", "red", "", "text"),
         ("  XLC      -40sh  @ $95.50  = $-3,820", "SkewLS", "red", "", "text"),
-        ("  XLK        7sh  @ $210.55  = $1,474", "SR", "blue", "", "text"),
+        ("  XLK        7sh  @ $210.55  = $1,474", "SR+SkewLS", "text", "", "text"),
     ]
     assert rows.other_holding_lines(_plan()) == ["  MAN        3sh  @ $7.00  = $21"]
+
+
+def test_current_holdings_tag_long_sector_etf_like_the_portfolio():
+    """#187：做多類股 ETF 的標籤和 Portfolio 同一套規則（strategy_owner.etf_owner）。"""
+    def tags(**alloc):
+        return {h.text.split()[0]: (h.tag, h.tag_color)
+                for h in rows.current_holding_rows(_plan(ctx=_ctx(**alloc)))}
+
+    skewls_only = tags(sr=0.0, sk=1.0)                 # 目前三個帳戶的設定
+    assert skewls_only["XLK"] == ("SkewLS", "red")
+    both = tags(sr=0.3, sk=0.2)
+    assert both["XLK"] == ("SR+SkewLS", "text")
+    sr_only = tags(sr=0.8, sk=0.0)
+    assert sr_only["XLK"] == ("SR", "blue")
+    for t in (skewls_only, both, sr_only):              # 反向／做空、個股不受 Allocation 影響
+        assert t["SEF"] == t["XLC"] == ("SkewLS", "red")
+        assert t["AAPL"] == ("SP500", "green")
 
 
 def test_paused_rows_show_the_held_order_or_none():

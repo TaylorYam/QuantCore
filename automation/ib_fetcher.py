@@ -34,31 +34,12 @@ from symbol_contract import canonicalize_position, contract_symbol
 log = logging.getLogger(__name__)
 
 
-# ── 常數（與 strategies 同步）──────────────────────────────────────────
-
-# 11 支板塊 ETF，用於分類 IB 持倉屬於 Sector Rotation 策略
-# （與 strategies/sector_rotation/config.py SECTOR_TICKERS 一致）
-SR_ETFS: set[str] = {
-    'XLK', 'XLF', 'XLV', 'XLE', 'XLI', 'XLY', 'XLB',
-    'XLP', 'XLU', 'XLC', 'XLRE',
-}
-
-# Skew LS 反向 ETF 清單 — 與 SR_ETFS 一起歸入 ETF Holdings (Issue 2 Option 2)
-# 同 strategies/sector_skew_ls/config.py INVERSE_TICKERS
-# 確保 strategies 套件可 import — 即使 ib_fetcher 被獨立 import (測試環境等)
-import sys as _sys
-from pathlib import Path as _Path
-_ROOT_DIR = _Path(__file__).parent.parent
-if str(_ROOT_DIR) not in _sys.path:
-    _sys.path.insert(0, str(_ROOT_DIR))
-try:
-    from strategies.sector_skew_ls import config as _skewls_cfg
-    SKEWLS_INVERSE_TICKERS: set[str] = set(_skewls_cfg.INVERSE_TICKERS)
-except Exception:
-    SKEWLS_INVERSE_TICKERS = set()
-
-# 所有「ETF Holdings」bucket 涵蓋的 ticker (= SR sector + SkewLS inverse)
-ETF_TICKERS: set[str] = SR_ETFS | SKEWLS_INVERSE_TICKERS
+# ── 常數：類股／反向 ETF 清單的唯一來源是 strategy_owner（取自策略設定，#187）──
+# 舊名保留給既有呼叫端：SR_ETFS = 11 支類股 ETF、SKEWLS_INVERSE_TICKERS = 反向 ETF、
+# ETF_TICKERS = 「ETF Holdings」bucket 涵蓋的全部（兩者合併）。
+from strategy_owner import INVERSE_ETFS as SKEWLS_INVERSE_TICKERS  # noqa: E402
+from strategy_owner import SECTOR_ETFS as SR_ETFS  # noqa: E402
+from strategy_owner import STRATEGY_ETFS as ETF_TICKERS  # noqa: E402
 
 
 # ── 低階：IB 連線 + 單項查詢 ────────────────────────────────────────────

@@ -10,10 +10,10 @@ Tk Panel 是否值班的讀取、時鐘、系統匣工廠、叫回視窗的訊�
 （Rosa poll／TY check／Morning check，既有的 MonitorEngine），Gateway 心跳與
 查詢改用 Tk Panel 原有的 clientId role。
 
-送單（#151）：Trading 的所有送單連線都由這裡建的送單閘門（broker_gate.SendGate）
-產生；並行模式下只接 config.json `qt_panel_paper` 指定的 paper Gateway，三個帳戶
-名稱都導向那個 paper 帳號；手動單、Sync Pos（#152）、交給策略接管（#153）的
-通知只寫 Output Log。
+送單（#151、#183）：這裡依實際生效的模式建一次送單目標（order_target）交給
+Trading — 正式模式送實盤，並行模式只接 config.json `qt_panel_paper` 指定的 paper
+Gateway。paper／實盤的差異（帳戶身分、紀錄、state、通知）都在送單目標裡；
+所有送單連線都由這裡建的送單閘門（broker_gate.SendGate）產生。
 """
 from __future__ import annotations
 
@@ -42,15 +42,11 @@ from qt_panel.gateway_actions import (
     CredentialStore, Dialogs, GatewayStartFlow, PortsFactory, QtDialogs,
 )
 from qt_panel.broker_gate import PaperTarget, SendGate
-from qt_panel.live_trading import (
-    LIVE_TARGET_TEXT, LiveSync, LiveTakeover, account_telegram, live_manual_order_service,
-)
 from qt_panel.gateway_status import GatewaySource
 from qt_panel.mode import PanelMode
+from qt_panel.order_target import OrderFiles, order_target_for
 from qt_panel.portfolio import EQUITY, FLOWS, PARAMS, TRADES, PortfolioPage
-from qt_panel.sync_pos import PaperSync
-from qt_panel.takeover import PaperTakeover
-from qt_panel.trading import PaperFiles, TradingPage, paper_manual_order_service
+from qt_panel.trading import TradingPage
 from qt_panel.watch import QtWatch, WatchPorts
 from qt_panel.widgets import label, pill, visible_text
 
@@ -128,7 +124,8 @@ class MainWindow(QMainWindow):
                  broker_factory: Callable[[], object] = _default_broker,
                  manual_order_service: Callable[..., object] | None = None,
                  symbol_loader: Callable | None = None,
-                 paper_files: PaperFiles = PaperFiles(),
+                 paper_files: OrderFiles | None = None,
+                 live_files: OrderFiles | None = None,
                  account_ctx_loader: Callable | None = None,
                  watch_ports: WatchPorts | None = None):
         super().__init__()
@@ -187,9 +184,13 @@ class MainWindow(QMainWindow):
         self.portfolio = PortfolioPage(names, on_refresh=self.refresh_portfolio)
         # 送單閘門：Trading 每一條 IB 連線都從這裡建，並行模式只放行 paper
         self.send_gate = SendGate(mode, broker_factory)
-        self.trading = self._build_trading(
-            mode, paper_target, paper_problem, manual_order_service, symbol_loader,
-            paper_files, account_ctx_loader)
+        target, problem = order_target_for(
+            mode, send_gate=self.send_gate, paper_target=paper_target,
+            paper_problem=paper_problem,
+            account_ctx_loader=account_ctx_loader or _load_account_ctx, log=self.log,
+            paper_files=paper_files, live_files=live_files)
+        self.trading = self._build_trading(target, problem, manual_order_service,
+                                           symbol_loader)
         self._pages: dict[str, QWidget] = {"Dashboard": self.dashboard,
                                            "Portfolio": self.portfolio,
                                            "Trading": self.trading}
@@ -238,50 +239,25 @@ class MainWindow(QMainWindow):
         self.dashboard.set_next_auto_recheck(self._next_recheck)
         self._update_clock()
 
-    def _build_trading(self, mode, paper_target, paper_problem, service_factory,
-                       symbol_loader, paper_files, account_ctx_loader) -> TradingPage:
+    def _build_trading(self, target, problem: str, service_factory,
+                       symbol_loader) -> TradingPage:
         from manual_orders import SUPPORTED_MANUAL_ACCOUNTS
         supported = {n.casefold() for n in SUPPORTED_MANUAL_ACCOUNTS}
         names = [n for n in self._names if n.casefold() in supported]
-        service, sync, takeover, problem, target_text = None, None, None, paper_problem, ""
-        load_ctx = account_ctx_loader or _load_account_ctx
-        if mode is PanelMode.PRODUCTION:
-            # 實盤：Panel 原有的帳戶身分與紀錄（同 Tk），連線仍經過送單閘門
-            factory = service_factory or live_manual_order_service(names)
+        service, sync, takeover = None, None, None
+        if target is not None:
             try:
-                service = factory(ib_factory=self.send_gate.broker,
-                                  account_ctx_factory=load_ctx, notifier=account_telegram)
-                target_text = LIVE_TARGET_TEXT
+                service = target.manual_order_service(names, service_factory)
             except Exception as e:
                 problem = f"手動單服務無法啟動：{e}"
-            if service is not None:
-                sync = LiveSync(send_gate=self.send_gate, account_ctx_loader=load_ctx,
-                                log=self.log)
-                takeover = LiveTakeover(send_gate=self.send_gate, account_ctx_loader=load_ctx)
-            self._manual_service = service
-        elif paper_target is not None:      # 並行模式：一律只接 paper
-            factory = service_factory or paper_manual_order_service(names, paper_files.orders)
-            try:
-                service = factory(ib_factory=self.send_gate.broker,
-                                  account_ctx_factory=paper_target.account_ctx,
-                                  notifier=self._manual_order_notice)
-                target_text = paper_target.describe()
-            except Exception as e:
-                problem = f"手動單服務無法啟動：{e}"
-            if service is not None:
-                paper = dict(target=paper_target, send_gate=self.send_gate, files=paper_files,
-                             account_ctx_loader=load_ctx)
-                sync = PaperSync(**paper)
-                takeover = PaperTakeover(**paper)
-        return TradingPage(names, service, unavailable=problem, target_text=target_text,
+            else:
+                sync, takeover = target.sync(), target.takeover()
+        if self._on_duty():
+            self._manual_service = service   # 正式模式：手動單對帳在背景持續跑（同 Tk）
+        return TradingPage(names, service, unavailable=problem,
+                           target_text=target.text if target is not None else "",
                            dialogs=self._dialogs, log=self.log, symbol_loader=symbol_loader,
-                           sync=sync, takeover=takeover, live=mode is PanelMode.PRODUCTION)
-
-    def _manual_order_notice(self, account: str, message: str) -> bool:
-        """手動單結案通知：paper 單只寫 Output Log，不發 Telegram。"""
-        lines = [line.strip() for line in message.splitlines() if line.strip()]
-        self.log(f"[手動單·paper] {account}：" + " ／ ".join(lines))
-        return True
+                           sync=sync, takeover=takeover, live=self._on_duty())
 
     # ── 生命週期 ─────────────────────────────────────────────────────
 

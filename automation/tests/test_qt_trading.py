@@ -6,8 +6,7 @@
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
-from types import SimpleNamespace as NS
+from datetime import date
 
 import pytest
 
@@ -15,21 +14,11 @@ from tests.test_qt_panel import (  # noqa: F401  fixtures
     dialogs, extras, make_window, portfolio, ports, source,
 )
 from tests.test_manual_orders import FakeIB, FakeIBState
+from tests.test_qt_order_target import NOW, PAPER, order_factory
 
 from PySide6.QtCore import Qt
 
-from manual_orders import DEFAULT_STORE_PATH, ManualOrderService, ManualOrderStore
-from qt_panel.broker_gate import PaperTarget
-
-PAPER = PaperTarget(host="127.0.0.1", port=4013, account="DU001", client_id=92)
-# 2026-09-29（週二）美東 14:00，一般時段；最近已收盤的交易日是 09-28
-NOW = datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc)
-
-
-def order_factory(action, quantity, price):
-    return NS(action=action, totalQuantity=quantity, lmtPrice=price, orderType="LMT",
-              tif="DAY", outsideRth=False, account="", orderRef="", orderId=0, permId=0,
-              cashQty="UNSET")
+from manual_orders import ManualOrderService
 
 
 class FakeSymbols:
@@ -55,13 +44,13 @@ def ib_state():
 
 
 @pytest.fixture
-def services(tmp_path):
+def services():
+    """手動單 service：連線、帳戶身分、紀錄檔（tmp_path）、通知由送單目標給。"""
     built = []
 
     def build(**kw):
         service = ManualOrderService(
             account_names=["Taylor", "Rosa", "Yvonne"],
-            store=ManualOrderStore(tmp_path / "paper.sqlite3"),
             universe_loader=lambda: {"SPY", "SSO"}, order_factory=order_factory,
             clock=lambda: NOW, **kw)
         built.append((service, kw))
@@ -149,13 +138,6 @@ def test_gateway_turning_live_while_the_confirm_dialog_is_open_blocks_the_send(
     qtbot.waitUntil(lambda: "送單閘門拒絕" in panel.preview_text.text(), timeout=3000)
     assert panel.form_status.text() == "送單前重新檢查未通過"
     assert ib_state.placed == []
-
-
-def test_every_trading_connection_goes_through_the_gate(trading_window, services):
-    w = trading_window()
-    [(_service, kw)] = services.built
-    assert kw["ib_factory"] == w.send_gate.broker
-    assert kw["account_ctx_factory"]("Rosa", 6).account == "DU001"
 
 
 # ── paper：預覽 → 二次確認 → 送出 → 狀態追蹤（AC2、AC4）─────────────
@@ -416,15 +398,6 @@ def test_unknown_symbol_hint_still_allows_preview(trading_window, qtbot):
 
 
 # ── 設定與紀錄檔 ─────────────────────────────────────────────────────
-
-def test_paper_orders_use_their_own_store_not_the_tk_manual_orders_file(tmp_path):
-    from qt_panel.trading import PAPER_STORE_PATH, paper_manual_order_service
-
-    assert PAPER_STORE_PATH != DEFAULT_STORE_PATH
-    service = paper_manual_order_service(["Taylor"], tmp_path / "p.sqlite3")(
-        notifier=lambda *_: True)
-    assert service.store.path == tmp_path / "p.sqlite3"
-
 
 def test_without_a_paper_target_no_service_is_built(make_window, services):
     w = make_window(manual_order_service=services, paper_problem="尚未設定 paper 連線")

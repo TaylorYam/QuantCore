@@ -153,10 +153,3 @@ def test_bad_or_missing_paper_config_explains_what_to_fix(section, words):
     for word in words:
         assert word in problem
 
-
-def test_paper_target_maps_every_account_name_to_the_paper_account():
-    target, _ = load_paper_target(
-        {PAPER_CONFIG_KEY: {"port": 4013, "account": "DU1"}}, ACCOUNTS)
-    ctx = target.account_ctx("Rosa", 6)
-    assert (ctx.name, ctx.account, ctx.host, ctx.port, ctx.client_id) == (
-        "Rosa", "DU1", "127.0.0.1", 4013, target.client_id)

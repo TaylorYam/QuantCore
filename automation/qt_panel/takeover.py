@@ -4,10 +4,10 @@
 確認視窗與結果標題共用 `takeover_preview_text`，預覽與送單沿用 `strategy_takeover`。
 也可以從 Sync Pos 預覽的暫停列直接進來（同 Tk）。
 
-並行模式只接 paper（`PaperTakeover`）：連線走送單閘門（clientId 和 Sync Pos 分開），
-手動歸屬紀錄與手動單紀錄用 paper 專用檔；不寫 state、不發 Telegram，接管結果只寫
-Output Log。拒絕（TakeoverRefused）在狀態列說明原因；預覽過期（TakeoverStale）換上
-新預覽並標出原因，要再確認一次。計算中按「放棄」或關掉 Panel，結果直接丟掉。
+暫停清單、預覽、送單與通知是送單目標給的 `order_target.TakeoverOperations`
+（#183）：連線、clientId、歸屬紀錄與通知對象都由送單目標決定，這裡只有畫面。
+拒絕（TakeoverRefused）在狀態列說明原因；預覽過期（TakeoverStale）換上新預覽並標出
+原因，要再確認一次。計算中按「放棄」或關掉 Panel，結果直接丟掉。
 """
 from __future__ import annotations
 
@@ -18,11 +18,10 @@ from PySide6.QtWidgets import (
     QComboBox, QHBoxLayout, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget,
 )
 
-import manual_attribution
 import takeover_preview_text as preview_text
 
 from qt_panel import theme
-from qt_panel.broker_gate import paper_records
+from qt_panel.order_target import TakeoverOperations
 from qt_panel.trading_common import MainThread, background
 from qt_panel.widgets import Card, clear_layout, label, mono
 
@@ -30,49 +29,9 @@ FIELD_WIDTH = 240
 SYMBOL_WIDTH = 140
 
 
-class PaperTakeover:
-    """paper 版交給策略接管的預覽與送單（不含畫面）。實盤版是 live_trading.LiveTakeover。"""
-    venue = "paper"
-
-    def __init__(self, *, target, send_gate, files, account_ctx_loader: Callable):
-        self._target = target
-        self._gate = send_gate
-        self._files = files
-        self._load_ctx = account_ctx_loader
-        self.target_text = target.describe()
-
-    def _ctx(self, account: str):
-        from account_utils import ROLE_TAKEOVER
-        return self._target.takeover_ctx(self._load_ctx(account, ROLE_TAKEOVER))
-
-    def paused(self, account: str) -> dict[str, str]:
-        """這個帳戶在 paper 歸屬紀錄裡被暫停的標的 → 原因（唯讀）。"""
-        return manual_attribution.paused_symbols(account, path=self._files.attribution)
-
-    def preview(self, account: str, symbol: str, log_fn: Callable[[str], None]):
-        import strategy_takeover
-        return strategy_takeover.build_preview(
-            self._ctx(account), symbol, log_fn,
-            records=paper_records(self._gate, self._files))
-
-    def submit(self, preview, log_fn: Callable[[str], None]):
-        import strategy_takeover
-        return strategy_takeover.submit(
-            preview, self._ctx(preview.account_name), log_fn,
-            records=paper_records(self._gate, self._files))
-
-    def take_notices(self, account: str) -> list[str]:
-        """接管結果等尚未通知的事：回傳要寫進 Output Log 的行，並在 paper 歸屬紀錄記已通知
-        （Tk 是發 Telegram 成功才記）。"""
-        path = self._files.attribution
-        notices = manual_attribution.pending_notices(account, path=path)
-        manual_attribution.mark_notified(account, [n.key for n in notices], path=path)
-        return manual_attribution.pause_notice_lines(notices)
-
-
 class TakeoverPanel(QWidget):
-    def __init__(self, account_names: list[str], takeover: PaperTakeover, *, dialogs,
-                 log: Callable[[str], None]):
+    def __init__(self, account_names: list[str], takeover: TakeoverOperations, *,
+                 dialogs, log: Callable[[str], None]):
         super().__init__()
         self._takeover = takeover
         self._dialogs = dialogs

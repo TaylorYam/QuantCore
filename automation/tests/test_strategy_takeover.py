@@ -23,6 +23,7 @@ import pytest
 
 import manual_attribution as ma
 import strategy_takeover as st
+from sync_position import SyncRecords
 
 UNIVERSE = {"AAPL", "MSFT", "SPY", "SSO"}
 JOINED = UNIVERSE | {"XYZ", "ABC"}          # XYZ、ABC 之後被加入 S&P 500
@@ -130,7 +131,14 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(ma, "DEFAULT_LEDGER_PATH", tmp_path / "ledger.sqlite3")
     monkeypatch.setattr(ma, "DEFAULT_MANUAL_ORDERS_PATH", env.orders)
     monkeypatch.setattr(sp500_state, "STATE_DIR", env.state_dir)
-    monkeypatch.setattr(ib_fetcher, "connect", lambda ctx, *a, **k: FakeIB(env))
+    def no_default(*_a, **_k):
+        raise AssertionError("接管不該走 ib_fetcher.connect 的預設連線")
+
+    monkeypatch.setattr(ib_fetcher, "connect", no_default)
+    # 實盤送單目標給的連線與紀錄（#183：沒有預設，一律明確給）
+    env.records = SyncRecords(connect=lambda ctx: FakeIB(env),
+                              attribution_ledger=tmp_path / "ledger.sqlite3",
+                              manual_orders_store=env.orders, persist_strategy_state=True)
     monkeypatch.setattr(ib_fetcher, "get_prices",
                         lambda ib, syms, ctx, **k: {s: 100.0 for s in syms})
     monkeypatch.setattr(signals, "get_sp500_universe", lambda historical=True: set(JOINED))
@@ -152,7 +160,7 @@ def env(tmp_path, monkeypatch):
 # ── 預覽 ─────────────────────────────────────────────────────────────
 
 def test_preview_shows_account_symbol_target_delta_and_direction(env):
-    p = st.build_preview(_ctx(), "XYZ")
+    p = st.build_preview(_ctx(), "XYZ", records=env.records)
     assert (p.account_name, p.symbol, p.current, p.manual) == ("Rosa", "XYZ", 10.0, 10.0)
     assert (p.target, p.parts, p.delta, p.action, p.quantity) == (
         250, (("SP500", 250),), 240, "BUY", 240)
@@ -165,13 +173,13 @@ def test_preview_shows_account_symbol_target_delta_and_direction(env):
 
 def test_zero_target_means_selling_the_existing_shares(env):
     env.sp500 = {"AAPL": 1.0}
-    p = st.build_preview(_ctx(), "XYZ")
+    p = st.build_preview(_ctx(), "XYZ", records=env.records)
     assert (p.target, p.delta, p.action, p.quantity) == (0, -10, "SELL", 10)
     assert "策略目標為 0，將賣出現有 10 股" in "\n".join(p.lines())
 
 
 def test_cancelled_preview_sends_nothing_and_keeps_the_pause(env):
-    st.build_preview(_ctx(), "XYZ")                          # 使用者按 Cancel
+    st.build_preview(_ctx(), "XYZ", records=env.records)     # 使用者按 Cancel
     assert env.placed == []
     assert set(ma.paused_symbols("Rosa")) == {"XYZ", "ABC"}
     assert ma.pending_takeover("Rosa", "XYZ") is None
@@ -180,7 +188,7 @@ def test_cancelled_preview_sends_nothing_and_keeps_the_pause(env):
 def test_unresolved_manual_order_refuses_takeover(env):
     _manual_order(env.orders, "M:1", "Rosa", "XYZ", "SELL", 0, "ACCEPTED")
     with pytest.raises(st.TakeoverRefused, match="未結案"):
-        st.build_preview(_ctx(), "XYZ")
+        st.build_preview(_ctx(), "XYZ", records=env.records)
 
 
 def test_open_order_on_the_symbol_refuses_takeover(env):
@@ -189,15 +197,15 @@ def test_open_order_on_the_symbol_refuses_takeover(env):
     other = NS(order=NS(account="U2", action="BUY", totalQuantity=1),
                contract=NS(symbol="AAPL"), orderStatus=NS(status="Submitted"))
     env.open_orders = [other]
-    st.build_preview(_ctx(), "XYZ")                          # 別的標的的掛單不擋
+    st.build_preview(_ctx(), "XYZ", records=env.records)     # 別的標的的掛單不擋
     env.open_orders = [tws, other]
     with pytest.raises(st.TakeoverRefused, match="1 筆掛單（SELL 3）"):
-        st.build_preview(_ctx(), "XYZ")
+        st.build_preview(_ctx(), "XYZ", records=env.records)
 
 
 def test_symbol_that_is_not_paused_cannot_be_taken_over(env):
     with pytest.raises(st.TakeoverRefused, match="沒有被手動持倉暫停"):
-        st.build_preview(_ctx(), "AAPL")
+        st.build_preview(_ctx(), "AAPL", records=env.records)
 
 
 def test_per_strategy_rounding_is_kept(env):
@@ -206,17 +214,17 @@ def test_per_strategy_rounding_is_kept(env):
     env.positions["XLK"] = 5.0
     env.sr = {"XLK": 0.003625}          # 100000 × 0.8 × w / 100 = 2.9  → int  → 2
     env.skewls = {"XLK": 0.0046667}     # 100000 × 0.3 × w / 100 ≈ 1.4  → round → 1
-    p = st.build_preview(_ctx(alloc=(0.8, 0.5, 0.3)), "XLK")
+    p = st.build_preview(_ctx(alloc=(0.8, 0.5, 0.3)), "XLK", records=env.records)
     assert p.parts == (("SR", 2), ("SkewLS", 1)) and p.target == 3   # 合權重 4.3 → 4
 
 
 # ── 送單 ─────────────────────────────────────────────────────────────
 
 def test_changed_position_invalidates_the_old_preview(env):
-    p = st.build_preview(_ctx(), "XYZ")
+    p = st.build_preview(_ctx(), "XYZ", records=env.records)
     env.positions["XYZ"] = 12.0                               # 預覽後在 App 又買 2 股
     with pytest.raises(st.TakeoverStale) as info:
-        st.submit(p, _ctx())
+        st.submit(p, _ctx(), records=env.records)
     assert info.value.fresh.current == 12.0 and info.value.fresh.delta == 238
     assert env.placed == [] and ma.pending_takeover("Rosa", "XYZ") is None
 
@@ -225,7 +233,8 @@ def test_success_sends_only_that_symbol_and_releases_only_its_pause(env):
     ma.evaluate("Taylor", {"XYZ": 7.0}, UNIVERSE)
     ma.evaluate("Taylor", {"XYZ": 7.0}, JOINED)
 
-    result = st.submit(st.build_preview(_ctx(), "XYZ"), _ctx())
+    result = st.submit(st.build_preview(_ctx(), "XYZ", records=env.records), _ctx(),
+                       records=env.records)
 
     assert result.status == "COMPLETED", result.message
     [o] = env.placed
@@ -238,18 +247,35 @@ def test_success_sends_only_that_symbol_and_releases_only_its_pause(env):
     assert list(env.state_dir.iterdir()) == []
 
     sent = []
-    assert st.notify(_ctx(), send=lambda m: sent.append(m) or True)
+    assert st.notify(_ctx(), send=lambda m: sent.append(m) or True, records=env.records)
     assert "✅ XYZ 已交給策略接管" in sent[0]
-    assert not st.notify(_ctx(), send=lambda m: sent.append(m) or True)   # 只通知一次
+    assert not st.notify(_ctx(), send=lambda m: sent.append(m) or True, records=env.records)   # 只通知一次
 
     # 之後的觀察：XYZ 全歸策略，不再暫停
     after = ma.evaluate("Rosa", dict(env.positions), JOINED)
     assert "XYZ" not in after.paused and "XYZ" not in after.manual
 
 
+def test_preview_and_submit_without_records_refuse_before_connecting(env):
+    """#183：沒有「預設實盤」— 忘了給連線與紀錄就報錯，不會不知情地繞過送單閘門。"""
+    with pytest.raises(TypeError):
+        st.build_preview(_ctx(), "XYZ")
+    with pytest.raises(TypeError, match="SyncRecords"):
+        st.build_preview(_ctx(), "XYZ", records=None)
+    p = st.build_preview(_ctx(), "XYZ", records=env.records)
+    with pytest.raises(TypeError):
+        st.submit(p, _ctx())
+    with pytest.raises(TypeError, match="SyncRecords"):
+        st.submit(p, _ctx(), records=None)
+    with pytest.raises(TypeError):
+        st.notify(_ctx(), lambda m: True)
+    assert env.placed == [] and ma.pending_takeover("Rosa", "XYZ") is None
+
+
 def test_zero_target_success_sells_everything(env):
     env.sp500 = {"AAPL": 1.0}
-    result = st.submit(st.build_preview(_ctx(), "XYZ"), _ctx())
+    result = st.submit(st.build_preview(_ctx(), "XYZ", records=env.records), _ctx(),
+                       records=env.records)
     assert result.status == "COMPLETED"
     assert [(o.action, o.qty) for o in env.placed] == [("SELL", 10)]
     assert env.positions["XYZ"] == 0
@@ -257,14 +283,16 @@ def test_zero_target_success_sells_everything(env):
 
 def test_no_difference_hands_over_without_an_order(env):
     env.sp500 = {"AAPL": 0.98, "XYZ": 0.02}                  # 100000 × 0.5 × 0.02 / 100 = 10
-    result = st.submit(st.build_preview(_ctx(), "XYZ"), _ctx())
+    result = st.submit(st.build_preview(_ctx(), "XYZ", records=env.records), _ctx(),
+                       records=env.records)
     assert result.status == "COMPLETED" and env.placed == []
     assert "XYZ" not in ma.paused_symbols("Rosa")
 
 
 def test_rejected_order_keeps_the_pause(env):
     env.behavior = "reject"
-    result = st.submit(st.build_preview(_ctx(), "XYZ"), _ctx())
+    result = st.submit(st.build_preview(_ctx(), "XYZ", records=env.records), _ctx(),
+                       records=env.records)
     assert result.status == "FAILED" and "IB 拒單（Order rejected - reason: margin）" in result.message
     assert "XYZ" in ma.paused_symbols("Rosa")
     assert ma.pending_takeover("Rosa", "XYZ") is None
@@ -274,7 +302,8 @@ def test_rejected_order_keeps_the_pause(env):
 
 def test_partial_fill_stays_paused_and_completes_after_restart(env):
     env.behavior = "partial"
-    result = st.submit(st.build_preview(_ctx(), "XYZ"), _ctx())
+    result = st.submit(st.build_preview(_ctx(), "XYZ", records=env.records), _ctx(),
+                       records=env.records)
     assert result.status == "PENDING"
     reason = ma.paused_symbols("Rosa")["XYZ"]
     assert reason.startswith("接管中：已送 BUY 240 股（接管後預計 250 股）")
@@ -289,20 +318,23 @@ def test_partial_fill_stays_paused_and_completes_after_restart(env):
 
 def test_working_order_times_out_as_pending(env):
     env.behavior = "working"
-    result = st.submit(st.build_preview(_ctx(), "XYZ"), _ctx())
+    result = st.submit(st.build_preview(_ctx(), "XYZ", records=env.records), _ctx(),
+                       records=env.records)
     assert result.status == "PENDING" and "維持暫停" in result.message
     assert ma.pending_takeover("Rosa", "XYZ").expected_after == 250.0
 
 
 def test_unknown_send_result_keeps_the_record(env):
     env.behavior = "raise"
-    result = st.submit(st.build_preview(_ctx(), "XYZ"), _ctx())
+    result = st.submit(st.build_preview(_ctx(), "XYZ", records=env.records), _ctx(),
+                       records=env.records)
     assert result.status == "PENDING" and "送單結果不確定" in result.message
     assert ma.pending_takeover("Rosa", "XYZ") is not None and "XYZ" in ma.paused_symbols("Rosa")
 
 
 def test_dry_run_changes_nothing(env):
-    result = st.submit(st.build_preview(_ctx(dry_run=True), "XYZ"), _ctx(dry_run=True))
+    result = st.submit(st.build_preview(_ctx(dry_run=True), "XYZ", records=env.records),
+                       _ctx(dry_run=True), records=env.records)
     assert result.status == "DRY_RUN" and env.placed == []
     assert ma.pending_takeover("Rosa", "XYZ") is None and "XYZ" in ma.paused_symbols("Rosa")
 
@@ -310,7 +342,6 @@ def test_dry_run_changes_nothing(env):
 def test_other_records_keep_the_live_ledger_untouched(env, tmp_path, monkeypatch):
     """新 Panel 的 paper 接管（#153）：連線、歸屬紀錄、手動單紀錄都用傳進來的那一組。"""
     import ib_fetcher
-    from sync_position import SyncRecords
 
     def no_live(*_a, **_k):
         raise AssertionError("不該連實盤")

@@ -1,18 +1,16 @@
 """新 Panel 的 Trading 分頁：手動單（#151）、Sync Pos（#152）、交給策略接管（#153）。
-並行模式只接 paper；正式模式（#154）送實盤，見 live_trading。
+送去 paper 或實盤由主視窗建的送單目標決定（`order_target`，#183）。
 
 流程和 Tk 的 `manual_order_view.ManualOrderWindow` 一樣：填欄位 → 預覽 → 再次核對
 （重新向 IB 檢查）→ 確認視窗 → 送出 → 狀態追蹤（部分成交、撤單、過期、修改）。
 欄位解析、預覽與狀態列文字共用 `manual_order_form`（#146），帳戶、合約、送單的
 判斷全在 `manual_orders.ManualOrderService`；這裡只做 Qt 那一側。
 
-送單連線一律由主視窗交給 service 的送單閘門（`broker_gate.SendGate`）建立；
-並行模式下只接 paper Gateway。IB 在背景執行緒跑，結果排回主執行緒更新畫面。
+手動單 service、Sync Pos、接管操作都由送單目標提供，送單連線一律經過送單閘門
+（`broker_gate.SendGate`）。IB 在背景執行緒跑，結果排回主執行緒更新畫面。
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QEvent, Qt, QTimer
@@ -27,24 +25,11 @@ from ime_guard import to_ascii_input
 from manual_order_form import ManualOrderForm
 
 from qt_panel import theme
-from qt_panel.sync_pos import PaperSync, SyncPosPanel
-from qt_panel.takeover import PaperTakeover, TakeoverPanel
+from qt_panel.order_target import SyncOperations, TakeoverOperations
+from qt_panel.sync_pos import SyncPosPanel
+from qt_panel.takeover import TakeoverPanel
 from qt_panel.trading_common import MainThread, background
 from qt_panel.widgets import Card, label
-
-AUTOMATION_DIR = Path(__file__).resolve().parent.parent
-# paper 單另存一個紀錄檔：不能混進 Tk Panel 的 manual_orders.sqlite3，否則 Tk 的
-# 對帳會拿實盤 Gateway 去找這些單。
-PAPER_STORE_PATH = AUTOMATION_DIR / "qt_panel_paper_orders.sqlite3"
-# paper 帳戶的手動持倉歸屬紀錄（#152）：不能寫進實盤的 manual_attribution.sqlite3
-PAPER_ATTRIBUTION_PATH = AUTOMATION_DIR / "qt_panel_paper_attribution.sqlite3"
-
-
-@dataclass(frozen=True)
-class PaperFiles:
-    """paper 專用的本機紀錄檔。"""
-    orders: Path = PAPER_STORE_PATH
-    attribution: Path = PAPER_ATTRIBUTION_PATH
 
 POLL_INTERVAL_MS = 10_000
 SYMBOL_SUGGESTION_LIMIT = 8
@@ -53,16 +38,6 @@ STATUS_COLUMN = 6
 # 表單欄位固定寬度、靠左排：寬螢幕不會把輸入框拉滿整行（#169）
 FIELD_WIDTH = 240
 SYMBOL_WIDTH = 320      # 代碼欄下方要放公司名稱提示
-
-
-def paper_manual_order_service(account_names: list[str],
-                               store_path: Path = PAPER_STORE_PATH) -> Callable:
-    """正式執行時的 service 工廠：paper 專用紀錄檔，其餘（連線、帳戶、通知）由主視窗注入。"""
-    def build(**kwargs):
-        from manual_orders import ManualOrderService, ManualOrderStore
-        return ManualOrderService(account_names=account_names,
-                                  store=ManualOrderStore(store_path), **kwargs)
-    return build
 
 
 def ascii_only(edit: QLineEdit) -> None:
@@ -733,8 +708,8 @@ class TradingPage(QWidget):
 
     def __init__(self, account_names: list[str], service, *, unavailable: str = "",
                  target_text: str = "", dialogs, log: Callable[[str], None],
-                 symbol_loader: Callable | None = None, sync: PaperSync | None = None,
-                 takeover: PaperTakeover | None = None, live: bool = False):
+                 symbol_loader: Callable | None = None, sync: SyncOperations | None = None,
+                 takeover: TakeoverOperations | None = None, live: bool = False):
         super().__init__()
         # 內容放進捲動區：確認內容很多行時可以捲，不會撐大主視窗被螢幕切掉（#171）
         outer = QVBoxLayout(self)

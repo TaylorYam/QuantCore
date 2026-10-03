@@ -342,8 +342,12 @@ def test_sync_pos_asks_for_account_and_previews_that_account(fake_config, monkey
 
     compute_sync_plan = sync_position.compute_sync_plan
 
-    def compute(ctx, log_fn=None):
-        plan = compute_sync_plan(ctx, log_fn=log_fn)
+    def compute(ctx, log_fn=None, *, records):
+        # Tk 明確指定實盤（#183 拿掉預設）：實盤歸屬紀錄、寫回 state
+        import manual_attribution
+        assert records.persist_strategy_state
+        assert records.attribution_ledger == manual_attribution.DEFAULT_LEDGER_PATH
+        plan = compute_sync_plan(ctx, log_fn=log_fn, records=records)
         plans.append(plan)
         return plan
 

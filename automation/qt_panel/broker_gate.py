@@ -6,17 +6,18 @@
 沒通過檢查的連線一律不能送單／撤單。做法沿用 `paper_verify_manual_orders` 的
 paper-only 檢查。帳號清單是連線時 Gateway 給的，同一條連線不會變，所以只查一次：
 在 placeOrder 才拒絕的話，service 已經先寫了委託紀錄，會留下卡住的假委託。
-正式模式（切換工單 #154）才放行實盤。
+正式模式（切換工單 #154）才放行實盤。閘門只判斷放不放行；送去哪、記在哪、通知誰
+是送單目標（`order_target`，#183）決定的。
 
 **paper 連線設定**：並行模式下 Trading 只接 paper Gateway，位置寫在 config.json 的
-`qt_panel_paper`（使用者自己填），三個帳戶名稱都導向這一個 paper 帳號。
+`qt_panel_paper`（使用者自己填）。這只是 paper 送單目標的連線設定（Gateway 位置與
+帳號）；三個帳戶名稱都導向這個 paper 帳號是 paper 送單目標做的。
 
 不 import PySide6。
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from types import SimpleNamespace
+from dataclasses import dataclass
 from typing import Callable, Iterable, Mapping
 
 from manual_orders import ManualOrderError
@@ -107,29 +108,11 @@ class SendGate:
 
 @dataclass(frozen=True)
 class PaperTarget:
+    """config.json `qt_panel_paper`：paper Gateway 的位置、paper 帳號與基準 clientId。"""
     host: str
     port: int
     account: str
     client_id: int
-
-    def account_ctx(self, name: str, _role: int) -> SimpleNamespace:
-        """ManualOrderService 的 account_ctx_factory：任何帳戶名稱都導向 paper 帳號。"""
-        return SimpleNamespace(name=name, account=self.account, host=self.host,
-                               port=self.port, client_id=self.client_id)
-
-    def sync_ctx(self, base):
-        """Sync Pos 的 AccountCtx：策略設定（Allocation 等）沿用該帳戶，
-        連線改到 paper；不去實盤 Gateway 借報價、不帶 Telegram 設定、一定真的送（paper）。"""
-        return self._strategy_ctx(base, SYNC_CLIENT_OFFSET)
-
-    def takeover_ctx(self, base):
-        """交給策略接管的 AccountCtx（#153）：同 sync_ctx，只是 clientId 不同。"""
-        return self._strategy_ctx(base, TAKEOVER_CLIENT_OFFSET)
-
-    def _strategy_ctx(self, base, client_offset: int):
-        return replace(base, host=self.host, port=self.port, account=self.account,
-                       client_id=self.client_id + client_offset, price_feed_port=None,
-                       dry_run=False, tg_token="", tg_chat_id="")
 
     def describe(self) -> str:
         return f"paper 帳號 {self.account}（{self.host}:{self.port}）"
@@ -146,15 +129,6 @@ def gated_connect(send_gate):
             raise
         return ib
     return connect
-
-
-def paper_records(send_gate, files):
-    """paper 的 IB 連線與本機紀錄（Sync Pos、交給策略接管共用）：連線走送單閘門、
-    歸屬與手動單紀錄用 paper 專用檔、SP500／SkewLS state 只讀不寫。"""
-    from sync_position import SyncRecords
-
-    return SyncRecords(connect=gated_connect(send_gate), attribution_ledger=files.attribution,
-                       manual_orders_store=files.orders, persist_strategy_state=False)
 
 
 def load_paper_target(config: Mapping, accounts: Iterable[Mapping]

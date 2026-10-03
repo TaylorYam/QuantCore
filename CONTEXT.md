@@ -111,12 +111,16 @@ _Avoid_: 斷線自動重連（auto-restart 是每天固定一次的重啟，不�
 _Avoid_: Auto-restart（那是 Gateway 每天自己重啟、免 IB Key，和這個一鍵登入無關）
 
 **並行模式 (Parallel Mode)**:
-Panel 從 Tk 換成 PySide6 的過渡期（ADR-0012）：新 Panel 和 Tk Panel 同時存在，新 Panel 對實盤只看不下單、不值班，IB 連線用自己的唯讀身分；新 Panel 的 Trading 只接 paper Gateway（經過 [[送單閘門]]）。值班與實盤下單仍由 Tk Panel 負責。相對的是**正式模式**：切換後值班、系統匣、實盤送單都交給新 Panel。由 `config.json` 的 `qt_panel_mode` 決定，預設並行模式。
+Panel 從 Tk 換成 PySide6 的過渡期（ADR-0012）：新 Panel 和 Tk Panel 同時存在，新 Panel 對實盤只看不下單、不值班，IB 連線用自己的唯讀身分；新 Panel 的 Trading 只接 paper Gateway（paper [[送單目標]]，連線經過 [[送單閘門]]）。值班鎖搶不到而退回並行模式時也一樣。值班與實盤下單仍由 Tk Panel 負責。相對的是**正式模式**：切換後值班、系統匣、實盤送單都交給新 Panel。由 `config.json` 的 `qt_panel_mode` 決定，預設並行模式。
 _Avoid_: 測試模式、Paper 模式（並行模式照樣讀實盤帳戶，只是不下單；paper 是模擬帳戶）
 
 **送單閘門 (Send Gate)**:
-新 Panel 所有送單路徑（手動單、Sync Pos、交給策略接管）共用的唯一判斷點：每條送單連線連上 Gateway 後先讀它管理的帳號，並行模式下不是全部 paper（DU/DF 開頭）就斷線拒絕並在畫面說明。正式模式才放行實盤。
+新 Panel 所有送單路徑（手動單、Sync Pos、交給策略接管）共用的唯一判斷點：每條送單連線連上 Gateway 後先讀它管理的帳號，並行模式下不是全部 paper（DU/DF 開頭）就斷線拒絕並在畫面說明。正式模式才放行實盤。閘門只判斷這條連線放不放行；送去哪、記在哪、通知誰由 [[送單目標]] 決定，送單目標的連線一律向閘門要。
 _Avoid_: paper 模式（並行模式照樣讀實盤，閘門只管送單）
+
+**送單目標 (Order Target)**:
+新 Panel 這次執行的單送去哪、用哪個 IB 身分、記在哪、通知誰。一次執行只有一個，主視窗依實際生效的模式建一次交給 Trading：**正式模式** → 實盤送單目標（各帳戶自己的 Gateway 與 clientId role、實盤的手動單與手動歸屬紀錄、寫回 SP500／SkewLS state、通知發該帳戶 Telegram、Sync Pos 寫 trade_log.xlsx）；**並行模式**且 `qt_panel_paper` 有效 → paper 送單目標（三個帳戶名稱都導向 paper 帳號、paper 專用紀錄檔、state 只讀不寫、通知只寫 Output Log）；paper 設定缺漏或無效 → 沒有送單目標，Trading 顯示原因。手動單、Sync Pos、交給策略接管的 paper／實盤差異都只在送單目標裡（`automation/qt_panel/order_target.py`）；`sync_position`／`strategy_takeover` 沒拿到送單目標給的連線與紀錄就報錯，沒有「預設實盤」。和 [[送單閘門]] 分工：閘門判斷放不放行，送單目標決定送去哪、記在哪、通知誰。`config.json` 的 `qt_panel_paper`（paper Gateway 位置與帳號）只是 paper 送單目標的連線設定，不是送單目標本身。
+_Avoid_: 送單模式（paper／實盤是送單目標的兩種，不是另一個模式；模式見 [[並行模式 (Parallel Mode)]]）
 
 **Broker（券商連線層）**:
 QuantCore 跟 IB 打交道的那一層：送單、查成交、查持倉與權益。畫面上使用者操作的單（手動單、Sync Pos、交給策略接管）屬於 Panel 的 Trading；真正把單送進 IB、回報成交的是 Broker。

@@ -3,9 +3,9 @@
 流程和 Tk 的 `sync_preview_window` 一樣；預覽的文字與表格列共用
 `sync_preview_rows`（#146），計算與送單沿用 `sync_position`。
 
-並行模式只接 paper（`PaperSync`）：連線走送單閘門；手動歸屬紀錄與手動單紀錄用
-paper 專用檔；SP500／SkewLS state 只讀不寫；不寫 trade_log.xlsx、不發 Telegram，
-結果與暫停通知只寫 Output Log。計算中按「放棄」或關掉 Panel，算完的結果直接丟掉。
+計算、通知與送單是送單目標給的 `order_target.SyncOperations`（#183）：送去哪、
+記在哪、通知誰（paper 只寫 Output Log；實盤發 Telegram、寫 trade_log.xlsx）都由
+送單目標決定，這裡只有畫面。計算中按「放棄」或關掉 Panel，算完的結果直接丟掉。
 暫停列的「交給策略接管」（#153）同 Tk：這份 Sync 預覽作廢，改開該標的的接管預覽。
 """
 from __future__ import annotations
@@ -19,56 +19,18 @@ from PySide6.QtWidgets import (
     QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-import manual_attribution
 import sync_preview_rows as preview_rows
 
 from qt_panel import theme
-from qt_panel.broker_gate import paper_records
+from qt_panel.order_target import SyncOperations
 from qt_panel.trading_common import MainThread, background
 from qt_panel.widgets import Card, clear_layout, label, mono as _mono
 
 FIELD_WIDTH = 240
 
 
-class PaperSync:
-    """paper 版 Sync Pos 的計算與送單（不含畫面）。實盤版是 live_trading.LiveSync。"""
-    venue = "paper"
-    helper_text = ("計算：讀 paper 帳戶的權益與持倉，依該帳戶的策略設定算理論持倉與差額；"
-                   "確認後以 LMT（ask×1.003／bid×0.997、outside RTH）送出。"
-                   "手動持倉暫停中的標的不送。")
-
-    def __init__(self, *, target, send_gate, files, account_ctx_loader: Callable):
-        self._target = target
-        self._gate = send_gate
-        self._files = files
-        self._load_ctx = account_ctx_loader
-        self.target_text = target.describe()
-
-    def records(self):
-        return paper_records(self._gate, self._files)
-
-    def compute(self, account: str, log_fn: Callable[[str], None]):
-        from account_utils import ROLE_REBALANCE
-        import sync_position
-
-        ctx = self._target.sync_ctx(self._load_ctx(account, ROLE_REBALANCE))
-        return sync_position.compute_sync_plan(ctx, log_fn=log_fn, records=self.records())
-
-    def take_notices(self, plan) -> list[str]:
-        """新出現的暫停通知：回傳要寫進 Output Log 的行，並在 paper 歸屬紀錄記已通知，
-        同一件事只提一次（Tk 是發 Telegram 成功才記）。"""
-        lines = manual_attribution.pause_notice_lines(plan.pause_notices)
-        manual_attribution.mark_notified(plan.ctx.name, [n.key for n in plan.pause_notices],
-                                         path=self._files.attribution)
-        return lines
-
-    def submit(self, plan, log_fn: Callable[[str], None]):
-        import sync_position
-        return sync_position.submit_sync_orders(plan, log_fn=log_fn)
-
-
 class SyncPosPanel(QWidget):
-    def __init__(self, account_names: list[str], sync: PaperSync, *, dialogs,
+    def __init__(self, account_names: list[str], sync: SyncOperations, *, dialogs,
                  log: Callable[[str], None],
                  on_takeover: Callable[[str, str], str] | None = None):
         super().__init__()

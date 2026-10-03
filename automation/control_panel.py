@@ -1289,6 +1289,21 @@ class ControlPanel(tk.Tk):
         from account_ctx import AccountCtx
         return AccountCtx.from_name(account_name, ROLE_TAKEOVER)
 
+    @staticmethod
+    def _live_records():
+        """Tk 的 Sync Pos／接管：明確指定實盤（#183 拿掉了預設實盤）。
+        直接連各帳戶的實盤 Gateway（送單閘門屬新 Panel）、實盤手動歸屬與手動單紀錄、
+        寫回 SP500／SkewLS state — 與 #183 之前的預設完全相同。路徑在呼叫時才讀，
+        測試把預設路徑轉到暫存目錄仍有效。正式模式下 Tk 只看、不會走到這裡；
+        回退到並行模式時才用得到。#155 刪 Tk 時一起刪。"""
+        import ib_fetcher
+        import manual_attribution
+        from sync_position import SyncRecords
+        return SyncRecords(connect=ib_fetcher.connect,
+                           attribution_ledger=manual_attribution.DEFAULT_LEDGER_PATH,
+                           manual_orders_store=manual_attribution.DEFAULT_MANUAL_ORDERS_PATH,
+                           persist_strategy_state=True)
+
     def _takeover_compute_thread(self, account_name: str, symbol: str, window):
         try:
             import strategy_takeover as st
@@ -1297,7 +1312,7 @@ class ControlPanel(tk.Tk):
                 self.after(0, lambda m=msg: (self._log(m), window.progress(m)))
 
             preview = st.build_preview(self._takeover_ctx(account_name), symbol,
-                                       log_fn=progress)
+                                       log_fn=progress, records=self._live_records())
             self.after(0, lambda p=preview: window.show_preview(p))
         except Exception as e:
             err_msg = str(e)
@@ -1307,9 +1322,11 @@ class ControlPanel(tk.Tk):
     def _takeover_execute(self, account_name: str, preview, window):
         import strategy_takeover as st
         ctx = self._takeover_ctx(account_name)
+        records = self._live_records()
         try:
             result = st.submit(preview, ctx,
-                               log_fn=lambda m: self.after(0, lambda m=m: self._log(m)))
+                               log_fn=lambda m: self.after(0, lambda m=m: self._log(m)),
+                               records=records)
         except st.TakeoverStale as e:
             self.after(0, lambda f=e.fresh, n=str(e): window.show_preview(f, note=n))
             return
@@ -1324,7 +1341,7 @@ class ControlPanel(tk.Tk):
             window.show_result(r)))
         # 接管結果（完成／未完成）→ 該帳戶 Telegram，送達才記已通知
         try:
-            st.notify(ctx)
+            st.notify(ctx, records=records)
         except Exception as e:
             self.after(0, lambda m=str(e): self._log(f"[!] 接管結果通知失敗: {m}"))
 
@@ -1340,7 +1357,7 @@ class ControlPanel(tk.Tk):
                 self.after(0, lambda m=msg: (self._log(m), window.progress(m)))
 
             ctx = AccountCtx.from_name(account_name, ROLE_REBALANCE)
-            plan = sp.compute_sync_plan(ctx, log_fn=progress)
+            plan = sp.compute_sync_plan(ctx, log_fn=progress, records=self._live_records())
 
             # 新出現的手動持倉暫停 → 該帳戶 Telegram 通知一次（#106）
             try:

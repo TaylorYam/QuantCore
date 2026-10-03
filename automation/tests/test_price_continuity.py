@@ -473,9 +473,11 @@ def test_vix_full_refresh_uses_close_when_provider_omits_adjusted_close(updater,
     write(path, local)
     window = bars(value[80:], adj=value[80:] * 1.002, days=DAYS[80:])
     full = bars(value).drop(columns=["Adj Close"])
-    monkeypatch.setattr(updater, "_download_ohlcv", lambda *a, **k: full)
+    monkeypatch.setattr(updater, "_download_ohlcv",
+                        lambda symbol, *a, **k: full if symbol == "^VIX" else None)
 
-    added = updater._store(path, window, kind=updater.INDEX, today=UPDATE_DAY)
+    added = updater._store(path, window, kind=updater.INDEX, today=UPDATE_DAY,
+                           provider_symbol="^VIX")
 
     stored = pc.read_csv(path)
     assert added == len(value) - len(local)
@@ -492,6 +494,7 @@ def test_vix_full_history_check_asks_the_provider_for_the_index_symbol(updater, 
     full = bars(value, volume=0).drop(columns=["Adj Close"])
     requested = []
 
+    # not serve(): VIX's window and full-history calls both go through _download_ohlcv
     def download(symbol, start, end, **kwargs):
         requested.append(symbol)
         if symbol != "^VIX":

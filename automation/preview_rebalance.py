@@ -26,11 +26,11 @@ QuantCore — Rebalance 離線預演（不連 IB、零 state 寫入）
 ------------------------
 1. 不連 IB — 本模組不 import ib_fetcher 的連線函式（classify 所需的
    SR_ETFS / SKEWLS_INVERSE_TICKERS 常數由 rebalance_plan 內部取用）。
-2. 不寫 state — `block_state_writes()` 於整段決策期間攔截
-   sp500_state.save_state（get_sp500_weights 每次呼叫必存 — 含 dip-buy /
-   bull counter 推進，攔截是必要而非防禦）與 skewls_state.save_state
-   （rebalance_ib step 10 的觸發後更新在預演中不存在，純防禦）。
-   sp500 / skewls state 一律唯讀 load，決策與 live 用同一份 state。
+2. 不寫 state — 調倉輸入（plan_inputs）以 persist_state=False 取得：SP500
+   訊號只讀 state 不寫回（含 dip-buy / bull counter 推進），本來會寫的 state
+   記在 skipped_state_writes 供報表揭露；預演不做 rebalance_ib step 10 的
+   SkewLS 觸發後更新。sp500 / skewls state 一律唯讀 load，決策與 live 用同一份
+   state。
 3. 不動 accounts.json / config.json — AccountCtx.from_name 唯讀。
 
 combine_targets 內部不動（ADR-0008）— 本模組只是 rebalance_plan 的第三個
@@ -55,11 +55,10 @@ import logging
 import math
 import re
 import sys
-from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Callable, Iterator, Optional
+from typing import Callable, Optional
 
 # ── 路徑設定（與 rebalance_ib 相同慣例）─────────────────────────────────
 BASE_DIR = Path(__file__).parent
@@ -71,10 +70,8 @@ import pandas as pd
 
 from account_ctx import AccountCtx
 from account_utils import ROLE_REBALANCE
+import plan_inputs
 import rebalance_plan as plan
-import signals
-import skewls_state
-import sp500_state
 
 log = logging.getLogger(__name__)
 
@@ -86,36 +83,6 @@ MODE_LABEL = {
     "skewls": "SkewLS Only", "both": "SR+SP500", "all": "All 3",
 }
 
-
-# ── 零寫入 guard ──────────────────────────────────────────────────────
-
-@contextmanager
-def block_state_writes() -> Iterator[list[str]]:
-    """
-    攔截 sp500 / skewls 的 save_state — 預演期間任何 state 寫入都改為記錄。
-
-    yield 出的 list 收集被攔下的呼叫（"模組:帳戶"），供報表揭露。
-    離開（含例外）時還原原函式，pytest 內重複使用不留殘影。
-    """
-    blocked: list[str] = []
-    orig_sp500 = sp500_state.save_state
-    orig_skewls = skewls_state.save_state
-
-    def _block_sp500(account_name: str, state: dict) -> None:
-        blocked.append(f"sp500_state:{account_name}")
-        log.info(f"  [預演] 攔截 sp500_state.save_state({account_name!r}) — 不落地")
-
-    def _block_skewls(account_name: str, state: dict) -> None:
-        blocked.append(f"skewls_state:{account_name}")
-        log.info(f"  [預演] 攔截 skewls_state.save_state({account_name!r}) — 不落地")
-
-    sp500_state.save_state = _block_sp500
-    skewls_state.save_state = _block_skewls
-    try:
-        yield blocked
-    finally:
-        sp500_state.save_state = orig_sp500
-        skewls_state.save_state = orig_skewls
 
 
 # ── 報價（本地 CSV 最新收盤；replay_hotfix 同款）─────────────────────────
@@ -216,84 +183,90 @@ def compute_preview(mode: str, ctx: AccountCtx, nav: float,
     if nav is None or not math.isfinite(nav) or nav <= 0:
         raise ValueError(f"NAV 必須為正數，收到 {nav!r}")
 
-    run_sp500 = mode in ("sp500", "both", "all")
-    run_skewls = mode in ("skewls", "all")
+    # 1–5. 調倉輸入（唯一實作 = plan_inputs）：SR 訊號（所有 mode 都算 —
+    #   combine overlap 需要）→ 分類持倉（[[Universe]] 歷史聯集語意）→ SP500 只在
+    #   sp500/both/all 跑（ADR-0004 hold 防護）→ SkewLS 唯讀 load state + threshold
+    #   gate → 報價（snapshot 優先，缺的 fallback 本地收盤）。不寫 state、不更新
+    #   手動持倉歸屬。
+    account = SnapshotAccount(nav, positions, snapshot_prices, price_lookup)
+    inputs = plan_inputs.start(ctx, mode, persist_state=False,
+                               narrator=_PreviewSteps())
+    inputs.read(account, attribution=False)
+    for skipped in inputs.skipped_state_writes:
+        module, account_name = skipped.split(":", 1)
+        log.info(f"  [預演] 攔截 {module}.save_state({account_name!r}) — 不落地")
+    split = inputs.split
+    prices = inputs.prices
 
-    with block_state_writes() as blocked:
-        # 1. SR 訊號（所有 mode 都算 — combine overlap 需要，與 live 相同）
-        sr_wgt, sr_date = signals.get_sr_weights()
+    # 6. Combine + hold + 差額訂單（決策層唯一實作，ADR-0008 內部不動）
+    targets = plan.combine_targets(nav, inputs.sr_wgt, inputs.sp500_for_combine,
+                                   prices, ctx=ctx, skewls_wgt=inputs.skewls_wgt)
+    targets = plan.apply_sp500_hold(targets, inputs.run_sp500, split.sp500,
+                                    positions)
 
-        # 3. 分類持倉（[[Universe]] 歷史聯集語意）
-        universe = signals.get_sp500_universe()
-        split = plan.classify_holdings(positions, universe)
+    orders = plan.build_order_list(
+        targets=targets,
+        current_pos=positions,
+        current_other_holdings=split.other,
+        prices=prices,
+        nav=nav,
+        log_fn=log.info,
+        warn_fn=log.warning,
+    )
+    rows = plan.evaluate_deltas(targets, positions, split.other,
+                                prices, nav)
+    report_lines = plan.drift_report_lines(rows)
+
+    return PreviewResult(
+        ctx=ctx, mode=mode, nav=nav,
+        orders=orders, rows=rows, report_lines=report_lines,
+        sr_wgt=inputs.sr_wgt, sr_date=inputs.sr_date,
+        sp500_wgt=inputs.sp500_wgt, sp500_date=inputs.sp500_date,
+        skewls=inputs.skewls_decision,
+        prices=prices, targets=targets,
+        current_pos=dict(positions), split=split,
+        missing_prices=account.missing,
+        blocked_state_writes=list(inputs.skipped_state_writes),
+    )
+
+
+class SnapshotAccount:
+    """預演的帳戶快照（plan_inputs 的 adapter）：給定 NAV／持倉；報價 snapshot
+    優先，缺的用 price_lookup（預設本地 CSV 收盤），取不到的記在 missing。"""
+
+    def __init__(self, nav: float, positions: dict[str, float],
+                 snapshot_prices: dict[str, float] | None = None,
+                 price_lookup: Callable[[str], Optional[float]] | None = None):
+        self._nav = nav
+        self._positions = positions
+        self._snapshot_prices = snapshot_prices
+        self._price_lookup = price_lookup
+        self.missing: list[str] = []
+
+    def nav(self) -> float:
+        return self._nav
+
+    def positions(self) -> dict[str, float]:
+        return self._positions
+
+    def prices(self, symbols: list[str]) -> dict[str, float]:
+        prices, self.missing = resolve_prices(symbols, self._snapshot_prices,
+                                              self._price_lookup)
+        return prices
+
+
+class _PreviewSteps(plan_inputs.Narrator):
+    """預演的 log：持倉分類與 SkewLS threshold 結果。"""
+
+    def holdings(self, split: plan.HoldingsSplit) -> None:
         log.info(f"  SR holdings:    {split.sr or '(none)'}")
         log.info(f"  SP500 holdings: {split.sp500 or '(none)'}")
         if split.other:
             log.info(f"  OTHER holdings: {split.other} (excluded from strategy)")
 
-        # 4. SP500 訊號 — 只在 sp500/both/all 跑（ADR-0004 hold 防護）；
-        #    save_state 已被 block_state_writes 攔截
-        if run_sp500:
-            sp500_wgt, sp500_date = signals.get_sp500_weights(split.sp500,
-                                                              ctx.name)
-        else:
-            sp500_wgt = plan.sp500_placeholder_weights(split.sp500)
-            sp500_date = "N/A"
-
-        # 4b. SkewLS：唯讀 load state → threshold gate 純決策
-        sk: plan.SkewlsDecision | None = None
-        skewls_wgt: dict[str, float] = {}
-        if ctx.alloc_skewls > 0:
-            state = skewls_state.load_state(ctx.name)   # 唯讀
-            today_target: dict[str, float] = {}
-            today_date = "N/A"
-            if run_skewls:
-                today_target, today_date = signals.get_skewls_weights()
-            sk = plan.select_skewls_weights(
-                run_skewls, ctx.alloc_skewls, state,
-                today_target=today_target,
-                today_signal_date=today_date,
-            )
-            skewls_wgt = sk.wgt
-            if run_skewls:
-                log.info(f"  SkewLS threshold: Δ={sk.delta:.4f} vs {sk.threshold}"
-                         f" → {'TRIGGER' if sk.triggered else 'hold'}")
-
-        # 5. 報價（snapshot 優先，缺的 fallback 本地收盤）
-        all_syms = plan.plan_symbols(sr_wgt, sp500_wgt, skewls_wgt, positions)
-        prices, missing = resolve_prices(all_syms, snapshot_prices, price_lookup)
-
-        # 6. Combine + hold + 差額訂單（決策層唯一實作，ADR-0008 內部不動）
-        sp500_wgt_for_combine = sp500_wgt if run_sp500 else {}
-        targets = plan.combine_targets(nav, sr_wgt, sp500_wgt_for_combine,
-                                       prices, ctx=ctx, skewls_wgt=skewls_wgt)
-        targets = plan.apply_sp500_hold(targets, run_sp500, split.sp500,
-                                        positions)
-
-        orders = plan.build_order_list(
-            targets=targets,
-            current_pos=positions,
-            current_other_holdings=split.other,
-            prices=prices,
-            nav=nav,
-            log_fn=log.info,
-            warn_fn=log.warning,
-        )
-        rows = plan.evaluate_deltas(targets, positions, split.other,
-                                    prices, nav)
-        report_lines = plan.drift_report_lines(rows)
-
-    return PreviewResult(
-        ctx=ctx, mode=mode, nav=nav,
-        orders=orders, rows=rows, report_lines=report_lines,
-        sr_wgt=sr_wgt, sr_date=sr_date,
-        sp500_wgt=sp500_wgt, sp500_date=sp500_date,
-        skewls=sk,
-        prices=prices, targets=targets,
-        current_pos=dict(positions), split=split,
-        missing_prices=missing,
-        blocked_state_writes=list(blocked),
-    )
+    def skewls_gate(self, sk: plan.SkewlsDecision) -> None:
+        log.info(f"  SkewLS threshold: Δ={sk.delta:.4f} vs {sk.threshold}"
+                 f" → {'TRIGGER' if sk.triggered else 'hold'}")
 
 
 # ── 渲染 ──────────────────────────────────────────────────────────────

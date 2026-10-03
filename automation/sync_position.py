@@ -8,7 +8,8 @@ Panel 按「Sync Pos」時的核心計算與下單邏輯。此模組只處理資
 核心流程
 ────────
 1. `compute_sync_plan(ctx)`
-   → 連 IB → 抓 NAV + 當前持倉 → 算 SR/SP500 目標權重 → 計算差額 order
+   → 調倉輸入（plan_inputs，SYNC：全部用最新訊號）：連 IB → NAV + 當前持倉 →
+     手動持倉歸屬 → 三策略目標權重 → 報價 → 計算差額 order
    → 回傳 SyncPlan（dataclass，含預覽所需的完整 metadata）
 
 2. Panel 顯示預覽對話框，使用者確認
@@ -32,10 +33,9 @@ from typing import Callable, Optional
 import numpy as np
 
 from account_ctx import AccountCtx
-import ib_fetcher
 import manual_attribution
+import plan_inputs
 import rebalance_plan as plan
-import signals
 
 log = logging.getLogger(__name__)
 
@@ -57,9 +57,6 @@ class SyncRecords:
 
     def open(self, ctx: AccountCtx):
         return self.connect(ctx)
-
-    def sp500_state_options(self) -> dict:
-        return {} if self.persist_strategy_state else {"persist": False}
 
     def gate_options(self) -> dict:
         return {"attribution_path": self.attribution_ledger}
@@ -102,6 +99,8 @@ class SyncPlan:
     pause_notices: list[manual_attribution.Notice] = field(default_factory=list)  # 尚未通知
     # 送單沿用計算時的連線與紀錄；只做預覽文字的 plan 可以沒有，但不能送出
     records: Optional[SyncRecords] = None
+    # 算這份 plan 的調倉輸入（plan_inputs）；送出後由它記 SkewLS state
+    inputs: Optional[plan_inputs.PlanInputs] = None
 
 
 # ── Compute phase ─────────────────────────────────────────────────────
@@ -149,58 +148,30 @@ def compute_sync_plan(
     except RuntimeError:
         asyncio.set_event_loop(asyncio.new_event_loop())
 
-    # 1. SR 目標權重（不需 IB）
-    _log("  Computing SR weights...")
-    sr_wgt, sr_date = signals.get_sr_weights()
+    # 1. 不需 IB 的訊號：SR，以及 SkewLS — Sync Pos 是「強制同步到最新 target」，
+    #    不套 threshold gating（使用者按 Sync 就是要把帳戶拉到 today's target）；
+    #    事後 submit 成功時會更新 state 給未來 threshold 用。
+    inputs = plan_inputs.start(ctx, plan_inputs.SYNC,
+                               persist_state=records.persist_strategy_state,
+                               narrator=_SyncSteps(_log))
 
-    # 1b. SkewLS 目標權重 — Sync Pos 是「強制同步到最新 target」，不套 threshold gating
-    #     使用者按 Sync 就是要把帳戶拉到 today's target，所以 ignore state file 中的
-    #     last_target，直接用最新訊號。事後 submit 成功時會更新 state 給未來 threshold 用。
-    skewls_wgt: dict[str, float] = {}
-    skewls_date = "N/A"
-    if ctx.alloc_skewls > 0:
-        _log("  Computing Skew LS weights...")
-        skewls_wgt, skewls_date = signals.get_skewls_weights()
-
-    # 2. 連 IB
+    # 2. 連 IB → NAV + 持倉 → 手動持倉歸屬（#106，讀寫失敗拋例外：本帳戶這次
+    #    不 Sync，且在算 SP500 訊號寫 state 之前）→ SP500 → 報價
     _log("  Connecting to IB...")
     ib = records.open(ctx)
     try:
-        nav = ib_fetcher.get_nav(ib, ctx)
-        current_pos = ib_fetcher.get_positions(ib, ctx)
-        _log(f"  NAV=${nav:,.0f}  positions={len(current_pos)}")
-
-        # 3. 分辨 SR vs SP500 vs 手動持倉（唯一實作 = rebalance_plan.classify_holdings）
-        sp500_universe = signals.get_sp500_universe()
-        split = plan.classify_holdings(current_pos, sp500_universe)
-        current_sp500_holdings = split.sp500
-        current_other_holdings = split.other
-
-        # 3b. 手動持倉歸屬（#106）— 讀寫失敗拋例外：本帳戶這次不 Sync
-        #     （在 4. 算 SP500 訊號寫 state 之前）
-        attribution = manual_attribution.evaluate(
-            ctx.name, current_pos, sp500_universe,
-            ledger_path=records.attribution_ledger,
-            manual_orders_path=records.manual_orders_store)
-
-        # 4. SP500 目標權重
-        _log("  Computing SP500 weights...")
-        sp500_wgt, sp500_date = signals.get_sp500_weights(
-            current_sp500_holdings, ctx.name, **records.sp500_state_options())
-
-        # 5. 取報價
-        all_syms = list(set(
-            list(sr_wgt.keys()) +
-            list(sp500_wgt.keys()) +
-            list(skewls_wgt.keys()) +
-            list(current_pos.keys())
-        ))
-        _log(f"  Getting prices for {len(all_syms)} symbols...")
-        prices = ib_fetcher.get_prices(ib, all_syms, ctx)
+        inputs.read(plan_inputs.IbAccount(ib, ctx),
+                    ledger_path=records.attribution_ledger,
+                    manual_orders_path=records.manual_orders_store)
+        nav = inputs.nav
+        current_pos = inputs.positions
+        current_other_holdings = inputs.split.other
+        prices = inputs.prices
+        attribution = inputs.attribution
 
         # 6. 合併三策略目標（[[Combine]]，唯一實作 = rebalance_plan.combine_targets）
-        targets = plan.combine_targets(nav, sr_wgt, sp500_wgt, prices, ctx=ctx,
-                                       skewls_wgt=skewls_wgt)
+        targets = plan.combine_targets(nav, inputs.sr_wgt, inputs.sp500_wgt, prices,
+                                       ctx=ctx, skewls_wgt=inputs.skewls_wgt)
 
     finally:
         try:
@@ -230,21 +201,48 @@ def compute_sync_plan(
         ctx=ctx,
         orders=orders,
         nav=nav,
-        sr_wgt=sr_wgt,
-        sp500_wgt=sp500_wgt,
-        sr_date=sr_date,
-        sp500_date=sp500_date,
+        sr_wgt=inputs.sr_wgt,
+        sp500_wgt=inputs.sp500_wgt,
+        sr_date=inputs.sr_date,
+        sp500_date=inputs.sp500_date,
         prices=prices,
         targets=targets,
         current_pos=current_pos,
         current_other_holdings=current_other_holdings,
-        skewls_wgt=skewls_wgt,
-        skewls_date=skewls_date,
+        skewls_wgt=inputs.skewls_wgt,
+        skewls_date=inputs.skewls_date,
         paused=dict(attribution.paused),
         paused_orders=paused_orders,
         pause_notices=list(attribution.new_notices),
         records=records,
+        inputs=inputs,
     )
+
+
+class _SyncSteps(plan_inputs.Narrator):
+    """Sync Pos 的進度文字（預覽視窗與 Output Log）。"""
+
+    def __init__(self, say: Callable[[str], None]):
+        self._say = say
+        self._nav = 0.0
+
+    def sr(self) -> None:
+        self._say("  Computing SR weights...")
+
+    def skewls_latest(self) -> None:
+        self._say("  Computing Skew LS weights...")
+
+    def nav(self, nav: float) -> None:
+        self._nav = nav
+
+    def positions(self, positions: dict[str, float]) -> None:
+        self._say(f"  NAV=${self._nav:,.0f}  positions={len(positions)}")
+
+    def sp500(self, run: bool) -> None:
+        self._say("  Computing SP500 weights...")
+
+    def prices(self, symbols: list[str]) -> None:
+        self._say(f"  Getting prices for {len(symbols)} symbols...")
 
 
 def notify_new_pauses(plan: SyncPlan,
@@ -257,77 +255,6 @@ def notify_new_pauses(plan: SyncPlan,
     records = require_records(plan.records)
     return manual_attribution.deliver_notices(plan.ctx, plan.pause_notices, send,
                                               path=records.attribution_ledger)
-
-
-# ── Drift check（理論 vs 實際對帳，唯讀）──────────────────────────────
-
-def compute_drift_rows(
-    ctx: AccountCtx,
-    log_fn: Optional[Callable[[str], None]] = None,
-) -> tuple[list, float]:
-    """
-    連 IB 抓快照，回傳 (rebalance_plan.DeltaRow 列表, nav) — 純觀測，
-    不下單、不寫 state。
-
-    與 compute_sync_plan 的**語意差別**：sync 是「強制同步到今日訊號」；
-    對帳是「與 scheduled rebalance 的 standing 理論目標比」——
-      SR     = 今日訊號（跨週 stable）
-      SkewLS = state last_target（threshold gate 維持中的目標；今日訊號
-               尚未觸發前不算偏離）
-      SP500  = hold 現倉（只在週三 rebalance 日有新目標；平日理論 = 現倉）
-    因此平日的 🔴 = 真異常（凍結類），不會把「訊號還沒到執行日」誤報成偏離。
-    """
-    def _log(msg: str) -> None:
-        log.info(msg)
-        if log_fn:
-            try:
-                log_fn(msg)
-            except Exception:
-                pass
-
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
-
-    _log("  Computing SR weights...")
-    sr_wgt, _sr_date = signals.get_sr_weights()
-
-    skewls_wgt: dict[str, float] = {}
-    if ctx.alloc_skewls > 0:
-        import skewls_state
-        state = skewls_state.load_state(ctx.name)
-        skewls_wgt = dict(state.get("last_target", {}))
-
-    _log("  Connecting to IB...")
-    ib = ib_fetcher.connect(ctx)
-    try:
-        nav = ib_fetcher.get_nav(ib, ctx)
-        current_pos = ib_fetcher.get_positions(ib, ctx)
-        _log(f"  NAV=${nav:,.0f}  positions={len(current_pos)}")
-
-        sp500_universe = signals.get_sp500_universe()
-        split = plan.classify_holdings(current_pos, sp500_universe)
-
-        sp500_wgt = plan.sp500_placeholder_weights(split.sp500)
-        all_syms = plan.plan_symbols(sr_wgt, sp500_wgt, skewls_wgt, current_pos)
-        _log(f"  Getting prices for {len(all_syms)} symbols...")
-        prices = ib_fetcher.get_prices(ib, all_syms, ctx)
-    finally:
-        try:
-            if ib.isConnected():
-                ib.disconnect()
-        except Exception:
-            pass
-
-    targets = plan.combine_targets(nav, sr_wgt, {}, prices, ctx=ctx,
-                                   skewls_wgt=skewls_wgt)
-    targets = plan.apply_sp500_hold(targets, run_sp500=False,
-                                    current_sp500_holdings=split.sp500,
-                                    positions=current_pos)
-    rows = plan.evaluate_deltas(targets, current_pos, split.other,
-                                prices, nav)
-    return rows, nav
 
 
 # ── Submit phase ──────────────────────────────────────────────────────
@@ -451,19 +378,12 @@ def submit_sync_orders(
 
         # 6. SkewLS state 更新（Sync Pos = 強制同步，所以即使非 threshold-triggered 也存）
         #    這樣下次 scheduled threshold check 才有正確 baseline。
-        if plan.skewls_wgt and plan.ctx.alloc_skewls > 0 and records.persist_strategy_state:
+        #    規則與寫入的唯一實作在 plan_inputs（paper＝不寫 state 時不記）。
+        if plan.inputs is not None:
             try:
-                import skewls_state
-                from datetime import date as _date
-                state = skewls_state.load_state(plan.ctx.name)
-                state = skewls_state.update_after_rebal(
-                    state,
-                    new_target=plan.skewls_wgt,
-                    signal_date=plan.skewls_date,
-                    rebal_date=str(_date.today()),
-                )
-                skewls_state.save_state(plan.ctx.name, state)
-                _log(f"  SkewLS state updated → last_target_date={plan.skewls_date}")
+                recorded = plan.inputs.record_skewls_rebalance()
+                if recorded is not None:
+                    _log(f"  SkewLS state updated → last_target_date={recorded}")
             except Exception as e:
                 log.error(f"SkewLS state save failed: {e}", exc_info=True)
                 # 不 raise — state 寫入失敗不該阻擋送單流程

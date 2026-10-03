@@ -62,19 +62,20 @@ from notify import Digest, order_group_lines
 # ── AccountCtx（S6：ctx 為所有函式的必要參數，模組不再有 mutable globals）
 from account_ctx import AccountCtx
 
-# ── IB 工具函式（S8：統一由 ib_fetcher 提供，這裡 re-export 給舊 callers）
+# ── IB 工具函式（S8：統一由 ib_fetcher 提供；NAV／持倉／報價的讀取在 plan_inputs）
 from ib_fetcher import (
     connect as connect_ib,
-    get_nav,
     get_positions,
     get_positions_detail,
-    get_prices,
     SR_ETFS,  # R1.3：SR ETF 常數單一來源
 )
 
 # ── Rebalance 決策層（分類 / mode 權重選擇 / Combine / 差額訂單的唯一實作）
 import rebalance_plan as plan
 from rebalance_plan import combine_targets  # re-export：tests 與舊 callers 沿用此路徑
+
+# ── 調倉輸入（帳戶快照 + 三策略權重的唯一實作，#186）
+import plan_inputs
 
 # ── 手動持倉歸屬與策略送單暫停（#106）
 import manual_attribution
@@ -173,43 +174,46 @@ def check_fills(trades: list) -> list:
     return results
 
 
-# ── 策略訊號計算（S7：thin wrapper，實作在 signals.py）──────────────────
+# ── 21:00 調倉的進度 log（plan_inputs 依步驟呼叫；文字與 #186 之前逐字相同）──
 
-def compute_sr_weights(ctx: AccountCtx) -> tuple[dict, str]:
-    """
-    取 Sector Rotation 最新目標權重。
+class _RebalanceSteps(plan_inputs.Narrator):
+    def __init__(self, ctx: AccountCtx, mode: str):
+        self._ctx = ctx
+        self._mode = mode
 
-    S7：實作搬到 `signals.get_sr_weights()`，本函式保留為 thin wrapper
-    以免 callers 需要同時 import signals + rebalance_ib。
-    ctx 參數目前不影響計算（保留供將來 per-account SR 參數）。
-    """
-    from signals import get_sr_weights
-    return get_sr_weights()
+    def sr(self) -> None:
+        log.info("Step 1: Computing Sector Rotation target weights...")
 
+    def nav(self, nav: float) -> None:
+        log.info(f"Step 3: NAV = ${nav:,.2f}  →  Position Size = ${nav*self._ctx.leverage:,.0f}")
 
-def compute_sp500_weights(current_sp500_holdings: list[str],
-                          account_name: str,
-                          ctx: AccountCtx) -> tuple[dict, str]:
-    """
-    基於 IB 帳戶的實際 SP500 持股，產生 live 目標權重。
+    def positions(self, positions: dict[str, float]) -> None:
+        log.info(f"Current positions: {positions if positions else '(none)'}")
 
-    S7：實作搬到 `signals.get_sp500_weights()`，本函式保留為 thin wrapper。
-    `ctx.name` 為 account_name 的權威來源。
-    """
-    from signals import get_sp500_weights
-    return get_sp500_weights(current_sp500_holdings, ctx.name)
+    def holdings(self, split) -> None:
+        log.info(f"  SR holdings:    {split.sr or '(none)'}")
+        log.info(f"  SP500 holdings: {split.sp500 or '(none)'}")
+        if split.other:
+            log.info(f"  OTHER holdings: {split.other} (excluded from strategy)")
+            log.info(f"    -> These are manual/discretionary trades, NOT rebalanced")
 
+    def sp500(self, run: bool) -> None:
+        log.info("Step 4: Computing SP500 Momentum weights (live, rank-aware)..." if run
+                 else "Step 4: SP500 skipped")
 
-def compute_skewls_weights(ctx: AccountCtx) -> tuple[dict, str]:
-    """
-    取 Sector Skew LS 最新目標權重（live 模式）— ticker-level signed weights。
+    def skewls(self, step: str) -> None:
+        log.info({
+            "check": "Step 4b: Computing Skew LS target + threshold check...",
+            "hold": f"Step 4b: SkewLS not checked (mode={self._mode}), hold last state",
+            "disabled": "Step 4b: SkewLS disabled (alloc_skewls = 0)",
+        }[step])
 
-    S16：thin wrapper 包 `signals.get_skewls_weights()`。
-    回傳 dict 含 long sector ETF (正權重)、long inverse ETF (正權重)、
-    XLC direct short (負權重)。未套 threshold gating。
-    """
-    from signals import get_skewls_weights
-    return get_skewls_weights()
+    def skewls_gate(self, sk) -> None:
+        log.info(f"  SkewLS threshold: Δ={sk.delta:.4f}  "
+                 f"vs {sk.threshold} → {'TRIGGER' if sk.triggered else 'hold'}")
+
+    def prices(self, symbols: list[str]) -> None:
+        log.info(f"Step 5: Getting prices for {len(symbols)} symbols...")
 
 
 # ── combine_targets：實作移至 rebalance_plan.combine_targets（[[Combine]]，
@@ -402,34 +406,21 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
     # SR 訊號是 pure function、跨週 stable，所有 mode 都算 (用於 combine 正確處理 overlap)
     # SP500 訊號可能 mutate state（dip-buy 觸發）→ 只在 sp500/both/all 跑
     # SkewLS threshold check 只在 skewls/all 跑（其他 mode 用 last_target 維持持倉）
-    run_sr      = True
-    run_sp500   = mode in ("sp500", "both", "all")
-    run_skewls  = mode in ("skewls", "all")
+    # — mode 語意的唯一實作在 plan_inputs（#186）
     mode_label = {
         "sr": "SR Only", "sp500": "SP500 Only",
         "skewls": "SkewLS Only", "both": "SR+SP500", "all": "All 3",
     }[mode]
 
     start_ts     = datetime.now()
-    nav          = None
     placed       = []
     trades       = []
     fill_results = []
     pos_detail   = []
-    prices       = {}
     error_msg    = None
-    sr_wgt       = {}
-    sp500_wgt    = {}
-    skewls_wgt   = {}              # ticker-level signed weights for combine_targets
-    skewls_target_today = {}       # raw signal output (for state save)
-    skewls_triggered = None        # None = 該 mode 不檢查；T/F = 檢查過
-    skewls_delta = None
-    sr_signal_date    = "N/A"
-    sp500_signal_date = "N/A"
-    skewls_signal_date = "N/A"
+    inputs: plan_inputs.PlanInputs | None = None   # Step 1–5 調倉輸入（中途失敗時保留已讀到的部分）
     drift_alarms: list[str] = []      # Step 9b 對帳警報（TG 必發）
     drift_advisories: list[str] = []  # Step 9b 🟠 合計偏離（TG 附帶）
-    attribution = None                # Step 3 手動持倉歸屬（#106）
 
     log.info(f"{'='*60}")
     log.info(f"  QuantCore Rebalance  {date.today()}  [{mode_label}]")
@@ -442,11 +433,8 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
 
     try:
         # ── 1. 計算 SR 目標權重（不需 IB）─────────────────────────────────────
-        if run_sr:
-            log.info("Step 1: Computing Sector Rotation target weights...")
-            sr_wgt, sr_signal_date = compute_sr_weights(ctx=ctx)
-        else:
-            log.info("Step 1: SR skipped")
+        inputs = plan_inputs.start(ctx, mode, persist_state=True,
+                                   narrator=_RebalanceSteps(ctx, mode))
 
         # ── 2. 連線 IB ───────────────────────────────────────────────────────
         log.info("Step 2: Connecting to IB Gateway...")
@@ -462,76 +450,18 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
         raise
 
     try:
-        # ── 3. 帳戶資訊 + 辨別持倉歸屬 ──────────────────────────────────────
-        nav = get_nav(ib, ctx=ctx)
-        log.info(f"Step 3: NAV = ${nav:,.2f}  →  Position Size = ${nav*leverage:,.0f}")
-
-        current_pos = get_positions(ib, ctx=ctx)
-        log.info(f"Current positions: {current_pos if current_pos else '(none)'}")
-
-        # 載入 SP500 成分股清單（用於分辨持倉歸屬）— S7 走 signals 單一入口
-        from signals import get_sp500_universe
-        _sp500_universe = get_sp500_universe()
-
-        # 分辨當前持股（[[Universe]] 語意；唯一實作 = rebalance_plan.classify_holdings）
-        split = plan.classify_holdings(current_pos, _sp500_universe)
-        current_sr_holdings = split.sr
-        current_sp500_holdings = split.sp500
-        current_other_holdings = split.other
-        log.info(f"  SR holdings:    {current_sr_holdings or '(none)'}")
-        log.info(f"  SP500 holdings: {current_sp500_holdings or '(none)'}")
-        if current_other_holdings:
-            other_val = sum(abs(current_pos[s]) * 1 for s in current_other_holdings)
-            log.info(f"  OTHER holdings: {current_other_holdings} (excluded from strategy)")
-            log.info(f"    -> These are manual/discretionary trades, NOT rebalanced")
-
-        # 手動持倉歸屬（#106）：更新紀錄、找出暫停標的。讀寫失敗拋例外 =
-        # 本帳戶這輪策略單全部不送（在 Step 4 算訊號寫 state 之前）
-        attribution = manual_attribution.evaluate(acct_name, current_pos,
-                                                  _sp500_universe)
-
-        # ── 4. 計算 SP500 目標權重（基於 IB 實際持倉 + rank buffer）────────
-        if run_sp500:
-            log.info("Step 4: Computing SP500 Momentum weights (live, rank-aware)...")
-            sp500_wgt, sp500_signal_date = compute_sp500_weights(
-                current_sp500_holdings, acct_name, ctx=ctx)
-        else:
-            log.info("Step 4: SP500 skipped")
-            # 非 SP500 mode：佔位權重只為把持股帶進報價清單，不會產生 order
-            sp500_wgt = plan.sp500_placeholder_weights(current_sp500_holdings)
-
-        # ── 4b. Skew LS：threshold check + 選 today_target or state ─────────
-        # 不論哪個 mode，只要 alloc_skewls > 0 就需要把 SkewLS 部位納入 combine_targets，
-        # 否則 SR/SP500 rebal 會誤砍 SkewLS 倉位。
-        import skewls_state
-
-        if alloc_skewls > 0:
-            state = skewls_state.load_state(acct_name)
-            if run_skewls:
-                log.info("Step 4b: Computing Skew LS target + threshold check...")
-                skewls_target_today, skewls_signal_date = compute_skewls_weights(ctx=ctx)
-            else:
-                log.info("Step 4b: SkewLS not checked (mode={}), hold last state".format(mode))
-            sk = plan.select_skewls_weights(
-                run_skewls, alloc_skewls, state,
-                today_target=skewls_target_today,
-                today_signal_date=skewls_signal_date,
-            )
-            skewls_wgt = sk.wgt
-            skewls_signal_date = sk.signal_date
-            skewls_triggered = sk.triggered
-            skewls_delta = sk.delta
-            if run_skewls:
-                log.info(f"  SkewLS threshold: Δ={sk.delta:.4f}  "
-                         f"vs {sk.threshold} → {'TRIGGER' if sk.triggered else 'hold'}")
-        else:
-            log.info("Step 4b: SkewLS disabled (alloc_skewls = 0)")
-            skewls_wgt = {}
-
-        # ── 5. 即時報價 ─────────────────────────────────────────────────────
-        all_syms = plan.plan_symbols(sr_wgt, sp500_wgt, skewls_wgt, current_pos)
-        log.info(f"Step 5: Getting prices for {len(all_syms)} symbols...")
-        prices = get_prices(ib, all_syms, ctx=ctx)
+        # ── 3–5. 帳戶資訊 + 持倉歸屬 → SP500 → Skew LS → 即時報價 ──────────
+        # 唯一實作 = plan_inputs（#186）：classify_holdings（[[Universe]] 語意）、
+        # 手動持倉歸屬（#106，讀寫失敗拋例外 = 本帳戶這輪策略單全部不送，且在
+        # Step 4 算訊號寫 state 之前）、SP500 只在 sp500/both/all 重算（否則佔位
+        # 權重只為帶進報價清單）、SkewLS threshold gate（alloc_skewls > 0 就納入
+        # combine，否則 SR/SP500 rebal 會誤砍 SkewLS 倉位）。
+        inputs.read(plan_inputs.IbAccount(ib, ctx))
+        nav = inputs.nav
+        current_pos = inputs.positions
+        current_other_holdings = inputs.split.other
+        prices = inputs.prices
+        attribution = inputs.attribution
 
         # ── 6. 合併目標 + 計算差額 ──────────────────────────────────────────
         log.info("Step 6: Computing targets and deltas...")
@@ -539,11 +469,10 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
         # SR 訊號永遠加入 combine（stable 跨週、與 SkewLS sector ETF overlap 需要它）
         # SkewLS 在 step 4b 已決定 skewls_wgt (today_target 或 last_target)
         # SP500 只在 run_sp500=True 時加入，否則 hold 模式（無 SkewLS overlap，可安全 override）
-        sp500_wgt_for_combine = sp500_wgt if run_sp500 else {}
-        targets = combine_targets(nav, sr_wgt, sp500_wgt_for_combine, prices,
-                                   ctx=ctx, skewls_wgt=skewls_wgt)
-        targets = plan.apply_sp500_hold(targets, run_sp500,
-                                        current_sp500_holdings, current_pos)
+        targets = combine_targets(nav, inputs.sr_wgt, inputs.sp500_for_combine, prices,
+                                   ctx=ctx, skewls_wgt=inputs.skewls_wgt)
+        targets = plan.apply_sp500_hold(targets, inputs.run_sp500,
+                                        inputs.split.sp500, current_pos)
 
         planned = plan.build_order_list(
             targets=targets,
@@ -618,22 +547,15 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
             drift_alarms = [f"⚠️ 對帳段失敗: {e}"]
             # 不 raise — 對帳失敗不該阻擋交易完成回報
 
-        # ── 10. Skew LS state 更新（成功觸發 + 有下單時）────────────────
-        if run_skewls and skewls_triggered and alloc_skewls > 0:
-            try:
-                state = skewls_state.load_state(acct_name)
-                state = skewls_state.update_after_rebal(
-                    state,
-                    new_target=skewls_target_today,
-                    signal_date=skewls_signal_date,
-                    rebal_date=str(date.today()),
-                )
-                skewls_state.save_state(acct_name, state)
+        # ── 10. Skew LS state 更新（threshold 觸發時；規則在 plan_inputs）────
+        try:
+            recorded = inputs.record_skewls_rebalance()
+            if recorded is not None:
                 log.info(f"Step 10: SkewLS state updated → "
-                         f"last_target_date={skewls_signal_date}")
-            except Exception as e:
-                log.error(f"  SkewLS state save failed: {e}", exc_info=True)
-                # 不 raise — state 寫入失敗不該阻擋交易完成回報
+                         f"last_target_date={recorded}")
+        except Exception as e:
+            log.error(f"  SkewLS state save failed: {e}", exc_info=True)
+            # 不 raise — state 寫入失敗不該阻擋交易完成回報
 
         log.info(f"{'='*60}")
         log.info(f"  Rebalance Done  [{mode_label}]")
@@ -649,9 +571,10 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
         log.info("Disconnected from IB Gateway.")
 
         # ── Excel 交易記錄 + Telegram 段落 ────────────────────────────────
-        signal_parts = [f"SR:{sr_signal_date}", f"SP500:{sp500_signal_date}"]
+        signal_parts = [f"SR:{inputs.sr_date}", f"SP500:{inputs.sp500_date}"]
         if alloc_skewls > 0:
-            signal_parts.append(f"SkewLS:{skewls_signal_date}")
+            signal_parts.append(f"SkewLS:{inputs.skewls_date}")
+        attribution = inputs.attribution
         new_notices = attribution.new_notices if attribution else []
         notice_keys = [n.key for n in new_notices]
         excel_error = _log_trades_and_report(

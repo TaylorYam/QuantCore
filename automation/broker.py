@@ -17,9 +17,12 @@ seam 兩側各一個 adapter：本模組（ib_insync，實盤與 paper）與
 `ib_fetcher`，數字不變；權益、送單報價、限價統一在第三階段。
 Gateway 心跳（`gateway_monitor`）是長駐連線、不讀數不送單，仍自己建 ib_insync 連線。
 
-ManualOrderService 的業務規則（盤後路由、成交對帳等）用到很多 IB 細節，#185 決定
-只換它底下的連線：它向 Broker 要連線，再從 `Connection.ib` 用 ib_insync 本體。
-`Connection.ib` 只給它用。
+`Connection.ib`（ib_insync 本體）只給三個地方用：
+- ManualOrderService：業務規則（盤後路由、成交對帳等）用到很多 IB 細節，#185 決定
+  只換它底下的連線。
+- `price_utils.robust_get_prices` 向報價 feed port 借價的那條連線：參考價的多層
+  fallback 第三階段才搬進 Broker。
+- `paper_verify_manual_orders`：paper 驗證要直接核對 IB 自己的委託紀錄。
 
 不 import ib_insync（用到時才載入）：純 clientId 規則在離線工具與測試也能用。
 """
@@ -190,7 +193,7 @@ class Connection:
 
     @property
     def ib(self):
-        """ib_insync 本體 — 只給 ManualOrderService 用（見模組說明）。"""
+        """ib_insync 本體 — 只給模組說明列的三個地方用。"""
         return self._ib
 
     def managed_accounts(self) -> list[str]:

@@ -52,7 +52,7 @@ from log_setup import setup_logging, quiet_ib_console
 log = logging.getLogger(__name__)
 
 # ── IB 連線工具 ───────────────────────────────────────────────────────────────
-from ib_insync import IB, MarketOrder, LimitOrder, Order, util
+from ib_insync import MarketOrder, LimitOrder, Order, util
 from symbol_contract import canonical_symbol
 
 

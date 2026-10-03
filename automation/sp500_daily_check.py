@@ -260,7 +260,7 @@ def run_daily_check(account_name: str, digest: Digest):
                     log.warning(f"  {sym}: wide spread bid={bid} ask={ask}")
             quotes[sym] = {'bid': bid, 'ask': ask}
 
-        # 對於缺 bid/ask 的 symbol，用 robust_get_prices fallback 到 feed/CSV
+        # 對於缺 bid/ask 的 symbol，用參考價（feed／延遲報價／CSV 後備）
         missing = [s for s in order_syms
                    if not (quotes[s].get('bid') and quotes[s].get('ask'))]
         if missing:

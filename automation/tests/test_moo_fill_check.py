@@ -177,23 +177,23 @@ CTX = NS(account="U1", name="Taylor", host="127.0.0.1", port=4001, client_id=22,
 def test_main_no_moo_orders_stays_silent(monkeypatch):
     import moo_fill_check as m
     from notify import Digest
-    ib = broker_with()
-    monkeypatch.setattr(m.ib_fetcher, "connect", ib.connect)
+    fake = broker_with()
+    monkeypatch.setattr(m.ib_fetcher, "connect", fake.connect)
     d = Digest("MOO 成交")
     m.main(CTX, digest=d)
     assert d.render() is None
-    assert ib.closed == 1
+    assert fake.closed == 1
 
 
 def test_main_reports_fills_into_digest(monkeypatch):
     import moo_fill_check as m
     from notify import Digest
-    ib = broker_with(
+    fake = broker_with(
         trades=[trade("ERY", "BUY", perm=111), trade("SPY", "BUY", perm=5, order_type="LMT", tif="DAY")],
         fills=[fill("ERY", "BOT", 55, 12.41, perm=111)],
         positions={"ERY": 55.0},
     )
-    monkeypatch.setattr(m.ib_fetcher, "connect", ib.connect)
+    monkeypatch.setattr(m.ib_fetcher, "connect", fake.connect)
     d = Digest("MOO 成交", icon="✅")
     m.main(CTX, digest=d)
     msg = d.render()
@@ -250,10 +250,10 @@ def test_run_all_quiet_day_sends_only_the_summary(fake_config, monkeypatch):
 
 
 def test_run_all_fills_then_summary_in_one_message(fake_config, monkeypatch):
-    ib = broker_with(trades=[trade("ERY", "BUY", perm=111)],
-                     fills=[fill("ERY", "BOT", 55, 12.41, perm=111)],
-                     positions={"ERY": 55.0})
-    _, sent, seen = _run_all(monkeypatch, {"Taylor": ib})
+    fake = broker_with(trades=[trade("ERY", "BUY", perm=111)],
+                       fills=[fill("ERY", "BOT", 55, 12.41, perm=111)],
+                       positions={"ERY": 55.0})
+    _, sent, seen = _run_all(monkeypatch, {"Taylor": fake})
     assert len(sent) == 1
     msg = sent[0][0]
     assert msg.startswith("<b>✅ MOO 成交 ")

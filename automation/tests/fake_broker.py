@@ -116,6 +116,7 @@ class FakeConnection:
         return dict(self._broker.positions)
 
     def positions_detail(self) -> list:
+        self._read("positions_detail")
         b = self._broker
         if b.detail is not None:
             return list(b.detail)
@@ -130,9 +131,11 @@ class FakeConnection:
                 "excess_liq": b.excess_liq, "maint_margin": b.maint_margin}
 
     def trades(self) -> list:
+        self._read("trades")
         return list(self._broker.session_trades) + list(self._broker.trades)
 
     def fills(self) -> list:
+        self._read("fills")
         b = self._broker
         return list(b.session_fills) + [f for t in b.trades for f in t.fills]
 

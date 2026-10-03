@@ -25,8 +25,9 @@ False 時不寫，並在 skipped_state_writes 記下「本來會寫哪個 state�
 
 帳戶快照來源是 adapter（nav() / positions() / prices(symbols)）：Broker 的連線
 （broker.Connection：21:00 調倉、Sync Pos、接管）與預演的
-preview_rebalance.SnapshotAccount（給定 NAV／持倉＋本地收盤價）。進度文字由各入口的 Narrator 決定，module 本身不寫
-log — 21:00 調倉 log 與 Panel 進度文字維持原樣。
+preview_rebalance.SnapshotAccount（給定 NAV／持倉＋本地收盤價）。
+進度文字由各入口的 Narrator 決定，module 本身不寫 log — 21:00 調倉 log 與
+Panel 進度文字維持原樣。
 """
 from __future__ import annotations
 

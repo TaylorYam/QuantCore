@@ -51,13 +51,9 @@ def connect(ctx: AccountCtx, timeout: float = 20.0, *, readonly: bool = False):
     """經 Broker 連線指定帳戶的 IB Gateway，回傳 broker.Connection。"""
     from broker import Broker
     conn = Broker().connect(ctx, timeout=timeout, readonly=readonly)
-    _log_connected(ctx)
-    return conn
-
-
-def _log_connected(ctx: AccountCtx) -> None:
     log.info(f"Connected  host={ctx.host} port={ctx.port} "
              f"clientId={ctx.client_id} account={ctx.account}")
+    return conn
 
 
 def get_nav(ib: IB, ctx: AccountCtx) -> float:

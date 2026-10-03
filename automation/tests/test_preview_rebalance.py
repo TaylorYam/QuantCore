@@ -3,8 +3,8 @@ preview_rebalance（離線預演）— 安全保證 + 決策鏈 pin tests。
 
 安全保證是本模組的存在理由，逐條考題化：
   1. 零 state 寫入 — STATE_DIR 指到 tmp 後跑完整 sp500 / skewls 流程，
-     檔案系統必須一個 json 都沒有（get_sp500_weights 每呼叫必 save，
-     攔截失效會當場現形）；guard 離開（含例外）必須還原原函式
+     檔案系統必須一個 json 都沒有（調倉輸入以 persist_state=False 取 SP500
+     訊號；本來會寫的 state 由報表揭露）
   2. ADR-0004 hold — 非 sp500 mode 不得呼叫 SP500 訊號、持股 target=current
   3. SkewLS 凍結防護 — 非 skewls mode 沿用 last_target 進 combine
      （SR 預演不得砍 SkewLS 倉）；threshold 未觸發 = hold ≠ 凍結
@@ -154,22 +154,6 @@ def test_skewls_threshold_hold_is_not_frozen(isolated_state, monkeypatch):
     assert res.skewls.wgt == {"REW": 0.8, "XLC": -0.4}   # 沿用 last_target
     assert res.orders == []                              # 已在目標上
     assert list(isolated_state.glob("*")) == []
-
-
-def test_block_state_writes_restores_on_exception():
-    """guard 離開（含例外）必須還原 save_state — pytest 重複使用不留殘影。"""
-    import sp500_state
-    import skewls_state
-    from preview_rebalance import block_state_writes
-
-    orig_sp, orig_sk = sp500_state.save_state, skewls_state.save_state
-    with pytest.raises(RuntimeError):
-        with block_state_writes():
-            assert sp500_state.save_state is not orig_sp
-            assert skewls_state.save_state is not orig_sk
-            raise RuntimeError("boom")
-    assert sp500_state.save_state is orig_sp
-    assert skewls_state.save_state is orig_sk
 
 
 # ── 2. ADR-0004：非 sp500 mode 的 hold 防護 ──────────────────────────

@@ -347,17 +347,18 @@ def rebalance_env(paths, monkeypatch):
         env.ib = FakeIB(env.positions, [MANUAL_OPEN, STRATEGY_OPEN])
         return env.ib
 
-    def sp500_weights(holdings, account_name, ctx):
+    def sp500_weights(holdings, account_name, persist=True):
         env.sp500_calls.append(list(holdings))
         return {"AAPL": 0.5, "XYZ": 0.5}, "2026-09-23"
 
+    import ib_fetcher
     monkeypatch.setattr(rebalance_ib, "connect_ib", connect)
-    monkeypatch.setattr(rebalance_ib, "get_prices",
+    monkeypatch.setattr(ib_fetcher, "get_prices",
                         lambda ib, syms, ctx: {s: 100.0 for s in syms})
     monkeypatch.setattr(rebalance_ib, "get_positions_detail", lambda ib, ctx: [])
     monkeypatch.setattr(rebalance_ib, "append_trade_log", lambda *a, **k: None)
-    monkeypatch.setattr(rebalance_ib, "compute_sr_weights", lambda ctx: ({}, "N/A"))
-    monkeypatch.setattr(rebalance_ib, "compute_sp500_weights", sp500_weights)
+    monkeypatch.setattr(signals, "get_sr_weights", lambda: ({}, "N/A"))
+    monkeypatch.setattr(signals, "get_sp500_weights", sp500_weights)
     monkeypatch.setattr(signals, "get_sp500_universe", lambda historical=True: set(JOINED))
     return env
 

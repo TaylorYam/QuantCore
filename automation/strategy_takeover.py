@@ -7,8 +7,8 @@ Telegram 在 control_panel。
 
 規則
 ────
-- 目標 = Sync Pos 同一套語意，只取這一檔：SR 今日訊號、SP500 live 權重
-  （`get_latest_weights_live`，不寫 state）、Skew LS 最新訊號；經
+- 目標 = Sync Pos 同一套語意，只取這一檔：調倉輸入（plan_inputs，SYNC，
+  不寫 state）的 SR 今日訊號、SP500 live 權重、Skew LS 最新訊號；經
   `rebalance_plan.combine_targets` 的 per-Strategy 取整後加總（ADR-0008）。
 - 差額 = 目標 − IB 現有股數（int，同 Rebalance Plan）；目標 0 = 賣出現有股數。
 - 還有未結案 Panel 手動單、或 IB 上這一檔還有任何掛單 → 不能接管。
@@ -38,8 +38,8 @@ from typing import Callable, Optional
 from account_ctx import AccountCtx
 import ib_fetcher
 import manual_attribution
+import plan_inputs
 import rebalance_plan as plan
-import signals
 from sync_position import SyncRecords, require_records
 
 log = logging.getLogger(__name__)
@@ -151,51 +151,48 @@ def _open_orders(ib, ctx: AccountCtx, symbol: str) -> list:
 
 def _compute(ib, ctx: AccountCtx, symbol: str, log_fn: Callable[[str], None],
              records: SyncRecords) -> tuple[TakeoverPreview, dict[str, float], set[str]]:
-    """同一條連線上的快照 → 預覽（或 TakeoverRefused）。回傳 (預覽, 持倉, Universe)。"""
-    nav = ib_fetcher.get_nav(ib, ctx)
-    positions = ib_fetcher.get_positions(ib, ctx)
-    universe = signals.get_sp500_universe()
-    split = plan.classify_holdings(positions, universe)
+    """同一條連線上的快照 → 預覽（或 TakeoverRefused）。回傳 (預覽, 持倉, Universe)。
 
-    attribution = manual_attribution.evaluate(
-        ctx.name, positions, universe, ledger_path=records.attribution_ledger,
-        manual_orders_path=records.manual_orders_store)
-    if symbol in attribution.completed:
-        raise TakeoverRefused(f"{symbol} 先前送出的接管單已成交並對上，接管已完成")
-    if symbol not in attribution.paused:
-        raise TakeoverRefused(f"{symbol} 目前沒有被手動持倉暫停，不需要接管")
-    unresolved = [f for f in manual_attribution.read_manual_fills(
-                      ctx.name, records.manual_orders_store)
-                  if f.symbol == symbol and not f.resolved]
-    if unresolved:
-        raise TakeoverRefused(f"{symbol} 還有 {len(unresolved)} 筆未結案的 Panel "
-                              "手動單；結案後再接管")
-    open_orders = _open_orders(ib, ctx, symbol)
-    if open_orders:
-        desc = "、".join(f"{t.order.action} {_fmt(float(t.order.totalQuantity))}"
-                        for t in open_orders)
-        raise TakeoverRefused(f"{symbol} 在 IB 還有 {len(open_orders)} 筆掛單（{desc}）；"
-                              "成交或取消後再接管")
+    調倉輸入（plan_inputs，SYNC：與 Sync Pos 同一套最新訊號）；接管不得改 state，
+    所以一律不寫。拒絕條件在手動持倉歸屬之後、SP500 訊號之前檢查。"""
 
-    log_fn("  Computing strategy targets...")
-    sr_wgt, sr_date = signals.get_sr_weights()
-    skewls_wgt, skewls_date = ({}, "N/A")
-    if ctx.alloc_skewls > 0:
-        skewls_wgt, skewls_date = signals.get_skewls_weights()
-    # SP500：與 Sync Pos 同一個 live 核心，但不寫 state（接管不得改 state）
-    import sp500_state
-    from strategies.sp500_momentum.signal import get_latest_weights_live
-    sp500_wgt, sp500_date, _unsaved = get_latest_weights_live(
-        split.sp500, sp500_state.load_state(ctx.name))
+    def vet(inputs: plan_inputs.PlanInputs) -> None:
+        attribution = inputs.attribution
+        if symbol in attribution.completed:
+            raise TakeoverRefused(f"{symbol} 先前送出的接管單已成交並對上，接管已完成")
+        if symbol not in attribution.paused:
+            raise TakeoverRefused(f"{symbol} 目前沒有被手動持倉暫停，不需要接管")
+        unresolved = [f for f in manual_attribution.read_manual_fills(
+                          ctx.name, records.manual_orders_store)
+                      if f.symbol == symbol and not f.resolved]
+        if unresolved:
+            raise TakeoverRefused(f"{symbol} 還有 {len(unresolved)} 筆未結案的 Panel "
+                                  "手動單；結案後再接管")
+        open_orders = _open_orders(ib, ctx, symbol)
+        if open_orders:
+            desc = "、".join(f"{t.order.action} {_fmt(float(t.order.totalQuantity))}"
+                            for t in open_orders)
+            raise TakeoverRefused(f"{symbol} 在 IB 還有 {len(open_orders)} 筆掛單（{desc}）；"
+                                  "成交或取消後再接管")
 
-    price = ib_fetcher.get_prices(ib, [symbol], ctx).get(symbol, 0)
+    inputs = plan_inputs.start(ctx, plan_inputs.SYNC, persist_state=False,
+                               narrator=_TakeoverSteps(log_fn))
+    inputs.read(plan_inputs.IbAccount(ib, ctx),
+                ledger_path=records.attribution_ledger,
+                manual_orders_path=records.manual_orders_store,
+                vet=vet, price_symbols=[symbol])
+    nav = inputs.nav
+    positions = inputs.positions
+    attribution = inputs.attribution
+
+    price = inputs.prices.get(symbol, 0)
     if not (price and math.isfinite(price) and price > 0):
         raise TakeoverRefused(f"沒有 {symbol} 的有效報價，無法計算策略目標")
     prices = {symbol: price}
     only = (lambda w: {symbol: w[symbol]} if symbol in w else {})
     # [[Combine]]：per-Strategy 取整後加總（ADR-0008），只取這一檔
-    combined = plan.combine_targets(nav, only(sr_wgt), only(sp500_wgt), prices,
-                                    ctx=ctx, skewls_wgt=only(skewls_wgt))
+    combined = plan.combine_targets(nav, only(inputs.sr_wgt), only(inputs.sp500_wgt),
+                                    prices, ctx=ctx, skewls_wgt=only(inputs.skewls_wgt))
     target = int(combined.get(symbol, {}).get("shares", 0))
     # 各 Strategy 拆解 = Combine 加總前的整數（SR → SP500 → SkewLS 順序）
     parts = list(combined.get(symbol, {}).get("strategy_shares", {}).items())
@@ -207,10 +204,18 @@ def _compute(ib, ctx: AccountCtx, symbol: str, log_fn: Callable[[str], None],
         target=target, parts=tuple(parts),
         pause_reason=attribution.paused[symbol],
         price=float(price), nav=float(nav),
-        signal_dates=(f"SR {sr_date}｜SP500 {sp500_date.date()}"
-                      + (f"｜SkewLS {skewls_date}" if ctx.alloc_skewls > 0 else "")),
+        signal_dates=(f"SR {inputs.sr_date}｜SP500 {inputs.sp500_date}"
+                      + (f"｜SkewLS {inputs.skewls_date}" if ctx.alloc_skewls > 0 else "")),
     )
-    return preview, positions, universe
+    return preview, positions, inputs.universe
+
+
+class _TakeoverSteps(plan_inputs.Narrator):
+    def __init__(self, say: Callable[[str], None]):
+        self._say = say
+
+    def sr(self) -> None:
+        self._say("  Computing strategy targets...")
 
 
 def _logger(log_fn: Optional[Callable[[str], None]]) -> Callable[[str], None]:

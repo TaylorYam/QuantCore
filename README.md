@@ -185,6 +185,7 @@ Panel 正逐步換成 PySide6（[ADR-0012](docs/adr/0012-panel-pyside6-parallel-
   - Trading 的交給策略接管（#153）：上方切換的第三個「交給策略接管」，或在 Sync Pos 預覽的暫停列按「交給策略接管」直接帶入（同 Tk，該份 Sync 預覽作廢）。選帳戶與被暫停的標的 → 計算預覽（顯示進度）→ 手動紀錄／IB 現有股數、策略整數目標與差額 → 確認視窗才送這一檔的 LMT。不能接管（未結案手動單、IB 上還有掛單、沒有被暫停等）在狀態列說明原因；確認時資料已變動 → 換上新預覽並標出原因，要再確認一次。預覽與送單沿用 `strategy_takeover`，按鈕與確認文字和 Tk 共用 `automation/takeover_preview_text.py`
     - paper 同 Sync Pos：連線走送單閘門（paper clientId = `client_id` + 2，預設 94，與 Sync Pos 分開，比照 Tk 的接管 clientId）；歸屬與手動單紀錄用 paper 專用檔；不寫 state、不發 Telegram，接管結果只寫 Output Log
 - 模式由 `config.json` 的 `qt_panel_mode` 決定，預設並行模式（`parallel`）。改成 `production`（#154）＝新 Panel 值班（Rosa poll／TY check／Morning check，同一套 `monitor_engine`）並送實盤單，改用 Tk 原有的 clientId role、紀錄與 Telegram；Tk Panel 讀同一個設定，自動不值班、不能送單、改用唯讀身分。兩個 Panel 都要重開才生效。步驟見 [docs/qt-panel-cutover.md](docs/qt-panel-cutover.md)
+- 手動單、Sync Pos、交給策略接管送去 paper 或實盤，由新 Panel 開啟時依實際生效的模式建一次的「送單目標」決定（#183，`automation/qt_panel/order_target.py`）：帳戶身分與 clientId、紀錄檔、state 寫不寫、通知對象都在這裡，連線一律經過送單閘門。值班鎖搶不到而退回並行模式時，Trading 一樣只接 paper
 
 ---
 

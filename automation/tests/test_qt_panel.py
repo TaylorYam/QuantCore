@@ -272,11 +272,17 @@ def extras():
 
 
 @pytest.fixture
-def make_window(qtbot, source, ports, dialogs, portfolio, extras):
+def make_window(qtbot, source, ports, dialogs, portfolio, extras, tmp_path):
     from qt_panel.main_window import MainWindow
     from qt_panel.mode import PanelMode
+    from qt_panel.order_target import OrderFiles
 
     def make(**kw):
+        # 送單目標的紀錄檔一律放 tmp_path：測試碰不到 live 目錄的 paper／實盤紀錄
+        kw.setdefault("paper_files", OrderFiles(tmp_path / "w_paper_orders.sqlite3",
+                                                tmp_path / "w_paper_attribution.sqlite3"))
+        kw.setdefault("live_files", OrderFiles(tmp_path / "w_live_orders.sqlite3",
+                                               tmp_path / "w_live_attribution.sqlite3"))
         kw.setdefault("accounts", ACCOUNTS)
         kw.setdefault("mode", PanelMode.PARALLEL)
         kw.setdefault("gateway_source", source)
@@ -383,6 +389,24 @@ def test_trading_without_paper_settings_explains_it_cannot_send(make_window):
     assert w.trading.manual is None
 
 
+def test_duty_lock_fallback_trades_paper_only(make_window):
+    """設定是正式模式但值班鎖搶不到（Tk 還在值班）：退回並行模式，Trading 只接 paper。"""
+    from types import SimpleNamespace as NS
+
+    from qt_panel.broker_gate import PaperTarget
+    from qt_panel.mode import qt_panel_duty
+
+    mode, note = qt_panel_duty({"qt_panel_mode": "production"}, claim=lambda: False)
+    w = make_window(mode=mode, mode_note=note,
+                    paper_target=PaperTarget("127.0.0.1", 4013, "DU001", 92),
+                    manual_order_service=lambda **_kw: NS(
+                        has_active_orders=lambda: False,
+                        has_pending_notifications=lambda: False, list_orders=lambda **_: []))
+    assert w.trading.banner_title.text() == (
+        "並行模式：手動單、Sync Pos、接管一律送往 paper 帳號 DU001（127.0.0.1:4013），"
+        "不會送到實盤")
+
+
 def test_recheck_button_asks_the_source_to_probe_again(make_window, source, qtbot):
     w = make_window()
     qtbot.mouseClick(w.dashboard.recheck_button, Qt.LeftButton)
@@ -437,12 +461,12 @@ def test_dashboard_says_watch_runs_in_the_tk_panel(make_window):
 
 def test_watch_telegram_and_trade_log_live_only_in_production_modules():
     """並行模式不值班、不發 Telegram（ADR-0012）：值班、Telegram、trade_log、策略送單
-    的模組只能出現在正式模式（#154）才建立的 watch.py／live_trading.py；paper 的手動單、
-    Sync Pos、接管路徑碰不到（行為面見 test_parallel_mode_runs_no_watch_worker 與
-    test_qt_production）。"""
+    的模組只能出現在值班的 watch.py 與送單目標 order_target.py（#183，paper／實盤的
+    差異只在這裡）；畫面與其他模組碰不到。paper 送單目標不發 Telegram、不寫 trade_log
+    的行為面見 test_qt_order_target，並行模式不值班見 test_qt_production。"""
     forbidden = {"monitor_engine", "notify", "rebalance_ib", "excel_logger"}
     telegram_calls = {"deliver_notices", "notify_new_pauses", "strategy_takeover.notify"}
-    production_only = {"watch.py", "live_trading.py"}
+    production_only = {"watch.py", "order_target.py"}
     package = Path(__file__).resolve().parents[1] / "qt_panel"
     offenders = {}
     for path in package.glob("*.py"):

@@ -44,31 +44,32 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class SyncRecords:
-    """Sync Pos 用的 IB 連線與本機紀錄。
+    """Sync Pos 與交給策略接管用的 IB 連線與本機紀錄，一律由呼叫端明確給（#183）。
 
-    預設 = 實盤（Tk Panel）：ib_fetcher.connect、實盤的手動歸屬紀錄與手動單紀錄、
-    寫回 SP500／SkewLS state。新 Panel 的 paper Sync Pos（#152）換一組：連線走
-    送單閘門、歸屬與手動單紀錄用 paper 專用檔、state 只讀不寫 — paper 帳戶的
-    持倉與成交不能改到實盤帳戶的紀錄。
+    沒有預設值：新 Panel 的送單目標（`qt_panel.order_target`）決定 paper 或實盤
+    — 連線都經過送單閘門；paper 用自己的歸屬與手動單紀錄、SP500／SkewLS state
+    只讀不寫；實盤用實盤的紀錄並寫回 state。
     """
-    connect: Optional[Callable[[AccountCtx], object]] = None   # None = ib_fetcher.connect
-    attribution_ledger: Optional[Path] = None                  # None = 實盤紀錄檔
-    manual_orders_store: Optional[Path] = None                 # None = 實盤手動單紀錄
-    persist_strategy_state: bool = True
+    connect: Callable[[AccountCtx], object]
+    attribution_ledger: Path
+    manual_orders_store: Path
+    persist_strategy_state: bool
 
     def open(self, ctx: AccountCtx):
-        return (self.connect or ib_fetcher.connect)(ctx)
+        return self.connect(ctx)
 
-    # 實盤預設不多傳參數：呼叫與改動前完全相同
     def sp500_state_options(self) -> dict:
         return {} if self.persist_strategy_state else {"persist": False}
 
     def gate_options(self) -> dict:
-        return ({} if self.attribution_ledger is None
-                else {"attribution_path": self.attribution_ledger})
+        return {"attribution_path": self.attribution_ledger}
 
 
-LIVE_RECORDS = SyncRecords()
+def require_records(records: Optional[SyncRecords]) -> SyncRecords:
+    """沒給連線與紀錄就報錯：不能在不知情下連實盤、繞過送單閘門（#183）。"""
+    if not isinstance(records, SyncRecords):
+        raise TypeError("沒有指定送單目標的連線與紀錄（SyncRecords），不送單")
+    return records
 
 
 # 決策層的訂單 dataclass（唯一實作在 rebalance_plan）；
@@ -99,7 +100,8 @@ class SyncPlan:
     paused: dict[str, str] = field(default_factory=dict)        # 標的 → 原因
     paused_orders: list[SyncOrder] = field(default_factory=list)
     pause_notices: list[manual_attribution.Notice] = field(default_factory=list)  # 尚未通知
-    records: SyncRecords = LIVE_RECORDS   # 送單沿用計算時的連線與紀錄
+    # 送單沿用計算時的連線與紀錄；只做預覽文字的 plan 可以沒有，但不能送出
+    records: Optional[SyncRecords] = None
 
 
 # ── Compute phase ─────────────────────────────────────────────────────
@@ -108,7 +110,7 @@ def compute_sync_plan(
     ctx: AccountCtx,
     log_fn: Optional[Callable[[str], None]] = None,
     *,
-    records: SyncRecords = LIVE_RECORDS,
+    records: SyncRecords,
 ) -> SyncPlan:
     """
     連線 IB、計算理論持倉與差額 order list，回傳完整 SyncPlan。
@@ -121,7 +123,7 @@ def compute_sync_plan(
         progress log callback（GUI 用，在呼叫 thread 執行；main-thread marshalling
         由 caller 負責）
     records : SyncRecords
-        IB 連線與本機紀錄；預設實盤
+        IB 連線與本機紀錄（必填；沒給就報錯）
 
     Returns
     -------
@@ -138,6 +140,8 @@ def compute_sync_plan(
                 log_fn(msg)
             except Exception:
                 pass
+
+    records = require_records(records)
 
     # asyncio 需要有 event loop 才能讓 ib_insync 跑
     try:
@@ -245,12 +249,14 @@ def compute_sync_plan(
 
 def notify_new_pauses(plan: SyncPlan,
                       send: Optional[Callable[[str], bool]] = None) -> bool:
-    """Sync Pos 計算時新出現的手動持倉暫停 → 該 Account Telegram 一則（#106）。
+    """Sync Pos 計算時新出現的手動持倉暫停 → 該 Account 一則通知（#106）。
 
-    送成功才記「已通知」，同一次暫停只通知一次。send 預設走該帳戶的
-    Telegram 設定；回傳是否有送出。
+    送成功才記「已通知」，記在算這份 plan 時讀的那份歸屬紀錄，同一次暫停只通知
+    一次。send 預設走該帳戶的 Telegram 設定；回傳是否有送出。
     """
-    return manual_attribution.deliver_notices(plan.ctx, plan.pause_notices, send)
+    records = require_records(plan.records)
+    return manual_attribution.deliver_notices(plan.ctx, plan.pause_notices, send,
+                                              path=records.attribution_ledger)
 
 
 # ── Drift check（理論 vs 實際對帳，唯讀）──────────────────────────────
@@ -393,6 +399,7 @@ def submit_sync_orders(
             except Exception:
                 pass
 
+    records = require_records(plan.records)
     if not plan.orders:
         return [], []
 
@@ -406,7 +413,6 @@ def submit_sync_orders(
     # Frozen AccountCtx replace → LMT + outsideRTH 版本（不汙染原 ctx）
     exec_ctx = _replace(plan.ctx, order_type='LMT', outside_rth=True)
 
-    records = plan.records
     ib = records.open(exec_ctx)
     try:
         # 1. 取消既有掛單（Panel 手動單除外，#106）
@@ -472,7 +478,7 @@ def submit_sync_orders(
     return placed, fill_results
 
 
-# ── 送出後：交易紀錄與 Telegram（Tk Panel 與新 Panel 正式模式共用，#154）──
+# ── 送出後：交易紀錄與 Telegram（實盤送單目標用，#154）──
 
 def log_sync_trades(plan: SyncPlan, placed: list[dict], fill_results: list[dict]) -> None:
     """trade_log.xlsx：每筆送出的單一列（自 control_panel._sync_execute 抽出，逐字相同）。"""

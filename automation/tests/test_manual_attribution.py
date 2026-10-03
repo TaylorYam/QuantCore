@@ -439,13 +439,22 @@ def sync_env(paths, monkeypatch):
     import ib_fetcher
     import signals
 
+    import sync_position
+
     env = NS(ib=None, positions={"AAPL": 100.0, "XYZ": 10.0}, sent=[])
 
     def connect(ctx, *a, **k):
         env.ib = FakeIB(env.positions, [MANUAL_OPEN, STRATEGY_OPEN])
         return env.ib
 
-    monkeypatch.setattr(ib_fetcher, "connect", connect)
+    def no_default(*_a, **_k):
+        raise AssertionError("Sync Pos 不該走 ib_fetcher.connect 的預設連線")
+
+    monkeypatch.setattr(ib_fetcher, "connect", no_default)
+    # 實盤送單目標給的連線與紀錄（#183：沒有預設，一律明確給）
+    env.records = sync_position.SyncRecords(
+        connect=connect, attribution_ledger=paths.ledger, manual_orders_store=paths.orders,
+        persist_strategy_state=True)
     monkeypatch.setattr(ib_fetcher, "get_prices",
                         lambda ib, syms, ctx, **k: {s: 100.0 for s in syms})
     monkeypatch.setattr(signals, "get_sr_weights", lambda: ({}, "N/A"))
@@ -458,7 +467,7 @@ def sync_env(paths, monkeypatch):
 def test_sync_pos_previews_paused_orders_and_never_sends_them(sync_env):
     import sync_position
     ma.evaluate("Rosa", {"AAPL": 100.0, "XYZ": 10.0}, UNIVERSE)
-    plan = sync_position.compute_sync_plan(_ctx())
+    plan = sync_position.compute_sync_plan(_ctx(), records=sync_env.records)
     assert [(o.symbol, o.qty) for o in plan.orders] == [("AAPL", 150)]
     assert [(o.symbol, o.qty) for o in plan.paused_orders] == [("XYZ", 240)]
     assert "手動持倉 10 股" in plan.paused["XYZ"]
@@ -466,9 +475,9 @@ def test_sync_pos_previews_paused_orders_and_never_sends_them(sync_env):
     sent = []
     assert sync_position.notify_new_pauses(plan, send=lambda m: sent.append(m) or True)
     assert "XYZ 策略單暫停" in sent[0]
-    assert sync_position.compute_sync_plan(_ctx()).pause_notices == []
+    assert sync_position.compute_sync_plan(_ctx(), records=sync_env.records).pause_notices == []
 
-    placed, _ = sync_position.submit_sync_orders(plan)
+    placed, _ = sync_position.submit_sync_orders(plan)          # 沿用計算時的連線與紀錄
     assert [o["symbol"] for o in placed] == ["AAPL"]
     assert sync_env.ib.placed == [("AAPL", "BUY", 150)]
     assert sync_env.ib.cancelled == [8]
@@ -582,9 +591,45 @@ def test_sync_pos_preview_window_shows_pause_reason():
 def test_sync_pos_notice_not_marked_when_telegram_fails(sync_env):
     import sync_position
     ma.evaluate("Rosa", {"AAPL": 100.0, "XYZ": 10.0}, UNIVERSE)
-    plan = sync_position.compute_sync_plan(_ctx())
+    plan = sync_position.compute_sync_plan(_ctx(), records=sync_env.records)
     assert not sync_position.notify_new_pauses(plan, send=lambda m: False)
-    assert sync_position.compute_sync_plan(_ctx()).pause_notices == plan.pause_notices
+    assert (sync_position.compute_sync_plan(_ctx(), records=sync_env.records).pause_notices
+            == plan.pause_notices)
+
+
+def test_sync_pos_without_records_refuses_before_connecting(sync_env):
+    """#183：沒有「預設實盤」— 忘了給連線與紀錄就報錯，不會不知情地繞過送單閘門。"""
+    from dataclasses import replace
+
+    import sync_position
+
+    with pytest.raises(TypeError):
+        sync_position.compute_sync_plan(_ctx())
+    with pytest.raises(TypeError, match="SyncRecords"):
+        sync_position.compute_sync_plan(_ctx(), records=None)
+    plan = sync_position.compute_sync_plan(_ctx(), records=sync_env.records)
+    sync_env.ib = None
+    unrecorded = replace(plan, records=None)
+    with pytest.raises(TypeError, match="SyncRecords"):
+        sync_position.submit_sync_orders(unrecorded)
+    with pytest.raises(TypeError, match="SyncRecords"):
+        sync_position.submit_sync_orders(replace(unrecorded, orders=[]))
+    with pytest.raises(TypeError, match="SyncRecords"):
+        sync_position.notify_new_pauses(unrecorded, send=lambda m: True)
+    assert sync_env.ib is None                  # 一條連線都沒開
+
+
+def test_deliver_notices_marks_the_ledger_it_was_given(paths, tmp_path):
+    """「送通知並記已通知」記在呼叫端指定的那份紀錄（讀出通知的那一份），不碰實盤預設檔。"""
+    other = tmp_path / "paper_attribution.sqlite3"
+    ma.evaluate("Rosa", {"XYZ": 10.0}, UNIVERSE, ledger_path=other)
+    notices = ma.evaluate("Rosa", {"XYZ": 10.0}, JOINED, ledger_path=other).new_notices
+    assert notices
+    with pytest.raises(TypeError):
+        ma.deliver_notices(_ctx(), notices, lambda m: True)
+    assert ma.deliver_notices(_ctx(), notices, lambda m: True, path=other)
+    assert ma.pending_notices("Rosa", path=other) == []
+    assert not paths.ledger.exists()
 
 
 class _Tue0915(date):

@@ -15,14 +15,14 @@ Telegram 在 control_panel。
 - 確認時在同一條連線重算：現有股數、手動股數、目標或暫停原因變了 → 舊預覽
   失效（TakeoverStale 帶回新預覽），不能直接沿用。
 - 只送這一檔的 LMT（Sync Pos 同價規則、outsideRth），clientId ROLE_TAKEOVER
-  — 排程調倉的「全部取消掛單」看不到它。刻意不經策略送單閘門：被暫停的正是
-  這一檔，且使用者剛確認過。
+  — 排程調倉的「全部取消掛單」看不到它。刻意不經策略的暫停閘門
+  （manual_attribution.gate_orders）：被暫停的正是這一檔，且使用者剛確認過。
 - 送出前記接管紀錄；成交且 IB 股數＝接管後預計股數才轉移歸屬、解除暫停
   （manual_attribution）。拒單／取消 → 刪紀錄、維持暫停；逾時 → 紀錄留著，
   之後任何一次觀察對上就完成。
 - 不改訊號、Allocation、state；不觸發整個 Account 的 Sync Pos。
-- IB 連線與本機紀錄沿用 Sync Pos 的 `SyncRecords`：預設實盤；新 Panel 的 paper
-  接管（#153）換成送單閘門的連線與 paper 專用的歸屬／手動單紀錄。
+- IB 連線與本機紀錄沿用 Sync Pos 的 `SyncRecords`，由呼叫端（新 Panel 的送單目標）
+  明確給；沒給就報錯，沒有「預設實盤」（#183）。
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ import ib_fetcher
 import manual_attribution
 import rebalance_plan as plan
 import signals
-from sync_position import LIVE_RECORDS, SyncRecords
+from sync_position import SyncRecords, require_records
 
 log = logging.getLogger(__name__)
 
@@ -226,8 +226,9 @@ def _logger(log_fn: Optional[Callable[[str], None]]) -> Callable[[str], None]:
 
 def build_preview(ctx: AccountCtx, symbol: str,
                   log_fn: Optional[Callable[[str], None]] = None, *,
-                  records: SyncRecords = LIVE_RECORDS) -> TakeoverPreview:
+                  records: SyncRecords) -> TakeoverPreview:
     """連 IB 取最新快照，算這一檔的接管預覽。不送單、不寫 state。"""
+    records = require_records(records)
     _log = _logger(log_fn)
     _ensure_loop()
     _log(f"  Connecting to IB ({ctx.name})...")
@@ -249,8 +250,9 @@ def _order_ref(account_name: str) -> str:
 
 def submit(preview: TakeoverPreview, ctx: AccountCtx,
            log_fn: Optional[Callable[[str], None]] = None, *,
-           records: SyncRecords = LIVE_RECORDS) -> TakeoverResult:
+           records: SyncRecords) -> TakeoverResult:
     """使用者確認後：同一條連線重算、核對，只送這一檔差額，等成交與對帳。"""
+    records = require_records(records)
     _log = _logger(log_fn)
     if ctx.name != preview.account_name:
         raise TakeoverRefused("預覽與目前選的 Account 不同，請重新預覽")
@@ -336,7 +338,12 @@ def submit(preview: TakeoverPreview, ctx: AccountCtx,
             pass
 
 
-def notify(ctx: AccountCtx, send: Optional[Callable[[str], bool]] = None) -> bool:
-    """把這個 Account 尚未送達的手動持倉通知（接管結果等）發一則 Telegram。"""
-    return manual_attribution.deliver_notices(
-        ctx, manual_attribution.pending_notices(ctx.name), send)
+def notify(ctx: AccountCtx, send: Optional[Callable[[str], bool]] = None, *,
+           records: SyncRecords) -> list[manual_attribution.Notice]:
+    """這個 Account 尚未送達的手動持倉通知（接管結果等）：從 records 的歸屬紀錄
+    讀一次，發一則（send 預設走該帳戶 Telegram），送達才在同一份紀錄記已通知。
+    回傳讀到的通知 — 不論送達與否，呼叫端都可以寫進 Output Log。"""
+    path = require_records(records).attribution_ledger
+    notices = manual_attribution.pending_notices(ctx.name, path=path)
+    manual_attribution.deliver_notices(ctx, notices, send, path=path)
+    return notices

@@ -265,9 +265,13 @@ def pause_notice_lines(notices: Iterable[Notice]) -> list[str]:
 
 
 def deliver_notices(ctx, notices: list[Notice],
-                    send: Callable[[str], bool] | None = None) -> bool:
-    """Panel 發的通知（Sync Pos 發現的暫停、接管結果）：該 Account 一則
-    Telegram，送成功才記已通知。send 預設走 ctx 的 Telegram 設定。"""
+                    send: Callable[[str], bool] | None = None, *,
+                    path: str | Path) -> bool:
+    """Panel 發的通知（Sync Pos 發現的暫停、接管結果）：該 Account 一則，送成功
+    才在 path 這份歸屬紀錄記已通知 — 必須是讀出這些通知的那一份（#183），沒有
+    預設的實盤檔。send 預設走 ctx 的 Telegram 設定。"""
+    if not path:
+        raise TypeError("deliver_notices 需要指定歸屬紀錄（讀出通知的那一份）")
     if not notices:
         return False
     if send is None:
@@ -280,7 +284,7 @@ def deliver_notices(ctx, notices: list[Notice],
     lines += [html.escape(n.line) for n in notices]
     if not send("\n".join(lines)):
         return False
-    mark_notified(ctx.name, [n.key for n in notices])
+    mark_notified(ctx.name, [n.key for n in notices], path=path)
     return True
 
 

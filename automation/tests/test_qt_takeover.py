@@ -1,74 +1,33 @@
-"""新 Panel 的交給策略接管（#153，接 paper）。
+"""新 Panel 的交給策略接管畫面（#153）。
 
 從主視窗操作，跑真的 strategy_takeover（預覽、重算核對、送單、對帳）與
-manual_attribution，只把 IB 換成假的 Broker、訊號換成固定值。驗證：送單閘門擋實盤、
-paper 可預覽 → 確認 → 送出、拒絕與過期在畫面上說明、Sync Pos 暫停列可直接接管、
-沒人在等的計算結果被丟棄、實盤紀錄不被寫入。不連 IB、不發 Telegram、不讀真實 config。
+manual_attribution，只把 IB 換成假的 Broker、訊號換成固定值。驗證畫面流程：閘門拒絕
+時畫面說明原因、預覽 → 確認 → 送出、拒絕與過期在畫面上說明、Sync Pos 暫停列可直接
+接管、沒人在等的計算結果被丟棄。paper／實盤的身分、紀錄、通知差異在
+test_qt_order_target。不連 IB、不發 Telegram、不讀真實 config。
 """
 from __future__ import annotations
 
 import threading
 from types import SimpleNamespace as NS
 
-import pandas as pd
 import pytest
 
 from tests.test_qt_panel import (  # noqa: F401  fixtures
     dialogs, extras, make_window, portfolio, ports, source,
 )
-from tests.test_qt_sync_pos import (  # noqa: F401  fixtures
-    PAPER, UNIVERSE, SyncBroker, base_ctx, broker, paper_files, sync_env,
+from tests.test_qt_order_target import (  # noqa: F401  fixtures
+    PAPER, TakeoverBroker, base_ctx, broker, live_files, paper_files, pause_xyz, sync_env,
+    takeover_signals,
 )
 
 from PySide6.QtCore import Qt
 
 
-class TakeoverBroker(SyncBroker):
-    """SyncBroker 加上掛單清單與成交行為（fill／reject／working）。"""
-
-    def reqAllOpenOrders(self):
-        return list(self.state.open_orders)
-
-    def placeOrder(self, contract, order):
-        trade = super().placeOrder(contract, order)
-        trade.log = []
-        trade.orderStatus = NS(status="Submitted", filled=0)
-        sign = 1 if order.action == "BUY" else -1
-        qty = int(order.totalQuantity)
-        if self.state.behavior == "fill":
-            trade.orderStatus = NS(status="Filled", filled=qty)
-            self.state.positions[contract.symbol] = (
-                self.state.positions.get(contract.symbol, 0.0) + sign * qty)
-        elif self.state.behavior == "reject":
-            trade.orderStatus = NS(status="Inactive", filled=0)
-            trade.log.append(NS(message="Order rejected - reason: margin"))
-        return trade
-
-
 @pytest.fixture
-def takeover_env(broker, sync_env, paper_files, monkeypatch):
+def takeover_env(takeover_signals, sync_env, paper_files):
     """paper 帳戶 Taylor 先有策略外的 XYZ 10 股，之後 XYZ 被加入 S&P 500 → 暫停。"""
-    import manual_attribution as ma
-    import sp500_state
-    from strategies.sp500_momentum import signal as sp_signal
-
-    broker.open_orders = []
-    broker.behavior = "fill"
-    broker.sp500_states = []
-
-    def live(holdings, state, as_of_date=None):
-        if broker.gate is not None:
-            broker.gate.wait(5)
-        return {"AAPL": 0.5, "XYZ": 0.5}, pd.Timestamp("2026-09-29"), dict(state)
-
-    monkeypatch.setattr(sp_signal, "get_latest_weights_live", live)
-    monkeypatch.setattr(sp500_state, "load_state", lambda name: {})
-    monkeypatch.setattr(sp500_state, "save_state",
-                        lambda *a, **k: broker.sp500_states.append(a))
-    ma.evaluate("Taylor", {"AAPL": 100.0, "XYZ": 10.0}, UNIVERSE,
-                ledger_path=paper_files.attribution, manual_orders_path=paper_files.orders)
-    ma.evaluate("Taylor", {"AAPL": 100.0, "XYZ": 10.0}, UNIVERSE | {"XYZ"},
-                ledger_path=paper_files.attribution, manual_orders_path=paper_files.orders)
+    pause_xyz(paper_files)
     return sync_env
 
 
@@ -133,17 +92,12 @@ def test_gateway_turning_live_after_the_preview_blocks_the_send(
 # ── paper：預覽 → 確認 → 送出 ─────────────────────────────────────────
 
 def test_paper_takeover_previews_then_sends_only_that_symbol(
-        takeover_window, broker, dialogs, paper_files, takeover_env, qtbot):
-    import manual_attribution as ma
-
+        takeover_window, broker, dialogs, qtbot):
     w = takeover_window()
     panel = w.trading.takeover
     assert panel.symbols() == ["XYZ"]                  # 只列這個帳戶被暫停的標的
     preview(qtbot, panel)
 
-    ctx = broker.ctxs[0]
-    assert (ctx.name, ctx.account, ctx.port, ctx.client_id) == ("Taylor", "DU001", 4013, 94)
-    assert ctx.price_feed_port is None and ctx.dry_run is False and ctx.tg_token == ""
     assert "Computing strategy targets" in panel.progress_text()
     text = panel.preview_text()
     for line in ("Account：Taylor", "標的：XYZ", "手動紀錄股數：10", "IB 現有股數：10",
@@ -157,15 +111,12 @@ def test_paper_takeover_previews_then_sends_only_that_symbol(
     assert title == "確認交給策略接管" and warning
     assert "送出 BUY 240 股 XYZ" in prompt and "paper 帳號 DU001" in prompt
     assert broker.placed == [("XYZ", "BUY", 240, "LMT", "DU001")]
-    assert {c[2] for c in broker.connects} == {94}
     assert "✅ 接管完成" in panel.status_text() and "XYZ 恢復策略送單" in panel.status_text()
-    assert "XYZ" not in ma.paused_symbols("Taylor", path=paper_files.attribution)
     log = w.dashboard.log_text()
     assert "[>] 交給策略接管 [Taylor] XYZ..." in log
     assert "[手動持倉·paper] [Taylor] ✅ XYZ 已交給策略接管" in log    # 結果通知只寫 Output Log
     assert not panel.confirm_button.isVisible()          # 同一份預覽不能再送一次
-    assert not takeover_env.ledger.exists()              # 實盤歸屬紀錄沒被建立或寫入
-    assert broker.sp500_states == []                     # 不寫 SP500 state
+    assert panel.symbols() == []                         # 解除暫停後清單跟著更新
 
 
 def test_declining_the_confirm_dialog_sends_nothing(takeover_window, broker, dialogs, qtbot):

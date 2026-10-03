@@ -1,7 +1,8 @@
 """新 Panel 的送單閘門與 paper 連線設定（#151，ADR-0012）。
 
-閘門是新 Panel 所有送單路徑共用的連線工廠：連上 Gateway 後先讀它管理的帳號，
-並行模式下不是全部 paper（DU/DF 開頭）就斷線拒絕。不需要 PySide6。
+閘門包在 Broker 外面（#185），是新 Panel 所有送單路徑共用的連線入口：連上 Gateway
+後先讀它管理的帳號，並行模式下不是全部 paper（DU/DF 開頭）就斷線拒絕，呼叫端
+拿不到連線。IB 換成 tests/fake_broker.py 的 in-memory fake。不需要 PySide6。
 """
 from __future__ import annotations
 
@@ -13,105 +14,74 @@ from qt_panel.broker_gate import (
     PAPER_CONFIG_KEY, PaperTarget, SendGate, SendRefused, load_paper_target,
 )
 from qt_panel.mode import PanelMode
+from tests.fake_broker import FakeBroker
+
+CTX = NS(name="Taylor", account="DU111", host="127.0.0.1", port=4013, client_id=92)
 
 
-class FakeBroker:
-    def __init__(self, managed):
-        self.managed = list(managed)
-        self.connected = False
-        self.calls = []
-        self.errorEvent = NS(name="errorEvent")
-
-    def connect(self, host, port, *, clientId, timeout):
-        self.connected = True
-        self.calls.append(("connect", host, port, clientId))
-
-    def managedAccounts(self):
-        return self.managed
-
-    def disconnect(self):
-        self.connected = False
-        self.calls.append(("disconnect",))
-
-    def placeOrder(self, contract, order):
-        self.calls.append(("placeOrder", contract, order))
-        return "trade"
-
-    def cancelOrder(self, order):
-        self.calls.append(("cancelOrder", order))
-        return "cancelled"
-
-    def openTrades(self):
-        return ["t"]
-
-
-def gated(managed, mode=PanelMode.PARALLEL):
-    raw = FakeBroker(managed)
-    return SendGate(mode, lambda: raw).broker(), raw
+def gate_for(managed, mode=PanelMode.PARALLEL):
+    fake = FakeBroker(managed=managed)
+    return SendGate(mode, fake), fake
 
 
 # ── 閘門 ─────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("managed", [["DU111"], ["DF222"], ["du333", "DU444"]])
 def test_parallel_mode_lets_paper_only_gateways_through(managed):
-    ib, raw = gated(managed)
-    ib.connect("127.0.0.1", 4013, clientId=92, timeout=10)
-    assert ib.placeOrder("c", "o") == "trade"
-    assert ib.cancelOrder("o") == "cancelled"
-    assert ib.openTrades() == ["t"]
-    assert ib.errorEvent is raw.errorEvent
-    assert raw.connected
+    gate, fake = gate_for(managed)
+    conn = gate.connect(CTX)
+    trade = conn.place(conn.contract("SPY"), NS(action="BUY", totalQuantity=1,
+                                                orderType="LMT", lmtPrice=1.0))
+    conn.cancel(trade.order)
+    assert [p.symbol for p in fake.placed] == ["SPY"] and fake.cancelled == [trade.order]
+    assert fake.connects == [("127.0.0.1", 4013, 92)] and fake.refused == 0
 
 
 @pytest.mark.parametrize("managed", [["U123"], ["DU111", "U123"], []])
 def test_parallel_mode_disconnects_and_refuses_live_or_unknown_gateways(managed):
-    ib, raw = gated(managed)
+    gate, fake = gate_for(managed)
     with pytest.raises(SendRefused) as exc:
-        ib.connect("127.0.0.1", 4001, clientId=92, timeout=10)
-    assert not raw.connected
-    assert raw.calls[-1] == ("disconnect",)
+        gate.connect(CTX)
+    assert fake.refused == 1 and fake.closed == 1      # 已斷線，呼叫端拿不到連線
+    assert fake.placed == [] and fake.cancelled == []
     text = str(exc.value)
     assert "並行模式" in text and "paper" in text and "沒有送出任何單" in text
 
 
 def test_refusal_names_the_live_account_so_the_trader_can_find_the_wrong_port():
-    ib, _raw = gated(["U123"])
+    gate, _fake = gate_for(["U123"])
     with pytest.raises(SendRefused, match="U123"):
-        ib.connect("127.0.0.1", 4001, clientId=92, timeout=10)
+        gate.connect(CTX)
 
 
-def test_order_calls_on_a_refused_connection_never_reach_the_gateway():
-    ib, raw = gated(["U123"])
-    with pytest.raises(SendRefused):
-        ib.connect("127.0.0.1", 4001, clientId=92, timeout=10)
-    for call in (lambda: ib.placeOrder("c", "o"), lambda: ib.cancelOrder("o")):
-        with pytest.raises(SendRefused):
-            call()
-    assert not any(c[0] in ("placeOrder", "cancelOrder") for c in raw.calls)
-
-
-def test_order_calls_after_disconnect_are_refused():
-    ib, raw = gated(["DU111"])
-    ib.connect("127.0.0.1", 4013, clientId=92, timeout=10)
-    ib.disconnect()
-    with pytest.raises(SendRefused):
-        ib.placeOrder("c", "o")
-
-
-def test_order_calls_before_a_checked_connection_are_refused():
-    ib, raw = gated(["DU111"])
-    with pytest.raises(SendRefused):
-        ib.placeOrder("c", "o")
-    assert raw.calls == []
+def test_production_mode_lets_live_gateways_through():
+    gate, fake = gate_for(["U123"], PanelMode.PRODUCTION)
+    assert gate.connect(CTX).managed_accounts() == ["U123"]
+    assert fake.refused == 0
 
 
 def test_every_connection_gets_its_own_check():
-    raws = [FakeBroker(["DU111"]), FakeBroker(["U123"])]
-    gate = SendGate(PanelMode.PARALLEL, lambda: raws.pop(0))
-    first, second = gate.broker(), gate.broker()
-    first.connect("h", 1, clientId=1, timeout=1)
+    gate, fake = gate_for(["DU111"])
+    gate.connect(CTX)
+    fake.managed = ["U123"]                  # 同一個 port 換成實盤 Gateway
     with pytest.raises(SendRefused):
-        second.connect("h", 1, clientId=1, timeout=1)
+        gate.connect(CTX)
+
+
+def test_the_gate_passes_the_timeout_and_wraps_the_real_broker_by_default():
+    import broker
+    gate = SendGate(PanelMode.PARALLEL)
+    assert isinstance(gate._broker, broker.Broker)
+    seen = []
+
+    class Spy:
+        def connect(self, ctx, *, timeout, check):
+            seen.append((ctx, timeout))
+            check(["DU1"])
+            return "conn"
+
+    assert SendGate(PanelMode.PARALLEL, Spy()).connect(CTX, timeout=10) == "conn"
+    assert seen == [(CTX, 10)]
 
 
 # ── paper 連線設定（config.json 的 qt_panel_paper）───────────────────

@@ -1,8 +1,8 @@
 """新 Panel 查權益／持倉（#149），以及單一帳戶頁的權益序列、策略設定、最近成交（#150）。
 
-查詢本身沿用 `ib_fetcher.fetch_portfolio`（和 Tk Panel 同一套，唯讀連線、查完就斷），
-只換 clientId：新 Panel 的 Gateway 心跳已經佔著 ROLE_PANEL_READONLY 那組號碼，
-查詢改用 `get_qt_panel_query_client_id`（Taylor 69／Rosa 79／Yvonne 89），不和
+查詢本身沿用 `ib_fetcher.fetch_portfolio`（和 Tk Panel 同一套，經 Broker 開唯讀連線、
+查完就斷），只換 clientId：新 Panel 的 Gateway 心跳已經佔著 ROLE_PANEL_READONLY 那組號碼，
+查詢改用 `broker.panel_query_client_id`（Taylor 69／Rosa 79／Yvonne 89），不和
 心跳、Tk Panel、排程搶同一個 clientId（ADR-0012）。
 
 另外唯讀讀一次手動歸屬紀錄的暫停標的（碰撞進策略 Universe 的手動持倉），持倉表
@@ -32,10 +32,11 @@ def fetch_panel_portfolio(account_name: str) -> dict:
 def fetch_readonly_portfolio(account_name: str) -> dict:
     import ib_fetcher
     from account_ctx import AccountCtx
-    from account_utils import ROLE_PANEL, get_qt_panel_query_client_id
+    from account_utils import ROLE_PANEL
+    from broker import panel_query_client_id
 
     ctx = replace(AccountCtx.from_name(account_name, ROLE_PANEL),
-                  client_id=get_qt_panel_query_client_id(account_name))
+                  client_id=panel_query_client_id(account_name))
     return _with_attribution(ib_fetcher.fetch_portfolio(ctx, readonly=True), ctx)
 
 

@@ -228,6 +228,12 @@ class FakeIB:
         self.connected = False
 
 
+def fake_ib_connect(state):
+    """ManualOrderService 的連線：真的 broker.Broker 接在 FakeIB 上（#185，timeout 10 秒）。"""
+    from broker import Broker
+    return lambda ctx: Broker(lambda: FakeIB(state)).connect(ctx, timeout=10)
+
+
 def service_for(tmp_path, state, *, universe=None, notifier=None,
                 quote_reader=None, clock=None):
     accounts = {
@@ -249,7 +255,7 @@ def service_for(tmp_path, state, *, universe=None, notifier=None,
         account_names=list(accounts),
         store=ManualOrderStore(tmp_path / "manual.sqlite3"),
         account_ctx_factory=account_ctx,
-        ib_factory=lambda: FakeIB(state),
+        connect=fake_ib_connect(state),
         universe_loader=lambda: set(universe or {"SPY", "SSO", "META"}),
         order_factory=lambda action, quantity, price: NS(
             action=action,

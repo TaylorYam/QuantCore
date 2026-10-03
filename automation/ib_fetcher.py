@@ -122,15 +122,15 @@ def get_prices(ib: IB, symbols: list, ctx: AccountCtx, *, readonly: bool = False
     取得 symbols 的報價（透過 price_utils.robust_get_prices 的多層 fallback）。
     優先順序：本連線即時 → ctx.price_feed_port 備援 → delayed → 本地 CSV。
     """
+    from broker import price_feed_client_id
     from price_utils import robust_get_prices
-    options = ({"feed_client_id": 1000 + ctx.client_id, "readonly": True}
-               if readonly else {})
     return robust_get_prices(
         ib, symbols,
         host=ctx.host,
         price_feed_port=ctx.price_feed_port,
         verbose_log=lambda m: log.info(m),
-        **options,
+        feed_client_id=price_feed_client_id(ctx.client_id, readonly=readonly),
+        readonly=readonly,
     )
 
 
@@ -159,101 +159,20 @@ def fetch_portfolio(ctx: AccountCtx, *, readonly: bool = False) -> dict:
         "source": f"IB Live [{ctx.name}]",
     }
 
-    ib = None
+    conn = None
+    readings: dict = {}
     try:
-        ib = (connect(ctx, timeout=15, readonly=True) if readonly
-              else connect(ctx, timeout=15))
-
-        # 1. 信任 Gateway 真正登入的帳號（accounts.json 的 U-號可能過期）
-        managed = list(ib.managedAccounts() or [])
-        configured = ctx.account
-        if readonly and (not configured or configured not in managed):
-            raise RuntimeError("Configured Account is not available on this Gateway")
-        if managed and configured and configured in managed:
-            account = configured
-        elif managed:
-            account = managed[0]
-        else:
-            account = configured
-
-        # 2. 帳戶資訊：優先用 accountSummary（snapshot API，對長壽命 GUI 穩定）
-        vals_source = "accountSummary"
-        vals = []
-        try:
-            vals = list(ib.accountSummary(account) if account else ib.accountSummary())
-        except Exception:
-            vals = []
-        if not any(v.tag == 'NetLiquidation' for v in vals):
-            try:
-                vals = list(ib.accountSummary())
-            except Exception:
-                pass
-        # 最後一層：舊款 accountValues（需要訂閱）
-        if not any(v.tag == 'NetLiquidation' for v in vals):
-            try:
-                if account:
-                    ib.reqAccountUpdates(True, account)
-                ib.sleep(1.5)
-            except Exception:
-                pass
-            vals = list(ib.accountValues(account) if account else ib.accountValues())
-            if not any(v.tag == 'NetLiquidation' for v in vals):
-                vals = list(ib.accountValues())
-            vals_source = "accountValues(fallback)"
-
-        # IB 有時把 NetLiquidation 放在 currency='BASE'（帳戶基礎幣別）
-        def _pick(tag: str) -> float:
-            # 優先抓指定帳戶 + USD
-            for pref in ('USD', 'BASE', ''):
-                for v in vals:
-                    if v.tag != tag:
-                        continue
-                    if account and getattr(v, 'account', account) != account:
-                        continue
-                    if v.currency != pref:
-                        continue
-                    try:
-                        return float(v.value)
-                    except Exception:
-                        pass
-            if readonly:
-                raise RuntimeError(f"Missing {tag} for configured Account")
-            # 放棄 account 過濾
-            for pref in ('USD', 'BASE', ''):
-                for v in vals:
-                    if v.tag == tag and v.currency == pref:
-                        try:
-                            return float(v.value)
-                        except Exception:
-                            pass
-            for v in vals:
-                if v.tag == tag:
-                    try:
-                        return float(v.value)
-                    except Exception:
-                        pass
-            return 0.0
-
-        result["nav"] = _pick('NetLiquidation')
-        result["cushion"] = _pick('Cushion') * 100
-        result["excess_liq"] = _pick('ExcessLiquidity')
-
-        # 3. 持倉明細
-        all_pos = list(ib.positions())
-        positions = [canonicalize_position(p) for p in all_pos
-                     if p.contract.secType == 'STK'
-                     and p.position != 0
-                     and (not account or p.account == account)]
-        # 若嚴格 account 過濾後空，fallback 不過濾
-        if not readonly and not positions and all_pos:
-            positions = [p for p in all_pos
-                         if p.contract.secType == 'STK' and p.position != 0]
+        from broker import Broker
+        conn = Broker().connect(ctx, timeout=15, readonly=readonly)
+        log.info(f"Connected  host={ctx.host} port={ctx.port} "
+                 f"clientId={ctx.client_id} account={ctx.account}")
+        conn.portfolio_readings(readings)
+        positions = readings["positions"]
 
         if positions:
             sp500_universe = get_sp500_universe()
             symbols = [contract_symbol(p.contract) for p in positions]
-            prices = (get_prices(ib, symbols, ctx, readonly=True) if readonly
-                      else get_prices(ib, symbols, ctx))
+            prices = conn.prices(symbols)
             # 清理：0 不當作有效報價，讓 downstream .get(sym, avg_cost) fallback
             prices = {s: p for s, p in prices.items() if p > 0}
 
@@ -288,12 +207,12 @@ def fetch_portfolio(ctx: AccountCtx, *, readonly: bool = False) -> dict:
 
         # 4. 診斷資訊（協助除錯）
         result["debug"] = {
-            "managed_accounts": list(managed),
-            "configured_account": configured,
-            "used_account": account,
-            "vals_source": vals_source,
-            "n_account_values": len(vals),
-            "n_positions_raw": len(all_pos),
+            "managed_accounts": list(readings["managed"]),
+            "configured_account": readings["configured"],
+            "used_account": readings["account"],
+            "vals_source": readings["vals_source"],
+            "n_account_values": readings["n_account_values"],
+            "n_positions_raw": readings["n_positions_raw"],
             "n_positions_stk": len(positions),
             "port": ctx.port,
             "client_id": ctx.client_id,
@@ -302,11 +221,11 @@ def fetch_portfolio(ctx: AccountCtx, *, readonly: bool = False) -> dict:
     except Exception as e:
         result["error"] = str(e)
     finally:
-        if ib is not None:
-            try:
-                if ib.isConnected():
-                    ib.disconnect()
-            except Exception:
-                pass
+        # 讀到哪就填到哪（中途失敗時已讀到的權益照舊留著，同 #185 之前）
+        for key in ("nav", "cushion", "excess_liq"):
+            if key in readings:
+                result[key] = readings[key]
+        if conn is not None:
+            conn.close()
 
     return result

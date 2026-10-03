@@ -10,28 +10,12 @@ BASE_DIR      = Path(__file__).parent
 CONFIG_PATH   = BASE_DIR / 'config.json'
 ACCOUNTS_PATH = BASE_DIR / 'accounts.json'
 
-# clientId 分配：每帳戶佔 10 個號碼段
-# A: 20-29, B: 30-39, C: 40-49, D: 50-59 ...
-_CLIENT_ID_BASE = 20
-_CLIENT_ID_STEP = 10
-
-# role offset: rebalance=0, report=1, moo_check=2, control_panel=5,
-#              manual_order=6, gw_monitor=7, takeover=8, panel_readonly=9
-ROLE_REBALANCE = 0
-ROLE_REPORT    = 1
-ROLE_MOO_CHECK = 2
-ROLE_PANEL     = 5
-ROLE_MANUAL_ORDER = 6
-ROLE_MONITOR   = 7
-# 交給策略接管（#107）自己的連線：接管單不會被排程調倉的「全部取消掛單」取消
-ROLE_TAKEOVER  = 8
-# 新 PySide6 Panel 並行期間的唯讀連線（#147，ADR-0012）：與 Tk Panel 同時開不互搶
-ROLE_PANEL_READONLY = 9
-
-# 新 Panel 查權益／持倉（#149）：ROLE_PANEL_READONLY 被它的 Gateway 心跳長連線佔著，
-# 同一個 clientId 不能同時連兩條，所以查詢另用一段號碼（Taylor 69／Rosa 79／Yvonne 89）。
-# 帳戶數 ≤ 4 時不會和上面的 BASE + idx*STEP + role 撞號。
-_QT_PANEL_QUERY_CLIENT_ID_BASE = 69
+# clientId 的規則與用途（role）編號只在 broker（#185）；這裡轉出 role 給既有的
+# AccountCtx.from_name(name, ROLE_…) 呼叫端。
+from broker import (  # noqa: E402,F401
+    ROLE_MANUAL_ORDER, ROLE_MONITOR, ROLE_MOO_CHECK, ROLE_PANEL, ROLE_PANEL_READONLY,
+    ROLE_REBALANCE, ROLE_REPORT, ROLE_TAKEOVER,
+)
 
 
 def load_base_config() -> dict:
@@ -129,31 +113,6 @@ def update_account_config(name: str, updates: dict) -> None:
     with open(ACCOUNTS_PATH, 'w', encoding='utf-8') as f:
         json.dump(accounts, f, indent=2, ensure_ascii=False)
         f.write('\n')
-
-
-def get_client_id(account_name: str, role: int = ROLE_REBALANCE) -> int:
-    """
-    按帳戶名稱 + 角色分配不衝突的 clientId。
-    A=20+role, B=30+role, C=40+role ...
-    """
-    accounts = load_accounts()
-    idx = 0
-    for i, a in enumerate(accounts):
-        if a['name'].upper() == account_name.upper():
-            idx = i
-            break
-    return _CLIENT_ID_BASE + idx * _CLIENT_ID_STEP + role
-
-
-def get_qt_panel_query_client_id(account_name: str) -> int:
-    """新 Panel 查權益／持倉用的 clientId（見 _QT_PANEL_QUERY_CLIENT_ID_BASE）。"""
-    accounts = load_accounts()
-    if _CLIENT_ID_BASE + len(accounts) * _CLIENT_ID_STEP > _QT_PANEL_QUERY_CLIENT_ID_BASE:
-        raise ValueError("帳戶超過 4 個，新 Panel 查詢的 clientId 會和既有用途撞號，"
-                         "請先改 _QT_PANEL_QUERY_CLIENT_ID_BASE")
-    idx = next((i for i, a in enumerate(accounts)
-                if a['name'].upper() == account_name.upper()), 0)
-    return _QT_PANEL_QUERY_CLIENT_ID_BASE + idx * _CLIENT_ID_STEP
 
 
 def get_all_account_configs() -> list[dict]:

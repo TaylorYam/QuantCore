@@ -1,10 +1,11 @@
 """
-Unit tests for account_utils.update_account_config + get_client_id.
+Unit tests for account_utils.update_account_config + telegram_dest.
 
 Coverage:
   - update_account_config writes to accounts.json without affecting others
   - update_account_config raises ValueError on unknown account
-  - get_client_id maths (per-account offset + role offset)
+  - telegram_dest fallbacks
+clientId 規則在 broker（#185），測試在 test_broker.py。
 """
 
 from __future__ import annotations
@@ -108,47 +109,6 @@ def test_update_account_config_case_insensitive_match(tmp_path, monkeypatch):
     assert data[0]["alloc_sr"] == 0.65
 
 
-def test_get_client_id_per_account_offset(fake_config):
-    """client_id = BASE + account_idx * STEP + role_offset
-    Taylor (idx 0) ROLE_REBALANCE (0) → 20
-    Rosa   (idx 1) ROLE_REBALANCE (0) → 30
-    Yvonne (idx 2) ROLE_REBALANCE (0) → 40"""
-    from account_utils import get_client_id, ROLE_REBALANCE
-
-    assert get_client_id("Taylor", ROLE_REBALANCE) == 20
-    assert get_client_id("Rosa", ROLE_REBALANCE) == 30
-    assert get_client_id("Yvonne", ROLE_REBALANCE) == 40
-
-
-def test_get_client_id_role_offset(fake_config):
-    """Same account, different roles → different client_ids.
-    Taylor REBALANCE=20, REPORT=21, MOO=22, PANEL=25, MONITOR=27"""
-    from account_utils import (
-        get_client_id,
-        ROLE_REBALANCE, ROLE_REPORT, ROLE_MOO_CHECK, ROLE_PANEL,
-        ROLE_MANUAL_ORDER, ROLE_MONITOR,
-    )
-
-    assert get_client_id("Taylor", ROLE_REBALANCE) == 20
-    assert get_client_id("Taylor", ROLE_REPORT) == 21
-    assert get_client_id("Taylor", ROLE_MOO_CHECK) == 22
-    assert get_client_id("Taylor", ROLE_PANEL) == 25
-    assert get_client_id("Taylor", ROLE_MANUAL_ORDER) == 26
-    assert get_client_id("Taylor", ROLE_MONITOR) == 27
-
-
-def test_panel_readonly_role_gets_its_own_client_ids(fake_config):
-    """新 PySide6 Panel 並行期間的唯讀連線（#147）不能和任何既有用途撞號，
-    否則會和 Tk Panel／排程搶同一個 clientId（IB 會拒絕後連的那條）。"""
-    import account_utils as au
-
-    roles = [value for name, value in vars(au).items() if name.startswith("ROLE_")]
-    assert len(roles) == len(set(roles))
-    assert all(0 <= r < au._CLIENT_ID_STEP for r in roles)
-    assert au.get_client_id("Taylor", au.ROLE_PANEL_READONLY) == 29
-    assert au.get_client_id("Yvonne", au.ROLE_PANEL_READONLY) == 49
-
-
 def test_telegram_dest_shared_account_and_fallback(monkeypatch):
     """帳戶覆寫優先；帳戶讀不到退回 config.json；config 也讀不到 → 空字串（不發）。"""
     import account_utils
@@ -169,26 +129,3 @@ def test_telegram_dest_shared_account_and_fallback(monkeypatch):
 
     monkeypatch.setattr(account_utils, "load_base_config", missing)
     assert account_utils.telegram_dest("Taylor") == {"token": "", "chat_id": ""}
-
-
-def test_qt_panel_queries_get_client_ids_outside_every_account_role(fake_config):
-    """新 Panel 查權益／持倉（#149）：心跳已佔 ROLE_PANEL_READONLY（29/39/49），
-    查詢另用 69/79/89，和所有帳戶的所有用途都不撞號。"""
-    import account_utils as au
-
-    names = [a["name"] for a in au.load_accounts()]
-    ids = [au.get_qt_panel_query_client_id(n) for n in names]
-    assert ids == [69, 79, 89]
-    roles = [value for name, value in vars(au).items() if name.startswith("ROLE_")]
-    taken = {au.get_client_id(n, r) for n in names for r in roles}
-    assert not taken & set(ids)
-
-
-def test_qt_panel_query_client_ids_refuse_a_layout_that_would_collide(monkeypatch):
-    import pytest
-    import account_utils as au
-
-    monkeypatch.setattr(au, "load_accounts",
-                        lambda: [{"name": f"A{i}"} for i in range(5)])
-    with pytest.raises(ValueError):
-        au.get_qt_panel_query_client_id("A0")

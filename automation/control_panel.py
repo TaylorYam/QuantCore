@@ -180,8 +180,8 @@ def fetch_ib_portfolio(account_name: str = "") -> dict:
     if _VIEW_ONLY:
         # 正式模式（#154）：ROLE_PANEL 交給新 Panel，這裡改用新 Panel 並行期間的查詢號碼
         from dataclasses import replace
-        from account_utils import get_qt_panel_query_client_id
-        ctx = replace(ctx, client_id=get_qt_panel_query_client_id(account_name))
+        from broker import panel_query_client_id
+        ctx = replace(ctx, client_id=panel_query_client_id(account_name))
     return _if.fetch_portfolio(ctx, readonly=True)
 
 
@@ -1298,8 +1298,14 @@ class ControlPanel(tk.Tk):
         回退到並行模式時才用得到。#155 刪 Tk 時一起刪。"""
         import ib_fetcher
         import manual_attribution
+        from broker import as_connection
         from sync_position import SyncRecords
-        return SyncRecords(connect=ib_fetcher.connect,
+
+        def connect(ctx):
+            # 連線照舊走 ib_fetcher.connect（同一個 log 行），包成 Broker 的連線（#185）
+            return as_connection(ib_fetcher.connect(ctx), ctx)
+
+        return SyncRecords(connect=connect,
                            attribution_ledger=manual_attribution.DEFAULT_LEDGER_PATH,
                            manual_orders_store=manual_attribution.DEFAULT_MANUAL_ORDERS_PATH,
                            persist_strategy_state=True)

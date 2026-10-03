@@ -88,11 +88,6 @@ class _Header(QFrame):
         lay.addWidget(self.clock)
 
 
-def _default_broker():
-    from ib_insync import IB
-    return IB()
-
-
 def _load_account_ctx(name: str, role: int):
     from account_ctx import AccountCtx
     return AccountCtx.from_name(name, role)
@@ -121,7 +116,7 @@ class MainWindow(QMainWindow):
                  mode_note: str = "",
                  paper_target: PaperTarget | None = None,
                  paper_problem: str = "尚未設定 paper 連線",
-                 broker_factory: Callable[[], object] = _default_broker,
+                 broker=None,
                  manual_order_service: Callable[..., object] | None = None,
                  symbol_loader: Callable | None = None,
                  paper_files: OrderFiles | None = None,
@@ -182,8 +177,9 @@ class MainWindow(QMainWindow):
             credential_accounts=LIVE_ACCOUNTS, on_refresh=self.refresh,
             watch_note=PRODUCTION_WATCH_NOTE if self._on_duty() else WATCH_NOTE)
         self.portfolio = PortfolioPage(names, on_refresh=self.refresh_portfolio)
-        # 送單閘門：Trading 每一條 IB 連線都從這裡建，並行模式只放行 paper
-        self.send_gate = SendGate(mode, broker_factory)
+        # 送單閘門：Trading 每一條 IB 連線都經過它向 Broker 要，並行模式只放行 paper。
+        # broker 只給測試換成 in-memory fake（tests/fake_broker.py）
+        self.send_gate = SendGate(mode, broker)
         target, problem = order_target_for(
             mode, send_gate=self.send_gate, paper_target=paper_target,
             paper_problem=paper_problem,

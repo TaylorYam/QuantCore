@@ -17,7 +17,7 @@ from tests.test_qt_panel import (  # noqa: F401  fixtures
     dialogs, extras, make_window, portfolio, ports, source,
 )
 from tests.test_qt_order_target import (  # noqa: F401  fixtures
-    PAPER, TakeoverBroker, base_ctx, broker, live_files, paper_files, pause_xyz, sync_env,
+    PAPER, base_ctx, broker, live_files, paper_files, pause_xyz, sent, sync_env,
     takeover_signals,
 )
 
@@ -35,7 +35,7 @@ def takeover_env(takeover_signals, sync_env, paper_files):
 def takeover_window(make_window, broker, takeover_env, paper_files, qtbot):
     def make(**kw):
         kw.setdefault("paper_target", PAPER)
-        kw.setdefault("broker_factory", lambda: TakeoverBroker(broker))
+        kw.setdefault("broker", broker)
         kw.setdefault("paper_files", paper_files)
         kw.setdefault("account_ctx_loader", base_ctx)
         kw.setdefault("manual_order_service", lambda **_kw: NS(
@@ -110,7 +110,7 @@ def test_paper_takeover_previews_then_sends_only_that_symbol(
     [(title, prompt, warning)] = dialogs.confirms
     assert title == "確認交給策略接管" and warning
     assert "送出 BUY 240 股 XYZ" in prompt and "paper 帳號 DU001" in prompt
-    assert broker.placed == [("XYZ", "BUY", 240, "LMT", "DU001")]
+    assert sent(broker) == [("XYZ", "BUY", 240, "LMT", "DU001")]
     assert "✅ 接管完成" in panel.status_text() and "XYZ 恢復策略送單" in panel.status_text()
     log = w.dashboard.log_text()
     assert "[>] 交給策略接管 [Taylor] XYZ..." in log
@@ -165,7 +165,7 @@ def test_stale_preview_is_replaced_and_must_be_confirmed_again(
 
     confirm(qtbot, panel)
     assert len(dialogs.confirms) == 2
-    assert broker.placed == [("XYZ", "BUY", 238, "LMT", "DU001")]
+    assert sent(broker) == [("XYZ", "BUY", 238, "LMT", "DU001")]
 
 
 def test_rejected_order_keeps_the_pause_and_says_why(

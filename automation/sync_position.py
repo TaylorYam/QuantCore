@@ -18,19 +18,17 @@ Panel 按「Sync Pos」時的核心計算與下單邏輯。此模組只處理資
    → 建新的 LMT+outsideRTH ctx → 連 IB → 取 bid/ask 算 LMT → 下單
    → 回傳 (placed_list, fill_results)
 
-所有 IB 互動走 ib_fetcher；策略訊號走 signals；帳戶 config 走 AccountCtx；
+所有 IB 互動走 Broker 的連線（records.open → broker.Connection）；策略訊號走 signals；
+帳戶 config 走 AccountCtx；
 分類 / Combine / 差額決策走 rebalance_plan（與 scheduled rebalance 同一顆腦）。
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass, field, replace as _replace
 from pathlib import Path
 from typing import Callable, Optional
-
-import numpy as np
 
 from account_ctx import AccountCtx
 import manual_attribution
@@ -48,7 +46,7 @@ class SyncRecords:
 
     沒有預設值：新 Panel 的送單目標（`qt_panel.order_target`）決定 paper 或實盤
     — 連線都經過送單閘門；paper 用自己的歸屬與手動單紀錄、SP500／SkewLS state
-    只讀不寫；實盤用實盤的紀錄並寫回 state。
+    只讀不寫；實盤用實盤的紀錄並寫回 state。connect 回傳 `broker.Connection`。
     """
     connect: Callable[[AccountCtx], object]
     attribution_ledger: Path
@@ -142,12 +140,6 @@ def compute_sync_plan(
 
     records = require_records(records)
 
-    # asyncio 需要有 event loop 才能讓 ib_insync 跑
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
-
     # 1. 不需 IB 的訊號：SR，以及 SkewLS — Sync Pos 是「強制同步到最新 target」，
     #    不套 threshold gating（使用者按 Sync 就是要把帳戶拉到 today's target）；
     #    事後 submit 成功時會更新 state 給未來 threshold 用。
@@ -158,9 +150,9 @@ def compute_sync_plan(
     # 2. 連 IB → NAV + 持倉 → 手動持倉歸屬（#106，讀寫失敗拋例外：本帳戶這次
     #    不 Sync，且在算 SP500 訊號寫 state 之前）→ SP500 → 報價
     _log("  Connecting to IB...")
-    ib = records.open(ctx)
+    conn = records.open(ctx)
     try:
-        inputs.read(plan_inputs.IbAccount(ib, ctx),
+        inputs.read(conn,
                     ledger_path=records.attribution_ledger,
                     manual_orders_path=records.manual_orders_store)
         nav = inputs.nav
@@ -174,11 +166,7 @@ def compute_sync_plan(
                                        ctx=ctx, skewls_wgt=inputs.skewls_wgt)
 
     finally:
-        try:
-            if ib.isConnected():
-                ib.disconnect()
-        except Exception:
-            pass
+        conn.close()
 
     # 7. 差額 order list（唯一實作 = rebalance_plan.build_order_list；
     #    log_fn=None：預覽視窗自行顯示，不進 log）
@@ -259,27 +247,6 @@ def notify_new_pauses(plan: SyncPlan,
 
 # ── Submit phase ──────────────────────────────────────────────────────
 
-def read_quotes(ib, symbols: list[str]) -> dict[str, dict]:
-    """本連線的 bid/ask/mid/last/close（無效值為 None），key = constituents 寫法。"""
-    from symbol_contract import canonical_symbol, ib_stock
-    contracts = [ib_stock(s) for s in symbols]
-    ib.qualifyContracts(*contracts)
-    tickers = ib.reqTickers(*contracts)
-    quotes = {}
-    for t in tickers:
-        sym = canonical_symbol(t.contract.symbol)
-        bid = t.bid if (t.bid and t.bid > 0 and np.isfinite(t.bid)) else None
-        ask = t.ask if (t.ask and t.ask > 0 and np.isfinite(t.ask)) else None
-        mid = t.midpoint() if (t.midpoint() and np.isfinite(t.midpoint())) else None
-        last = t.last if (t.last and t.last > 0 and np.isfinite(t.last)) else None
-        close = t.close if (t.close and t.close > 0 and np.isfinite(t.close)) else None
-        quotes[sym] = {
-            'bid': bid, 'ask': ask, 'mid': mid,
-            'last': last, 'close': close,
-        }
-    return quotes
-
-
 def sync_lmt_price(action: str, quote: dict, ref: float) -> float:
     """Sync Pos 的 LMT 價：BUY ask×1.003、SELL bid×0.997（缺價依序用
     mid/last/close/ref 後備）。交給策略接管（#107）用同一規則。"""
@@ -330,28 +297,22 @@ def submit_sync_orders(
     if not plan.orders:
         return [], []
 
-    # asyncio 需要有 event loop
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
-
     import rebalance_ib as reb
     # Frozen AccountCtx replace → LMT + outsideRTH 版本（不汙染原 ctx）
     exec_ctx = _replace(plan.ctx, order_type='LMT', outside_rth=True)
 
-    ib = records.open(exec_ctx)
+    conn = records.open(exec_ctx)
     try:
         # 1. 取消既有掛單（Panel 手動單除外，#106）
-        open_trades = manual_attribution.strategy_open_trades(ib.openTrades())
+        open_trades = manual_attribution.strategy_open_trades(conn.open_orders())
         if open_trades:
             _log(f"  Cancelling {len(open_trades)} existing open orders...")
             for t in open_trades:
-                ib.cancelOrder(t.order)
-            ib.sleep(2)
+                conn.cancel(t.order)
+            conn.wait(2)
 
         # 2. 取得 bid/ask 報價以計算 LMT 價格
-        quotes = read_quotes(ib, list({o.symbol for o in plan.orders}))
+        quotes = conn.quotes(list({o.symbol for o in plan.orders}))
 
         # 3. 算 LMT 價並組 order dict（format 沿用 rebalance_ib.place_orders 吃的）
         ib_orders = []
@@ -368,7 +329,7 @@ def submit_sync_orders(
             _log(f"  LMT {o.action} {o.qty}sh {o.symbol} @ ${lmt:.2f}")
 
         # 4. 送單（透過 rebalance_ib.place_orders）
-        placed, trades = reb.place_orders(ib, ib_orders, ctx=exec_ctx,
+        placed, trades = reb.place_orders(conn, ib_orders, ctx=exec_ctx,
                                           **records.gate_options())
 
         # 5. 等成交回報
@@ -389,11 +350,7 @@ def submit_sync_orders(
                 # 不 raise — state 寫入失敗不該阻擋送單流程
 
     finally:
-        try:
-            if ib.isConnected():
-                ib.disconnect()
-        except Exception:
-            pass
+        conn.close()
 
     return placed, fill_results
 

@@ -27,7 +27,6 @@ Telegram 在 control_panel。
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field, replace
 import logging
 import math
@@ -36,7 +35,6 @@ import uuid
 from typing import Callable, Optional
 
 from account_ctx import AccountCtx
-import ib_fetcher
 import manual_attribution
 import plan_inputs
 import rebalance_plan as plan
@@ -129,18 +127,11 @@ class TakeoverResult:
     order_status: str = ""
 
 
-def _ensure_loop() -> None:
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
-
-
-def _open_orders(ib, ctx: AccountCtx, symbol: str) -> list:
+def _open_orders(conn, ctx: AccountCtx, symbol: str) -> list:
     """這個 Account 在 IB 上這一檔的所有掛單（任何 clientId、含 TWS）。"""
     from symbol_contract import contract_symbol
     out = []
-    for t in ib.reqAllOpenOrders() or []:
+    for t in conn.open_orders(all_clients=True):
         account = str(getattr(t.order, "account", "") or ctx.account)
         status = str(getattr(getattr(t, "orderStatus", None), "status", "") or "")
         if (account == ctx.account and status not in _DONE_STATUSES
@@ -149,7 +140,7 @@ def _open_orders(ib, ctx: AccountCtx, symbol: str) -> list:
     return out
 
 
-def _compute(ib, ctx: AccountCtx, symbol: str, log_fn: Callable[[str], None],
+def _compute(conn, ctx: AccountCtx, symbol: str, log_fn: Callable[[str], None],
              records: SyncRecords) -> tuple[TakeoverPreview, dict[str, float], set[str]]:
     """同一條連線上的快照 → 預覽（或 TakeoverRefused）。回傳 (預覽, 持倉, Universe)。
 
@@ -168,7 +159,7 @@ def _compute(ib, ctx: AccountCtx, symbol: str, log_fn: Callable[[str], None],
         if unresolved:
             raise TakeoverRefused(f"{symbol} 還有 {len(unresolved)} 筆未結案的 Panel "
                                   "手動單；結案後再接管")
-        open_orders = _open_orders(ib, ctx, symbol)
+        open_orders = _open_orders(conn, ctx, symbol)
         if open_orders:
             desc = "、".join(f"{t.order.action} {_fmt(float(t.order.totalQuantity))}"
                             for t in open_orders)
@@ -177,7 +168,7 @@ def _compute(ib, ctx: AccountCtx, symbol: str, log_fn: Callable[[str], None],
 
     inputs = plan_inputs.start(ctx, plan_inputs.SYNC, persist_state=False,
                                narrator=_TakeoverSteps(log_fn))
-    inputs.read(plan_inputs.IbAccount(ib, ctx),
+    inputs.read(conn,
                 ledger_path=records.attribution_ledger,
                 manual_orders_path=records.manual_orders_store,
                 vet=vet, price_symbols=[symbol])
@@ -235,17 +226,12 @@ def build_preview(ctx: AccountCtx, symbol: str,
     """連 IB 取最新快照，算這一檔的接管預覽。不送單、不寫 state。"""
     records = require_records(records)
     _log = _logger(log_fn)
-    _ensure_loop()
     _log(f"  Connecting to IB ({ctx.name})...")
-    ib = records.open(ctx)
+    conn = records.open(ctx)
     try:
-        return _compute(ib, ctx, symbol, _log, records)[0]
+        return _compute(conn, ctx, symbol, _log, records)[0]
     finally:
-        try:
-            if ib.isConnected():
-                ib.disconnect()
-        except Exception:
-            pass
+        conn.close()
 
 
 def _order_ref(account_name: str) -> str:
@@ -261,11 +247,10 @@ def submit(preview: TakeoverPreview, ctx: AccountCtx,
     _log = _logger(log_fn)
     if ctx.name != preview.account_name:
         raise TakeoverRefused("預覽與目前選的 Account 不同，請重新預覽")
-    _ensure_loop()
     exec_ctx = replace(ctx, order_type="LMT", outside_rth=True)
-    ib = records.open(exec_ctx)
+    conn = records.open(exec_ctx)
     try:
-        fresh, _positions, universe = _compute(ib, exec_ctx, preview.symbol, _log, records)
+        fresh, _positions, universe = _compute(conn, exec_ctx, preview.symbol, _log, records)
         if fresh != preview:
             raise TakeoverStale(fresh)
         sym = fresh.symbol
@@ -283,17 +268,15 @@ def submit(preview: TakeoverPreview, ctx: AccountCtx,
         if fresh.quantity:
             import rebalance_ib
             import sync_position
-            from symbol_contract import ib_stock
-            quotes = sync_position.read_quotes(ib, [sym])
+            quotes = conn.quotes([sym])
             lmt = sync_position.sync_lmt_price(fresh.action, quotes.get(sym, {}),
                                                fresh.price)
-            contract = ib_stock(sym)
-            ib.qualifyContracts(contract)
+            contract = conn.contract(sym)
             order = rebalance_ib.make_order(fresh.action, fresh.quantity, lmt, exec_ctx)
             order.orderRef = order_ref
             _log(f"  LMT {fresh.action} {fresh.quantity}sh {sym} @ ${lmt:.2f}（接管）")
             try:
-                trade = ib.placeOrder(contract, order)
+                trade = conn.place(contract, order)
             except Exception as exc:
                 return TakeoverResult(
                     "PENDING", f"送單結果不確定（{exc}）；接管紀錄保留，這檔維持暫停。"
@@ -301,7 +284,7 @@ def submit(preview: TakeoverPreview, ctx: AccountCtx,
             waited = 0
             while (trade.orderStatus.status not in _DONE_STATUSES
                    and waited < max(exec_ctx.wait_fill_sec, 1)):
-                ib.sleep(1)
+                conn.wait(1)
                 waited += 1
             order_status = str(trade.orderStatus.status or "")
             if order_status in {"Cancelled", "ApiCancelled", "Inactive"}:
@@ -320,7 +303,7 @@ def submit(preview: TakeoverPreview, ctx: AccountCtx,
 
         # 對帳：IB 股數＝接管後預計股數才完成（成交後持倉回報可能慢一點）
         for attempt in range(5):
-            positions = ib_fetcher.get_positions(ib, exec_ctx)
+            positions = conn.positions()
             att = manual_attribution.evaluate(
                 ctx.name, positions, universe, ledger_path=records.attribution_ledger,
                 manual_orders_path=records.manual_orders_store)
@@ -330,17 +313,13 @@ def submit(preview: TakeoverPreview, ctx: AccountCtx,
                     f"{sym} 恢復策略送單", fresh, order_status)
             if order_status != "Filled":
                 break
-            ib.sleep(1)
+            conn.wait(1)
         filled = f"，狀態 {order_status}" if order_status else ""
         return TakeoverResult(
             "PENDING", f"委託還沒全部成交或持倉還沒對上{filled}；接管紀錄保留，"
             "這檔維持暫停。之後 IB 持倉對上接管目標時會自動完成", fresh, order_status)
     finally:
-        try:
-            if ib.isConnected():
-                ib.disconnect()
-        except Exception:
-            pass
+        conn.close()
 
 
 def notify(ctx: AccountCtx, send: Optional[Callable[[str], bool]] = None, *,

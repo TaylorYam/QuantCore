@@ -15,7 +15,7 @@ from tests.test_qt_panel import (  # noqa: F401  fixtures
     dialogs, extras, make_window, portfolio, ports, source,
 )
 from tests.test_qt_order_target import (  # noqa: F401  fixtures
-    TakeoverBroker, broker, live_ctx, live_files, paper_files, pause_xyz, sync_env,
+    broker, live_ctx, live_files, paper_files, pause_xyz, sent, sync_env,
     takeover_signals, telegram, trade_log,
 )
 from tests.test_qt_trading import FakeSymbols
@@ -84,7 +84,7 @@ def test_live_sync_confirm_and_log_say_live(
         prod, broker, sync_env, telegram, trade_log, dialogs, qtbot):
     broker.managed = ["U001"]
     broker.positions = {"AAPL": 100.0}
-    w = prod(broker_factory=lambda: TakeoverBroker(broker),
+    w = prod(broker=broker,
              manual_order_service=_no_manual_service)
     qtbot.mouseClick(w.trading.sync_tab, Qt.LeftButton)
     sync = w.trading.sync
@@ -96,7 +96,7 @@ def test_live_sync_confirm_and_log_say_live(
     qtbot.waitUntil(lambda: not sync.sending(), timeout=5000)
     [(_title, prompt, _warning)] = dialogs.confirms
     assert "送往：實盤帳戶（各帳戶自己的 Gateway）" in prompt
-    assert broker.placed == [("AAPL", "BUY", 150, "LMT", "U001"),
+    assert sent(broker) == [("AAPL", "BUY", 150, "LMT", "U001"),
                              ("XYZ", "BUY", 250, "LMT", "U001")]
     assert "限價單（實盤）" in sync.status_text()
 
@@ -105,7 +105,7 @@ def test_live_takeover_lists_live_pauses_and_logs_live(
         prod, broker, takeover_signals, live_files, telegram, dialogs, qtbot):
     pause_xyz(live_files)
     broker.managed = ["U001"]
-    w = prod(broker_factory=lambda: TakeoverBroker(broker),
+    w = prod(broker=broker,
              manual_order_service=_no_manual_service)
     qtbot.mouseClick(w.trading.takeover_tab, Qt.LeftButton)
     panel = w.trading.takeover

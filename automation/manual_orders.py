@@ -1099,7 +1099,7 @@ class ManualOrderService:
     def __init__(self, *, account_names: Iterable[str] | None = None,
                  store: ManualOrderStore | None = None,
                  account_ctx_factory: Callable | None = None,
-                 ib_factory: Callable | None = None,
+                 connect: Callable | None = None,
                  universe_loader: Callable[[], set[str]] | None = None,
                  order_factory: Callable | None = None,
                  quote_reader: Callable | None = None,
@@ -1124,7 +1124,7 @@ class ManualOrderService:
             store = ManualOrderStore(store_path)
         self.store = store
         self._account_ctx_factory = account_ctx_factory
-        self._ib_factory = ib_factory
+        self._connect = connect
         self._universe_loader = universe_loader or _default_universe_loader
         self._order_factory = order_factory
         self._quote_reader = quote_reader or read_ib_quote
@@ -1151,12 +1151,13 @@ class ManualOrderService:
 
         return AccountCtx.from_name(account_name, ROLE_MANUAL_ORDER)
 
-    def _ib(self):
-        if self._ib_factory:
-            return self._ib_factory()
-        from ib_insync import IB
+    def _open(self, ctx):
+        """向 Broker 開連線（新 Panel 經送單閘門）；預設直接連 ctx 的 Gateway，timeout 10 秒。"""
+        if self._connect:
+            return self._connect(ctx)
+        from broker import Broker
 
-        return IB()
+        return Broker().connect(ctx, timeout=10)
 
     def _make_order(self, action: str, quantity: int, price: float | None,
                     order_type: str):
@@ -1183,25 +1184,24 @@ class ManualOrderService:
     @contextmanager
     def _connected(self, account_name: str) -> Iterator[tuple[object, object]]:
         ctx = self._context(account_name)
-        ib = self._ib()
+        # ib_insync's synchronous API runs coroutines on the calling
+        # thread's event loop. Panel workers and the lifecycle monitor
+        # are new threads on modern Python, where no loop is installed by
+        # default.
+        _ensure_ib_event_loop()
+        conn = self._open(ctx)
         try:
-            # ib_insync's synchronous API runs coroutines on the calling
-            # thread's event loop. Panel workers and the lifecycle monitor
-            # are new threads on modern Python, where no loop is installed by
-            # default.
-            _ensure_ib_event_loop()
-            ib.connect(ctx.host, ctx.port, clientId=ctx.client_id, timeout=10)
-            managed = {str(item).strip() for item in (ib.managedAccounts() or [])}
+            # The service's rules use ib_insync directly (#185: only the
+            # connection underneath moves to the Broker).
+            ib = conn.ib
+            managed = set(conn.managed_accounts())
             if ctx.account not in managed:
                 raise ManualOrderError(
                     f"IB 連線未確認選定 Account {account_name}（{ctx.account}），已阻擋委託"
                 )
             yield ctx, ib
         finally:
-            try:
-                ib.disconnect()
-            except Exception:
-                pass
+            conn.close()
 
     @staticmethod
     def _check_request(account_name: str, symbol: str,

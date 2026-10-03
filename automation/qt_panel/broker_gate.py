@@ -1,13 +1,14 @@
 """新 Panel 的送單閘門與 paper 連線設定（#151，ADR-0012）。
 
 **送單閘門**：新 Panel 所有會送單的路徑（手動單、Sync Pos、交給策略接管）
-都用 `SendGate.broker()` 建 IB 連線，這是唯一的判斷點。連上 Gateway 後先讀它
-管理的帳號；並行模式下只要有一個不是 paper（DU/DF 開頭）就立刻斷線並拒絕，
-沒通過檢查的連線一律不能送單／撤單。做法沿用 `paper_verify_manual_orders` 的
-paper-only 檢查。帳號清單是連線時 Gateway 給的，同一條連線不會變，所以只查一次：
-在 placeOrder 才拒絕的話，service 已經先寫了委託紀錄，會留下卡住的假委託。
-正式模式（切換工單 #154）才放行實盤。閘門只判斷放不放行；送去哪、記在哪、通知誰
-是送單目標（`order_target`，#183）決定的。
+都用 `SendGate.connect(ctx)` 開 IB 連線，這是唯一的判斷點。閘門包在 Broker
+（`broker.Broker`，#185）外面：連上 Gateway 後先讀它管理的帳號；並行模式下只要
+有一個不是 paper（DU/DF 開頭）就立刻斷線並拒絕，呼叫端拿不到連線，也就不能
+送單／撤單。做法沿用 `paper_verify_manual_orders` 的 paper-only 檢查。帳號清單是
+連線時 Gateway 給的，同一條連線不會變，所以只查一次：在送單時才拒絕的話，
+service 已經先寫了委託紀錄，會留下卡住的假委託。正式模式（切換工單 #154）才放行
+實盤。閘門只判斷放不放行；送去哪、記在哪、通知誰是送單目標（`order_target`，
+#183）決定的。
 
 **paper 連線設定**：並行模式下 Trading 只接 paper Gateway，位置寫在 config.json 的
 `qt_panel_paper`（使用者自己填）。這只是 paper 送單目標的連線設定（Gateway 位置與
@@ -18,8 +19,9 @@ paper-only 檢查。帳號清單是連線時 Gateway 給的，同一條連線不
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Iterable, Mapping
+from typing import Iterable, Mapping
 
+from broker import PAPER_CLIENT_ID, Broker
 from manual_orders import ManualOrderError
 
 from qt_panel.mode import PanelMode
@@ -27,13 +29,7 @@ from qt_panel.mode import PanelMode
 PAPER_PREFIXES = ("DU", "DF")
 PAPER_CONFIG_KEY = "qt_panel_paper"
 DEFAULT_PAPER_HOST = "127.0.0.1"
-# paper Gateway 上的 clientId；paper_verify_manual_orders 預設用 91，錯開才能同時開。
-# IB 只允許同一個 clientId 撤自己的單，所以固定不變。
-DEFAULT_PAPER_CLIENT_ID = 92
-# Sync Pos 在 paper 上用下一個 clientId：和手動單的對帳連線同時存在也不會互踢
-SYNC_CLIENT_OFFSET = 1
-# 交給策略接管再下一個（#153）：比照 Tk 的 ROLE_TAKEOVER，和 Sync Pos 分開
-TAKEOVER_CLIENT_OFFSET = 2
+# paper Gateway 上的 clientId 規則（基準號預設 92、Sync Pos＋1、接管＋2）在 broker。
 
 
 class SendRefused(ManualOrderError):
@@ -51,50 +47,12 @@ def paper_only_problem(accounts: Iterable[str]) -> str:
             f"請確認 config.json 的 {PAPER_CONFIG_KEY} port 指向 paper Gateway。")
 
 
-class _GatedBroker:
-    """包住一條 IB 連線：connect 後檢查帳號，沒通過就不能送單／撤單。其餘原樣轉交。"""
-
-    def __init__(self, inner, gate: "SendGate"):
-        self._inner = inner
-        self._gate = gate
-        self._checked = False
-
-    def connect(self, *args, **kwargs):
-        result = self._inner.connect(*args, **kwargs)
-        try:
-            self._gate.check(self._inner.managedAccounts())
-        except Exception:
-            self._inner.disconnect()
-            raise
-        self._checked = True
-        return result
-
-    def _require_checked(self) -> None:
-        if not self._checked:
-            raise SendRefused("送單閘門拒絕：連線尚未通過帳號檢查，沒有送出任何單。")
-
-    def placeOrder(self, contract, order):
-        self._require_checked()
-        return self._inner.placeOrder(contract, order)
-
-    def cancelOrder(self, *args, **kwargs):
-        self._require_checked()
-        return self._inner.cancelOrder(*args, **kwargs)
-
-    def disconnect(self):
-        self._checked = False
-        return self._inner.disconnect()
-
-    def __getattr__(self, name):
-        return getattr(self._inner, name)
-
-
 class SendGate:
-    """新 Panel 唯一的送單連線工廠。"""
+    """新 Panel 唯一的送單連線入口：向 Broker 開連線，先過帳號檢查才交出去。"""
 
-    def __init__(self, mode: PanelMode, broker_factory: Callable[[], object]):
+    def __init__(self, mode: PanelMode, broker: Broker | None = None):
         self._mode = mode
-        self._factory = broker_factory
+        self._broker = broker or Broker()
 
     def check(self, accounts: Iterable[str]) -> None:
         if self._mode is PanelMode.PARALLEL:
@@ -102,8 +60,9 @@ class SendGate:
             if problem:
                 raise SendRefused(problem)
 
-    def broker(self):
-        return _GatedBroker(self._factory(), self)
+    def connect(self, ctx, *, timeout: float = 20):
+        """依 ctx 連線並檢查帳號；拒絕時已斷線並拋 SendRefused。回傳 broker.Connection。"""
+        return self._broker.connect(ctx, timeout=timeout, check=self.check)
 
 
 @dataclass(frozen=True)
@@ -116,19 +75,6 @@ class PaperTarget:
 
     def describe(self) -> str:
         return f"paper 帳號 {self.account}（{self.host}:{self.port}）"
-
-
-def gated_connect(send_gate):
-    """SyncRecords 的連線工廠：每條連線都經過送單閘門（Sync Pos、接管；paper 與實盤）。"""
-    def connect(ctx):
-        ib = send_gate.broker()
-        try:
-            ib.connect(ctx.host, ctx.port, clientId=ctx.client_id, timeout=20)
-        except BaseException:
-            ib.disconnect()            # 同 ib_fetcher.connect：連不上也要收掉 socket
-            raise
-        return ib
-    return connect
 
 
 def load_paper_target(config: Mapping, accounts: Iterable[Mapping]
@@ -154,7 +100,7 @@ def load_paper_target(config: Mapping, accounts: Iterable[Mapping]
         return None, (f"{PAPER_CONFIG_KEY} 的 port {port} 是 {live} 的實盤 Gateway，"
                       "不能當 paper 連線。")
     try:
-        client_id = int(section.get("client_id", DEFAULT_PAPER_CLIENT_ID))
+        client_id = int(section.get("client_id", PAPER_CLIENT_ID))
     except (TypeError, ValueError):
         return None, f"{PAPER_CONFIG_KEY} 的 client_id 必須是整數。"
     host = str(section.get("host") or DEFAULT_PAPER_HOST).strip()

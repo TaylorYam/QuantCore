@@ -31,6 +31,32 @@ for p in (_ROOT_DIR, _AUTOMATION_DIR):
 import pytest
 
 
+# ── 測試不得連 IB ───────────────────────────────────────────────────
+# 本機就是 live 機器，Gateway 一直開著：測試若不小心用到真的 ib_insync.IB（例如
+# 預設的 broker.Broker()），會真的連上實盤 Gateway。這裡在最底層擋掉並報錯，
+# 錯誤訊息說明該改用 tests/fake_broker.py 或注入的假 IB。
+class _RealIbConnectBlocked(RuntimeError):
+    pass
+
+
+def _block_real_ib_connect(*_args, **_kwargs):
+    raise _RealIbConnectBlocked(
+        "測試試圖用真的 ib_insync 連 IB Gateway；請注入 tests/fake_broker.py 的假 Broker"
+        "或假 IB，不要用預設的 broker.Broker()／ib_insync.IB()")
+
+
+try:
+    import ib_insync as _ib_insync
+    import ib_insync.client as _ib_client
+except ImportError:          # pragma: no cover — ib_insync 是必要套件
+    pass
+else:
+    _ib_insync.IB.connect = _block_real_ib_connect
+    _ib_insync.IB.connectAsync = _block_real_ib_connect
+    _ib_client.Client.connect = _block_real_ib_connect
+    _ib_client.Client.connectAsync = _block_real_ib_connect
+
+
 # ── Shared fake config data ─────────────────────────────────────────
 
 FAKE_BASE_CONFIG = {

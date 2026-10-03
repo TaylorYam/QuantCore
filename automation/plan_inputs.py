@@ -8,7 +8,7 @@
 兩步：
     inputs = start(ctx, mode, persist_state=...)   # 不需 IB：SR 訊號（Sync 另加 SkewLS 最新訊號）
     ...連 IB...
-    inputs.read(IbAccount(ib, ctx))                # 帳戶快照 → 分類 → 手動持倉歸屬 → SP500 → SkewLS → 報價
+    inputs.read(conn)                              # 帳戶快照 → 分類 → 手動持倉歸屬 → SP500 → SkewLS → 報價
 
 固定順序（不變式）：手動持倉歸屬在 SP500 訊號之前 — 歸屬紀錄讀寫失敗時這一輪
 不寫 SP500 state（#106）。read 中途失敗時，已讀到的欄位留在 inputs 上（caller
@@ -23,8 +23,9 @@ mode：
 persist_state：SP500 訊號要不要寫回 state，以及 SkewLS 調倉後要不要記新目標。
 False 時不寫，並在 skipped_state_writes 記下「本來會寫哪個 state」（預演報表揭露用）。
 
-帳戶快照來源是 adapter（nav() / positions() / prices(symbols)）：IbAccount（IB
-連線，讀數仍走 ib_fetcher）與預演的 preview_rebalance.SnapshotAccount（給定
+帳戶快照來源是 adapter（nav() / positions() / prices(symbols)）：Broker 的連線
+（broker.Connection：Sync Pos、接管）、IbAccount（21:00 調倉還拿著 ib_insync 本體，
+#185 第二階段改走 Broker 後刪除）與預演的 preview_rebalance.SnapshotAccount（給定
 NAV／持倉＋本地收盤價）。進度文字由各入口的 Narrator 決定，module 本身不寫
 log — 21:00 調倉 log 與 Panel 進度文字維持原樣。
 """
@@ -60,7 +61,8 @@ class Narrator:
 
 
 class IbAccount:
-    """IB 連線上的帳戶快照（NAV、持倉、報價）。#185 會換成 Broker。"""
+    """IB 連線上的帳戶快照（NAV、持倉、報價）。21:00 調倉專用；#185 第二階段換成
+    broker.Connection 後刪除。"""
 
     def __init__(self, ib, ctx):
         self._ib = ib

@@ -1,8 +1,11 @@
 """Recent Trades shared by the Tk and Qt Panels (#150).
 
-`read_latest_trades` reads the last 7 days of trade_log.xlsx (moved unchanged
-from control_panel so the new Panel can use it without importing the Tk Panel).
-`trade_row` formats one trade the way the Tk TradesView shows it. No GUI imports;
+`read_latest_trades` reads the last 7 days of trade_log.xlsx (moved from
+control_panel so the new Panel can use it without importing the Tk Panel);
+`read_account_trades` is what both Panels call, with the account's Allocation.
+`trade_row` formats one trade the way the Tk TradesView shows it. Sector and
+inverse ETF trades are labelled with the same rule as the Portfolio
+(`strategy_owner`, #187). No GUI imports;
 colors come back as theme key names ("green", "red", "yellow", "text_dim").
 """
 
@@ -11,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from ib_fetcher import SR_ETFS
+from strategy_owner import STRATEGY_ETFS, trade_owner
 
 TRADE_FILE = Path(__file__).parent / "trade_log.xlsx"
 
@@ -63,8 +66,28 @@ def trade_row(tr: dict) -> TradeRow:
     )
 
 
-def read_latest_trades(account_name: str = "", path: Path | None = None) -> list:
-    """讀取 trade_log.xlsx 最近 7 天的交易記錄，可按帳戶篩選"""
+def account_alloc(account_name: str) -> tuple[float, float] | None:
+    """帳戶的 (alloc_sr, alloc_skewls)；讀不到設定回 None（類股 ETF 照舊算 SR）。"""
+    try:
+        from account_utils import get_account_config
+        cfg = get_account_config(account_name)
+        return (float(cfg.get("alloc_sr", 0)), float(cfg.get("alloc_skewls", 0)))
+    except Exception:
+        return None
+
+
+def read_account_trades(account_name: str, path: Path | None = None) -> list:
+    """某帳戶最近 7 天的交易，ETF 依該帳戶的 Allocation 標 Strategy（兩個 Panel 用）。"""
+    return read_latest_trades(account_name, path, account_alloc(account_name))
+
+
+def read_latest_trades(account_name: str = "", path: Path | None = None,
+                       alloc: tuple[float, float] | None = None) -> list:
+    """讀取 trade_log.xlsx 最近 7 天的交易記錄，可按帳戶篩選。
+
+    alloc: 帳戶的 (alloc_sr, alloc_skewls)，決定類股 ETF 的 Strategy 標籤；
+    None = 不知道，類股 ETF 算 SR。
+    """
     trade_file = TRADE_FILE if path is None else path
     try:
         import pandas as pd
@@ -86,8 +109,8 @@ def read_latest_trades(account_name: str = "", path: Path | None = None) -> list
         for _, row in recent.iterrows():
             sym = str(row["Symbol"])
             raw_strat = str(row.get("Strategy", ""))
-            if sym in SR_ETFS:
-                strat = "SR"
+            if sym in STRATEGY_ETFS:
+                strat = trade_owner(sym, alloc)
             elif "SR" in raw_strat and "SP500" not in raw_strat and "Combo" not in raw_strat:
                 strat = "SR"
             else:

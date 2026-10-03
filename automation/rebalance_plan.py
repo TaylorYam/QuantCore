@@ -100,7 +100,11 @@ class SkewlsDecision:
 def classify_holdings(positions: dict[str, float],
                       sp500_universe: set[str]) -> HoldingsSplit:
     """
-    分辨當前持股：SR ETFs vs SP500 個股 vs 其他（手動操作，排除在外）。
+    分辨當前持股：類股 ETF vs SP500 個股 vs 其他（手動操作，排除在外）。
+
+    「sr」桶 = 所有類股 ETF（SR 與 SkewLS 都會持有）；清單取自 strategy_owner
+    （唯一來源 = 策略設定，#187）。這裡只判斷「是不是策略持倉」，不用顯示用的
+    SR／SkewLS 歸屬標籤，所以結果與 Allocation 無關。
 
     SkewLS inverse ETF 是策略持倉，不得歸入「其他」— 否則持有後即凍結
     （不加碼/不減碼/不出場；2026-06 三次 threshold 觸發皆單腿執行）。
@@ -109,14 +113,14 @@ def classify_holdings(positions: dict[str, float],
 
     列表順序 = positions 的迭代順序（log 顯示沿用）。
     """
-    from ib_fetcher import SR_ETFS, SKEWLS_INVERSE_TICKERS
+    from strategy_owner import INVERSE_ETFS, SECTOR_ETFS
     return HoldingsSplit(
-        sr=[s for s in positions if s in SR_ETFS],
+        sr=[s for s in positions if s in SECTOR_ETFS],
         sp500=[s for s in positions
-               if s not in SR_ETFS and s in sp500_universe],
+               if s not in SECTOR_ETFS and s in sp500_universe],
         other=[s for s in positions
-               if s not in SR_ETFS
-               and s not in SKEWLS_INVERSE_TICKERS
+               if s not in SECTOR_ETFS
+               and s not in INVERSE_ETFS
                and s not in sp500_universe],
     )
 

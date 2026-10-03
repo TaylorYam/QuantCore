@@ -11,8 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ib_fetcher import ETF_TICKERS
-from strategy_owner import etf_owner
+from strategy_owner import STRATEGY_ETFS, etf_owner
 
 TICKER_NAMES: dict[str, str] = {
     "XLK": "Technology",      "XLF": "Financials",
@@ -283,7 +282,7 @@ def donut_slices(holdings: list, nav: float, exposure: float,
     parts: list[tuple[str, float, str]] = []
     ei = si = 0
     for h in top_h:
-        if h["symbol"] in ETF_TICKERS:
+        if h["symbol"] in STRATEGY_ETFS:
             color = _ETF_BLUES[ei % len(_ETF_BLUES)]
             ei += 1
         else:

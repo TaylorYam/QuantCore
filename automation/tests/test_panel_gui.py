@@ -119,7 +119,7 @@ def load_panel_module(monkeypatch):
     spec.loader.exec_module(module)
     for name in ("update_account_config", "read_latest_portfolio", "_ps"):
         monkeypatch.setattr(module, name, forbidden)
-    monkeypatch.setattr(module, "read_latest_trades", lambda *_: [])
+    monkeypatch.setattr(module, "read_account_trades", lambda *_: [])
     monkeypatch.setattr(module, "get_last_data_update", lambda: "FAKE DATA")
     return module
 

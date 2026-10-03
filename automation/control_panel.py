@@ -56,7 +56,7 @@ from panel_task_cards import TradesView
 from strategy_params_view import StrategyParamsView
 from log_window import LogWindow
 from trades_popup import TradesPopup
-from trades_display import read_latest_trades
+from trades_display import read_account_trades
 
 
 # ── 顏色主題（深藍 + 金色）───────────────────────────────────
@@ -136,8 +136,8 @@ def read_latest_portfolio() -> dict:
                 "upnl_pct": float(row["UnrealPnL%"]),
             }
             # ETF bucket 涵蓋 SR sector + SkewLS inverse (Issue 2 Option 2)
-            from ib_fetcher import ETF_TICKERS
-            if sym in ETF_TICKERS:
+            from strategy_owner import STRATEGY_ETFS
+            if sym in STRATEGY_ETFS:
                 result["etf_holdings"].append(entry)
                 result["strategy_mktval"] += entry["mkt_val"]
             elif _SP500_UNIVERSE and sym in _SP500_UNIVERSE:
@@ -697,7 +697,7 @@ class ControlPanel(tk.Tk):
         inner.bind("<Configure>", resize_content)
 
         # ── Recent Trades button ──
-        popup = TradesPopup(self, name, self._theme, self._fonts, read_latest_trades)
+        popup = TradesPopup(self, name, self._theme, self._fonts, read_account_trades)
         self._btn(inner, f"Recent Trades",
                   popup.toggle,
                   BTN_BG, padx=6, pady=4, font=self.font_small).pack(fill="x", pady=(0, 2))

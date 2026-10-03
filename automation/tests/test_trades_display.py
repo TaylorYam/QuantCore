@@ -69,7 +69,7 @@ def test_read_latest_trades_keeps_seven_days_newest_first_for_one_account(tmp_pa
     trades = read_latest_trades("Taylor", log)
     assert [t["symbol"] for t in trades] == ["MSFT", "XLK"]           # 新到舊、超過 7 天不列
     assert trades[0]["strategy"] == "Stocks" and trades[0]["fill_price"] == 0.0
-    assert trades[1]["strategy"] == "SR" and trades[1]["fill_price"] == 12.5  # SR_ETFS 一律 SR
+    assert trades[1]["strategy"] == "SR" and trades[1]["fill_price"] == 12.5  # 沒給 Allocation：類股 ETF 算 SR
     assert [t["symbol"] for t in read_latest_trades("Rosa", log)] == ["XLB"]
     assert read_latest_trades("Nobody", log) == []
 
@@ -90,3 +90,43 @@ def test_nan_fill_price_from_the_log_shows_a_dash(tmp_path):
     [tr] = read_latest_trades("Taylor", log)
     assert math.isnan(tr["fill_price"])
     assert trade_row(tr).price == "—"
+
+
+def _etf_trades_log(tmp_path):
+    today = pd.Timestamp.now().strftime("%Y-%m-%d")
+    log = tmp_path / "trade_log.xlsx"
+    _write_log(log, [
+        {"Date": today, "DateTime": f"{today} 21:30:0{i}", "Account": "Taylor",
+         "Symbol": sym, "Action": "BUY", "Qty": 1, "FillPrice": 1, "Strategy": raw,
+         "FillStatus": "Filled", "DryRun": False}
+        for i, (sym, raw) in enumerate([("XLK", "SR+SkewLS"), ("REW", "SkewLS"),
+                                        ("AAPL", "SP500")])])
+    return log
+
+
+def test_etf_trades_are_labelled_like_the_portfolio(tmp_path):
+    """#187：類股／反向 ETF 的成交標籤和 Portfolio 同一套規則（依 Allocation）。"""
+    log = _etf_trades_log(tmp_path)
+
+    def labels(alloc):
+        return {t["symbol"]: t["strategy"] for t in read_latest_trades("Taylor", log, alloc)}
+
+    assert labels((0.0, 1.0)) == {"XLK": "SkewLS", "REW": "SkewLS", "AAPL": "Stocks"}
+    assert labels((0.3, 0.2)) == {"XLK": "SR+SkewLS", "REW": "SkewLS", "AAPL": "Stocks"}
+    assert labels((0.8, 0.0)) == {"XLK": "SR", "REW": "SkewLS", "AAPL": "Stocks"}
+    assert labels(None)["XLK"] == "SR"                  # 不知道 Allocation：舊規則
+
+
+def test_account_trades_use_that_accounts_allocation(tmp_path, monkeypatch):
+    import account_utils
+    import trades_display
+
+    log = _etf_trades_log(tmp_path)
+    monkeypatch.setattr(account_utils, "get_account_config",
+                        lambda name: {"alloc_sr": 0.0, "alloc_skewls": 1.0, "alloc_sp500": 0.4})
+    assert trades_display.read_account_trades("Taylor", log)[-1]["strategy"] == "SkewLS"
+
+    def missing(name):
+        raise ValueError("Account not found")
+    monkeypatch.setattr(account_utils, "get_account_config", missing)
+    assert trades_display.read_account_trades("Taylor", log)[-1]["strategy"] == "SR"

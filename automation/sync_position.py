@@ -89,7 +89,7 @@ class SyncPlan:
     sr_date: str
     sp500_date: str
     prices: dict[str, float]
-    targets: dict[str, dict]          # symbol -> {'shares', 'strategy', 'alloc_w'}
+    targets: dict[str, dict]          # symbol -> {'shares', 'strategy', 'alloc_w', 'strategy_shares'}
     current_pos: dict[str, float]     # symbol -> shares (可為負)
     current_other_holdings: list[str] # 手動持倉（排除在 rebalance 外）
     # SkewLS 欄位（S19）— 沒啟用時為 {} / 'N/A'

@@ -197,13 +197,8 @@ def _compute(ib, ctx: AccountCtx, symbol: str, log_fn: Callable[[str], None],
     combined = plan.combine_targets(nav, only(sr_wgt), only(sp500_wgt), prices,
                                     ctx=ctx, skewls_wgt=only(skewls_wgt))
     target = int(combined.get(symbol, {}).get("shares", 0))
-    parts = []
-    for label, sr, sp, sk in (("SR", only(sr_wgt), {}, {}),
-                              ("SP500", {}, only(sp500_wgt), {}),
-                              ("SkewLS", {}, {}, only(skewls_wgt))):
-        if sr or sp or sk:
-            one = plan.combine_targets(nav, sr, sp, prices, ctx=ctx, skewls_wgt=sk)
-            parts.append((label, int(one.get(symbol, {}).get("shares", 0))))
+    # 各 Strategy 拆解 = Combine 加總前的整數（SR → SP500 → SkewLS 順序）
+    parts = list(combined.get(symbol, {}).get("strategy_shares", {}).items())
 
     preview = TakeoverPreview(
         account_name=ctx.name, symbol=symbol,

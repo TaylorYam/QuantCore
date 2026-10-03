@@ -77,6 +77,11 @@ def wait_log(qtbot, w, text, timeout=3000):
     qtbot.waitUntil(lambda: text in w.dashboard.log_text(), timeout=timeout)
 
 
+def wait_telegram(qtbot, telegram, count, timeout=3000):
+    # worker 先 log 再 notify（背景執行緒）；看到 ALERT log 時訊息不一定已送出
+    qtbot.waitUntil(lambda: len(telegram) == count, timeout=timeout)
+
+
 # ── 模式 ─────────────────────────────────────────────────────────────
 
 def test_production_mode_setting_is_recognised():
@@ -120,6 +125,7 @@ def test_rosa_poll_inside_the_window_alerts_when_retry_fails(
     watch_source.online["Rosa"] = False
     w = prod_window(datetime(2026, 9, 29, 21, 10))                # 窗內 → 立刻跑一次
     wait_log(qtbot, w, "Rosa poll 21:10 → ALERT")
+    wait_telegram(qtbot, telegram, 1)
     assert watch_source.restarted == ["Rosa"]
     assert len(telegram) == 1 and "Rosa" in telegram[0] and "disconnected" in telegram[0]
 
@@ -145,6 +151,7 @@ def test_ty_check_at_20_05_cold_connects_offline_accounts_and_alerts(
     clock.now = datetime(2026, 9, 29, 20, 5, 1)
     wait_log(qtbot, w, "TY check Yvonne → ALERT")
     wait_log(qtbot, w, "TY check Taylor → ok")
+    wait_telegram(qtbot, telegram, 1)
     assert tried == ["Yvonne"]                       # 心跳在線的不冷連線
     assert len(telegram) == 1 and "Yvonne" in telegram[0]
 
@@ -159,6 +166,7 @@ def test_morning_check_rechecks_gateways_and_alerts_offline_accounts(
     w = prod_window(None, taipei_now=clock)
     clock.now = datetime(2026, 9, 30, 7, 0, 1)
     wait_log(qtbot, w, "Morning check → ALERT")
+    wait_telegram(qtbot, telegram, 1)
     assert watch_source.rechecks == 1                # Check Now 等效重新探測
     assert len(telegram) == 1 and "Taylor" in telegram[0]
     w.tick_minute()                                  # 並行模式的 07:00 重新檢查不再重複做

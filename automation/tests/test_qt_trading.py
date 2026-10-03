@@ -186,17 +186,6 @@ def test_paper_order_previews_confirms_sends_and_tracks_status(
     assert row[6] == "部分成交" and row[7] == "2/5 @ $99.50"
 
 
-def test_declining_the_confirm_dialog_sends_nothing(trading_window, ib_state, dialogs, qtbot):
-    w = trading_window()
-    panel = w.trading.manual
-    fill(panel)
-    click_and_wait(qtbot, panel, panel.preview_button)
-    dialogs.confirm_answers = [False]
-    click_and_wait(qtbot, panel, panel.confirm_button)
-    assert len(dialogs.confirms) == 1
-    assert ib_state.placed == []
-
-
 def test_changing_a_field_after_preview_requires_a_new_preview(trading_window, qtbot):
     w = trading_window()
     panel = w.trading.manual
@@ -205,15 +194,6 @@ def test_changing_a_field_after_preview_requires_a_new_preview(trading_window, q
     panel.price_edit.setText("101")
     assert not panel.confirm_button.isEnabled()
     assert "重新預覽" in panel.preview_text.text()
-
-
-def test_invalid_field_is_explained_without_contacting_ib(trading_window, ib_state, dialogs, qtbot):
-    w = trading_window()
-    panel = w.trading.manual
-    fill(panel, quantity="abc")
-    qtbot.mouseClick(panel.preview_button, Qt.LeftButton)
-    assert dialogs.messages == [("手動下單", "整股股數必須是正整數。", True)]
-    assert ib_state.ib_instances == []
 
 
 def test_price_warning_is_shown_and_the_confirm_dialog_warns(

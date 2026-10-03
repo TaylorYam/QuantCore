@@ -30,3 +30,18 @@ def background(main: MainThread, work: Callable[[], object],
             result, error = None, str(exc) or type(exc).__name__
         main.call.emit(lambda: done(result, error))
     threading.Thread(target=run, name=name, daemon=True).start()
+
+
+class QtRunner:
+    """trading_flow 的 runner（Qt 版）：背景執行緒跑 work，結果與 post 都排回主執行緒。"""
+
+    def __init__(self, main: MainThread, name: str):
+        self._main = main
+        self._name = name
+
+    def run(self, work: Callable[[], object],
+            done: Callable[[object, str | None], None]) -> None:
+        background(self._main, work, done, name=self._name)
+
+    def post(self, fn: Callable[[], None]) -> None:
+        self._main.call.emit(fn)

@@ -117,10 +117,12 @@ def _adj_close_from_close(df: pd.DataFrame) -> None:
     df["Adj Close"] = df["Adj Close"].fillna(df["Close"])
 
 
-def _store(path: Path, window: pd.DataFrame, *, kind: str, today: str) -> int | Failure:
+def _store(path: Path, window: pd.DataFrame, *, kind: str, today: str,
+           provider_symbol: str | None = None) -> int | Failure:
     """
     追加 path 最後一列之後的 K 棒；重抓的已存 K 棒顯示 provider 調整過歷史或
     代碼換了證券時（#53），抓完整歷史核對後整檔替換；核對不過不續寫。
+    `provider_symbol` 是向 provider 查完整歷史用的代號，預設同檔名（VIX.csv 要傳 ^VIX，#194）。
     回傳新增行數，或未寫入的 Failure。
     """
     tk = path.stem
@@ -134,7 +136,7 @@ def _store(path: Path, window: pd.DataFrame, *, kind: str, today: str) -> int | 
     if not reasons:
         return _append(path, window[window.index > last])
     why = "; ".join(reasons)
-    full = _download_ohlcv(tk, str(local.index[0].date()), today)
+    full = _download_ohlcv(provider_symbol or tk, str(local.index[0].date()), today)
     if not isinstance(full, pd.DataFrame):
         detail = full.detail if isinstance(full, Failure) else "empty response"
         return Failure("download_failed", f"{tk}: 需核對完整歷史（{why}），下載失敗，未續寫（{detail}）")
@@ -235,11 +237,13 @@ def _file_signature(path: Path) -> tuple[int, int]:
 
 def _update_file(ticker: str, dataset: str, path: Path,
                  fetched: pd.DataFrame | Failure | None, *, kind: str, today: str,
-                 window_start: str | None = None) -> UpdateOutcome:
+                 window_start: str | None = None,
+                 provider_symbol: str | None = None) -> UpdateOutcome:
     """Store one provider response into `path` and report what happened.
 
     The single store-and-judge step for ETFs, VIX and stocks (#189). Empty
-    provider responses are inconclusive and do not prove missing sessions."""
+    provider responses are inconclusive and do not prove missing sessions.
+    `provider_symbol` is needed only when it differs from `ticker` (VIX → ^VIX)."""
     if fetched is None:
         result = outcome(ticker, dataset, "inconclusive",
                          "provider returned no rows; freshness unverified")
@@ -255,7 +259,8 @@ def _update_file(ticker: str, dataset: str, path: Path,
         if window_start is not None:
             window = window[window.index >= window_start]
         before = _file_signature(path)
-        stored = _store(path, window, kind=kind, today=today)
+        stored = _store(path, window, kind=kind, today=today,
+                        provider_symbol=provider_symbol)
         result = _stored_outcome(ticker, dataset, path, before, stored)
         if dataset == "etfs" and not isinstance(stored, Failure):
             print(f"  {ticker:6s}  +{stored} 筆  (至 {str(fetched.index[-1].date())})")
@@ -366,7 +371,8 @@ def update_etfs(today: str | None = None) -> list[UpdateOutcome]:
                 if isinstance(fetched, Failure):
                     # reported under the file's name, not the provider symbol
                     fetched = fetched._replace(detail=fetched.detail.removeprefix(f"{VIX_TICKER}: "))
-                results["VIX"] = _update_file("VIX", "etfs", vix_path, fetched, kind=INDEX, today=today)
+                results["VIX"] = _update_file("VIX", "etfs", vix_path, fetched, kind=INDEX, today=today,
+                                              provider_symbol=VIX_TICKER)
             else:
                 print(f"  {'VIX':6s}  已最新")
                 results["VIX"] = outcome("VIX", "etfs", "no_update_required",

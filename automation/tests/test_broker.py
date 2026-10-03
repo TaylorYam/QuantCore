@@ -220,14 +220,40 @@ def test_close_is_idempotent_and_never_raises():
     conn.close()
 
 
-def test_scheduled_entries_raw_ib_is_wrapped_and_a_connection_passes_through():
+def test_scheduled_reads_go_to_the_ib_calls():
     ib = RecordingIB()
-    wrapped = broker.as_connection(ib, CTX)
-    assert isinstance(wrapped, Connection) and wrapped.ib is ib
+    ib.trades = lambda: ["moo"]
+    ib.fills = lambda: ["fill"]
     conn = Broker(lambda: ib).connect(CTX)
-    assert broker.as_connection(conn, CTX) is conn
-    fake = FakeBroker().connect(CTX)
-    assert broker.as_connection(fake, CTX) is fake
+    assert conn.trades() == ["moo"] and conn.fills() == ["fill"]
+
+
+def test_ib_fetcher_connect_hands_back_a_connection_and_logs_the_line(monkeypatch, caplog):
+    """排程入口的連線：經 Broker 開、同一行 log（21:00 log 逐字不變）。"""
+    import ib_fetcher
+    ib = RecordingIB()
+    monkeypatch.setattr(broker, "_default_ib", lambda: ib)
+    caplog.set_level("INFO", logger="ib_fetcher")
+    conn = ib_fetcher.connect(CTX)
+    assert isinstance(conn, Connection) and conn.ib is ib
+    assert ib.calls == [("connect", "127.0.0.1", 4001, {"clientId": 26, "timeout": 20.0})]
+    assert caplog.messages == [
+        "Connected  host=127.0.0.1 port=4001 clientId=26 account=U1"]
+
+
+def test_cold_connect_probe_opens_and_closes_through_the_broker(monkeypatch, fake_config):
+    from qt_panel.watch import cold_connect
+    ib = RecordingIB()
+    monkeypatch.setattr(broker, "_default_ib", lambda: ib)
+    cold_connect("Rosa")
+    assert ib.calls == [("connect", "127.0.0.1", 4002, {"clientId": 37, "timeout": 10}),
+                        ("disconnect",)]
+
+
+def test_acceptance_check_client_ids_stay_clear_of_every_role():
+    ids = [broker.acceptance_check_client_id(i) for i in range(3)]
+    assert ids == [16025, 16035, 16045]
+    assert not {i for row in EXISTING_IDS.values() for i in row} & set(ids)
 
 
 # ── in-memory fake 和 adapter 同一個 interface ─────────────────────

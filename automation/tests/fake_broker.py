@@ -12,6 +12,9 @@ FakeBroker 上的屬性，測試直接設定；連線、送單、撤單都記下
   - "reject"   IB 拒單（Inactive），log 留下原因
   - "raise"    送單當下連線出錯（ConnectionError）
 
+排程入口（21:00／16:00／04:40／21:31）在用到時才取 `broker.Broker`：測試用
+`install(monkeypatch, fake)` 把它換成這個 fake。
+
 ManualOrderService 用 ib_insync 本體（`Connection.ib`），它的測試把真的
 `broker.Broker` 接在 test_manual_orders 的假 IB 上，不用這個 fake。
 """
@@ -24,6 +27,13 @@ QUOTE = {"bid": 99.9, "ask": 100.1, "mid": 100.0, "last": 100.0, "close": 100.0}
 _DONE = {"Filled", "Cancelled", "ApiCancelled", "Inactive"}
 
 
+def install(monkeypatch, fake: "FakeBroker") -> "FakeBroker":
+    """排程入口與 ib_fetcher.connect 用到的 broker.Broker 換成 fake。"""
+    import broker
+    monkeypatch.setattr(broker, "Broker", lambda *_a, **_k: fake)
+    return fake
+
+
 class FakeBroker:
     def __init__(self, *, managed=("DU001",), nav: float = 100_000.0,
                  positions: dict[str, float] | None = None,
@@ -31,6 +41,13 @@ class FakeBroker:
         self.managed = list(managed)
         self.nav = nav
         self.positions = dict(positions or {})
+        self.avg_cost: dict[str, float] = {}          # 持倉成本；沒列的是 1.0
+        self.detail: list | None = None               # 指定持倉明細（None = 由持倉產生）
+        self.cushion_pct, self.excess_liq, self.maint_margin = 42.0, nav * 0.4, nav * 0.3
+        self.session_trades: list = []                # 這次連線前就有的今日委託／成交
+        self.session_fills: list = []
+        self.connect_error: BaseException | None = None   # 連不上 Gateway
+        self.fail: dict[str, BaseException] = {}      # 讀數方法名 → 拋出的例外
         self.price = price                    # 每一檔的參考價
         self.quote = dict(QUOTE)              # 每一檔的送單報價
         self.open_orders: list = []           # Gateway 上的掛單（Trade 形狀）
@@ -50,6 +67,8 @@ class FakeBroker:
     def connect(self, ctx, *, timeout: float = 20, readonly: bool = False,
                 check=None) -> "FakeConnection":
         self.connects.append((ctx.host, ctx.port, ctx.client_id))
+        if self.connect_error is not None:
+            raise self.connect_error
         conn = FakeConnection(self, ctx, readonly)
         if check is not None:
             try:
@@ -78,7 +97,9 @@ class FakeConnection:
     def ib(self):
         raise AttributeError("in-memory FakeBroker 沒有 ib_insync 本體")
 
-    def _read(self) -> None:
+    def _read(self, what: str = "") -> None:
+        if what in self._broker.fail:
+            raise self._broker.fail[what]
         if self._broker.on_read is not None:
             self._broker.on_read()
 
@@ -86,12 +107,34 @@ class FakeConnection:
         return list(self._broker.managed)
 
     def nav(self) -> float:
-        self._read()
+        self._read("nav")
         self._broker.ctxs.append(self.ctx)
         return float(self._broker.nav)
 
     def positions(self) -> dict[str, float]:
+        self._read("positions")
         return dict(self._broker.positions)
+
+    def positions_detail(self) -> list:
+        b = self._broker
+        if b.detail is not None:
+            return list(b.detail)
+        return [NS(contract=NS(symbol=s, secType="STK"), position=q,
+                   avgCost=b.avg_cost.get(s, 1.0))
+                for s, q in b.positions.items() if q]
+
+    def account_info(self) -> dict:
+        self._read("account_info")
+        b = self._broker
+        return {"nav": float(b.nav), "cushion_pct": b.cushion_pct,
+                "excess_liq": b.excess_liq, "maint_margin": b.maint_margin}
+
+    def trades(self) -> list:
+        return list(self._broker.session_trades) + list(self._broker.trades)
+
+    def fills(self) -> list:
+        b = self._broker
+        return list(b.session_fills) + [f for t in b.trades for f in t.fills]
 
     def prices(self, symbols) -> dict[str, float]:
         return {s: self._broker.price for s in symbols}

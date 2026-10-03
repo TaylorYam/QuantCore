@@ -69,7 +69,7 @@ mode 有兩種語意：
 - 不寫時，記下「本來會寫哪個 state」（預演報表會揭露）。
 - 送單後的 SkewLS state 更新也只在這裡：排程 mode 觸發門檻才記，SYNC 有目標就記。
 
-帳戶快照來源是 adapter：[[Broker（券商連線層）]] 的連線（Sync Pos、接管）、21:00 調倉的 IB 連線（IbAccount，#185 第二階段也改走 Broker）和預演的給定快照。決策本身（Combine、hold、門檻、訂單清單）仍在 rebalance_plan。
+帳戶快照來源是 adapter：[[Broker（券商連線層）]] 的連線（21:00 調倉、Sync Pos、接管）和預演的給定快照。決策本身（Combine、hold、門檻、訂單清單）仍在 rebalance_plan。
 _Avoid_: Snapshot（只是其中一部分）、Signals（三策略權重只是其中一部分）
 
 **手動持倉 (Manual Holding)**:
@@ -149,7 +149,7 @@ _Avoid_: 送單模式（paper／實盤是送單目標的兩種，不是另一個
 
 **Broker（券商連線層）**:
 QuantCore 跟 IB 打交道的那一層：送單、查成交、查持倉與權益。畫面上使用者操作的單（手動單、Sync Pos、交給策略接管）屬於 Panel 的 Trading；真正把單送進 IB、回報成交的是 Broker。
-實作在 `automation/broker.py`（#185）：依帳戶＋用途開連線（clientId 的分配規則只在這裡，不認得的帳戶名稱直接報錯），一條連線上讀權益、持倉、報價，送單、撤單、斷線。新 Panel 的送單閘門包在 Broker 外面，連上後先檢查帳號才交出連線。測試用 `automation/tests/fake_broker.py` 的 in-memory Broker。
+實作在 `automation/broker.py`（#185）：依帳戶＋用途開連線（clientId 的分配規則只在這裡，不認得的帳戶名稱直接報錯），一條連線上讀權益、持倉、報價、今日委託與成交，送單、撤單、斷線。新 Panel 的三條送單路徑與 Portfolio、21:00 調倉、16:00 日度風控、04:40 每日報告、21:31 成交回報都向它要連線；新 Panel 的送單閘門包在 Broker 外面，連上後先檢查帳號才交出連線。Gateway 心跳是長駐的值班連線，不讀數不送單，仍自己連。測試用 `automation/tests/fake_broker.py` 的 in-memory Broker。
 _Avoid_: Execution（與 [[執行盤 (Execution Session)]] 撞名）、Orders（架構圖上同時指畫面的單與送單層，見下方 Flagged ambiguities）
 
 **業績 (Performance)**:

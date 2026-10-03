@@ -62,13 +62,9 @@ from notify import Digest, order_group_lines
 # ── AccountCtx（S6：ctx 為所有函式的必要參數，模組不再有 mutable globals）
 from account_ctx import AccountCtx
 
-# ── IB 工具函式（S8：統一由 ib_fetcher 提供；NAV／持倉／報價的讀取在 plan_inputs）
-from ib_fetcher import (
-    connect as connect_ib,
-    get_positions,
-    get_positions_detail,
-    SR_ETFS,  # R1.3：SR ETF 常數單一來源
-)
+# ── IB 連線（#185：經 Broker；讀數與送單都在 broker.Connection 上）
+import ib_fetcher
+from ib_fetcher import SR_ETFS  # R1.3：SR ETF 常數單一來源
 
 # ── Rebalance 決策層（分類 / mode 權重選擇 / Combine / 差額訂單的唯一實作）
 import rebalance_plan as plan
@@ -104,19 +100,16 @@ def make_order(action: str, qty: int, lmt_price: float,
     return o
 
 
-def place_orders(ib, order_list: list, ctx: AccountCtx, *,
+def place_orders(conn, order_list: list, ctx: AccountCtx, *,
                  attribution_path=None) -> tuple:
     """先 SELL 再 BUY。回傳 (placed_list, trades_list)
 
-    ib = broker.Connection（新 Panel 的 Sync Pos）或 ib_insync 本體（21:00 調倉、
-    16:00 日度風控；第二階段改走 Broker 前由 as_connection 包起來，行為相同）。
+    conn = broker.Connection（21:00 調倉、16:00 日度風控、新 Panel 的 Sync Pos）。
 
     策略送單的最終閘門（#106）：手動持倉暫停中的標的不送；讀不到暫停
     紀錄時拋 ManualAttributionError，一張都不送。attribution_path = 暫停紀錄檔，
     None = 實盤預設（新 Panel 的 paper Sync Pos 用自己的檔，#152）。
     """
-    from broker import as_connection
-    conn = as_connection(ib, ctx)
     order_list, _held = manual_attribution.gate_orders(ctx.name, order_list,
                                                        path=attribution_path)
     sells = [o for o in order_list if o['action'] == 'SELL']
@@ -442,7 +435,7 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
 
         # ── 2. 連線 IB ───────────────────────────────────────────────────────
         log.info("Step 2: Connecting to IB Gateway...")
-        ib = connect_ib(ctx=ctx)
+        conn = ib_fetcher.connect(ctx)
 
     except Exception as e:
         error_msg = str(e)
@@ -460,7 +453,7 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
         # Step 4 算訊號寫 state 之前）、SP500 只在 sp500/both/all 重算（否則佔位
         # 權重只為帶進報價清單）、SkewLS threshold gate（alloc_skewls > 0 就納入
         # combine，否則 SR/SP500 rebal 會誤砍 SkewLS 倉位）。
-        inputs.read(plan_inputs.IbAccount(ib, ctx))
+        inputs.read(conn)
         nav = inputs.nav
         current_pos = inputs.positions
         current_other_holdings = inputs.split.other
@@ -508,15 +501,15 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
             # 取消該帳戶既有掛單（Panel 手動單除外，#106）
             if not dry_run:
                 open_trades = manual_attribution.strategy_open_trades(
-                    ib.openTrades())
+                    conn.open_orders())
                 if open_trades:
                     log.info(f"  Cancelling {len(open_trades)} existing open orders...")
                     for t in open_trades:
-                        ib.cancelOrder(t.order)
-                    ib.sleep(2)
+                        conn.cancel(t.order)
+                    conn.wait(2)
 
             log.info(f"Step 7: Placing {len(order_list)} orders ({order_type})...")
-            placed, trades = place_orders(ib, order_list, ctx=ctx)
+            placed, trades = place_orders(conn, order_list, ctx=ctx)
 
         # ── 8. 確認成交 ─────────────────────────────────────────────────────
         if trades:
@@ -525,14 +518,14 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
 
         # ── 9. 帳戶現況 + 損益 ──────────────────────────────────────────────
         log.info("Step 9: Fetching positions detail for P&L...")
-        pos_detail = get_positions_detail(ib, ctx=ctx)
+        pos_detail = conn.positions_detail()
 
         # ── 9b. 理論 vs 實際對帳（執行驗證）─────────────────────────────
         # MOO 開盤才成交 → 不比成交、比「送單覆蓋」：算出該動卻一張單都
         # 沒送 = 🔴（2026-06 inverse 凍結類 bug 的當場警鈴）。
         log.info("Step 9b: Drift verification (theory vs actual)...")
         try:
-            fresh_pos = get_positions(ib, ctx=ctx)
+            fresh_pos = conn.positions()
             drift_rows = plan.mark_paused(
                 plan.verify_execution(
                     plan.evaluate_deltas(targets, fresh_pos,
@@ -571,7 +564,7 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
         raise
 
     finally:
-        ib.disconnect()
+        conn.close()
         log.info("Disconnected from IB Gateway.")
 
         # ── Excel 交易記錄 + Telegram 段落 ────────────────────────────────

@@ -899,19 +899,10 @@ class ControlPanel(tk.Tk):
         """Open a fresh IB connection to `name` and immediately disconnect.
         Raises on connect failure — verify_one_account turns that into the
         red Telegram message."""
-        from ib_insync import IB
         from account_ctx import AccountCtx
-        from account_utils import ROLE_MONITOR
+        from broker import ROLE_MONITOR, Broker
 
-        ctx = AccountCtx.from_name(name, ROLE_MONITOR)
-        ib = IB()
-        try:
-            ib.connect(ctx.host, ctx.port, clientId=ctx.client_id, timeout=10)
-        finally:
-            try:
-                ib.disconnect()
-            except Exception:
-                pass
+        Broker().connect(AccountCtx.from_name(name, ROLE_MONITOR), timeout=10).close()
 
     # ── Gateway Status UI 狀態更新 ─────────────────────────
 
@@ -1298,14 +1289,8 @@ class ControlPanel(tk.Tk):
         回退到並行模式時才用得到。#155 刪 Tk 時一起刪。"""
         import ib_fetcher
         import manual_attribution
-        from broker import as_connection
         from sync_position import SyncRecords
-
-        def connect(ctx):
-            # 連線照舊走 ib_fetcher.connect（同一個 log 行），包成 Broker 的連線（#185）
-            return as_connection(ib_fetcher.connect(ctx), ctx)
-
-        return SyncRecords(connect=connect,
+        return SyncRecords(connect=ib_fetcher.connect,
                            attribution_ledger=manual_attribution.DEFAULT_LEDGER_PATH,
                            manual_orders_store=manual_attribution.DEFAULT_MANUAL_ORDERS_PATH,
                            persist_strategy_state=True)

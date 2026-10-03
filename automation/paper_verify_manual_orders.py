@@ -122,18 +122,22 @@ def paper_ib(timeline: Timeline | None):
     return ib
 
 
+def _paper_ctx(args, name=None):
+    return SimpleNamespace(
+        name=name or LABEL, account=args.account, host=args.host,
+        port=args.port, client_id=args.client_id,
+    )
+
+
 def _connect(args, timeline: Timeline | None):
-    ib = paper_ib(timeline)
-    ib.connect(args.host, args.port, clientId=args.client_id, timeout=10)
-    return ib
+    """IB 本身的委託紀錄要用 ib_insync 本體查：經 Broker 連上（paper-only 檢查在
+    paper_ib 的 connect 裡）再取出。"""
+    return Broker(lambda: paper_ib(timeline)).connect(_paper_ctx(args), timeout=10).ib
 
 
 def build_service(args, timeline: Timeline, ib_factory=None) -> mo.ManualOrderService:
     def account_ctx(name, _role):
-        return SimpleNamespace(
-            name=name, account=args.account, host=args.host,
-            port=args.port, client_id=args.client_id,
-        )
+        return _paper_ctx(args, name)
 
     def notifier(account, message):
         body = "\n".join(f"      {line}" for line in message.splitlines())

@@ -162,47 +162,38 @@ def test_summarize_fills_aggregates_executions():
 
 # ── main()：沒單靜默、失敗回報 ─────────────────────────────────────────
 
-class FakeIB:
-    def __init__(self, trades=(), fills=(), positions=()):
-        self._trades, self._fills, self._positions = list(trades), list(fills), list(positions)
-        self.disconnected = False
-
-    def trades(self):
-        return self._trades
-
-    def fills(self):
-        return self._fills
-
-    def positions(self, account=None):
-        return self._positions
-
-    def disconnect(self):
-        self.disconnected = True
+def broker_with(trades=(), fills=(), positions=None):
+    """in-memory Broker：這次連線看到的今日委託、成交與持倉。"""
+    from tests.fake_broker import FakeBroker
+    fake = FakeBroker(managed=["U1"], positions=positions)
+    fake.session_trades, fake.session_fills = list(trades), list(fills)
+    return fake
 
 
-CTX = NS(account="U1", name="Taylor", tg_token="T", tg_chat_id="C")
+CTX = NS(account="U1", name="Taylor", host="127.0.0.1", port=4001, client_id=22,
+         tg_token="T", tg_chat_id="C")
 
 
 def test_main_no_moo_orders_stays_silent(monkeypatch):
     import moo_fill_check as m
     from notify import Digest
-    ib = FakeIB()
-    monkeypatch.setattr(m.ib_fetcher, "connect", lambda ctx: ib)
+    ib = broker_with()
+    monkeypatch.setattr(m.ib_fetcher, "connect", ib.connect)
     d = Digest("MOO 成交")
     m.main(CTX, digest=d)
     assert d.render() is None
-    assert ib.disconnected
+    assert ib.closed == 1
 
 
 def test_main_reports_fills_into_digest(monkeypatch):
     import moo_fill_check as m
     from notify import Digest
-    ib = FakeIB(
+    ib = broker_with(
         trades=[trade("ERY", "BUY", perm=111), trade("SPY", "BUY", perm=5, order_type="LMT", tif="DAY")],
         fills=[fill("ERY", "BOT", 55, 12.41, perm=111)],
-        positions=[NS(contract=NS(symbol="ERY", secType="STK"), position=55.0)],
+        positions={"ERY": 55.0},
     )
-    monkeypatch.setattr(m.ib_fetcher, "connect", lambda ctx: ib)
+    monkeypatch.setattr(m.ib_fetcher, "connect", ib.connect)
     d = Digest("MOO 成交", icon="✅")
     m.main(CTX, digest=d)
     msg = d.render()
@@ -238,7 +229,8 @@ def _run_all(monkeypatch, ibs, *, summary=True, now=WEEKDAY_2131, names=("Taylor
     sent, seen = [], []
     monkeypatch.setattr(notify, "tg_send",
                         lambda msg, *, token, chat_id: sent.append((msg, token, chat_id)))
-    monkeypatch.setattr(m.ib_fetcher, "connect", lambda ctx: ibs.get(ctx.name) or FakeIB())
+    monkeypatch.setattr(m.ib_fetcher, "connect",
+                        lambda ctx: (ibs.get(ctx.name) or broker_with()).connect(ctx))
 
     def fake_summary(now_, accounts, moo_outcomes):
         seen.append((now_, list(accounts), dict(moo_outcomes)))
@@ -258,9 +250,9 @@ def test_run_all_quiet_day_sends_only_the_summary(fake_config, monkeypatch):
 
 
 def test_run_all_fills_then_summary_in_one_message(fake_config, monkeypatch):
-    ib = FakeIB(trades=[trade("ERY", "BUY", perm=111)],
-                fills=[fill("ERY", "BOT", 55, 12.41, perm=111)],
-                positions=[NS(contract=NS(symbol="ERY", secType="STK"), position=55.0)])
+    ib = broker_with(trades=[trade("ERY", "BUY", perm=111)],
+                     fills=[fill("ERY", "BOT", 55, 12.41, perm=111)],
+                     positions={"ERY": 55.0})
     _, sent, seen = _run_all(monkeypatch, {"Taylor": ib})
     assert len(sent) == 1
     msg = sent[0][0]

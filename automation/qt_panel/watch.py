@@ -45,20 +45,11 @@ def send_system_telegram(msg: str) -> None:
 
 
 def cold_connect(name: str) -> None:
-    """TY check 的冷連線探測：連上就斷，失敗 raise（同 Tk `_cold_connect`）。"""
-    from ib_insync import IB
+    """TY check 的冷連線探測：經 Broker 連上就斷，失敗 raise（同 Tk `_cold_connect`）。"""
     from account_ctx import AccountCtx
-    from account_utils import ROLE_MONITOR
+    from broker import ROLE_MONITOR, Broker
 
-    ctx = AccountCtx.from_name(name, ROLE_MONITOR)
-    ib = IB()
-    try:
-        ib.connect(ctx.host, ctx.port, clientId=ctx.client_id, timeout=10)
-    finally:
-        try:
-            ib.disconnect()
-        except Exception:
-            pass
+    Broker().connect(AccountCtx.from_name(name, ROLE_MONITOR), timeout=10).close()
 
 
 @dataclass

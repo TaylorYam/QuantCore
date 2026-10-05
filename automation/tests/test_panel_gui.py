@@ -93,7 +93,7 @@ def descendants(widget):
 def load_panel_module(monkeypatch):
     """Import control_panel offline: UAC, network, subprocess, IB orders and
     file writes are blocked."""
-    import ib_fetcher
+    import ib_insync
     import signals
 
     original_connect = socket.socket.connect
@@ -107,7 +107,7 @@ def load_panel_module(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", local_event_loop_only)
     monkeypatch.setattr(subprocess, "Popen", forbidden)
     for method in ("connect", "placeOrder", "cancelOrder", "reqGlobalCancel"):
-        monkeypatch.setattr(ib_fetcher.IB, method, forbidden)
+        monkeypatch.setattr(ib_insync.IB, method, forbidden)
     monkeypatch.setattr(ctypes.windll.shell32, "IsUserAnAdmin", lambda: 1)
     monkeypatch.setattr(ctypes.windll.shell32, "ShellExecuteW", forbidden)
     monkeypatch.setattr(ctypes.windll.shell32, "SetCurrentProcessExplicitAppUserModelID", lambda *a: None)

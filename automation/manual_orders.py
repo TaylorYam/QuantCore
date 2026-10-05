@@ -26,6 +26,8 @@ from typing import Callable, Iterable, Iterator
 from zoneinfo import ZoneInfo
 
 from account_utils import ROLE_MANUAL_ORDER
+# 手動單用的即時報價在 Broker（#185），這裡只用它的結果與規則
+from broker import AccountValueUnavailable, BrokerQuote, realtime_quote
 from market_calendar import NYSE_EARLY_CLOSES, official_sessions
 
 
@@ -124,15 +126,6 @@ class DuplicateManualOrder(ManualOrderError):
     """An Account already has an unresolved manual order for the symbol."""
 
 
-@dataclass(frozen=True)
-class BrokerQuote:
-    price: float
-    asof: datetime = field(compare=False)
-    side: str
-    market_data_type: int = 1
-    source: str = "IB 即時買賣報價"
-
-
 def _nyse_day_clock(now: datetime) -> tuple[time, time, time] | None:
     """(Eastern wall clock, regular close, after-hours end) on an NYSE session day.
 
@@ -206,36 +199,6 @@ def ib_trading_hours_include(trading_hours: str, time_zone_id: str,
             if start <= now < end:
                 return True
     return False
-
-
-def read_ib_quote(ib, contract, side: str) -> BrokerQuote:
-    """Wait for a fresh, selected-side tick on a real-time IB subscription."""
-    if side not in {"bid", "ask"}:
-        raise ValueError(side)
-    ib.reqMarketDataType(1)
-    ticker = ib.reqMktData(contract, "", False, False)
-    seen = None
-
-    def on_update(updated):
-        nonlocal seen
-        for tick in updated.ticks:
-            if tick.tickType == (1 if side == "bid" else 2):
-                seen = BrokerQuote(tick.price, tick.time, side,
-                                   updated.marketDataType)
-
-    ticker.updateEvent += on_update
-    try:
-        for _ in range(25):
-            ib.sleep(0.2)
-            if seen is not None and ticker.marketDataType == 1:
-                current = ticker.bid if side == "bid" else ticker.ask
-                size = ticker.bidSize if side == "bid" else ticker.askSize
-                if current == seen.price and math.isfinite(size) and size > 0:
-                    return seen
-        raise ManualOrderError("沒有有效的 IB 即時報價；請改用明確股數")
-    finally:
-        ticker.updateEvent -= on_update
-        ib.cancelMktData(contract)
 
 
 def read_ib_daily_closes(ib, contract) -> list[tuple[date, float]]:
@@ -1127,7 +1090,7 @@ class ManualOrderService:
         self._connect = connect
         self._universe_loader = universe_loader or _default_universe_loader
         self._order_factory = order_factory
-        self._quote_reader = quote_reader or read_ib_quote
+        self._quote_reader = quote_reader or realtime_quote
         self._close_reader = close_reader or read_ib_daily_closes
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         if not callable(notifier):
@@ -1182,7 +1145,8 @@ class ManualOrderService:
         return {canonical_symbol(symbol) for symbol in raw}
 
     @contextmanager
-    def _connected(self, account_name: str) -> Iterator[tuple[object, object]]:
+    def _connection(self, account_name: str) -> Iterator[tuple[object, object]]:
+        """(ctx, broker.Connection)，Gateway 必須確認管理選定的 Account。"""
         ctx = self._context(account_name)
         # ib_insync's synchronous API runs coroutines on the calling
         # thread's event loop. Panel workers and the lifecycle monitor
@@ -1191,17 +1155,21 @@ class ManualOrderService:
         _ensure_ib_event_loop()
         conn = self._open(ctx)
         try:
-            # The service's rules use ib_insync directly (#185: only the
-            # connection underneath moves to the Broker).
-            ib = conn.ib
             managed = set(conn.managed_accounts())
             if ctx.account not in managed:
                 raise ManualOrderError(
                     f"IB 連線未確認選定 Account {account_name}（{ctx.account}），已阻擋委託"
                 )
-            yield ctx, ib
+            yield ctx, conn
         finally:
             conn.close()
+
+    @contextmanager
+    def _connected(self, account_name: str) -> Iterator[tuple[object, object]]:
+        """(ctx, ib)：The service's rules use ib_insync directly (#185: only the
+        connection underneath moves to the Broker)."""
+        with self._connection(account_name) as (ctx, conn):
+            yield ctx, conn.ib
 
     @staticmethod
     def _check_request(account_name: str, symbol: str,
@@ -1570,20 +1538,13 @@ class ManualOrderService:
                 )
 
     @staticmethod
-    def _account_equity(ib, ctx) -> Decimal:
-        """The selected Account's NetLiquidation in USD, straight from IB."""
-        values = [
-            item for item in (ib.accountSummary(ctx.account) or [])
-            if item.tag == "NetLiquidation" and item.currency == "USD"
-            and getattr(item, "account", ctx.account) == ctx.account
-        ]
+    def _account_equity(conn) -> Decimal:
+        """The selected Account's NetLiquidation in USD — the Broker's one equity read."""
         try:
-            equity = Decimal(str(values[0].value))
-        except (IndexError, InvalidOperation, ValueError):
-            equity = None
-        if equity is None or not equity.is_finite() or equity <= 0:
-            raise ManualOrderError("讀不到帳戶權益（IB NetLiquidation USD），無法用權益百分比下單")
-        return equity
+            return conn.equity()
+        except AccountValueUnavailable as exc:
+            raise ManualOrderError(
+                "讀不到帳戶權益（IB NetLiquidation USD），無法用權益百分比下單") from exc
 
     @staticmethod
     def _position(ib, ctx, contract) -> float:
@@ -1704,8 +1665,8 @@ class ManualOrderService:
             if quantity is not None or amount_usd is not None:
                 raise ManualOrderError("請在整股股數、美元金額與權益百分比之間擇一輸入")
             pct = equity_percent(equity_pct)
-            with self._connected(account) as (ctx, ib):
-                equity = self._account_equity(ib, ctx)
+            with self._connection(account) as (_ctx, conn):
+                equity = self._account_equity(conn)
             preview = self.preview(
                 account, symbol, None, limit_price, action=action,
                 allow_short=allow_short, amount_usd=equity_amount(equity, pct),

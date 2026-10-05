@@ -1,7 +1,7 @@
 """Read-only query isolation and legacy portfolio characterization, all fake IB.
 
 fetch_portfolio 經 Broker 開連線（#185）：假 IB 接在 broker 的 ib_insync 工廠上，
-測的是 adapter 自己的讀法（Connection.portfolio_readings 的多層 fallback）。"""
+測的是 adapter 自己的讀法（Connection.portfolio_readings：只讀所選帳戶，和排程同一套）。"""
 from datetime import date
 import json
 from pathlib import Path
@@ -14,7 +14,7 @@ from account_ctx import AccountCtx
 from account_utils import ROLE_PANEL
 
 
-SCENARIOS = ("empty", "mixed", "foreign", "fallback", "timeout")
+SCENARIOS = ("empty", "mixed", "foreign", "timeout")
 
 
 def configure_fake(monkeypatch, module, ctx, scenario):
@@ -29,27 +29,20 @@ def configure_fake(monkeypatch, module, ctx, scenario):
         def managedAccounts(self):
             return [ctx.account]
 
-        def accountSummary(self, *args):
-            return [] if scenario == "fallback" else self.accountValues()
-
         def accountValues(self, *args):
             return [NS(account=ctx.account, tag=tag, currency="USD", value=value)
                     for tag, value in [("NetLiquidation", "10000"),
                                        ("Cushion", ".4"), ("ExcessLiquidity", "4000")]]
 
-        def reqAccountUpdates(self, *args):
-            pass
-
-        def sleep(self, *args):
-            pass
-
-        def positions(self):
-            if scenario in ("empty", "fallback"):
+        def positions(self, account=""):
+            if scenario == "empty":
                 return []
-            return [NS(account="OTHER" if scenario == "foreign" else ctx.account,
+            held = [NS(account="OTHER" if scenario == "foreign" else ctx.account,
                        contract=NS(symbol=s, secType="STK", longName=""),
                        position=qty, avgCost=100)
                     for s, qty in [("XLK", 2), ("AAPL", 3), ("ZZZ", -1)]]
+            # 同 ib_insync：指定帳戶時只回那個帳戶的持倉
+            return [p for p in held if not account or p.account == account]
 
         def isConnected(self):
             return True
@@ -63,7 +56,8 @@ def configure_fake(monkeypatch, module, ctx, scenario):
     import signals
     monkeypatch.setattr(signals, "get_sp500_universe", lambda: {"AAPL"})
     monkeypatch.setattr(broker, "_default_ib", lambda: fake)
-    monkeypatch.setattr(module, "get_prices", lambda *a, **kw: {"XLK": 110, "AAPL": 120, "ZZZ": 90})
+    monkeypatch.setattr(broker.Connection, "prices",
+                        lambda self, symbols: {"XLK": 110, "AAPL": 120, "ZZZ": 90})
     return fake
 
 
@@ -122,47 +116,63 @@ def test_readonly_connect_is_bounded_and_cleanup_on_failure(fake_config, monkeyp
     assert calls[-1] == "disconnect"
 
 
-def test_readonly_price_feed_ids_are_independent(fake_config, monkeypatch):
-    import price_utils
-    options = []
-    monkeypatch.setattr(price_utils, "robust_get_prices", lambda *a, **kw: options.append(kw))
-    for name in ("Taylor", "Rosa", "Yvonne"):
-        ib_fetcher.get_prices(None, ["XLK"], AccountCtx.from_name(name, ROLE_PANEL), readonly=True)
-    assert len({kw["feed_client_id"] for kw in options}) == 3
-    assert all(kw["readonly"] for kw in options)
-    ib_fetcher.get_prices(None, ["XLK"], AccountCtx.from_name("Taylor", ROLE_PANEL))
-    # 一般連線借報價用固定的 99（同 price_utils 原本的預設），規則在 broker（#185）
-    assert options[-1]["readonly"] is False and options[-1]["feed_client_id"] == 99
+class _FeedIB:
+    """報價 feed port 上的假 IB：記下連線參數，每檔都有價。"""
+
+    def __init__(self, calls):
+        self.calls = calls
+
+    def connect(self, *a, **kw):
+        self.calls.append(kw)
+        assert kw.get("readonly") is not True or self.RequestTimeout == 20
+
+    def qualifyContracts(self, *a):
+        pass
+
+    def reqTickers(self, *contracts):
+        return [NS(contract=c, midpoint=lambda: 123) for c in contracts]
+
+    def isConnected(self):
+        return True
+
+    def disconnect(self):
+        self.calls.append("disconnect")
 
 
-def test_feed_connection_receives_unique_id_and_closes(monkeypatch):
-    import ib_insync
-    import price_utils
+def _no_live_price_ib(port):
+    """本連線沒有即時報價（feed 借到就不會走到延遲報價）。"""
+    missing = lambda c: NS(contract=c, midpoint=lambda: float("nan"), last=0, close=0)
+    return NS(client=NS(port=port), qualifyContracts=lambda *a: None,
+              reqTickers=lambda *cs: [missing(c) for c in cs])
+
+
+def test_readonly_price_feed_ids_are_independent(fake_config):
+    import broker
     calls = []
-    contract = NS(symbol="XLK")
-    missing = NS(contract=contract, midpoint=lambda: float("nan"), last=0, close=0)
-    priced = NS(contract=contract, midpoint=lambda: 123)
+    feed_broker = broker.Broker(lambda: _FeedIB(calls))
+    for name in ("Taylor", "Rosa", "Yvonne"):
+        ctx = AccountCtx.from_name(name, ROLE_PANEL)
+        # 本連線的 port 設成 0：Rosa 自己就在 feed port 上，這裡要它也去借價
+        conn = broker.Connection(_no_live_price_ib(0), ctx, readonly=True,
+                                 broker=feed_broker)
+        assert conn.prices(["XLK"]) == {"XLK": 123}
+    connects = [c for c in calls if c != "disconnect"]
+    assert len({c["clientId"] for c in connects}) == 3
+    assert all(c["readonly"] for c in connects)
+    # 一般連線借報價用固定的 99（規則在 broker.price_feed_client_id）
+    ctx = AccountCtx.from_name("Taylor", ROLE_PANEL)
+    broker.Connection(_no_live_price_ib(0), ctx, broker=feed_broker).prices(["XLK"])
+    assert calls[-2]["clientId"] == 99 and "readonly" not in calls[-2]
 
-    class Feed:
-        def connect(self, *a, **kw):
-            calls.append(kw)
-            assert self.RequestTimeout == 20
 
-        def qualifyContracts(self, *a):
-            pass
-
-        def reqTickers(self, *a):
-            return [priced]
-
-        def isConnected(self):
-            return True
-
-        def disconnect(self):
-            calls.append("disconnect")
-
-    monkeypatch.setattr(ib_insync, "IB", Feed)
-    own = NS(client=NS(port=4001), qualifyContracts=lambda *a: None,
-             reqTickers=lambda *a: [missing])
-    assert price_utils.robust_get_prices(own, ["XLK"], feed_client_id=1025, readonly=True) == {"XLK": 123}
+def test_feed_connection_receives_unique_id_and_closes():
+    import broker
+    calls = []
+    ctx = NS(name="Taylor", account="U1", host="127.0.0.1", port=4001, client_id=25,
+             price_feed_port=4002)
+    conn = broker.Connection(_no_live_price_ib(4001), ctx, readonly=True,
+                             broker=broker.Broker(lambda: _FeedIB(calls)))
+    assert conn.prices(["XLK"]) == {"XLK": 123}
     assert calls[0]["clientId"] == 1025 and calls[0]["readonly"] is True
+    assert calls[0]["timeout"] == 10 and calls[0]["account"] == ""
     assert calls[-1] == "disconnect"

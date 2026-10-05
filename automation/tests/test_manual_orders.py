@@ -68,9 +68,9 @@ class FakeIBState:
         self.daily_bars = []
         self.history_requests = []
         self.history_error = None
-        # NetLiquidation (USD) returned by accountSummary, per account.
+        # NetLiquidation (USD) returned by accountValues, per account.
         self.net_liquidation = {account: "16000" for account in self.managed}
-        self.summary_requests = []
+        self.account_value_requests = []
 
 
 class FakeEvent:
@@ -118,8 +118,8 @@ class FakeIB:
     def managedAccounts(self):
         return self.state.managed
 
-    def accountSummary(self, account=""):
-        self.state.summary_requests.append(account)
+    def accountValues(self, account=""):
+        self.state.account_value_requests.append(account)
         rows = [NS(account=account, tag="NetLiquidation", value=value, currency="USD")
                 for account, value in self.state.net_liquidation.items()]
         # Another account's figure and a non-USD row must never be picked.
@@ -448,7 +448,7 @@ def test_ib_quote_adapter_requires_realtime_selected_side_tick(
 ):
     from ib_insync import Ticker
     from ib_insync.objects import TickData
-    from manual_orders import read_ib_quote
+    from broker import NoRealtimeQuote, realtime_quote
 
     class FakeQuoteIB:
         def __init__(self):
@@ -475,11 +475,11 @@ def test_ib_quote_adapter_requires_realtime_selected_side_tick(
 
     ib = FakeQuoteIB()
     if accepted:
-        result = read_ib_quote(ib, NS(symbol="ZZZZ"), "ask")
+        result = realtime_quote(ib, NS(symbol="ZZZZ"), "ask")
         assert (result.price, result.side, result.market_data_type) == (30, "ask", 1)
     else:
-        with pytest.raises(ValueError, match="明確股數"):
-            read_ib_quote(ib, NS(symbol="ZZZZ"), "ask")
+        with pytest.raises(NoRealtimeQuote, match="明確股數"):
+            realtime_quote(ib, NS(symbol="ZZZZ"), "ask")
     assert ib.requested_type == 1
     assert ib.cancelled
 
@@ -1149,7 +1149,7 @@ def test_equity_percent_preview_uses_net_liquidation_and_rounds_down(tmp_path):
     assert (preview.account_equity, preview.equity_pct) == (Decimal("16000"), Decimal("30"))
     assert "帳戶權益（IB 淨清算值）：$16,000.00 × 30% = $4,800.00" in preview.confirmation_text
     assert "換算整股股數：16" in preview.confirmation_text
-    assert state.summary_requests == ["U001"]
+    assert state.account_value_requests == ["U001"]
 
     # 16000 x 25% = 4000 -> 4000 / 301 = 13.29 -> 13 shares
     assert service.preview("Taylor", "ZZZZ", None, 301.0, equity_pct="25").quantity == 13

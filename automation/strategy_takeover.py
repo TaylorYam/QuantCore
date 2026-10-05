@@ -266,11 +266,10 @@ def submit(preview: TakeoverPreview, ctx: AccountCtx,
 
         order_status = ""
         if fresh.quantity:
+            import broker
             import rebalance_ib
-            import sync_position
             quotes = conn.quotes([sym])
-            lmt = sync_position.sync_lmt_price(fresh.action, quotes.get(sym, {}),
-                                               fresh.price)
+            lmt = broker.limit_price(fresh.action, quotes.get(sym, {}), fresh.price)
             contract = conn.contract(sym)
             order = rebalance_ib.make_order(fresh.action, fresh.quantity, lmt, exec_ctx)
             order.orderRef = order_ref

@@ -20,6 +20,7 @@ ManualOrderService 用 ib_insync 本體（`Connection.ib`），它的測試把�
 """
 from __future__ import annotations
 
+from decimal import Decimal
 from types import SimpleNamespace as NS
 from typing import Callable
 
@@ -43,7 +44,7 @@ class FakeBroker:
         self.positions = dict(positions or {})
         self.avg_cost: dict[str, float] = {}          # 持倉成本；沒列的是 1.0
         self.detail: list | None = None               # 指定持倉明細（None = 由持倉產生）
-        self.cushion_pct, self.excess_liq, self.maint_margin = 42.0, nav * 0.4, nav * 0.3
+        self.cushion_pct, self.excess_liq = 42.0, nav * 0.4
         self.session_trades: list = []                # 這次連線前就有的今日委託／成交
         self.session_fills: list = []
         self.connect_error: BaseException | None = None   # 連不上 Gateway
@@ -106,10 +107,21 @@ class FakeConnection:
     def managed_accounts(self) -> list[str]:
         return list(self._broker.managed)
 
-    def nav(self) -> float:
+    def equity(self) -> Decimal:
         self._read("nav")
         self._broker.ctxs.append(self.ctx)
-        return float(self._broker.nav)
+        return Decimal(str(self._broker.nav))
+
+    def nav(self) -> float:
+        return float(self.equity())
+
+    def cushion_pct(self) -> float:
+        self._read("account_info")
+        return self._broker.cushion_pct
+
+    def excess_liq(self) -> float:
+        self._read("account_info")
+        return self._broker.excess_liq
 
     def positions(self) -> dict[str, float]:
         self._read("positions")
@@ -125,10 +137,16 @@ class FakeConnection:
                 for s, q in b.positions.items() if q]
 
     def account_info(self) -> dict:
-        self._read("account_info")
-        b = self._broker
-        return {"nav": float(b.nav), "cushion_pct": b.cushion_pct,
-                "excess_liq": b.excess_liq, "maint_margin": b.maint_margin}
+        return {"nav": self.nav(), "cushion_pct": self.cushion_pct(),
+                "excess_liq": self.excess_liq()}
+
+    def portfolio_readings(self, out: dict) -> dict:
+        out.update(managed=self.managed_accounts(), account=self.ctx.account)
+        out["nav"] = self.nav()
+        out["cushion"] = self.cushion_pct()
+        out["excess_liq"] = self.excess_liq()
+        out["positions"] = self.positions_detail()
+        return out
 
     def trades(self) -> list:
         self._read("trades")

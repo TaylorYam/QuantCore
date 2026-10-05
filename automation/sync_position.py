@@ -247,18 +247,6 @@ def notify_new_pauses(plan: SyncPlan,
 
 # ── Submit phase ──────────────────────────────────────────────────────
 
-def sync_lmt_price(action: str, quote: dict, ref: float) -> float:
-    """Sync Pos 的 LMT 價：BUY ask×1.003、SELL bid×0.997（缺價依序用
-    mid/last/close/ref 後備）。交給策略接管（#107）用同一規則。"""
-    if action == 'BUY':
-        base = (quote.get('ask') or quote.get('mid') or quote.get('last')
-                or quote.get('close') or ref)
-        return round(base * 1.003, 2)
-    base = (quote.get('bid') or quote.get('mid') or quote.get('last')
-            or quote.get('close') or ref)
-    return round(base * 0.997, 2)
-
-
 def submit_sync_orders(
     plan: SyncPlan,
     log_fn: Optional[Callable[[str], None]] = None,
@@ -297,6 +285,7 @@ def submit_sync_orders(
     if not plan.orders:
         return [], []
 
+    import broker
     import rebalance_ib as reb
     # Frozen AccountCtx replace → LMT + outsideRTH 版本（不汙染原 ctx）
     exec_ctx = _replace(plan.ctx, order_type='LMT', outside_rth=True)
@@ -318,7 +307,7 @@ def submit_sync_orders(
         ib_orders = []
         for o in plan.orders:
             # o.price = 預覽時的估價（報價都缺時的後備）
-            lmt = sync_lmt_price(o.action, quotes.get(o.symbol, {}), o.price)
+            lmt = broker.limit_price(o.action, quotes.get(o.symbol, {}), o.price)
             ib_orders.append({
                 'symbol':    o.symbol,
                 'action':    o.action,

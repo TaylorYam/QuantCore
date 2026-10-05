@@ -150,6 +150,7 @@ _Avoid_: 送單模式（paper／實盤是送單目標的兩種，不是另一個
 **Broker（券商連線層）**:
 QuantCore 跟 IB 打交道的那一層：送單、查成交、查持倉與權益。畫面上使用者操作的單（手動單、Sync Pos、交給策略接管）屬於 Panel 的 Trading；真正把單送進 IB、回報成交的是 Broker。
 實作在 `automation/broker.py`（#185）：依帳戶＋用途開連線（clientId 的分配規則只在這裡，不認得的帳戶名稱直接報錯），一條連線上讀權益、持倉、報價、今日委託與成交，送單、撤單、斷線。新 Panel 的三條送單路徑與 Portfolio、21:00 調倉、16:00 日度風控、04:40 每日報告、21:31 成交回報都向它要連線；新 Panel 的送單閘門包在 Broker 外面，連上後先檢查帳號才交出連線。Gateway 心跳是長駐的值班連線，不讀數不送單，仍自己連。測試用 `automation/tests/fake_broker.py` 的 in-memory Broker。
+讀數與限價各只有一份：權益只讀所選帳戶的 NetLiquidation（USD），cushion、excess liquidity 也只讀所選帳戶，讀不到就報錯（不回傳 0、不拿別的帳戶的數字）；參考價（算股數、Portfolio、每日報告標價）走本連線 → 報價 feed port → 延遲報價 → 本地 CSV；送單時的買賣報價把 bid > ask 當成沒有報價；限價一律買 ask×1.003、賣 bid×0.997，缺價依序 mid → last → close → 參考價；手動單的即時報價刻意較嚴，另一份。21:00 以 MOO 下單時不帶限價，交易紀錄的預估價記算股數用的參考價。
 _Avoid_: Execution（與 [[執行盤 (Execution Session)]] 撞名）、Orders（架構圖上同時指畫面的單與送單層，見下方 Flagged ambiguities）
 
 **業績 (Performance)**:

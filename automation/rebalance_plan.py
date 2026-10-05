@@ -8,9 +8,9 @@ panel Sync Pos（sync_position.compute_sync_plan）皆為 caller —
 
 **純 plain-data 決策，無 I/O**：
 - 不連 IB、不讀價格檔、不算訊號、不碰 state 檔 — 快照與權重由 caller
-  提供（IB adapter = ib_fetcher；測試 / 離線試算 = fixture dict）。
-- execution 關切留在 caller：LMT 價計算（rebalance ±0.05% vs Sync Pos
-  bid/ask ±0.3%）、下單順序（先 SELL 後 BUY）、成交等待。
+  提供（IB adapter = broker.Connection；測試 / 離線試算 = fixture dict）。
+- execution 關切留在 caller：LMT 價計算（Broker 的統一限價規則
+  `broker.limit_price`）、下單順序（先 SELL 後 BUY）、成交等待。
 - state 檔讀寫留在 caller：`select_skewls_weights` 只吃已載入的 state
   dict 做純決策，觸發後的 state 更新由 caller 在下單完成後執行。
 

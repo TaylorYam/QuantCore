@@ -392,7 +392,6 @@ def test_rebalance_unreadable_ledger_stops_account_before_state(rebalance_env, p
     assert digest.outcomes(["Rosa"])["Rosa"][0] == "error"
 
 
-
 # 21:00 的限價（#185 第三階段）：MOO 不帶限價，交易紀錄的預估價 = 算股數用的參考價；
 # 以 LMT 下單時走 Broker 的統一限價規則（原本的 −0.05%／+0.05% 已刪）
 
@@ -416,6 +415,7 @@ def test_rebalance_lmt_run_uses_the_unified_limit_rule(rebalance_env):
     placed = rebalance_env.broker.placed
     assert [(p.symbol, p.order_type, p.lmt) for p in placed] == [
         ("AAPL", "LMT", round(100.1 * 1.003, 2)), ("XYZ", "LMT", round(100.1 * 1.003, 2))]
+
 
 def test_place_orders_gate_holds_persisted_pause_even_if_caller_forgot(paths):
     import rebalance_ib

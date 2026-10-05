@@ -249,7 +249,8 @@ def run_daily_check(account_name: str, digest: Digest):
         # 限價規則；報價全缺的標的才向參考價（feed／延遲報價／CSV 後備）要價
         order_syms = list({o['symbol'] for o in orders})
         quotes = conn.quotes(order_syms)
-        action = {o['symbol']: o['action'] for o in orders}
+        action = {o['symbol']: o['action'] for o in orders}   # 上面已去重：一檔一筆
+        # 不給參考價時限價是 0 = 報價全缺（bid／ask、mid、last、close 都沒有）
         no_quote = [s for s in order_syms
                     if not broker.limit_price(action[s], quotes.get(s, {}), None)]
         refs = conn.prices(no_quote) if no_quote else {}

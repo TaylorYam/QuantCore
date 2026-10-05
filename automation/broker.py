@@ -333,6 +333,15 @@ class Connection:
         self._ib.qualifyContracts(*contracts)
         return self._ib.reqTickers(*contracts)
 
+    def _ticker_prices(self, symbols: list[str]) -> list[tuple[str, float]]:
+        """[(標的, 價格)]：這條連線上 symbols 的 ticker 價（mid／last／close／延遲），
+        取不到的是 0。"""
+        from price_utils import ticker_price
+        from symbol_contract import canonical_symbol
+
+        return [(canonical_symbol(t.contract.symbol), ticker_price(t))
+                for t in self._tickers(symbols)]
+
     def prices(self, symbols: list[str]) -> dict[str, float]:
         """參考價：算下單股數、Portfolio 與每日報告標價用。{標的: 價格}，全部後備都
         失敗的標的是 0。
@@ -342,7 +351,7 @@ class Connection:
         """
         from types import SimpleNamespace
 
-        from price_utils import load_csv_close, ticker_price
+        from price_utils import load_csv_close
         from symbol_contract import canonical_symbol
 
         if not symbols:
@@ -352,9 +361,7 @@ class Connection:
         canonical_symbols = [canonical_symbol(s) for s in symbols]
         prices: dict[str, float] = {}
         need_feed = []
-        for t in self._tickers(canonical_symbols):
-            sym = canonical_symbol(t.contract.symbol)
-            p = ticker_price(t)
+        for sym, p in self._ticker_prices(canonical_symbols):
             if p > 0:
                 prices[sym] = p
                 log.info(f"  {sym}: ${p:.2f}")
@@ -376,9 +383,7 @@ class Connection:
                                         ctx.client_id, readonly=self.readonly)),
                     timeout=10, readonly=self.readonly)
                 recovered = []
-                for t in feed._tickers(need_feed):
-                    sym = canonical_symbol(t.contract.symbol)
-                    p = ticker_price(t)
+                for sym, p in feed._ticker_prices(need_feed):
                     if p > 0:
                         prices[sym] = p
                         recovered.append(sym)
@@ -395,9 +400,7 @@ class Connection:
             log.info(f"  {len(need_feed)} still missing, trying delayed on own port...")
             try:
                 self._ib.reqMarketDataType(3)  # 3 = delayed
-                for t in self._tickers(need_feed):
-                    sym = canonical_symbol(t.contract.symbol)
-                    p = ticker_price(t)
+                for sym, p in self._ticker_prices(need_feed):
                     if p > 0:
                         prices[sym] = p
                         log.info(f"  {sym}: ${p:.2f} (delayed)")

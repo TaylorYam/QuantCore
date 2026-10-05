@@ -141,7 +141,10 @@ class FakeConnection:
                 "excess_liq": self.excess_liq()}
 
     def portfolio_readings(self, out: dict) -> dict:
-        out.update(managed=self.managed_accounts(), account=self.ctx.account)
+        managed = self.managed_accounts()
+        if not self.ctx.account or self.ctx.account not in managed:
+            raise RuntimeError("Configured Account is not available on this Gateway")
+        out.update(managed=managed, account=self.ctx.account)
         out["nav"] = self.nav()
         out["cushion"] = self.cushion_pct()
         out["excess_liq"] = self.excess_liq()

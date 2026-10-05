@@ -1165,7 +1165,7 @@ class ManualOrderService:
             conn.close()
 
     @contextmanager
-    def _connected(self, account_name: str) -> Iterator[tuple[object, object]]:
+    def _connected_ib(self, account_name: str) -> Iterator[tuple[object, object]]:
         """(ctx, ib)：The service's rules use ib_insync directly (#185: only the
         connection underneath moves to the Broker)."""
         with self._connection(account_name) as (ctx, conn):
@@ -1686,7 +1686,7 @@ class ManualOrderService:
             raise ManualOrderError("請選擇有效委託類型與價格")
         if action not in {"BUY", "SELL", "COVER"} or not isinstance(allow_short, bool):
             raise ManualOrderError("請選擇有效方向與放空設定")
-        with self._connected(account) as (ctx, ib):
+        with self._connected_ib(account) as (ctx, ib):
             preview, _contract = self._build_preview(
                 account, symbol, quantity, price, action, allow_short, ctx, ib,
                 amount, order_type, session, check_price=True,
@@ -1734,7 +1734,7 @@ class ManualOrderService:
                 or preview.action not in {"BUY", "SELL", "COVER"}
                 or not isinstance(preview.allow_short, bool)):
             raise ManualOrderError("委託預覽已變更，請重新預覽")
-        with self._connected(account) as (ctx, ib):
+        with self._connected_ib(account) as (ctx, ib):
             fresh, contract = self._build_preview(
                 account, symbol, quantity, price, preview.action,
                 preview.allow_short, ctx, ib, amount, preview.order_type,
@@ -1935,7 +1935,7 @@ class ManualOrderService:
                 status_message=_STATUS_LABELS["CANCEL_PENDING"],
             ) or row
             try:
-                with self._connected(account) as (ctx, ib):
+                with self._connected_ib(account) as (ctx, ib):
                     if row["account_id"] != ctx.account:
                         raise ManualOrderError(
                             "委託所屬 Account 與目前設定不符；已阻擋取消"
@@ -1989,7 +1989,7 @@ class ManualOrderService:
             errors = []
             for account in accounts:
                 try:
-                    with self._connected(account) as (ctx, ib):
+                    with self._connected_ib(account) as (ctx, ib):
                         open_trades = self._sync_trades(ib, ctx)
                         self._enforce_session_routing(ib, ctx, open_trades)
                 except Exception as exc:

@@ -112,6 +112,28 @@ def test_add_section_never_raises(monkeypatch):
     assert d.render() is None
 
 
+# ── 排程入口：--mode／--order-type 交到每個帳戶的 main（#206）────────
+
+@pytest.mark.parametrize("argv, order_type", [
+    (["--mode", "skewls", "--order-type", "MKT", "--account", "all"], "MKT"),
+    (["--mode", "all", "--account", "Rosa"], "MOO"),             # 沒指定 = 帳戶設定
+])
+def test_run_passes_mode_and_order_type_to_each_account(fake_config, run_status_dir,
+                                                        monkeypatch, argv, order_type):
+    import notify
+    import rebalance_ib
+    import scheduled_run
+    monkeypatch.setattr(notify, "tg_send", lambda msg, *, token, chat_id: None)
+    monkeypatch.setattr(scheduled_run, "setup_logging", lambda key: None)
+    monkeypatch.setattr(scheduled_run, "quiet_ib_console", lambda: None)
+    seen = []
+    monkeypatch.setattr(rebalance_ib, "main", lambda mode, ctx, digest: seen.append(
+        (mode, ctx.name, ctx.order_type)))
+    assert rebalance_ib.run(argv) == 0
+    names = ["Taylor", "Rosa", "Yvonne"] if "all" == argv[-1] else [argv[-1]]
+    assert seen == [(argv[1], n, order_type) for n in names]
+
+
 # ── main() 收尾：Excel 交易紀錄 + Telegram 段落（#29）──────────────────
 
 def _ctx(name="Taylor"):

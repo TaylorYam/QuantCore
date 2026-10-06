@@ -101,14 +101,14 @@ def run_daily_check(ctx: AccountCtx, digest: Digest):
     # fail closed with an actionable alert before any len/index access.
     if spy_df is None:
         log.error(f"SPY benchmark unavailable: {spy_path}")
-        digest.add(account_name, "❌ 日度風控失敗",
+        digest.add(account_name, run_status.DAILY_CHECK_JOB.failed,
                    ["SPY 資料不可用（檔案不存在或格式錯誤），本次沒有做 dip-buy 檢查"],
                    "error", **tg)
         return
 
     if len(spy_df) < 2:
         log.error("SPY data too short")
-        digest.add(account_name, "❌ 日度風控失敗",
+        digest.add(account_name, run_status.DAILY_CHECK_JOB.failed,
                    ["SPY 資料不足，本次沒有做 dip-buy 檢查"], "error", **tg)
         return
 
@@ -140,7 +140,7 @@ def run_daily_check(ctx: AccountCtx, digest: Digest):
     mkt = get_market_regime_state(ref_date)
     if not mkt:
         log.error("No market regime data")
-        digest.add(account_name, "❌ 日度風控失敗",
+        digest.add(account_name, run_status.DAILY_CHECK_JOB.failed,
                    ["讀不到市場狀態資料（SPY / MA200），本次沒有做 dip-buy 檢查"],
                    "error", **tg)
         return
@@ -256,7 +256,7 @@ def run_daily_check(ctx: AccountCtx, digest: Digest):
         if ctx.dry_run:
             log.info("  [DRY RUN] orders not sent")
         elif sent.placed:
-            # Telegram 通知（main() 合併發送）
+            # Telegram 通知（排程執行殼三帳戶合併發送）
             digest.note(f"SPY {mkt['SPY_Close']:.2f} · DD {spy_dd*100:.1f}%")
             digest.add(account_name, f"熊市 dip-buy 送出 {len(sent.placed)} 筆 LMT",
                        order_group_lines(sent.placed, show_price=True), **tg)

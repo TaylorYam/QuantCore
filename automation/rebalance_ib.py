@@ -54,7 +54,7 @@ from ib_insync import util
 
 
 # ── Telegram 通知（統一由 notify.py 提供；三帳戶合併一則，#26）──────────
-from notify import Digest, order_group_lines
+from notify import Digest, error_line, order_group_lines
 
 # ── AccountCtx（S6：ctx 為所有函式的必要參數，模組不再有 mutable globals）
 from account_ctx import AccountCtx
@@ -178,7 +178,7 @@ def rebalance_tg_section(placed: list[dict], fill_results: list[dict], *,
     body += [html_mod.escape(ln) for ln in drift_alarms]
     body += [html_mod.escape(ln) for ln in drift_advisories]
     if error_msg:
-        body.append(html_mod.escape(str(error_msg)[:300]))   # headline 已帶 ❌
+        body.append(error_line(error_msg))   # headline 已帶 ❌
 
     if error_msg:
         level = "error"

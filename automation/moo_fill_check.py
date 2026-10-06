@@ -271,7 +271,7 @@ def main(ctx: AccountCtx, digest: Digest):
 
     except Exception as e:
         log.error(f"ERROR: {e}", exc_info=True)
-        digest.add(ctx.name, "❌ 成交回報失敗", [error_line(e)], "error", **dest)
+        digest.add(ctx.name, run_status.MOO_JOB.failed, [error_line(e)], "error", **dest)
 
     finally:
         conn.close()

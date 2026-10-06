@@ -125,7 +125,8 @@ def main(ctx: AccountCtx, digest: Digest):
 
     except Exception as e:
         log.error(f"ERROR: {e}", exc_info=True)
-        digest.add(acct_name, "❌ 每日報告失敗", [error_line(e)], "error", **dest)
+        digest.add(acct_name, run_status.DAILY_REPORT_JOB.failed, [error_line(e)], "error",
+                   **dest)
         raise
 
     finally:

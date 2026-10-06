@@ -417,14 +417,14 @@ def test_rebalance_lmt_run_uses_the_unified_limit_rule(rebalance_env):
         ("AAPL", "LMT", round(100.1 * 1.003, 2)), ("XYZ", "LMT", round(100.1 * 1.003, 2))]
 
 
-def test_place_orders_gate_holds_persisted_pause_even_if_caller_forgot(paths):
-    import rebalance_ib
+def test_send_gate_holds_persisted_pause_even_if_caller_forgot(paths):
+    import strategy_orders
     ma.evaluate("Rosa", {"XYZ": 10.0}, UNIVERSE)
     ma.evaluate("Rosa", {"XYZ": 10.0}, JOINED)
     fake = _fake_broker({})
-    placed, _ = rebalance_ib.place_orders(
+    placed = strategy_orders.send(
         fake.connect(_ctx()), [{"symbol": "XYZ", "action": "SELL", "qty": 10},
-                               {"symbol": "AAPL", "action": "BUY", "qty": 1}], _ctx())
+                               {"symbol": "AAPL", "action": "BUY", "qty": 1}], _ctx()).placed
     assert [o["symbol"] for o in placed] == ["AAPL"]
     assert _sent(fake) == [("AAPL", "BUY", 1)]
 

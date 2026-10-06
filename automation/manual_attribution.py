@@ -4,7 +4,7 @@ QuantCore — 手動持倉歸屬與策略送單暫停（#106）
 哪些持倉屬於「手動」、哪一檔的策略單要暫停的唯一實作。scheduled
 rebalance（rebalance_ib）、Panel Sync Pos（sync_position）是會更新歸屬的
 caller；三個策略送單入口（這兩個再加上 sp500_daily_check）在最後送出前
-都經過 `gate_orders`（rebalance_ib.place_orders），讀同一份暫停狀態。
+都經過 `gate_orders`（strategy_orders.send），讀同一份暫停狀態。
 
 歸屬規則
 ────────

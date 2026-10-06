@@ -147,9 +147,9 @@ def dip_buy(daily_check_env, fake_config, monkeypatch, tmp_path):
     """SPY 跌 16%、在 MA200 下：觸發第一階 dip-buy，真的送單到 in-memory FakeBroker。"""
     import account_utils
     import ib_fetcher
-    import rebalance_ib
     import signals
     import sp500_state
+    import strategy_orders
     from tests.fake_broker import FakeBroker
 
     base, _accounts = fake_config
@@ -158,7 +158,7 @@ def dip_buy(daily_check_env, fake_config, monkeypatch, tmp_path):
                         lambda: {**base, "dry_run": False})
     monkeypatch.setattr(sp500_state, "STATE_DIR", tmp_path)
     monkeypatch.setattr(signals, "get_sp500_universe", lambda: {"AAPL"})
-    monkeypatch.setattr(rebalance_ib.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(strategy_orders.time, "sleep", lambda _s: None)
     fake = FakeBroker(managed=["U17800779"], positions={"AAPL": 10.0}, price=500.0)
     monkeypatch.setattr(ib_fetcher, "connect", lambda ctx: fake.connect(ctx))
     return fake
@@ -184,6 +184,24 @@ def test_dip_buy_without_any_quote_uses_the_reference_price(dip_buy):
     dip_buy.quote = {"bid": None, "ask": None, "mid": None, "last": None, "close": None}
     assert _dip_limit(dip_buy) == round(500.0 * 1.003, 2)
 
+
+
+def test_dip_buy_sends_one_lmt_order_and_reports_it(dip_buy):
+    d = _check()
+    assert [(p.symbol, p.order_type, p.outside_rth) for p in dip_buy.placed] == [("SPY", "LMT", True)]
+    assert "熊市 dip-buy 送出 1 筆 LMT" in d.render()
+
+
+def test_dip_buy_dry_run_neither_sends_nor_cancels_existing_orders(dip_buy, fake_config,
+                                                                  monkeypatch):
+    """#205：dry run 預演 16:00 不會撤掉帳戶裡真的掛單（之前會）。"""
+    import account_utils
+    base, _accounts = fake_config
+    monkeypatch.setattr(account_utils, "load_base_config", lambda: {**base, "dry_run": True})
+    dip_buy.open_orders = [NS(order=NS(orderId=8, orderRef=""), contract=NS(symbol="AAPL"))]
+    d = _check()
+    assert dip_buy.placed == [] and dip_buy.cancelled == []
+    assert "dip-buy" not in (d.render() or "")
 
 # ── #2: daily_report marks at Reference Close, IB only as fallback ──
 

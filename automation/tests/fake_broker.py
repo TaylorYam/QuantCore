@@ -217,7 +217,8 @@ class FakeConnection:
         price = getattr(trade.order, "lmtPrice", None) or self._broker.price
         if price > 1e300:                       # ib_insync 的 UNSET_DOUBLE（非限價單）
             price = self._broker.price
-        trade.fills.append(NS(execution=NS(shares=qty, avgPrice=price)))
+        # price = 這筆成交價；avgPrice = IB 的累計均價（只有一筆時兩者相同）
+        trade.fills.append(NS(execution=NS(shares=qty, price=price, avgPrice=price)))
         trade.orderStatus.status, trade.orderStatus.filled = status, qty
 
     def close(self) -> None:

@@ -104,7 +104,7 @@ def test_ib_price_request_uses_broker_symbol_and_returns_canonical_key():
 
 
 def test_order_path_uses_broker_symbol_in_mock_ib():
-    import rebalance_ib
+    import strategy_orders
     from account_ctx import AccountCtx
 
     requested = []
@@ -120,17 +120,18 @@ def test_order_path_uses_broker_symbol_in_mock_ib():
         price_feed_port=None, tg_token="", tg_chat_id="",
     )
     from broker import Connection
-    placed, trades = rebalance_ib.place_orders(
+    sent = strategy_orders.send(
         Connection(FakeIB(), ctx), [{"symbol": "BRK.B", "action": "BUY", "qty": 2}], ctx,
     )
-    assert trades == []
+    placed = sent.placed
+    assert sent.fills == []
     assert [o["symbol"] for o in placed] == ["BRK.B"]
     assert requested[0].symbol == "BRK B"
     assert requested[0].primaryExchange == "NYSE"
 
 
 def test_fill_and_report_keys_normalize_ib_class_share():
-    import rebalance_ib
+    import strategy_orders
 
     trade = NS(
         contract=NS(symbol="BRK B"),
@@ -138,5 +139,5 @@ def test_fill_and_report_keys_normalize_ib_class_share():
         fills=[],
         orderStatus=NS(status="Filled"),
     )
-    assert rebalance_ib.check_fills([trade])[0]["symbol"] == "BRK.B"
+    assert strategy_orders.fill_summary([trade])[0]["symbol"] == "BRK.B"
 

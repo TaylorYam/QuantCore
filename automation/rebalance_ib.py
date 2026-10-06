@@ -27,7 +27,7 @@ order_type 選項：
 
 import argparse
 import html as html_mod
-import json, logging, time, sys, urllib.request, urllib.parse
+import json, logging, sys, urllib.request, urllib.parse
 from pathlib import Path
 from datetime import date, datetime
 
@@ -52,8 +52,7 @@ from log_setup import setup_logging, quiet_ib_console
 log = logging.getLogger(__name__)
 
 # ── IB 連線工具 ───────────────────────────────────────────────────────────────
-from ib_insync import MarketOrder, LimitOrder, Order, util
-from symbol_contract import canonical_symbol
+from ib_insync import util
 
 
 # ── Telegram 通知（統一由 notify.py 提供；三帳戶合併一則，#26）──────────
@@ -63,7 +62,6 @@ from notify import Digest, order_group_lines
 from account_ctx import AccountCtx
 
 # ── IB 連線（#185：經 Broker；讀數與送單都在 broker.Connection 上）
-import broker
 import ib_fetcher
 from ib_fetcher import SR_ETFS  # R1.3：SR ETF 常數單一來源
 
@@ -77,99 +75,9 @@ import plan_inputs
 # ── 手動持倉歸屬與策略送單暫停（#106）
 import manual_attribution
 
-
-def make_order(action: str, qty: int, lmt_price: float,
-               ctx: AccountCtx) -> Order:
-    if ctx.order_type == 'MOO':
-        o = Order()
-        o.action        = action
-        o.totalQuantity = qty
-        o.orderType     = 'MKT'
-        o.tif           = 'OPG'
-        o.outsideRth    = False
-    elif ctx.order_type == 'LMT':
-        o = LimitOrder(action, qty, lmt_price)
-        o.outsideRth = ctx.outside_rth
-    else:  # MKT
-        o = MarketOrder(action, qty)
-        o.outsideRth = ctx.outside_rth
-        if ctx.outside_rth:
-            o.tif = 'GTC'
-    # FA 帳戶必須指定下單帳戶，否則 Error 436
-    if ctx.account:
-        o.account = ctx.account
-    return o
-
-
-def place_orders(conn, order_list: list, ctx: AccountCtx, *,
-                 attribution_path=None) -> tuple:
-    """先 SELL 再 BUY。回傳 (placed_list, trades_list)
-
-    conn = broker.Connection（21:00 調倉、16:00 日度風控、新 Panel 的 Sync Pos）。
-
-    策略送單的最終閘門（#106）：手動持倉暫停中的標的不送；讀不到暫停
-    紀錄時拋 ManualAttributionError，一張都不送。attribution_path = 暫停紀錄檔，
-    None = 實盤預設（新 Panel 的 paper Sync Pos 用自己的檔，#152）。
-    """
-    order_list, _held = manual_attribution.gate_orders(ctx.name, order_list,
-                                                       path=attribution_path)
-    sells = [o for o in order_list if o['action'] == 'SELL']
-    buys  = [o for o in order_list if o['action'] == 'BUY']
-    placed, trades = [], []
-
-    for o in sells + buys:
-        sym = o['symbol']
-        qty = int(abs(o['qty']))
-        if qty == 0:
-            continue
-
-        contract = conn.contract(sym)
-        order = make_order(o['action'], qty, o.get('lmt_price', 0), ctx=ctx)
-
-        if ctx.dry_run:
-            log.info(f"  [DRY RUN] {ctx.order_type} {o['action']:4s} {qty:5d} {sym}"
-                     f"  ({o.get('strategy', '')})")
-        else:
-            trade = conn.place(contract, order)
-            trades.append(trade)
-            # Preserve the broker identity for an idempotent SQLite log write.
-            # Excel output remains unchanged because this is metadata on the
-            # in-memory order dict only.
-            o["order_id"] = str(trade.order.orderId)
-            log.info(f"  {ctx.order_type} {o['action']:4s} {qty:5d} {sym}"
-                     f"  orderId={trade.order.orderId}  ({o.get('strategy', '')})")
-        placed.append(o)
-        time.sleep(0.2)
-
-    if not ctx.dry_run and placed:
-        log.info(f"Waiting {ctx.wait_fill_sec}s for fills...")
-        conn.wait(ctx.wait_fill_sec)
-
-    return placed, trades
-
-
-def check_fills(trades: list) -> list:
-    results = []
-    for trade in trades:
-        sym     = canonical_symbol(trade.contract.symbol)
-        action  = trade.order.action
-        qty     = int(trade.order.totalQuantity)
-        filled  = sum(f.execution.shares for f in trade.fills)
-        avg_px  = (
-            sum(f.execution.shares * f.execution.avgPrice for f in trade.fills) / filled
-            if filled > 0 else 0.0
-        )
-        status  = trade.orderStatus.status
-        log.info(f"  Fill: {action} {sym}  {filled}/{qty}sh @ ${avg_px:.2f}  [{status}]")
-        results.append({
-            'symbol':    sym,
-            'action':    action,
-            'qty':       qty,
-            'filled':    filled,
-            'avg_price': avg_px,
-            'status':    status,
-        })
-    return results
+# ── 策略單送出與成交彙整（#205）
+import strategy_orders
+from strategy_orders import make_order  # noqa: F401 — re-export 一輪：舊路徑，之後刪
 
 
 # ── 21:00 調倉的進度 log（plan_inputs 依步驟呼叫；文字與 #186 之前逐字相同）──
@@ -212,6 +120,19 @@ class _RebalanceSteps(plan_inputs.Narrator):
 
     def prices(self, symbols: list[str]) -> None:
         log.info(f"Step 5: Getting prices for {len(symbols)} symbols...")
+
+
+class _RebalanceSend(strategy_orders.Narrator):
+    """Step 7／8 的進度 log（文字與 #205 之前逐字相同）。"""
+
+    def __init__(self, order_type: str):
+        self._order_type = order_type
+
+    def placing(self, count: int) -> None:
+        log.info(f"Step 7: Placing {count} orders ({self._order_type})...")
+
+    def checking_fills(self) -> None:
+        log.info("Step 8: Checking fills...")
 
 
 # ── combine_targets：實作移至 rebalance_plan.combine_targets（[[Combine]]，
@@ -412,7 +333,6 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
 
     start_ts     = datetime.now()
     placed       = []
-    trades       = []
     fill_results = []
     pos_detail   = []
     error_msg    = None
@@ -481,45 +401,20 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
             log_fn=log.info,
             warn_fn=log.warning,
         )
-        # 以 LMT 下單時限價走統一規則（#185）；MOO／MKT 不帶限價，lmt_price 只當
-        # 交易紀錄的預估價 = 算股數用的參考價
-        quotes = (conn.quotes(sorted({o.symbol for o in planned}))
-                  if order_type == 'LMT' and planned else {})
-        order_list = [{
-            'symbol':    o.symbol,
-            'action':    o.action,
-            'qty':       o.qty,
-            'lmt_price': (broker.limit_price(o.action, quotes.get(o.symbol, {}), o.price)
-                          if order_type == 'LMT' else round(o.price, 2)),
-            'strategy':  o.strategy,
-        } for o in planned]
-
-        # ── 7. 下單（先取消既有掛單，避免重複）─────────────────────────
-        # 手動持倉暫停（#106）的標的不送，其他照常
-        order_list, held_orders = attribution.split_orders(order_list)
+        # ── 7–8. 下單、確認成交（strategy_orders，#205）──────────────────
+        # 手動持倉暫停（#106）的標的不送，其他照常；送單前撤掉該帳戶既有策略
+        # 掛單（Panel 手動單除外）。以 LMT 下單時限價走統一規則（#185）；MOO／MKT
+        # 不帶限價，交易紀錄的預估價 = 算股數用的參考價
+        order_list, held_orders = attribution.split_orders(planned, key=lambda o: o.symbol)
         for o in held_orders:
-            log.warning(f"  ⏸ {o['symbol']} {o['action']} {o['qty']} 不送出："
-                        f"{attribution.paused[o['symbol']]}")
+            log.warning(f"  ⏸ {o.symbol} {o.action} {o.qty} 不送出："
+                        f"{attribution.paused[o.symbol]}")
         if not order_list:
             log.info("Step 7: No changes needed.")
         else:
-            # 取消該帳戶既有掛單（Panel 手動單除外，#106）
-            if not dry_run:
-                open_trades = manual_attribution.strategy_open_trades(
-                    conn.open_orders())
-                if open_trades:
-                    log.info(f"  Cancelling {len(open_trades)} existing open orders...")
-                    for t in open_trades:
-                        conn.cancel(t.order)
-                    conn.wait(2)
-
-            log.info(f"Step 7: Placing {len(order_list)} orders ({order_type})...")
-            placed, trades = place_orders(conn, order_list, ctx=ctx)
-
-        # ── 8. 確認成交 ─────────────────────────────────────────────────────
-        if trades:
-            log.info("Step 8: Checking fills...")
-            fill_results = check_fills(trades)
+            sent = strategy_orders.send(conn, order_list, ctx,
+                                        narrator=_RebalanceSend(order_type))
+            placed, fill_results = sent.placed, sent.fills
 
         # ── 9. 帳戶現況 + 損益 ──────────────────────────────────────────────
         log.info("Step 9: Fetching positions detail for P&L...")

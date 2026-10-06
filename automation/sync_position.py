@@ -256,9 +256,9 @@ def submit_sync_orders(
 
     流程：
       1. 建新的 ctx（LMT + outsideRTH），frozen replace，不汙染原 ctx
-      2. 連 IB → 取消既有掛單（避免重複）
-      3. 取 bid/ask → 算 LMT 價（BUY ask×1.003 / SELL bid×0.997）
-      4. 送單 → 等成交 → 回傳 (placed, fill_results)
+      2. 連 IB → strategy_orders.send（#205）：暫停閘門 → 撤策略舊單 → bid/ask 算
+         LMT 價（BUY ask×1.003 / SELL bid×0.997）→ 送單 → 等成交
+      3. SkewLS state 更新
 
     Parameters
     ----------
@@ -270,7 +270,7 @@ def submit_sync_orders(
     Returns
     -------
     (placed, fill_results)
-        placed : list[dict]      — rebalance_ib 格式的 order dict（已附 lmt_price）
+        placed : list[dict]      — strategy_orders 格式的 order dict（已附 lmt_price）
         fill_results : list[dict] — 成交回報
     """
     def _log(msg: str) -> None:
@@ -285,46 +285,21 @@ def submit_sync_orders(
     if not plan.orders:
         return [], []
 
-    import broker
-    import rebalance_ib as reb
+    import strategy_orders
     # Frozen AccountCtx replace → LMT + outsideRTH 版本（不汙染原 ctx）
     exec_ctx = _replace(plan.ctx, order_type='LMT', outside_rth=True)
 
-    conn = records.open(exec_ctx)
-    try:
-        # 1. 取消既有掛單（Panel 手動單除外，#106）
-        open_trades = manual_attribution.strategy_open_trades(conn.open_orders())
-        if open_trades:
-            _log(f"  Cancelling {len(open_trades)} existing open orders...")
-            for t in open_trades:
-                conn.cancel(t.order)
-            conn.wait(2)
-
-        # 2. 取得 bid/ask 報價以計算 LMT 價格
-        quotes = conn.quotes(list({o.symbol for o in plan.orders}))
-
-        # 3. 算 LMT 價並組 order dict（format 沿用 rebalance_ib.place_orders 吃的）
-        ib_orders = []
-        for o in plan.orders:
-            # o.price = 預覽時的估價（報價都缺時的後備）
-            lmt = broker.limit_price(o.action, quotes.get(o.symbol, {}), o.price)
-            ib_orders.append({
-                'symbol':    o.symbol,
-                'action':    o.action,
-                'qty':       o.qty,
-                'lmt_price': lmt,
-                'strategy':  o.strategy,
-            })
+    class _Steps(strategy_orders.Narrator):
+        def priced(self, o, lmt: float) -> None:
             _log(f"  LMT {o.action} {o.qty}sh {o.symbol} @ ${lmt:.2f}")
 
-        # 4. 送單（透過 rebalance_ib.place_orders）
-        placed, trades = reb.place_orders(conn, ib_orders, ctx=exec_ctx,
-                                          **records.gate_options())
-
-        # 5. 等成交回報
-        fill_results = []
-        if trades:
-            fill_results = reb.check_fills(trades)
+    conn = records.open(exec_ctx)
+    try:
+        # 送單閘門用送單目標給的歸屬紀錄（paper 用自己的檔，#152）；
+        # o.price = 預覽時的估價（報價都缺時的後備）
+        sent = strategy_orders.send(conn, plan.orders, exec_ctx, narrator=_Steps(),
+                                    log_fn=log_fn, **records.gate_options())
+        placed, fill_results = sent.placed, sent.fills
 
         # 6. SkewLS state 更新（Sync Pos = 強制同步，所以即使非 threshold-triggered 也存）
         #    這樣下次 scheduled threshold check 才有正確 baseline。

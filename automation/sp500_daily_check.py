@@ -38,10 +38,10 @@ if str(ROOT_DIR) not in sys.path:
 LOG_DIR = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
 
-import broker
 from log_setup import setup_logging
 import market_calendar
 from notify import Digest, order_group_lines   # 三帳戶合併一則（#26）
+import strategy_orders                          # #205：策略單送出（撤舊單、限價、送單、成交）
 log = logging.getLogger(__name__)
 
 
@@ -56,12 +56,22 @@ def _prev_trading_day(d):
     return cur
 
 
+class _DipBuySend(strategy_orders.Narrator):
+    """dip-buy 送單的進度 log（文字與 #205 之前逐字相同）。"""
+
+    def placing(self, count: int) -> None:
+        log.info(f"  Placing {count} LMT orders...")
+
+    def priced(self, src: dict, lmt: float) -> None:
+        log.info(f"    LMT {src['action']} {src['qty']}sh {src['symbol']} @ ${lmt:.2f}"
+                 f"  ({src['reason']})")
+
+
 def run_daily_check(account_name: str, digest: Digest):
     """單一帳戶的每日檢查。S6：account_name 為必填，ctx 一律建立。
 
     Telegram 內容加進 digest，由 run_all() 三帳戶合併發送（#26）。
     """
-    import rebalance_ib as reb     # 仍需要：place_orders, check_fills
     import ib_fetcher               # #185：經 Broker 開連線（讀數、送單在 Connection 上）
     import manual_attribution       # #106：手動持倉暫停閘門
     from strategy_owner import SECTOR_ETFS   # #187：類股 ETF 清單唯一來源
@@ -235,56 +245,24 @@ def run_daily_check(account_name: str, digest: Digest):
             dedup_orders.append(o)
         orders = dedup_orders
 
-        # 取消該帳戶既有的掛單（避免新單與舊單衝突；Panel 手動單除外，#106）
-        open_trades = manual_attribution.strategy_open_trades(conn.open_orders())
-        if open_trades:
-            log.info(f"  Cancelling {len(open_trades)} existing open orders...")
-            for t in open_trades:
-                conn.cancel(t.order)
-            conn.wait(2)
-
-        log.info(f"  Placing {len(orders)} LMT orders...")
-
-        # 限價：Broker 的送單報價（錯亂報價已去掉 bid／ask、價差過大記 log）＋統一
-        # 限價規則；報價全缺的標的才向參考價（feed／延遲報價／CSV 後備）要價
-        order_syms = list({o['symbol'] for o in orders})
-        quotes = conn.quotes(order_syms)
-        action = {o['symbol']: o['action'] for o in orders}   # 上面已去重：一檔一筆
-        # 不給參考價時限價是 0 = 報價全缺（bid／ask、mid、last、close 都沒有）
-        no_quote = [s for s in order_syms
-                    if not broker.limit_price(action[s], quotes.get(s, {}), None)]
-        refs = conn.prices(no_quote) if no_quote else {}
-
-        # 為本段下單建一個 LMT+outsideRTH 的臨時 ctx（frozen，不汙染原 ctx）
+        # 送單（strategy_orders，#205）：撤該帳戶既有策略掛單（Panel 手動單除外，
+        # dry run 不撤）→ Broker 的送單報價＋統一限價規則（報價全缺才向參考價要價）
+        # → LMT＋outsideRth 送出 → 等成交
         from dataclasses import replace as _replace
         place_ctx = _replace(ctx, order_type='LMT', outside_rth=True)
+        sent = strategy_orders.send(
+            conn,
+            [{'symbol': o['symbol'], 'action': o['action'], 'qty': o['qty'],
+              'strategy': 'SP500-daily', 'reason': o['reason']} for o in orders],
+            place_ctx, narrator=_DipBuySend())
 
-        ib_orders = []
-        for o in orders:
-            sym = o['symbol']
-            lmt = broker.limit_price(o['action'], quotes.get(sym, {}), refs.get(sym))
-
-            if lmt <= 0:
-                log.warning(f"    {sym}: no price, skipping")
-                continue
-
-            ib_orders.append({
-                'symbol': sym, 'action': o['action'], 'qty': o['qty'],
-                'lmt_price': lmt, 'strategy': 'SP500-daily',
-            })
-            log.info(f"    LMT {o['action']} {o['qty']}sh {sym} @ ${lmt:.2f}  ({o['reason']})")
-
-        if ib_orders and not ctx.dry_run:
-            placed, trades = reb.place_orders(conn, ib_orders, ctx=place_ctx)
-            fill_results = reb.check_fills(trades) if trades else []
-
-            # Telegram 通知（main() 合併發送）
-            if placed:
-                digest.note(f"SPY {mkt['SPY_Close']:.2f} · DD {spy_dd*100:.1f}%")
-                digest.add(account_name, f"熊市 dip-buy 送出 {len(placed)} 筆 LMT",
-                           order_group_lines(placed, show_price=True), **tg)
-        elif ctx.dry_run:
+        if ctx.dry_run:
             log.info("  [DRY RUN] orders not sent")
+        elif sent.placed:
+            # Telegram 通知（main() 合併發送）
+            digest.note(f"SPY {mkt['SPY_Close']:.2f} · DD {spy_dd*100:.1f}%")
+            digest.add(account_name, f"熊市 dip-buy 送出 {len(sent.placed)} 筆 LMT",
+                       order_group_lines(sent.placed, show_price=True), **tg)
 
     finally:
         conn.close()

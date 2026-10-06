@@ -151,7 +151,12 @@ _Avoid_: 送單模式（paper／實盤是送單目標的兩種，不是另一個
 QuantCore 跟 IB 打交道的那一層：送單、查成交、查持倉與權益。畫面上使用者操作的單（手動單、Sync Pos、交給策略接管）屬於 Panel 的 Trading；真正把單送進 IB、回報成交的是 Broker。
 實作在 `automation/broker.py`（#185）：依帳戶＋用途開連線（clientId 的分配規則只在這裡，不認得的帳戶名稱直接報錯），一條連線上讀權益、持倉、報價、今日委託與成交，送單、撤單、斷線。新 Panel 的三條送單路徑與 Portfolio、21:00 調倉、16:00 日度風控、04:40 每日報告、21:31 成交回報都向它要連線；新 Panel 的送單閘門包在 Broker 外面，連上後先檢查帳號才交出連線。Gateway 心跳是長駐的值班連線，不讀數不送單，仍自己連。測試用 `automation/tests/fake_broker.py` 的 in-memory Broker。
 讀數與限價各只有一份：權益只讀所選帳戶的 NetLiquidation（USD），cushion、excess liquidity 也只讀所選帳戶，讀不到就報錯（不回傳 0、不拿別的帳戶的數字）；參考價（算股數、Portfolio、每日報告標價）走本連線 → 報價 feed port → 延遲報價 → 本地 CSV；送單時的買賣報價把 bid > ask 當成沒有報價；限價一律買 ask×1.003、賣 bid×0.997，缺價依序 mid → last → close → 參考價；手動單的即時報價刻意較嚴，另一份。21:00 以 MOO 下單時不帶限價，交易紀錄的預估價記算股數用的參考價。
+Broker 是純 IB 介面；把一批策略單送進 IB 的程序（閘門、撤舊單、先賣後買、成交彙整）見 [[策略單送出]]。
 _Avoid_: Execution（與 [[執行盤 (Execution Session)]] 撞名）、Orders（架構圖上同時指畫面的單與送單層，見下方 Flagged ambiguities）
+
+**策略單送出**:
+把一批策略單（Rebalance Plan 算出的單、dip-buy 單）送進 IB 並回報成交的程序，唯一實作在 `automation/strategy_orders.py`（#205）：手動持倉暫停閘門（讀不到紀錄一張不送）→ 非 dry run 才撤該帳戶的策略舊單（Panel 手動單、接管單除外）→ LMT 用 [[Broker（券商連線層）]] 的送單報價與統一限價、報價全缺時依序用訂單自帶估價 → 參考價，算不出限價的標的跳過並警告 → 先賣後買、每張隔 0.2 秒 → 等成交 → 每張單的成交股數與均價（均價 = 每筆成交價 × 股數的加權平均）。21:00 調倉、16:00 日度風控（dip-buy）、新 Panel 的 Sync Pos 都呼叫它，各自只決定單清單與進度文字；交給策略接管只借它「建 IB 單」，自己逐秒等那一張單、另有對帳流程。手動單自成一套（嚴格即時報價），不走這裡。
+_Avoid_: Execution（與 [[執行盤 (Execution Session)]] 撞名）、下單（太泛，手動單也是下單）
 
 **業績 (Performance)**:
 單一 [[Account]] 排除出入金後的累積報酬（時間加權報酬，TWR），比照 IB PortfolioAnalyst：每天報酬 = (今天權益 − 這段期間的淨入金) ÷ 前一天權益 − 1，再連乘。入金不算賺錢、提款不算虧損。權益來自每日快照（`portfolio_tracker.xlsx` Daily，經 `automation/ledger.py` 讀取），出入金來自 IB Flex 報表（`automation/ib_flex.py`，每帳戶在 `accounts.json` 設 `flex_token`／`flex_query_id`）；計算在 `automation/performance.py`。股息、利息、手續費屬於報酬本身，不算出入金。相對的是**權益**（NAV），含出入金。

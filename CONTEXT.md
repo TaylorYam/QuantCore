@@ -121,7 +121,7 @@ Panel 的三個定時監控統稱：Rosa poll（台北 21:00–05:00 市場窗�
 _Avoid_: Monitoring（與 GatewayMonitor 心跳連線層混淆）、Alarm job
 
 **當日排程總結 (Daily Run Summary)**:
-平日 21:31 成交回報最後固定的一行：當天 04:30 資料更新、04:40 每日報告、16:00 [[日度風控 (Daily Risk Check)]]、21:00 調倉、21:31 成交回報有沒有跑完、有沒有出錯；沒單沒事的日子 Telegram 只有這一行。依據 = 各排程入口（`--account all`）寫的執行紀錄 `automation/logs/run_status/<job>_<YYYYMMDD>.json`，實作 `automation/run_status.py`：沒有紀錄 = 沒執行；有開始沒結束 = 沒跑完；開始時間早於排程 = 手動跑的，不算。平日 21:35 沒收到 = 電腦、排程或 Telegram 本身出問題（#38）。
+平日 21:31 成交回報最後固定的一行：當天 04:30 資料更新、04:40 每日報告、16:00 [[日度風控 (Daily Risk Check)]]、21:00 調倉、21:31 成交回報有沒有跑完、有沒有出錯；沒單沒事的日子 Telegram 只有這一行。依據 = 各排程入口（`--account all`）寫的執行紀錄 `automation/logs/run_status/<job>_<YYYYMMDD>.json`，實作 `automation/run_status.py`：沒有紀錄 = 沒執行；有開始沒結束 = 沒跑完；開始時間早於排程 = 手動跑的，不算。平日 21:35 沒收到 = 電腦、排程或 Telegram 本身出問題（#38）。各排程的時間、腳本、Telegram 標題與要不要寫紀錄只定義在 `run_status` 的 Job 表；逐帳戶跑、一個帳戶失敗繼續跑下一個、合成一則、有失敗 exit 1 的執行殼只有一份，在 `automation/scheduled_run.py`（#206）。
 _Avoid_: Heartbeat（只代表程式活著，這裡還列各排程結果）、每日報告（= 04:40 帳戶快照）
 
 **Auto-restart**:

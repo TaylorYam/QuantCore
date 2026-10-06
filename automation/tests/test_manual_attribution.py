@@ -658,18 +658,11 @@ def _daily(name="Taylor"):
     import sp500_daily_check
     from notify import Digest
     d = Digest("日度風控 T", icon="📤")
-    sp500_daily_check.run_daily_check(name, d)
+    sp500_daily_check.run_daily_check(_ctx(name), d)
     return d
 
 
-@pytest.fixture
-def dip_ctx(monkeypatch):
-    import account_ctx
-    monkeypatch.setattr(account_ctx.AccountCtx, "from_name",
-                        classmethod(lambda cls, name, role: _ctx(name)))
-
-
-def test_daily_check_dip_buy_keeps_manual_orders(dip_env, dip_ctx):
+def test_daily_check_dip_buy_keeps_manual_orders(dip_env):
     from strategies.sp500_momentum import config as sp_cfg
     _daily()
     assert _cancelled(dip_env.broker) == [8]                      # 手動單 7 沒被取消
@@ -678,7 +671,7 @@ def test_daily_check_dip_buy_keeps_manual_orders(dip_env, dip_ctx):
 
 
 def test_daily_check_unreadable_ledger_keeps_dip_trigger_for_tomorrow(
-        dip_env, dip_ctx, paths):
+        dip_env, paths):
     paths.ledger.write_bytes(b"corrupt" * 100)
     with pytest.raises(ma.ManualAttributionError):
         _daily()

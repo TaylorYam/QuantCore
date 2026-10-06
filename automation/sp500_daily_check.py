@@ -23,8 +23,6 @@ Telegram：dip-buy 送單、資料錯位中止、失敗（讀不到資料、連�
 才發，三帳戶合成一則。失敗以前只寫 log（#38）。
 """
 
-import argparse
-import html
 import logging
 import sys
 from pathlib import Path
@@ -38,9 +36,11 @@ if str(ROOT_DIR) not in sys.path:
 LOG_DIR = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
 
-from log_setup import setup_logging
 import market_calendar
-from notify import Digest, order_group_lines   # 三帳戶合併一則（#26）
+from notify import Digest, error_line, order_group_lines   # 三帳戶合併一則（#26）
+import run_status
+import scheduled_run                            # #206：排程執行殼
+from account_ctx import AccountCtx
 import strategy_orders                          # #205：策略單送出（撤舊單、限價、送單、成交）
 log = logging.getLogger(__name__)
 
@@ -67,17 +67,15 @@ class _DipBuySend(strategy_orders.Narrator):
                  f"  ({src['reason']})")
 
 
-def run_daily_check(account_name: str, digest: Digest):
-    """單一帳戶的每日檢查。S6：account_name 為必填，ctx 一律建立。
+def run_daily_check(ctx: AccountCtx, digest: Digest):
+    """單一帳戶的每日檢查（ctx 由排程執行殼以 ROLE_MOO_CHECK 建立）。
 
-    Telegram 內容加進 digest，由 run_all() 三帳戶合併發送（#26）。
+    Telegram 內容加進 digest，由排程執行殼三帳戶合併發送（#26）。
     """
     import ib_fetcher               # #185：經 Broker 開連線（讀數、送單在 Connection 上）
     import manual_attribution       # #106：手動持倉暫停閘門
     from strategy_owner import SECTOR_ETFS   # #187：類股 ETF 清單唯一來源
     from symbol_contract import canonical_symbol
-    from account_ctx import AccountCtx
-    from account_utils import ROLE_MOO_CHECK
     from sp500_state import (load_state, save_state, update_bull_counter,
                              mark_dip_triggered, is_dip_triggered)
     # S7：config / utils 是資料載入 helper（不是策略 business logic），可保留
@@ -85,7 +83,7 @@ def run_daily_check(account_name: str, digest: Digest):
     # S7：MarketRegime / SelectionEngine 走 signals 統一入口
     from signals import get_market_regime_state
 
-    ctx = AccountCtx.from_name(account_name, ROLE_MOO_CHECK)
+    account_name = ctx.name
     tag = f"[{account_name}]"
 
     log.info(f"{'='*60}")
@@ -157,8 +155,7 @@ def run_daily_check(account_name: str, digest: Digest):
         conn = ib_fetcher.connect(ctx)
     except Exception as e:
         log.error(f"IB connect failed: {e}")
-        digest.add(account_name, "❌ IB 連線失敗", [html.escape(str(e)[:300])],
-                   "error", **tg)
+        digest.add(account_name, "❌ IB 連線失敗", [error_line(e)], "error", **tg)
         return
 
     try:
@@ -269,42 +266,5 @@ def run_daily_check(account_name: str, digest: Digest):
         log.info("Disconnected")
 
 
-def run_all(names: list[str], digest: Digest) -> None:
-    """依序檢查多個帳戶，合成一則發送。某帳戶出例外 → ❌ 段落，繼續下一個。"""
-    from account_utils import telegram_dest
-    try:
-        for name in names:
-            log.info(f"\n\n{'*'*60}\n  Account: {name}\n{'*'*60}")
-            try:
-                run_daily_check(name, digest)
-            except Exception as e:
-                log.error(f"  [{name}] daily check failed: {e}", exc_info=True)
-                digest.add(name, "❌ 日度風控失敗", [html.escape(str(e)[:300])],
-                           "error", **telegram_dest(name))
-    finally:
-        digest.send()
-
-
-def main(argv: list[str] | None = None):
-    parser = argparse.ArgumentParser(description="SP500 Daily Check")
-    parser.add_argument("--account", required=True,
-                        help="帳戶名稱（Taylor/Rosa/Yvonne），或 'all' = 全部帳戶")
-    args = parser.parse_args(argv)
-
-    from account_utils import load_accounts
-    import run_status
-
-    all_accounts = args.account.lower() == "all"
-    names: list[str] = []
-    digest = Digest(f"日度風控 {date.today()}", icon="📤")
-    # 當日排程總結用的執行紀錄（#38）：只記排程的 --account all
-    with run_status.recording("daily_check", lambda: digest.outcomes(names),
-                              enabled=all_accounts):
-        names.extend([a["name"] for a in load_accounts()] if all_accounts
-                     else [args.account])
-        run_all(names, digest)
-
-
 if __name__ == '__main__':
-    setup_logging("daily_check")
-    main()
+    sys.exit(scheduled_run.run_job(run_status.DAILY_CHECK_JOB, run_daily_check))

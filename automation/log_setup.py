@@ -13,8 +13,9 @@ is how the SP500 daily-risk-check output ended up inside ``rebalance_*.log``
 while ``daily_check_*.log`` looked empty.
 
 Rule: scripts call ``setup_logging()`` from their entry point
-(``if __name__ == "__main__":``), never at module import. Imported modules then
-inherit the entry point's root logger instead of clobbering it.
+(``if __name__ == "__main__":``), never at module import — the scheduled jobs
+do it through ``scheduled_run`` (#206). Imported modules then inherit the entry
+point's root logger instead of clobbering it.
 """
 
 from __future__ import annotations

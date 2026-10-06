@@ -270,7 +270,7 @@ def test_scheduler_propagates_returned_errors(monkeypatch):
                                    "status": "download_failed", "detail": "download failed",
                                    "rows_added": 0}]
     monkeypatch.setitem(sys.modules, "data.update_data", fake)
-    monkeypatch.setattr(update_data, "_load_tg_config", lambda: ("fake", "fake"))
+    monkeypatch.setattr(update_data, "telegram_dest", lambda: {"token": "fake", "chat_id": "fake"})
     sent = []
     monkeypatch.setattr(update_data, "_tg", lambda *args, **kwargs: sent.append(args))
     result = update_data.main()

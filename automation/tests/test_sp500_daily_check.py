@@ -71,9 +71,11 @@ def daily_check_env(fake_config, monkeypatch):
 
 def _check(name="Taylor"):
     import sp500_daily_check
+    from account_ctx import AccountCtx
+    from account_utils import ROLE_MOO_CHECK
     from notify import Digest
     d = Digest("日度風控 2026-09-15", icon="📤")
-    sp500_daily_check.run_daily_check(name, d)
+    sp500_daily_check.run_daily_check(AccountCtx.from_name(name, ROLE_MOO_CHECK), d)
     return d
 
 
@@ -115,29 +117,6 @@ def test_nyse_holiday_stays_silent(daily_check_env, monkeypatch):
 
     monkeypatch.setattr(sp500_daily_check, "date", _LaborDay)
     assert _check().render() is None
-
-
-def test_run_all_exception_is_reported_and_continues(fake_config, monkeypatch):
-    import notify
-    import sp500_daily_check
-    from notify import Digest
-    sent, ran = [], []
-    monkeypatch.setattr(notify, "tg_send",
-                        lambda msg, *, token, chat_id: sent.append((msg, token, chat_id)))
-
-    def fake_check(name, digest):
-        ran.append(name)
-        if name == "Rosa":
-            raise RuntimeError("state <broken>")
-
-    monkeypatch.setattr(sp500_daily_check, "run_daily_check", fake_check)
-    d = Digest("日度風控 2026-09-15", icon="📤")
-    sp500_daily_check.run_all(["Taylor", "Rosa", "Yvonne"], d)
-    assert ran == ["Taylor", "Rosa", "Yvonne"]
-    assert sent == [("<b>❌ 日度風控 2026-09-15</b>\n\n<b>Rosa</b> ❌ 日度風控失敗\nstate &lt;broken&gt;",
-                     "FAKE_TOKEN", "FAKE_CHAT")]
-    assert d.outcomes(["Taylor", "Rosa"]) == {"Taylor": ("ok", None),
-                                               "Rosa": ("error", "❌ 日度風控失敗")}
 
 
 # ── 熊市 dip-buy 的限價：Broker 的送單報價＋統一限價規則（#185 第三階段）──────

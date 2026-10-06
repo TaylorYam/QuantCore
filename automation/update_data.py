@@ -11,7 +11,7 @@ QuantCore — 每日收盤後資料更新
 """
 
 import html
-import json, logging, sys
+import logging, sys
 from pathlib import Path
 from datetime import date, datetime
 
@@ -24,20 +24,16 @@ LOG_DIR.mkdir(exist_ok=True)
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-# ── 日誌 ──────────────────────────────────────────────────────────────────────
-from log_setup import setup_logging
 log = logging.getLogger(__name__)
 from data.update_outcomes import outcome_errors
 
-# ── Telegram（統一由 notify.py 提供）─────────────────────────────────────
+# ── Telegram（統一由 notify.py 提供；config.json 的共用目的地）─────────────
+from account_utils import telegram_dest
 from notify import tg_send as _tg
 
-
-def _load_tg_config() -> tuple[str, str]:
-    """config.json 的 telegram token / chat_id（呼叫時才讀，模組可離線 import）。"""
-    with open(BASE_DIR / 'config.json', encoding='utf-8') as f:
-        cfg = json.load(f)
-    return cfg.get('telegram_token', ''), cfg.get('telegram_chat_id', '')
+# ── 排程執行殼（log、執行紀錄；#206）
+import run_status
+import scheduled_run
 
 
 def failure_message(errors: list[str], elapsed: int, today: date) -> str | None:
@@ -89,8 +85,7 @@ def main() -> list[str]:
     # ── 3. Telegram 通知（只在失敗時）──────────────────────────────────────
     msg = failure_message(errors, elapsed, date.today())
     if msg is not None:
-        token, chat_id = _load_tg_config()
-        _tg(msg, token=token, chat_id=chat_id)
+        _tg(msg, **telegram_dest())
     log.info(f"Done. Elapsed: {elapsed}s  Errors: {len(errors)}")
     return errors
 
@@ -102,9 +97,12 @@ def run_outcome(errors: list[str]) -> dict:
     return {"": ("ok", None)}
 
 
-if __name__ == '__main__':
-    setup_logging("update")
-    import run_status
+def run() -> int:
+    """排程入口：資料更新不分帳戶，執行殼只負責 log 與執行紀錄。"""
     errors: list[str] = []
-    with run_status.recording("update", lambda: run_outcome(errors)):
-        errors.extend(main())
+    return scheduled_run.run_task(run_status.UPDATE_JOB, lambda: errors.extend(main()),
+                                  lambda: run_outcome(errors))
+
+
+if __name__ == '__main__':
+    sys.exit(run())

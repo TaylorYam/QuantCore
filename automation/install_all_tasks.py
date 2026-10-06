@@ -28,6 +28,9 @@ import tempfile
 import time
 from dataclasses import dataclass
 
+from run_status import (DAILY_CHECK_JOB, DAILY_REPORT_JOB, MOO_JOB, REBALANCE_JOB, UPDATE_JOB,
+                        Job)
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
@@ -51,27 +54,23 @@ class TaskSpec:
 
 
 def task_specs(script_dir: str = SCRIPT_DIR) -> list[TaskSpec]:
-    """實盤排程的唯一定義。"""
-    def auto(name: str) -> str:
-        return os.path.join(script_dir, name)
+    """實盤排程的唯一定義。各排程的腳本與時間取自 run_status 的 Job 表（#206）。"""
+    def task(name: str, job: Job, args: str, days: tuple[str, ...] | None) -> TaskSpec:
+        return TaskSpec(name, os.path.join(script_dir, job.script), args, days, job.at)
 
     const_ref = os.path.normpath(os.path.join(script_dir, "..", "data",
                                               "refresh_constituents.py"))
     return [
-        TaskSpec("QuantCore_DataUpdate_Daily", auto("update_data.py"),
-                 "", None, "04:30"),
-        TaskSpec("QuantCore_DailyReport", auto("daily_report.py"),
-                 "--account all", None, "04:40"),
-        TaskSpec("QuantCore_SP500_DailyCheck", auto("sp500_daily_check.py"),
-                 "--account all", WEEKDAYS, "16:00"),
-        TaskSpec("QuantCore_SR_Rebalance_Tue", auto("rebalance_ib.py"),
-                 "--mode all --account all", ("Tuesday",), "21:00"),
-        TaskSpec("QuantCore_SP500_Rebalance_Wed", auto("rebalance_ib.py"),
-                 "--mode all --account all", ("Wednesday",), "21:00"),
-        TaskSpec("QuantCore_SkewLS_DailyCheck", auto("rebalance_ib.py"),
-                 "--mode skewls --account all", ("Monday", "Thursday", "Friday"), "21:00"),
-        TaskSpec("QuantCore_MOO_Fill_Daily", auto("moo_fill_check.py"),
-                 "--account all", WEEKDAYS, "21:31"),
+        task("QuantCore_DataUpdate_Daily", UPDATE_JOB, "", None),
+        task("QuantCore_DailyReport", DAILY_REPORT_JOB, "--account all", None),
+        task("QuantCore_SP500_DailyCheck", DAILY_CHECK_JOB, "--account all", WEEKDAYS),
+        task("QuantCore_SR_Rebalance_Tue", REBALANCE_JOB,
+             "--mode all --account all", ("Tuesday",)),
+        task("QuantCore_SP500_Rebalance_Wed", REBALANCE_JOB,
+             "--mode all --account all", ("Wednesday",)),
+        task("QuantCore_SkewLS_DailyCheck", REBALANCE_JOB,
+             "--mode skewls --account all", ("Monday", "Thursday", "Friday")),
+        task("QuantCore_MOO_Fill_Daily", MOO_JOB, "--account all", WEEKDAYS),
         # 04:50 避開 04:40 DailyReport，距週三 21:00 SP500 調倉 ~16h 人工餘裕
         TaskSpec("QuantCore_ConstituentsRefresh_Wed", const_ref,
                  "--auto", ("Wednesday",), "04:50"),

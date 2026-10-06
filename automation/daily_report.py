@@ -10,7 +10,6 @@ QuantCore — 每日收盤後帳戶快照
      不再推播）；失敗（含連不上 IB）發 ❌（#38）；三帳戶合成一則
 """
 
-import html
 import logging
 import sys
 from pathlib import Path
@@ -26,12 +25,14 @@ LOG_DIR.mkdir(exist_ok=True)
 sys.path.insert(0, str(BASE_DIR))
 from excel_logger import append_daily_snapshot
 
-# ── 日誌 ──────────────────────────────────────────────────────────────────────
-from log_setup import setup_logging, quiet_ib_console
 log = logging.getLogger(__name__)
 
 # ── Telegram（統一由 notify.py 提供）─────────────────────────────────────
-from notify import Digest
+from notify import Digest, error_line
+
+# ── 排程執行殼（log、逐帳戶、失敗段落、執行紀錄、exit code；#206）
+import run_status
+import scheduled_run
 
 # ── AccountCtx（S6：ctx 為所有函式的必要參數，無 module global 可 fallback）
 from account_ctx import AccountCtx
@@ -83,15 +84,11 @@ def mark_at_reference_close(conn, symbols):
     return marks
 
 
-def main(ctx: AccountCtx, digest: Digest | None = None):
+def main(ctx: AccountCtx, digest: Digest):
     """每日快照 + 保證金警示。所有設定從 ctx 取得，thread-safe。
 
-    警示加進 digest（__main__ 三帳戶合併一則發送）；沒給 digest 時自己建一則
-    並在結束時發送。
+    警示加進 digest（排程執行殼三帳戶合併一則發送）。
     """
-    own_digest = digest is None
-    if own_digest:
-        digest = Digest(f"每日報告 {date.today()}", icon="📊")
     dest = {"token": ctx.tg_token, "chat_id": ctx.tg_chat_id}
     acct_name = ctx.name
 
@@ -128,67 +125,13 @@ def main(ctx: AccountCtx, digest: Digest | None = None):
 
     except Exception as e:
         log.error(f"ERROR: {e}", exc_info=True)
-        digest.add(acct_name, "❌ 每日報告失敗", [html.escape(str(e)[:300])],
-                   "error", **dest)
+        digest.add(acct_name, "❌ 每日報告失敗", [error_line(e)], "error", **dest)
         raise
 
     finally:
         conn.close()
         log.info("Disconnected.")
-        if own_digest:
-            digest.send()
-
-
-def run_all(names: list[str], digest: Digest) -> list[tuple[str, str]]:
-    """依序跑多個帳戶，警示合成一則發送。回傳失敗清單 [(帳戶, 錯誤)]。
-
-    main() 沒來得及加段落就失敗的帳戶（連不上 IB、ctx 建不起來）補 ❌ 段落
-    — 以前只寫 log，Gateway 沒開時 04:40 失敗沒有任何通知（#38）。
-    """
-    from account_utils import ROLE_REPORT, telegram_dest
-
-    failures = []
-    try:
-        for name in names:
-            try:
-                ctx = AccountCtx.from_name(name, ROLE_REPORT)
-                log.info(f">>> Account: {ctx.name} ({ctx.account}) port={ctx.port} <<<")
-                main(ctx=ctx, digest=digest)
-            except Exception as e:
-                failures.append((name, str(e)))
-                log.error(f"Account {name} failed (continuing to next): {e}")
-                if not digest.has(name):
-                    digest.add(name, "❌ 每日報告失敗", [html.escape(str(e)[:300])],
-                               "error", **telegram_dest(name))
-    finally:
-        digest.send()
-    return failures
 
 
 if __name__ == '__main__':
-    setup_logging("daily")
-    quiet_ib_console()
-    import argparse
-    parser = argparse.ArgumentParser(description="QuantCore Daily Report")
-    parser.add_argument("--account", required=True,
-                        help="Account name from accounts.json (e.g. Taylor/Rosa/Yvonne), "
-                             "or 'all' to run all accounts sequentially")
-    args = parser.parse_args()
-
-    from account_utils import load_accounts
-    import run_status
-
-    all_accounts = args.account.lower() == 'all'
-    names: list[str] = []
-    digest = Digest(f"每日報告 {date.today()}", icon="📊")
-    # 當日排程總結用的執行紀錄（#38）：只記排程的 --account all
-    with run_status.recording("daily", lambda: digest.outcomes(names),
-                              enabled=all_accounts):
-        names.extend([a['name'] for a in load_accounts()] if all_accounts
-                     else [args.account])
-        failures = run_all(names, digest)
-
-    if failures:
-        log.error(f"Daily report finished with {len(failures)} failure(s): "
-                  + "; ".join(f"{n}={msg}" for n, msg in failures))
-        sys.exit(1)
+    sys.exit(scheduled_run.run_job(run_status.DAILY_REPORT_JOB, main))

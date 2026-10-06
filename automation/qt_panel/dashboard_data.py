@@ -135,8 +135,7 @@ def _not_run_state(job: run_status.Job, now: datetime) -> str:
 
 def _recorded_row(job: run_status.Job, now: datetime, record: dict | None,
                   accounts: Sequence[str]) -> JobRow:
-    # 開始時間早於排程的紀錄是手動跑的，不算（同當日排程總結）
-    record = run_status._scheduled_run(job, now.date(), record)
+    """record = 排程跑的紀錄（`run_status.scheduled_record`；手動跑的不算）。"""
     if record is None:
         return JobRow(job.key, job.at, job.name, _not_run_state(job, now))
     if not record.get("finished"):
@@ -165,7 +164,8 @@ def today_jobs(now: datetime, accounts: Sequence[str], *,
     當天它的 log 檔在排程時間後有沒有寫過 → 「已執行」。
     """
     weekday = now.weekday() < 5
-    rows = [_recorded_row(job, now, load(job.key, now.date()), accounts)
+    rows = [_recorded_row(job, now, run_status.scheduled_record(job, now.date(), read=load),
+                          accounts)
             for job in run_status.SUMMARY_JOBS if weekday or job.key in _EVERY_DAY]
     if weekday:
         job = run_status.MOO_JOB

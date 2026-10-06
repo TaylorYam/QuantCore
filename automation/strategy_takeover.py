@@ -35,6 +35,7 @@ import uuid
 from typing import Callable, Optional
 
 from account_ctx import AccountCtx
+from broker import IB_DONE_STATUSES
 import manual_attribution
 import plan_inputs
 import rebalance_plan as plan
@@ -42,7 +43,6 @@ from sync_position import SyncRecords, require_records
 
 log = logging.getLogger(__name__)
 
-_DONE_STATUSES = frozenset({"Filled", "Cancelled", "ApiCancelled", "Inactive"})
 _EPS = 1e-6
 
 
@@ -134,7 +134,7 @@ def _open_orders(conn, ctx: AccountCtx, symbol: str) -> list:
     for t in conn.open_orders(all_clients=True):
         account = str(getattr(t.order, "account", "") or ctx.account)
         status = str(getattr(getattr(t, "orderStatus", None), "status", "") or "")
-        if (account == ctx.account and status not in _DONE_STATUSES
+        if (account == ctx.account and status not in IB_DONE_STATUSES
                 and contract_symbol(t.contract) == symbol):
             out.append(t)
     return out
@@ -281,7 +281,7 @@ def submit(preview: TakeoverPreview, ctx: AccountCtx,
                     "PENDING", f"送單結果不確定（{exc}）；接管紀錄保留，這檔維持暫停。"
                     "IB 持倉對上接管目標時會自動完成", fresh, "UNKNOWN")
             waited = 0
-            while (trade.orderStatus.status not in _DONE_STATUSES
+            while (trade.orderStatus.status not in IB_DONE_STATUSES
                    and waited < max(exec_ctx.wait_fill_sec, 1)):
                 conn.wait(1)
                 waited += 1

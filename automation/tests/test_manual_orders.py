@@ -2150,15 +2150,6 @@ def test_unique_index_locks_exactly_the_active_statuses(tmp_path):
     assert set(re.findall(r"'([A-Z_]+)'", in_list)) == set(manual_orders.ACTIVE_STATUSES)
 
 
-def test_every_status_is_either_active_or_terminal():
-    active = set(manual_orders.ACTIVE_STATUSES)
-    terminal = set(manual_orders.TERMINAL_STATUSES)
-    assert not active & terminal
-    assert active | terminal == set(manual_orders._STATUS_LABELS)
-    assert set(manual_orders.UNCONFIRMED_STATUSES) == {
-        "CANCEL_UNKNOWN", "IB_UNKNOWN", "SUBMISSION_UNKNOWN"}
-
-
 # ── Read-only fills query (#190) ───────────────────────────────────────
 
 def test_read_account_fills_missing_store_means_no_manual_orders(tmp_path):

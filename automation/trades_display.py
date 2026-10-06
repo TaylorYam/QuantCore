@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import ledger
-from strategy_owner import SR, STRATEGY_ETFS, trade_owner
+from strategy_owner import SR, SR_AND_SKEWLS, STRATEGY_ETFS, trade_owner
 
 # (header, Tk label width)
 TRADE_COLUMNS = (
@@ -27,7 +27,7 @@ STOCKS = "Stocks"
 # 不是類股／反向 ETF 的成交：寫入的 Strategy → 畫面標籤。SR 只交易類股 ETF，個股
 # 實際寫的是 SP500、EXIT、Sync 或舊版的「QuantCore Combo／SP500 Only」，都顯示 Stocks；
 # 下面這幾個 SR 的寫法沿用舊版判讀（含 SR、不含 SP500／Combo → SR）。
-_SR_WRITTEN = frozenset({SR, "SR+SkewLS", "QuantCore SR Only"})
+_SR_WRITTEN = frozenset({SR, SR_AND_SKEWLS, "QuantCore SR Only"})
 
 
 @dataclass(frozen=True)

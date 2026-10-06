@@ -141,3 +141,16 @@ def test_daily_snapshot_attributes_long_sector_etfs_by_allocation(monkeypatch):
     written.clear()
     excel_logger.append_daily_snapshot(15_000.0, positions[:1], prices, account_name="Rosa")
     assert written[0]["Strategy"] == "SR"                  # 沒給 Allocation：維持舊規則
+
+
+def test_excel_backend_writes_columns_in_the_declared_order(monkeypatch, tmp_path):
+    """#209：寫端 dict 的欄序和 SNAPSHOT_FIELDS／TRADE_FIELDS（SQLite 匯出用）一致。"""
+    portfolio, trade_file, _ = _patch_paths(monkeypatch, tmp_path)
+    monkeypatch.delenv("QUANTCORE_LOG_BACKEND")
+    excel_logger.append_daily_snapshot(10000, [Position("XLK", 5, 100)], {"XLK": 110},
+                                       account_name="Taylor")
+    excel_logger.append_trade_log([{"symbol": "XLK", "action": "BUY", "qty": 2,
+                                    "lmt_price": 100}], [], "2026-09-21", "MOO", 1.3, True,
+                                  account_name="Taylor")
+    assert tuple(pd.read_excel(portfolio, sheet_name="Daily").columns) == excel_logger.SNAPSHOT_FIELDS
+    assert tuple(pd.read_excel(trade_file, sheet_name="Trades").columns) == excel_logger.TRADE_FIELDS

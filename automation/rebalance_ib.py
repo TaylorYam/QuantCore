@@ -63,6 +63,7 @@ from notify import Digest, order_group_lines
 from account_ctx import AccountCtx
 
 # ── IB 連線（#185：經 Broker；讀數與送單都在 broker.Connection 上）
+import broker
 import ib_fetcher
 from ib_fetcher import SR_ETFS  # R1.3：SR ETF 常數單一來源
 
@@ -480,12 +481,16 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
             log_fn=log.info,
             warn_fn=log.warning,
         )
-        # LMT 保護價（execution 關切，留在 shell）：BUY −0.05% / SELL +0.05%
+        # 以 LMT 下單時限價走統一規則（#185）；MOO／MKT 不帶限價，lmt_price 只當
+        # 交易紀錄的預估價 = 算股數用的參考價
+        quotes = (conn.quotes(sorted({o.symbol for o in planned}))
+                  if order_type == 'LMT' and planned else {})
         order_list = [{
             'symbol':    o.symbol,
             'action':    o.action,
             'qty':       o.qty,
-            'lmt_price': round(o.price * (0.9995 if o.action == 'BUY' else 1.0005), 2),
+            'lmt_price': (broker.limit_price(o.action, quotes.get(o.symbol, {}), o.price)
+                          if order_type == 'LMT' else round(o.price, 2)),
             'strategy':  o.strategy,
         } for o in planned]
 

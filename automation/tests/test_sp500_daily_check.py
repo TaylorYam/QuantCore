@@ -140,6 +140,51 @@ def test_run_all_exception_is_reported_and_continues(fake_config, monkeypatch):
                                                "Rosa": ("error", "❌ 日度風控失敗")}
 
 
+# ── 熊市 dip-buy 的限價：Broker 的送單報價＋統一限價規則（#185 第三階段）──────
+
+@pytest.fixture
+def dip_buy(daily_check_env, fake_config, monkeypatch, tmp_path):
+    """SPY 跌 16%、在 MA200 下：觸發第一階 dip-buy，真的送單到 in-memory FakeBroker。"""
+    import account_utils
+    import ib_fetcher
+    import rebalance_ib
+    import signals
+    import sp500_state
+    from tests.fake_broker import FakeBroker
+
+    base, _accounts = fake_config
+    daily_check_env.regime = {"SPY_Close": 600.0, "SPY_MA200": 700.0, "SPY_DD": -0.16}
+    monkeypatch.setattr(account_utils, "load_base_config",
+                        lambda: {**base, "dry_run": False})
+    monkeypatch.setattr(sp500_state, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(signals, "get_sp500_universe", lambda: {"AAPL"})
+    monkeypatch.setattr(rebalance_ib.time, "sleep", lambda _s: None)
+    fake = FakeBroker(managed=["U17800779"], positions={"AAPL": 10.0}, price=500.0)
+    monkeypatch.setattr(ib_fetcher, "connect", lambda ctx: fake.connect(ctx))
+    return fake
+
+
+def _dip_limit(fake):
+    _check()
+    [order] = fake.placed
+    assert (order.symbol, order.action, order.order_type) == ("SPY", "BUY", "LMT")
+    return order.lmt
+
+
+def test_dip_buy_limit_is_ask_times_1_003(dip_buy):
+    assert _dip_limit(dip_buy) == round(100.1 * 1.003, 2)
+
+
+def test_dip_buy_without_bid_or_ask_falls_back_to_mid_then_last_then_close(dip_buy):
+    dip_buy.quote = {"bid": None, "ask": None, "mid": None, "last": 99.0, "close": 98.0}
+    assert _dip_limit(dip_buy) == round(99.0 * 1.003, 2)
+
+
+def test_dip_buy_without_any_quote_uses_the_reference_price(dip_buy):
+    dip_buy.quote = {"bid": None, "ask": None, "mid": None, "last": None, "close": None}
+    assert _dip_limit(dip_buy) == round(500.0 * 1.003, 2)
+
+
 # ── #2: daily_report marks at Reference Close, IB only as fallback ──
 
 def test_daily_report_marks_at_reference_close_then_ib_fallback(monkeypatch):

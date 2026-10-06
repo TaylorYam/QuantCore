@@ -5,44 +5,12 @@
     "date": "FIXED_DATE",
     "debug": {
       "client_id": 35,
-      "configured_account": "U12770188",
       "managed_accounts": [
         "U12770188"
       ],
-      "n_account_values": 3,
-      "n_positions_raw": 0,
       "n_positions_stk": 0,
       "port": 4002,
-      "used_account": "U12770188",
-      "vals_source": "accountSummary"
-    },
-    "etf_holdings": [],
-    "excess_liq": 4000.0,
-    "nav": 10000.0,
-    "other_holdings": [],
-    "other_mktval": 0,
-    "source": "IB Live [Rosa]",
-    "stock_holdings": [],
-    "strategy_mktval": 0,
-    "total_mktval": 0,
-    "total_upnl": 0
-  },
-  "Rosa/fallback": {
-    "available": true,
-    "cushion": 40.0,
-    "date": "FIXED_DATE",
-    "debug": {
-      "client_id": 35,
-      "configured_account": "U12770188",
-      "managed_accounts": [
-        "U12770188"
-      ],
-      "n_account_values": 3,
-      "n_positions_raw": 0,
-      "n_positions_stk": 0,
-      "port": 4002,
-      "used_account": "U12770188",
-      "vals_source": "accountValues(fallback)"
+      "used_account": "U12770188"
     },
     "etf_holdings": [],
     "excess_liq": 4000.0,
@@ -61,60 +29,23 @@
     "date": "FIXED_DATE",
     "debug": {
       "client_id": 35,
-      "configured_account": "U12770188",
       "managed_accounts": [
         "U12770188"
       ],
-      "n_account_values": 3,
-      "n_positions_raw": 3,
-      "n_positions_stk": 3,
+      "n_positions_stk": 0,
       "port": 4002,
-      "used_account": "U12770188",
-      "vals_source": "accountSummary"
+      "used_account": "U12770188"
     },
-    "etf_holdings": [
-      {
-        "avg_cost": 100.0,
-        "mkt_px": 110,
-        "mkt_val": 220,
-        "name": "",
-        "shares": 2,
-        "symbol": "XLK",
-        "upnl": 20.0,
-        "upnl_pct": 10.000000000000009
-      }
-    ],
+    "etf_holdings": [],
     "excess_liq": 4000.0,
     "nav": 10000.0,
-    "other_holdings": [
-      {
-        "avg_cost": 100.0,
-        "mkt_px": 90,
-        "mkt_val": -90,
-        "name": "",
-        "shares": -1,
-        "symbol": "ZZZ",
-        "upnl": 10.0,
-        "upnl_pct": -9.999999999999998
-      }
-    ],
-    "other_mktval": -90,
+    "other_holdings": [],
+    "other_mktval": 0,
     "source": "IB Live [Rosa]",
-    "stock_holdings": [
-      {
-        "avg_cost": 100.0,
-        "mkt_px": 120,
-        "mkt_val": 360,
-        "name": "",
-        "shares": 3,
-        "symbol": "AAPL",
-        "upnl": 60.0,
-        "upnl_pct": 19.999999999999996
-      }
-    ],
-    "strategy_mktval": 580,
-    "total_mktval": 490,
-    "total_upnl": 90.0
+    "stock_holdings": [],
+    "strategy_mktval": 0,
+    "total_mktval": 0,
+    "total_upnl": 0
   },
   "Rosa/mixed": {
     "available": true,
@@ -122,16 +53,12 @@
     "date": "FIXED_DATE",
     "debug": {
       "client_id": 35,
-      "configured_account": "U12770188",
       "managed_accounts": [
         "U12770188"
       ],
-      "n_account_values": 3,
-      "n_positions_raw": 3,
       "n_positions_stk": 3,
       "port": 4002,
-      "used_account": "U12770188",
-      "vals_source": "accountSummary"
+      "used_account": "U12770188"
     },
     "etf_holdings": [
       {
@@ -199,44 +126,12 @@
     "date": "FIXED_DATE",
     "debug": {
       "client_id": 25,
-      "configured_account": "U17800779",
       "managed_accounts": [
         "U17800779"
       ],
-      "n_account_values": 3,
-      "n_positions_raw": 0,
       "n_positions_stk": 0,
       "port": 4001,
-      "used_account": "U17800779",
-      "vals_source": "accountSummary"
-    },
-    "etf_holdings": [],
-    "excess_liq": 4000.0,
-    "nav": 10000.0,
-    "other_holdings": [],
-    "other_mktval": 0,
-    "source": "IB Live [Taylor]",
-    "stock_holdings": [],
-    "strategy_mktval": 0,
-    "total_mktval": 0,
-    "total_upnl": 0
-  },
-  "Taylor/fallback": {
-    "available": true,
-    "cushion": 40.0,
-    "date": "FIXED_DATE",
-    "debug": {
-      "client_id": 25,
-      "configured_account": "U17800779",
-      "managed_accounts": [
-        "U17800779"
-      ],
-      "n_account_values": 3,
-      "n_positions_raw": 0,
-      "n_positions_stk": 0,
-      "port": 4001,
-      "used_account": "U17800779",
-      "vals_source": "accountValues(fallback)"
+      "used_account": "U17800779"
     },
     "etf_holdings": [],
     "excess_liq": 4000.0,
@@ -255,60 +150,23 @@
     "date": "FIXED_DATE",
     "debug": {
       "client_id": 25,
-      "configured_account": "U17800779",
       "managed_accounts": [
         "U17800779"
       ],
-      "n_account_values": 3,
-      "n_positions_raw": 3,
-      "n_positions_stk": 3,
+      "n_positions_stk": 0,
       "port": 4001,
-      "used_account": "U17800779",
-      "vals_source": "accountSummary"
+      "used_account": "U17800779"
     },
-    "etf_holdings": [
-      {
-        "avg_cost": 100.0,
-        "mkt_px": 110,
-        "mkt_val": 220,
-        "name": "",
-        "shares": 2,
-        "symbol": "XLK",
-        "upnl": 20.0,
-        "upnl_pct": 10.000000000000009
-      }
-    ],
+    "etf_holdings": [],
     "excess_liq": 4000.0,
     "nav": 10000.0,
-    "other_holdings": [
-      {
-        "avg_cost": 100.0,
-        "mkt_px": 90,
-        "mkt_val": -90,
-        "name": "",
-        "shares": -1,
-        "symbol": "ZZZ",
-        "upnl": 10.0,
-        "upnl_pct": -9.999999999999998
-      }
-    ],
-    "other_mktval": -90,
+    "other_holdings": [],
+    "other_mktval": 0,
     "source": "IB Live [Taylor]",
-    "stock_holdings": [
-      {
-        "avg_cost": 100.0,
-        "mkt_px": 120,
-        "mkt_val": 360,
-        "name": "",
-        "shares": 3,
-        "symbol": "AAPL",
-        "upnl": 60.0,
-        "upnl_pct": 19.999999999999996
-      }
-    ],
-    "strategy_mktval": 580,
-    "total_mktval": 490,
-    "total_upnl": 90.0
+    "stock_holdings": [],
+    "strategy_mktval": 0,
+    "total_mktval": 0,
+    "total_upnl": 0
   },
   "Taylor/mixed": {
     "available": true,
@@ -316,16 +174,12 @@
     "date": "FIXED_DATE",
     "debug": {
       "client_id": 25,
-      "configured_account": "U17800779",
       "managed_accounts": [
         "U17800779"
       ],
-      "n_account_values": 3,
-      "n_positions_raw": 3,
       "n_positions_stk": 3,
       "port": 4001,
-      "used_account": "U17800779",
-      "vals_source": "accountSummary"
+      "used_account": "U17800779"
     },
     "etf_holdings": [
       {
@@ -393,44 +247,12 @@
     "date": "FIXED_DATE",
     "debug": {
       "client_id": 45,
-      "configured_account": "U18807005",
       "managed_accounts": [
         "U18807005"
       ],
-      "n_account_values": 3,
-      "n_positions_raw": 0,
       "n_positions_stk": 0,
       "port": 4003,
-      "used_account": "U18807005",
-      "vals_source": "accountSummary"
-    },
-    "etf_holdings": [],
-    "excess_liq": 4000.0,
-    "nav": 10000.0,
-    "other_holdings": [],
-    "other_mktval": 0,
-    "source": "IB Live [Yvonne]",
-    "stock_holdings": [],
-    "strategy_mktval": 0,
-    "total_mktval": 0,
-    "total_upnl": 0
-  },
-  "Yvonne/fallback": {
-    "available": true,
-    "cushion": 40.0,
-    "date": "FIXED_DATE",
-    "debug": {
-      "client_id": 45,
-      "configured_account": "U18807005",
-      "managed_accounts": [
-        "U18807005"
-      ],
-      "n_account_values": 3,
-      "n_positions_raw": 0,
-      "n_positions_stk": 0,
-      "port": 4003,
-      "used_account": "U18807005",
-      "vals_source": "accountValues(fallback)"
+      "used_account": "U18807005"
     },
     "etf_holdings": [],
     "excess_liq": 4000.0,
@@ -449,60 +271,23 @@
     "date": "FIXED_DATE",
     "debug": {
       "client_id": 45,
-      "configured_account": "U18807005",
       "managed_accounts": [
         "U18807005"
       ],
-      "n_account_values": 3,
-      "n_positions_raw": 3,
-      "n_positions_stk": 3,
+      "n_positions_stk": 0,
       "port": 4003,
-      "used_account": "U18807005",
-      "vals_source": "accountSummary"
+      "used_account": "U18807005"
     },
-    "etf_holdings": [
-      {
-        "avg_cost": 100.0,
-        "mkt_px": 110,
-        "mkt_val": 220,
-        "name": "",
-        "shares": 2,
-        "symbol": "XLK",
-        "upnl": 20.0,
-        "upnl_pct": 10.000000000000009
-      }
-    ],
+    "etf_holdings": [],
     "excess_liq": 4000.0,
     "nav": 10000.0,
-    "other_holdings": [
-      {
-        "avg_cost": 100.0,
-        "mkt_px": 90,
-        "mkt_val": -90,
-        "name": "",
-        "shares": -1,
-        "symbol": "ZZZ",
-        "upnl": 10.0,
-        "upnl_pct": -9.999999999999998
-      }
-    ],
-    "other_mktval": -90,
+    "other_holdings": [],
+    "other_mktval": 0,
     "source": "IB Live [Yvonne]",
-    "stock_holdings": [
-      {
-        "avg_cost": 100.0,
-        "mkt_px": 120,
-        "mkt_val": 360,
-        "name": "",
-        "shares": 3,
-        "symbol": "AAPL",
-        "upnl": 60.0,
-        "upnl_pct": 19.999999999999996
-      }
-    ],
-    "strategy_mktval": 580,
-    "total_mktval": 490,
-    "total_upnl": 90.0
+    "stock_holdings": [],
+    "strategy_mktval": 0,
+    "total_mktval": 0,
+    "total_upnl": 0
   },
   "Yvonne/mixed": {
     "available": true,
@@ -510,16 +295,12 @@
     "date": "FIXED_DATE",
     "debug": {
       "client_id": 45,
-      "configured_account": "U18807005",
       "managed_accounts": [
         "U18807005"
       ],
-      "n_account_values": 3,
-      "n_positions_raw": 3,
       "n_positions_stk": 3,
       "port": 4003,
-      "used_account": "U18807005",
-      "vals_source": "accountSummary"
+      "used_account": "U18807005"
     },
     "etf_holdings": [
       {

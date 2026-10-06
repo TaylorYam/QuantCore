@@ -14,7 +14,8 @@ Usage:
     from account_utils import ROLE_REBALANCE
 
     ctx = AccountCtx.from_name('Taylor', ROLE_REBALANCE)
-    nav = get_nav(ib, ctx)
+    with Broker().connect(ctx) as conn:
+        nav = conn.nav()
     tg_send(msg, token=ctx.tg_token, chat_id=ctx.tg_chat_id)
 
 Migration 注意事項：

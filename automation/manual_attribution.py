@@ -435,7 +435,7 @@ def evaluate(account_name: str, positions: dict[str, float],
              manual_orders_path: str | Path | None = None) -> Attribution:
     """觀察一次 IB 持倉、更新歸屬紀錄，回傳該 Account 的暫停清單。
 
-    positions = ib_fetcher.get_positions 的結果；universe = SP500 歷史
+    positions = broker.Connection.positions() 的結果；universe = SP500 歷史
     Universe（與 classify_holdings 同一份）。讀寫失敗拋
     ManualAttributionError — caller 必須把整個 Account 的策略單停下。
     """

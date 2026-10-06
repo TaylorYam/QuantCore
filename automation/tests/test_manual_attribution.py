@@ -392,6 +392,31 @@ def test_rebalance_unreadable_ledger_stops_account_before_state(rebalance_env, p
     assert digest.outcomes(["Rosa"])["Rosa"][0] == "error"
 
 
+# 21:00 的限價（#185 第三階段）：MOO 不帶限價，交易紀錄的預估價 = 算股數用的參考價；
+# 以 LMT 下單時走 Broker 的統一限價規則（原本的 −0.05%／+0.05% 已刪）
+
+def test_rebalance_moo_records_the_reference_price_as_the_estimate(rebalance_env, monkeypatch):
+    import rebalance_ib
+    logged = []
+    monkeypatch.setattr(rebalance_ib, "append_trade_log",
+                        lambda placed, *a, **k: logged.extend(placed))
+    _run_rebalance("Taylor")
+    assert [(o["symbol"], o["lmt_price"]) for o in logged] == [("AAPL", 100.0), ("XYZ", 100.0)]
+    assert {p.order_type for p in rebalance_env.broker.placed} == {"MKT"}      # MOO
+
+
+def test_rebalance_lmt_run_uses_the_unified_limit_rule(rebalance_env):
+    import dataclasses
+
+    import rebalance_ib
+    from notify import Digest
+    ctx = dataclasses.replace(_ctx("Taylor"), order_type="LMT")
+    rebalance_ib.main(mode="sp500", ctx=ctx, digest=Digest("調倉 T", icon="📤"))
+    placed = rebalance_env.broker.placed
+    assert [(p.symbol, p.order_type, p.lmt) for p in placed] == [
+        ("AAPL", "LMT", round(100.1 * 1.003, 2)), ("XYZ", "LMT", round(100.1 * 1.003, 2))]
+
+
 def test_place_orders_gate_holds_persisted_pause_even_if_caller_forgot(paths):
     import rebalance_ib
     ma.evaluate("Rosa", {"XYZ": 10.0}, UNIVERSE)

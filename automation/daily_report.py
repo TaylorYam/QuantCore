@@ -48,8 +48,8 @@ def cushion_alert(nav: float, cushion_pct: float,
                   excess_liq: float) -> tuple[str, list[str], str] | None:
     """Margin Cushion 低於門檻 → Digest 段落 (headline, body, level)；否則 None。
 
-    nav <= 0 視為帳戶資料沒讀到（get_account_info 缺欄位時預設 0），
-    不警示 — 避免把「沒資料」誤判成「cushion 0%」。
+    nav <= 0 視為帳戶資料沒讀到，不警示 — 避免把「沒資料」誤判成「cushion 0%」。
+    （Broker 讀不到權益或 cushion 時直接拋例外，正常流程不會傳 0 進來。）
     """
     if nav <= 0 or cushion_pct >= CUSHION_ALERT_PCT:
         return None
@@ -66,7 +66,7 @@ def mark_at_reference_close(conn, symbols):
     回退 IB 報價。
 
     daily report 是 EOD 快照，正確 mark 是最近官方收盤，而非盤後/週末可能陳舊的
-    即時 tick（見 ADR-0003）。live 下單取價走 `robust_get_prices`，不受此影響。
+    即時 tick（見 ADR-0003）。live 下單取價走 Broker 的參考價（`Connection.prices`），不受此影響。
     """
     from price_utils import load_csv_close
     marks, missing = {}, []

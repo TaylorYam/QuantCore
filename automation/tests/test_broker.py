@@ -7,6 +7,7 @@ adapter：用一個只會記錄呼叫的假 ib_insync.IB 驗證連線參數、�
 from __future__ import annotations
 
 import inspect
+from decimal import Decimal
 from types import SimpleNamespace as NS
 
 import pytest
@@ -263,9 +264,7 @@ def _public(cls):
 
 
 def test_fake_connection_offers_the_same_interface_as_the_adapter():
-    # portfolio_readings 只給 Portfolio 頁用，第三階段會換成統一的權益讀法；
-    # fake 不模仿它的多層 fallback（那是 adapter 自己的測試：test_ib_portfolio_query）
-    assert _public(Connection) - {"portfolio_readings"} <= _public(FakeConnection)
+    assert _public(Connection) <= _public(FakeConnection)
 
 
 def test_fake_broker_check_refusal_closes_and_counts():
@@ -277,3 +276,150 @@ def test_fake_broker_check_refusal_closes_and_counts():
     with pytest.raises(PermissionError):
         fake.connect(CTX, check=refuse)
     assert fake.refused == 1 and fake.closed == 1 and fake.connects == [("127.0.0.1", 4001, 26)]
+
+
+# ── 讀數與限價統一（#185 第三階段）─────────────────────────────────
+
+def _value(tag, value, currency="USD", account="U1"):
+    return NS(account=account, tag=tag, value=str(value), currency=currency, modelCode="")
+
+
+class AccountIB(RecordingIB):
+    """accountValues 照 IB 的形狀：別的帳戶、非 USD 的列也混在裡面。"""
+
+    def __init__(self, rows, **kw):
+        super().__init__(**kw)
+        self.rows = rows
+        self.connected = True
+
+    def accountValues(self, account=""):
+        self.calls.append(("accountValues", account))
+        return list(self.rows)
+
+
+NORMAL_ROWS = [
+    _value("NetLiquidation", "99999.5", account="U2"),       # 別的帳戶
+    _value("NetLiquidation", "7.8", currency="HKD"),          # 非 USD
+    _value("NetLiquidation", "38199.96"),
+    _value("Cushion", "0.643", currency=""),
+    _value("ExcessLiquidity", "24551.2"),
+    _value("MaintMarginReq", "13000"),
+]
+
+
+def test_equity_is_the_selected_accounts_net_liquidation_in_usd():
+    conn = Connection(AccountIB(NORMAL_ROWS), CTX)
+    assert conn.equity() == Decimal("38199.96")
+    assert conn.nav() == 38199.96
+    assert conn.account_info() == {"nav": 38199.96, "cushion_pct": 64.3,
+                                   "excess_liq": 24551.2}
+
+
+@pytest.mark.parametrize("rows", [
+    [],
+    [_value("NetLiquidation", "99999.5", account="U2")],      # 只有別的帳戶的
+    [_value("NetLiquidation", "7.8", currency="HKD")],         # 只有非 USD 的
+    [_value("NetLiquidation", "0")],
+    [_value("NetLiquidation", "nan")],
+    [_value("NetLiquidation", "")],
+])
+def test_equity_that_cannot_be_read_is_an_error_never_zero_or_another_account(rows):
+    conn = Connection(AccountIB(rows), CTX)
+    with pytest.raises(broker.AccountValueUnavailable, match="U1"):
+        conn.nav()
+    with pytest.raises(broker.AccountValueUnavailable):
+        conn.equity()
+
+
+def test_equity_needs_a_configured_account():
+    conn = Connection(AccountIB(NORMAL_ROWS), NS(**{**vars(CTX), "account": ""}))
+    with pytest.raises(broker.AccountValueUnavailable):
+        conn.nav()
+
+
+@pytest.mark.parametrize("missing", ["Cushion", "ExcessLiquidity"])
+def test_cushion_and_excess_liquidity_follow_the_same_strict_rule(missing):
+    rows = [r for r in NORMAL_ROWS if r.tag != missing]
+    rows.append(_value(missing, "0.9", account="U2"))           # 別的帳戶的不能拿來用
+    conn = Connection(AccountIB(rows), CTX)
+    with pytest.raises(broker.AccountValueUnavailable, match=missing):
+        conn.account_info()
+
+
+def test_portfolio_readings_use_the_same_strict_reads():
+    ib = AccountIB(NORMAL_ROWS, managed=["U1"])
+    ib.positions = lambda account="": [
+        NS(account="U1", contract=NS(symbol="BRK B", secType="STK"), position=3.0),
+        NS(account="U1", contract=NS(symbol="SPY", secType="OPT"), position=1.0),
+    ]
+    out = {}
+    Connection(ib, CTX, readonly=True).portfolio_readings(out)
+    assert (out["account"], out["nav"], out["cushion"], out["excess_liq"]) == (
+        "U1", 38199.96, 64.3, 24551.2)
+    assert [p.contract.symbol for p in out["positions"]] == ["BRK.B"]
+
+
+@pytest.mark.parametrize("readonly", [True, False])
+def test_portfolio_readings_refuse_a_gateway_without_the_selected_account(readonly):
+    conn = Connection(AccountIB(NORMAL_ROWS, managed=["U2"]), CTX, readonly=readonly)
+    with pytest.raises(RuntimeError, match="not available"):
+        conn.portfolio_readings({})
+
+
+def test_portfolio_readings_keep_what_was_read_before_a_missing_value():
+    rows = [r for r in NORMAL_ROWS if r.tag != "Cushion"]
+    out = {}
+    with pytest.raises(broker.AccountValueUnavailable):
+        Connection(AccountIB(rows, managed=["U1"]), CTX).portfolio_readings(out)
+    assert out["nav"] == 38199.96 and "cushion" not in out
+
+
+def _quote_ib(bid, ask, last=float("nan"), close=float("nan")):
+    ib = RecordingIB()
+    ib.connected = True
+
+    def tickers(*contracts):
+        mid = (bid + ask) / 2 if bid == bid and ask == ask else float("nan")
+        return [NS(contract=c, bid=bid, ask=ask, last=last, close=close,
+                   midpoint=lambda: mid) for c in contracts]
+    ib.reqTickers = tickers
+    return ib
+
+
+def test_crossed_quote_counts_as_no_bid_or_ask(caplog):
+    caplog.set_level("WARNING", logger="broker")
+    conn = Connection(_quote_ib(10.2, 10.0, last=10.1), CTX)
+    assert conn.quotes(["XLK"]) == {"XLK": {"bid": None, "ask": None, "mid": None,
+                                            "last": 10.1, "close": None}}
+    assert caplog.messages == ["  XLK: crossed quote bid=10.2 > ask=10.0"]
+
+
+def test_wide_spread_is_logged_but_kept(caplog):
+    caplog.set_level("WARNING", logger="broker")
+    conn = Connection(_quote_ib(9.0, 10.0), CTX)
+    assert conn.quotes(["XLK"])["XLK"]["bid"] == 9.0
+    assert caplog.messages == ["  XLK: wide spread bid=9.0 ask=10.0"]
+
+
+def test_normal_quote_logs_nothing(caplog):
+    caplog.set_level("WARNING", logger="broker")
+    Connection(_quote_ib(9.99, 10.01), CTX).quotes(["XLK"])
+    assert caplog.messages == []
+
+
+FULL = {"bid": 9.9, "ask": 10.1, "mid": 10.0, "last": 10.05, "close": 9.8}
+
+
+@pytest.mark.parametrize("action,quote,ref,expected", [
+    ("BUY", FULL, 5.0, round(10.1 * 1.003, 2)),
+    ("SELL", FULL, 5.0, round(9.9 * 0.997, 2)),
+    # 缺 bid／ask：mid → last → close → 呼叫端給的參考價
+    ("BUY", {**FULL, "ask": None}, 5.0, round(10.0 * 1.003, 2)),
+    ("SELL", {**FULL, "bid": None, "mid": None}, 5.0, round(10.05 * 0.997, 2)),
+    ("BUY", {"ask": None, "mid": None, "last": None, "close": 9.8}, 5.0, round(9.8 * 1.003, 2)),
+    ("SELL", {}, 5.0, round(5.0 * 0.997, 2)),
+    ("BUY", {}, 0, 0.0),
+    ("BUY", {}, None, 0.0),
+])
+def test_limit_price_is_one_rule_with_one_fallback_order(action, quote, ref, expected):
+    assert broker.limit_price(action, quote, ref) == expected

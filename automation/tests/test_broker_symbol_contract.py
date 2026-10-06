@@ -37,21 +37,20 @@ def test_class_share_mapping_is_explicit_and_contract_is_smart_nyse():
 
 
 def test_positions_normalize_broker_class_share_to_canonical_and_preserve_local():
-    import ib_fetcher
-    from account_ctx import AccountCtx
+    from broker import Connection
 
     class FakeIB:
         def positions(self, account):
             return [_position("BRK B", 3), _position("BRK.B", 2),
                     _position("AAPL", 1)]
 
-    ctx = NS(account="U00000000")
-    assert ib_fetcher.get_positions(FakeIB(), ctx) == {
+    conn = Connection(FakeIB(), NS(account="U00000000"))
+    assert conn.positions() == {
         "BRK.B": 5,
         "AAPL": 1,
     }
 
-    detail = ib_fetcher.get_positions_detail(FakeIB(), ctx)
+    detail = conn.positions_detail()
     assert [p.contract.symbol for p in detail] == ["BRK.B", "BRK.B", "AAPL"]
     assert detail[0].contract.localSymbol == "BRK B"
 
@@ -82,7 +81,7 @@ def test_price_fallback_uses_provider_filename_for_class_share(tmp_path, monkeyp
 
 
 def test_ib_price_request_uses_broker_symbol_and_returns_canonical_key():
-    import price_utils
+    from broker import Connection
 
     requested = []
 
@@ -98,9 +97,7 @@ def test_ib_price_request_uses_broker_symbol_and_returns_canonical_key():
                        midpoint=lambda: 501.0,
                        last=0, close=0)]
 
-    prices = price_utils.robust_get_prices(
-        FakeIB(), ["BRK.B"], price_feed_port=None,
-    )
+    prices = Connection(FakeIB(), NS(price_feed_port=None)).prices(["BRK.B"])
     assert prices == {"BRK.B": 501.0}
     assert requested[0].symbol == "BRK B"
     assert requested[0].primaryExchange == "NYSE"

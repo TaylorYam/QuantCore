@@ -38,6 +38,7 @@ if str(ROOT_DIR) not in sys.path:
 LOG_DIR = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
 
+import broker
 from log_setup import setup_logging
 import market_calendar
 from notify import Digest, order_group_lines   # 三帳戶合併一則（#26）
@@ -244,31 +245,15 @@ def run_daily_check(account_name: str, digest: Digest):
 
         log.info(f"  Placing {len(orders)} LMT orders...")
 
-        # 取得即時報價以計算 LMT 價格
+        # 限價：Broker 的送單報價（錯亂報價已去掉 bid／ask、價差過大記 log）＋統一
+        # 限價規則；報價全缺的標的才向參考價（feed／延遲報價／CSV 後備）要價
         order_syms = list({o['symbol'] for o in orders})
-
-        # 先抓本連線的 bid/ask（用於 LMT 精準 buffer）。錯亂／價差過大的判斷與
-        # 限價規則第三階段（#185）併進 Broker 的送單報價與統一限價。
-        quotes = {}
-        for sym, q in conn.quotes(order_syms).items():
-            bid, ask = q['bid'], q['ask']
-            if bid and ask:
-                if bid > ask:
-                    log.warning(f"  {sym}: crossed quote bid={bid} > ask={ask}")
-                    bid = ask = None
-                elif (ask - bid) / ((ask + bid) / 2) > 0.05:
-                    log.warning(f"  {sym}: wide spread bid={bid} ask={ask}")
-            quotes[sym] = {'bid': bid, 'ask': ask}
-
-        # 對於缺 bid/ask 的 symbol，用參考價（feed／延遲報價／CSV 後備）
-        missing = [s for s in order_syms
-                   if not (quotes[s].get('bid') and quotes[s].get('ask'))]
-        if missing:
-            fallback = conn.prices(missing)
-            for sym in missing:
-                p = fallback.get(sym, 0)
-                if p > 0 and not quotes[sym].get('bid'):
-                    quotes[sym]['ref'] = p
+        quotes = conn.quotes(order_syms)
+        action = {o['symbol']: o['action'] for o in orders}   # 上面已去重：一檔一筆
+        # 不給參考價時限價是 0 = 報價全缺（bid／ask、mid、last、close 都沒有）
+        no_quote = [s for s in order_syms
+                    if not broker.limit_price(action[s], quotes.get(s, {}), None)]
+        refs = conn.prices(no_quote) if no_quote else {}
 
         # 為本段下單建一個 LMT+outsideRTH 的臨時 ctx（frozen，不汙染原 ctx）
         from dataclasses import replace as _replace
@@ -277,13 +262,7 @@ def run_daily_check(account_name: str, digest: Digest):
         ib_orders = []
         for o in orders:
             sym = o['symbol']
-            q = quotes.get(sym, {})
-            if o['action'] == 'BUY':
-                base = q.get('ask') or q.get('ref') or 0
-                lmt = round(base * 1.003, 2) if base > 0 else 0
-            else:
-                base = q.get('bid') or q.get('ref') or 0
-                lmt = round(base * 0.997, 2) if base > 0 else 0
+            lmt = broker.limit_price(o['action'], quotes.get(sym, {}), refs.get(sym))
 
             if lmt <= 0:
                 log.warning(f"    {sym}: no price, skipping")

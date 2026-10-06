@@ -30,7 +30,8 @@ def test_low_cushion_alerts():
 
 
 def test_missing_account_data_is_not_a_zero_cushion_alarm():
-    """get_account_info 缺欄位時 nav / cushion 都是 0 — 不能當成 cushion 0% 警示。"""
+    """nav / cushion 都是 0 = 沒資料，不能當成 cushion 0% 警示（Broker 讀不到時本來就
+    直接報錯，這是最後一道保險）。"""
     from daily_report import cushion_alert
     assert cushion_alert(nav=0.0, cushion_pct=0.0, excess_liq=0.0) is None
 

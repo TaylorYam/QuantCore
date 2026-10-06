@@ -39,7 +39,8 @@ class Narrator:
     """caller 自己的進度文字；預設什麼都不說。依呼叫順序：
 
     placing（撤完舊單、要開始送）→ priced（LMT，每張算好限價的單；src 是 caller
-    傳進來的那一筆）→ checking_fills（有真的送出單，彙整成交前）
+    傳進來的那一筆，原樣交回，所以 caller 可以帶自己的欄位，例如 dip-buy 的 reason）
+    → checking_fills（有真的送出單，彙整成交前）
     """
 
     def placing(self, count: int) -> None: ...

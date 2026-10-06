@@ -5,8 +5,9 @@ Why this exists
 Each automation script writes to its own ``logs/{prefix}_{date}.log`` via
 ``logging.basicConfig(..., force=True)``. When that call sits at *module level*
 it fires on **import**, not just when the script is the entry point — so a
-script imported as a library (e.g. ``rebalance_ib`` imported by
-``sp500_daily_check`` for ``place_orders`` / ``check_fills``) silently hijacks
+script imported as a library (e.g. ``rebalance_ib``, which ``sp500_daily_check``
+used to import for its order helpers before #205 moved them to
+``strategy_orders``) silently hijacks
 the importer's root logger and redirects its output into the wrong file. That
 is how the SP500 daily-risk-check output ended up inside ``rebalance_*.log``
 while ``daily_check_*.log`` looked empty.

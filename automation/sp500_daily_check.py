@@ -41,6 +41,7 @@ LOG_DIR.mkdir(exist_ok=True)
 from log_setup import setup_logging
 import market_calendar
 from notify import Digest, order_group_lines   # 三帳戶合併一則（#26）
+import strategy_orders                          # #205：策略單送出（撤舊單、限價、送單、成交）
 log = logging.getLogger(__name__)
 
 
@@ -55,8 +56,8 @@ def _prev_trading_day(d):
     return cur
 
 
-class _DipBuySend:
-    """dip-buy 送單的進度 log（strategy_orders.Narrator；文字與 #205 之前逐字相同）。"""
+class _DipBuySend(strategy_orders.Narrator):
+    """dip-buy 送單的進度 log（文字與 #205 之前逐字相同）。"""
 
     def placing(self, count: int) -> None:
         log.info(f"  Placing {count} LMT orders...")
@@ -64,9 +65,6 @@ class _DipBuySend:
     def priced(self, src: dict, lmt: float) -> None:
         log.info(f"    LMT {src['action']} {src['qty']}sh {src['symbol']} @ ${lmt:.2f}"
                  f"  ({src['reason']})")
-
-    def checking_fills(self) -> None:
-        pass
 
 
 def run_daily_check(account_name: str, digest: Digest):
@@ -76,7 +74,6 @@ def run_daily_check(account_name: str, digest: Digest):
     """
     import ib_fetcher               # #185：經 Broker 開連線（讀數、送單在 Connection 上）
     import manual_attribution       # #106：手動持倉暫停閘門
-    import strategy_orders          # #205：策略單送出（撤舊單、限價、送單、成交）
     from strategy_owner import SECTOR_ETFS   # #187：類股 ETF 清單唯一來源
     from symbol_contract import canonical_symbol
     from account_ctx import AccountCtx

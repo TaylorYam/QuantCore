@@ -185,7 +185,6 @@ def test_dip_buy_without_any_quote_uses_the_reference_price(dip_buy):
     assert _dip_limit(dip_buy) == round(500.0 * 1.003, 2)
 
 
-
 def test_dip_buy_sends_one_lmt_order_and_reports_it(dip_buy):
     d = _check()
     assert [(p.symbol, p.order_type, p.outside_rth) for p in dip_buy.placed] == [("SPY", "LMT", True)]

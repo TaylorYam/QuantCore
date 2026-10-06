@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
 )
 
 import strategy_params_display
-import trades_display
 
 from qt_panel import theme
 from qt_panel.widgets import Card, all_text, clear_layout, label
@@ -89,7 +88,8 @@ class RecentTradesCard(Card):
         self.set_trades(None)
 
     def set_trades(self, trades: list | None, error: str = "") -> None:
-        rows = [trades_display.trade_row(tr) for tr in trades or []]
+        """trades: trades_display.TradeLine 的清單（read_account_trades）。"""
+        rows = list(trades or [])
         self.table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             cells = (row.datetime,) + row.cells()[1:]       # 7 天內會跨日：顯示完整日期時間

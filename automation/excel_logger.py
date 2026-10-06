@@ -2,6 +2,7 @@
 QuantCore Automation — Excel 日誌記錄
   portfolio_tracker.xlsx  — 每日收盤持倉快照（一行一標的，含 Strategy heuristic）
   trade_log.xlsx          — 每次調倉委託記錄（Strategy 由 order dict 帶入）
+讀取端是 `ledger`（#209）；兩邊的欄位名稱都用這裡的常數。
 """
 
 from pathlib import Path
@@ -16,6 +17,29 @@ TRADE_FILE     = BASE_DIR / 'trade_log.xlsx'
 SQLITE_FILE    = BASE_DIR / 'quantcore_logs.sqlite3'
 PORT_SHEET     = 'Daily'
 TRADE_SHEET    = 'Trades'
+
+# ── 欄位名稱（#209）：寫端在這裡、讀端 `ledger`、`sqlite_store` 的對照都用這一組 ──
+DATE, ACCOUNT, STRATEGY, SYMBOL = 'Date', 'Account', 'Strategy', 'Symbol'
+# portfolio_tracker.xlsx（Daily）
+NAV, CUSHION_PCT, EXCESS_LIQ = 'NAV', 'Cushion%', 'ExcessLiq'
+SHARES, AVG_COST, MKT_PX, MKT_VAL = 'Shares', 'AvgCost', 'MktPx', 'MktVal'
+UNREAL_PNL, UNREAL_PNL_PCT = 'UnrealPnL', 'UnrealPnL%'
+# trade_log.xlsx（Trades）
+DATETIME, SIGNAL_DATE, ACTION, QTY = 'DateTime', 'SignalDate', 'Action', 'Qty'
+EST_PRICE, EST_VALUE = 'EstPrice', 'EstValue'
+FILL_PRICE, FILL_QTY, FILL_VALUE, FILL_STATUS = 'FillPrice', 'FillQty', 'FillValue', 'FillStatus'
+ORDER_TYPE, LEVERAGE, DRY_RUN = 'OrderType', 'Leverage', 'DryRun'
+
+# 新檔的欄序
+SNAPSHOT_FIELDS = (
+    DATE, ACCOUNT, NAV, CUSHION_PCT, EXCESS_LIQ, SYMBOL, STRATEGY, SHARES,
+    AVG_COST, MKT_PX, MKT_VAL, UNREAL_PNL, UNREAL_PNL_PCT,
+)
+TRADE_FIELDS = (
+    DATETIME, DATE, ACCOUNT, SIGNAL_DATE, STRATEGY, SYMBOL, ACTION, QTY,
+    EST_PRICE, EST_VALUE, FILL_PRICE, FILL_QTY, FILL_VALUE, FILL_STATUS,
+    ORDER_TYPE, LEVERAGE, DRY_RUN,
+)
 
 from symbol_contract import canonical_symbol
 
@@ -145,24 +169,24 @@ def append_daily_snapshot(nav: float, pos_detail: list, prices: dict,
         cost_abs = abs(pos * avg_cost)
         upnl_pct = round(upnl / cost_abs * 100, 2) if cost_abs else 0
         row = {
-            'Date':       today,
-            'Account':    account_name,
-            'NAV':        round(nav, 2),
-            'Cushion%':   round(cushion_pct, 2),
-            'ExcessLiq':  round(excess_liq, 2),
-            'Symbol':     sym,
-            'Strategy':   _classify_strategy(sym, pos, strategy_alloc),  # heuristic 歸屬
-            'Shares':     round(pos, 4),
-            'AvgCost':    round(avg_cost, 4),
-            'MktPx':      round(mkt_px, 4),
-            'MktVal':     round(mkt_val, 2),
-            'UnrealPnL':  round(upnl, 2),
-            'UnrealPnL%': upnl_pct,
+            DATE:           today,
+            ACCOUNT:        account_name,
+            NAV:            round(nav, 2),
+            CUSHION_PCT:    round(cushion_pct, 2),
+            EXCESS_LIQ:     round(excess_liq, 2),
+            SYMBOL:         sym,
+            STRATEGY:       _classify_strategy(sym, pos, strategy_alloc),  # heuristic 歸屬
+            SHARES:         round(pos, 4),
+            AVG_COST:       round(avg_cost, 4),
+            MKT_PX:         round(mkt_px, 4),
+            MKT_VAL:        round(mkt_val, 2),
+            UNREAL_PNL:     round(upnl, 2),
+            UNREAL_PNL_PCT: upnl_pct,
         }
         rows.append(row)
     capture = str(capture_id or uuid4().hex)
     identities = [
-        f"snapshot:{capture}:{account_name}:{row['Symbol']}"
+        f"snapshot:{capture}:{account_name}:{row[SYMBOL]}"
         for row in rows
     ]
     _append_rows(PORT_SHEET, rows, identities)
@@ -190,23 +214,23 @@ def append_trade_log(placed: list, fill_results: list, signal_date,
         fill_status = fill.get('status', 'DRY_RUN') if fill else 'DRY_RUN'
 
         rows.append({
-            'DateTime':   now,
-            'Date':       today,
-            'Account':    account_name,
-            'SignalDate': str(signal_date),
-            'Strategy':   o.get('strategy', strategy),
-            'Symbol':     sym,
-            'Action':     o['action'],
-            'Qty':        qty,
-            'EstPrice':   round(est_px, 4),
-            'EstValue':   round(qty * est_px, 2),
-            'FillPrice':  round(fill_px, 4) if fill_px else '',
-            'FillQty':    fill_qty if fill_qty else '',
-            'FillValue':  fill_val,
-            'FillStatus': fill_status,
-            'OrderType':  order_type,
-            'Leverage':   leverage,
-            'DryRun':     dry_run,
+            DATETIME:    now,
+            DATE:        today,
+            ACCOUNT:     account_name,
+            SIGNAL_DATE: str(signal_date),
+            STRATEGY:    o.get('strategy', strategy),
+            SYMBOL:      sym,
+            ACTION:      o['action'],
+            QTY:         qty,
+            EST_PRICE:   round(est_px, 4),
+            EST_VALUE:   round(qty * est_px, 2),
+            FILL_PRICE:  round(fill_px, 4) if fill_px else '',
+            FILL_QTY:    fill_qty if fill_qty else '',
+            FILL_VALUE:  fill_val,
+            FILL_STATUS: fill_status,
+            ORDER_TYPE:  order_type,
+            LEVERAGE:    leverage,
+            DRY_RUN:     dry_run,
         })
     capture = str(capture_id or uuid4().hex)
     identities = []

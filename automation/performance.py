@@ -1,6 +1,6 @@
 """Performance: cumulative time-weighted return excluding cash flows (#166).
 
-No GUI imports. Takes the daily NAV series (`equity_chart.load_equity_series`)
+No GUI imports. Takes the daily NAV series (`ledger.daily_nav`)
 and the account's deposits / withdrawals (`ib_flex`) and chains daily returns
 
     r_t = (NAV_t - F_t) / NAV_{t-1} - 1

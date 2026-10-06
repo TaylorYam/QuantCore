@@ -21,21 +21,18 @@ from typing import Iterable, Mapping
 
 import pandas as pd
 
+# 欄位名稱與工作表只定義在寫端（#209）
+from excel_logger import (
+    ACCOUNT, ACTION, AVG_COST, CUSHION_PCT, DATE, DATETIME, DRY_RUN, EST_PRICE,
+    EST_VALUE, EXCESS_LIQ, FILL_PRICE, FILL_QTY, FILL_STATUS, FILL_VALUE, LEVERAGE,
+    MKT_PX, MKT_VAL, NAV, ORDER_TYPE, QTY, SHARES, SIGNAL_DATE, SNAPSHOT_FIELDS,
+    STRATEGY, SYMBOL, TRADE_FIELDS, UNREAL_PNL, UNREAL_PNL_PCT,
+)
+from excel_logger import PORT_SHEET as PORTFOLIO_SHEET
+from excel_logger import TRADE_SHEET
+
 
 SCHEMA_VERSION = 2
-PORTFOLIO_SHEET = "Daily"
-TRADE_SHEET = "Trades"
-
-SNAPSHOT_FIELDS = (
-    "Date", "Account", "NAV", "Cushion%", "ExcessLiq", "Symbol",
-    "Strategy", "Shares", "AvgCost", "MktPx", "MktVal", "UnrealPnL",
-    "UnrealPnL%",
-)
-TRADE_FIELDS = (
-    "DateTime", "Date", "Account", "SignalDate", "Strategy", "Symbol",
-    "Action", "Qty", "EstPrice", "EstValue", "FillPrice", "FillQty",
-    "FillValue", "FillStatus", "OrderType", "Leverage", "DryRun",
-)
 
 _SNAPSHOT_COLUMNS = {
     "date": "TEXT NOT NULL",
@@ -221,42 +218,42 @@ def _row(frame: pd.DataFrame, fields: tuple[str, ...]) -> list[dict]:
 def _snapshot_item(source: Mapping[str, object]) -> dict:
     """Normalize one legacy snapshot row without assigning its occurrence."""
     return {
-        "date": _text(source["Date"], field="Date", required=True),
-        "account": _text(source["Account"], field="Account"),
-        "nav": _number(source["NAV"], field="NAV"),
-        "cushion_pct": _number(source["Cushion%"], field="Cushion%"),
-        "excess_liq": _number(source["ExcessLiq"], field="ExcessLiq"),
-        "symbol": _text(source["Symbol"], field="Symbol", required=True),
-        "strategy": _text(source["Strategy"], field="Strategy"),
-        "shares": _number(source["Shares"], field="Shares"),
-        "avg_cost": _number(source["AvgCost"], field="AvgCost"),
-        "mkt_px": _number(source["MktPx"], field="MktPx"),
-        "mkt_val": _number(source["MktVal"], field="MktVal"),
-        "unreal_pnl": _number(source["UnrealPnL"], field="UnrealPnL"),
-        "unreal_pnl_pct": _number(source["UnrealPnL%"], field="UnrealPnL%"),
+        "date": _text(source[DATE], field=DATE, required=True),
+        "account": _text(source[ACCOUNT], field=ACCOUNT),
+        "nav": _number(source[NAV], field=NAV),
+        "cushion_pct": _number(source[CUSHION_PCT], field=CUSHION_PCT),
+        "excess_liq": _number(source[EXCESS_LIQ], field=EXCESS_LIQ),
+        "symbol": _text(source[SYMBOL], field=SYMBOL, required=True),
+        "strategy": _text(source[STRATEGY], field=STRATEGY),
+        "shares": _number(source[SHARES], field=SHARES),
+        "avg_cost": _number(source[AVG_COST], field=AVG_COST),
+        "mkt_px": _number(source[MKT_PX], field=MKT_PX),
+        "mkt_val": _number(source[MKT_VAL], field=MKT_VAL),
+        "unreal_pnl": _number(source[UNREAL_PNL], field=UNREAL_PNL),
+        "unreal_pnl_pct": _number(source[UNREAL_PNL_PCT], field=UNREAL_PNL_PCT),
     }
 
 
 def _trade_item(source: Mapping[str, object]) -> dict:
     """Normalize one legacy trade row without assigning its occurrence."""
     return {
-        "datetime": _text(source["DateTime"], field="DateTime", required=True),
-        "date": _text(source["Date"], field="Date", required=True),
-        "account": _text(source["Account"], field="Account"),
-        "signal_date": _text(source["SignalDate"], field="SignalDate"),
-        "strategy": _text(source["Strategy"], field="Strategy"),
-        "symbol": _text(source["Symbol"], field="Symbol", required=True),
-        "action": _text(source["Action"], field="Action", required=True),
-        "qty": _number(source["Qty"], field="Qty", integer=True),
-        "est_price": _number(source["EstPrice"], field="EstPrice"),
-        "est_value": _number(source["EstValue"], field="EstValue"),
-        "fill_price": _number(source["FillPrice"], field="FillPrice"),
-        "fill_qty": _number(source["FillQty"], field="FillQty"),
-        "fill_value": _number(source["FillValue"], field="FillValue"),
-        "fill_status": _text(source["FillStatus"], field="FillStatus"),
-        "order_type": _text(source["OrderType"], field="OrderType"),
-        "leverage": _number(source["Leverage"], field="Leverage"),
-        "dry_run": _bool(source["DryRun"], field="DryRun"),
+        "datetime": _text(source[DATETIME], field=DATETIME, required=True),
+        "date": _text(source[DATE], field=DATE, required=True),
+        "account": _text(source[ACCOUNT], field=ACCOUNT),
+        "signal_date": _text(source[SIGNAL_DATE], field=SIGNAL_DATE),
+        "strategy": _text(source[STRATEGY], field=STRATEGY),
+        "symbol": _text(source[SYMBOL], field=SYMBOL, required=True),
+        "action": _text(source[ACTION], field=ACTION, required=True),
+        "qty": _number(source[QTY], field=QTY, integer=True),
+        "est_price": _number(source[EST_PRICE], field=EST_PRICE),
+        "est_value": _number(source[EST_VALUE], field=EST_VALUE),
+        "fill_price": _number(source[FILL_PRICE], field=FILL_PRICE),
+        "fill_qty": _number(source[FILL_QTY], field=FILL_QTY),
+        "fill_value": _number(source[FILL_VALUE], field=FILL_VALUE),
+        "fill_status": _text(source[FILL_STATUS], field=FILL_STATUS),
+        "order_type": _text(source[ORDER_TYPE], field=ORDER_TYPE),
+        "leverage": _number(source[LEVERAGE], field=LEVERAGE),
+        "dry_run": _bool(source[DRY_RUN], field=DRY_RUN),
     }
 
 
@@ -512,21 +509,21 @@ def _export_frame(path: str | Path, table: str) -> pd.DataFrame:
     rows = _query(path, table)
     if table == "portfolio_snapshots":
         rename = {
-            "date": "Date", "account": "Account", "nav": "NAV",
-            "cushion_pct": "Cushion%", "excess_liq": "ExcessLiq",
-            "symbol": "Symbol", "strategy": "Strategy", "shares": "Shares",
-            "avg_cost": "AvgCost", "mkt_px": "MktPx", "mkt_val": "MktVal",
-            "unreal_pnl": "UnrealPnL", "unreal_pnl_pct": "UnrealPnL%",
+            "date": DATE, "account": ACCOUNT, "nav": NAV,
+            "cushion_pct": CUSHION_PCT, "excess_liq": EXCESS_LIQ,
+            "symbol": SYMBOL, "strategy": STRATEGY, "shares": SHARES,
+            "avg_cost": AVG_COST, "mkt_px": MKT_PX, "mkt_val": MKT_VAL,
+            "unreal_pnl": UNREAL_PNL, "unreal_pnl_pct": UNREAL_PNL_PCT,
         }
         data = [{rename[k]: row[k] for k in rename} for row in rows]
         return pd.DataFrame(data, columns=list(SNAPSHOT_FIELDS))
     rename = {
-        "datetime": "DateTime", "date": "Date", "account": "Account",
-        "signal_date": "SignalDate", "strategy": "Strategy", "symbol": "Symbol",
-        "action": "Action", "qty": "Qty", "est_price": "EstPrice",
-        "est_value": "EstValue", "fill_price": "FillPrice", "fill_qty": "FillQty",
-        "fill_value": "FillValue", "fill_status": "FillStatus", "order_type": "OrderType",
-        "leverage": "Leverage", "dry_run": "DryRun",
+        "datetime": DATETIME, "date": DATE, "account": ACCOUNT,
+        "signal_date": SIGNAL_DATE, "strategy": STRATEGY, "symbol": SYMBOL,
+        "action": ACTION, "qty": QTY, "est_price": EST_PRICE,
+        "est_value": EST_VALUE, "fill_price": FILL_PRICE, "fill_qty": FILL_QTY,
+        "fill_value": FILL_VALUE, "fill_status": FILL_STATUS, "order_type": ORDER_TYPE,
+        "leverage": LEVERAGE, "dry_run": DRY_RUN,
     }
     data = [{rename[k]: row[k] for k in rename} for row in rows]
     return pd.DataFrame(data, columns=list(TRADE_FIELDS))

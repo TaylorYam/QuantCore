@@ -1,22 +1,25 @@
-"""最近成交（#150）：讀 trade_log 與成交列格式化，Tk TradesView 與新 Panel 共用。"""
+"""最近成交（#150）：成交列格式化與策略標籤，Tk TradesView 與新 Panel 共用。
+
+成交本身經 `ledger` 讀出（#209）；這裡用寫端寫入 → `read_account_trades` 測整條路。
+"""
 from __future__ import annotations
 
-import math
+import pytest
 
-import pandas as pd
-
-from trades_display import read_latest_trades, trade_row
+import excel_logger
+from ledger import TradeRow
+from trades_display import read_account_trades, strategy_label, trade_line
 
 
 def trade(**kw):
-    tr = {"datetime": "2026-09-29 21:30:05", "symbol": "XLK", "action": "BUY", "qty": 10,
-          "fill_price": 230.5, "strategy": "SR", "status": "Filled", "dry_run": False}
+    tr = dict(datetime="2026-09-29 21:30:05", symbol="XLK", action="BUY", qty=10,
+              fill_price=230.5, strategy="SR", status="Filled", dry_run=False)
     tr.update(kw)
-    return tr
+    return TradeRow(**tr)
 
 
 def test_row_cells_and_colors():
-    row = trade_row(trade())
+    row = trade_line(trade())
     assert row.cells() == ("21:30:05", "XLK", "BUY", "10", "$230.50", "SR", "Filled")
     assert row.datetime == "2026-09-29 21:30:05"
     assert (row.action_color, row.status_color) == ("green", "green")
@@ -24,92 +27,30 @@ def test_row_cells_and_colors():
 
 
 def test_sell_is_red_and_dry_run_is_tagged_and_yellow():
-    row = trade_row(trade(action="SELL", status="DRY RUN", dry_run=True))
+    row = trade_line(trade(action="SELL", status="DRY RUN", dry_run=True))
     assert row.action_color == "red"
     assert (row.status, row.status_color) == ("DRY RUN [DRY]", "yellow")
     # 只有 status 本身含 DRY 才變黃；dry_run 旗標只加標籤
-    assert trade_row(trade(dry_run=True)).cells()[-1] == "Filled [DRY]"
-    assert trade_row(trade(dry_run=True)).status_color == "green"
+    assert trade_line(trade(dry_run=True)).cells()[-1] == "Filled [DRY]"
+    assert trade_line(trade(dry_run=True)).status_color == "green"
 
 
-def test_missing_zero_or_nan_fill_price_is_a_dash():
-    for px in (0, -1.0, float("nan")):
-        assert trade_row(trade(fill_price=px)).price == "—"
-    tr = trade()
-    del tr["fill_price"]
-    assert trade_row(tr).price == "—"
+def test_zero_or_nan_fill_price_is_a_dash():
+    for px in (0.0, -1.0, float("nan")):
+        assert trade_line(trade(fill_price=px)).price == "—"
 
 
 def test_short_datetime_is_kept_whole():
-    assert trade_row(trade(datetime="21:30")).time == "21:30"
+    assert trade_line(trade(datetime="21:30")).time == "21:30"
 
 
-def _write_log(path, rows):
-    pd.DataFrame(rows).to_excel(path, sheet_name="Trades", index=False)
+# ── 策略標籤 ─────────────────────────────────────────────────────────
 
-
-def test_read_latest_trades_keeps_seven_days_newest_first_for_one_account(tmp_path):
-    today = pd.Timestamp.now().normalize()
-    day = lambda n: (today - pd.Timedelta(days=n)).strftime("%Y-%m-%d")
-    log = tmp_path / "trade_log.xlsx"
-    _write_log(log, [
-        {"Date": day(30), "DateTime": f"{day(30)} 21:30:00", "Account": "Taylor",
-         "Symbol": "OLD", "Action": "BUY", "Qty": 1, "FillPrice": 1, "Strategy": "SR",
-         "FillStatus": "Filled", "DryRun": False},
-        {"Date": day(2), "DateTime": f"{day(2)} 21:30:00", "Account": "Taylor",
-         "Symbol": "XLK", "Action": "BUY", "Qty": 3, "FillPrice": "12.5", "Strategy": "SP500",
-         "FillStatus": "Filled", "DryRun": False},
-        {"Date": day(1), "DateTime": f"{day(1)} 21:30:00", "Account": "Taylor",
-         "Symbol": "MSFT", "Action": "SELL", "Qty": 2, "FillPrice": "bad",
-         "Strategy": "SR+SP500 Combo", "FillStatus": "DRY RUN", "DryRun": True},
-        {"Date": day(1), "DateTime": f"{day(1)} 21:31:00", "Account": "Rosa",
-         "Symbol": "XLB", "Action": "BUY", "Qty": 5, "FillPrice": 3, "Strategy": "SR",
-         "FillStatus": "Filled", "DryRun": False},
-    ])
-    trades = read_latest_trades("Taylor", log)
-    assert [t["symbol"] for t in trades] == ["MSFT", "XLK"]           # 新到舊、超過 7 天不列
-    assert trades[0]["strategy"] == "Stocks" and trades[0]["fill_price"] == 0.0
-    assert trades[1]["strategy"] == "SR" and trades[1]["fill_price"] == 12.5  # 沒給 Allocation：類股 ETF 算 SR
-    assert [t["symbol"] for t in read_latest_trades("Rosa", log)] == ["XLB"]
-    assert read_latest_trades("Nobody", log) == []
-
-
-def test_read_latest_trades_missing_or_broken_log_is_empty(tmp_path):
-    assert read_latest_trades("Taylor", tmp_path / "missing.xlsx") == []
-    broken = tmp_path / "broken.xlsx"
-    broken.write_bytes(b"not excel")
-    assert read_latest_trades("Taylor", broken) == []
-
-
-def test_nan_fill_price_from_the_log_shows_a_dash(tmp_path):
-    today = pd.Timestamp.now().strftime("%Y-%m-%d")
-    log = tmp_path / "trade_log.xlsx"
-    _write_log(log, [{"Date": today, "DateTime": f"{today} 21:30:00", "Account": "Taylor",
-                      "Symbol": "AAPL", "Action": "BUY", "Qty": 1, "FillPrice": None,
-                      "Strategy": "SP500", "FillStatus": "Filled", "DryRun": False}])
-    [tr] = read_latest_trades("Taylor", log)
-    assert math.isnan(tr["fill_price"])
-    assert trade_row(tr).price == "—"
-
-
-def _etf_trades_log(tmp_path):
-    today = pd.Timestamp.now().strftime("%Y-%m-%d")
-    log = tmp_path / "trade_log.xlsx"
-    _write_log(log, [
-        {"Date": today, "DateTime": f"{today} 21:30:0{i}", "Account": "Taylor",
-         "Symbol": sym, "Action": "BUY", "Qty": 1, "FillPrice": 1, "Strategy": raw,
-         "FillStatus": "Filled", "DryRun": False}
-        for i, (sym, raw) in enumerate([("XLK", "SR+SkewLS"), ("REW", "SkewLS"),
-                                        ("AAPL", "SP500")])])
-    return log
-
-
-def test_etf_trades_are_labelled_like_the_portfolio(tmp_path):
-    """#187：類股／反向 ETF 的成交標籤和 Portfolio 同一套規則（依 Allocation）。"""
-    log = _etf_trades_log(tmp_path)
-
+def test_etf_trades_are_labelled_like_the_portfolio():
+    """#187：類股／反向 ETF 的成交標籤和 Portfolio 同一套規則（依 Allocation），不看寫入值。"""
     def labels(alloc):
-        return {t["symbol"]: t["strategy"] for t in read_latest_trades("Taylor", log, alloc)}
+        return {sym: strategy_label(trade(symbol=sym, strategy=raw), alloc)
+                for sym, raw in (("XLK", "SR+SkewLS"), ("REW", "SkewLS"), ("AAPL", "SP500"))}
 
     assert labels((0.0, 1.0)) == {"XLK": "SkewLS", "REW": "SkewLS", "AAPL": "Stocks"}
     assert labels((0.3, 0.2)) == {"XLK": "SR+SkewLS", "REW": "SkewLS", "AAPL": "Stocks"}
@@ -117,16 +58,60 @@ def test_etf_trades_are_labelled_like_the_portfolio(tmp_path):
     assert labels(None)["XLK"] == "SR"                  # 不知道 Allocation：舊規則
 
 
-def test_account_trades_use_that_accounts_allocation(tmp_path, monkeypatch):
-    import account_utils
-    import trades_display
+def _old_stock_label(raw: str) -> str:
+    """#209 之前用字串猜的規則（非 ETF 成交）。"""
+    return "SR" if "SR" in raw and "SP500" not in raw and "Combo" not in raw else "Stocks"
 
-    log = _etf_trades_log(tmp_path)
+
+@pytest.mark.parametrize("written", [
+    # trade_log 裡實際出現過的 Strategy 寫法，加上 Sync／手動與空白
+    "SP500", "EXIT", "SR", "SR+SkewLS", "SkewLS", "QuantCore Combo",
+    "QuantCore SP500 Only", "QuantCore SR Only", "Sync", "Manual", "nan", "",
+    "SR+SP500 Combo",
+])
+def test_stock_trades_keep_the_old_label_for_every_written_strategy(written):
+    assert strategy_label(trade(symbol="AAPL", strategy=written)) == _old_stock_label(written)
+
+
+# ── 寫端寫入 → 畫面列 ─────────────────────────────────────────────────
+
+@pytest.fixture
+def trade_log(monkeypatch, tmp_path):
+    monkeypatch.setattr(excel_logger, "TRADE_FILE", tmp_path / "trade_log.xlsx")
+    monkeypatch.delenv("QUANTCORE_LOG_BACKEND", raising=False)
+
+    def write(account, symbol, strategy, *, fill=True):
+        placed = [{"symbol": symbol, "action": "BUY", "qty": 3, "lmt_price": 12.0,
+                   "strategy": strategy}]
+        fills = [{"symbol": symbol, "filled": 3, "avg_price": 12.5, "status": "Filled"}] if fill else []
+        excel_logger.append_trade_log(placed, fills, "2026-10-05", "MOO", 1.3, False,
+                                      account_name=account)
+    return write
+
+
+def test_account_trades_are_screen_rows_newest_first_with_that_accounts_allocation(
+        trade_log, monkeypatch):
+    import account_utils
+
+    trade_log("Taylor", "AAPL", "SP500", fill=False)
+    trade_log("Taylor", "XLK", "SR+SkewLS")
+    trade_log("Rosa", "XLB", "SR")
     monkeypatch.setattr(account_utils, "get_account_config",
                         lambda name: {"alloc_sr": 0.0, "alloc_skewls": 1.0, "alloc_sp500": 0.4})
-    assert trades_display.read_account_trades("Taylor", log)[-1]["strategy"] == "SkewLS"
+    rows = read_account_trades("Taylor")
+    assert [r.cells()[1:] for r in rows] == [
+        ("XLK", "BUY", "3", "$12.50", "SkewLS", "Filled"),
+        ("AAPL", "BUY", "3", "—", "Stocks", "DRY_RUN"),
+    ]
 
     def missing(name):
         raise ValueError("Account not found")
     monkeypatch.setattr(account_utils, "get_account_config", missing)
-    assert trades_display.read_account_trades("Taylor", log)[-1]["strategy"] == "SR"
+    assert read_account_trades("Taylor")[0].strategy == "SR"       # 讀不到設定：舊規則
+
+
+def test_missing_or_broken_log_shows_no_trades(tmp_path):
+    assert read_account_trades("Taylor", tmp_path / "missing.xlsx") == []
+    broken = tmp_path / "broken.xlsx"
+    broken.write_bytes(b"not excel")
+    assert read_account_trades("Taylor", broken) == []

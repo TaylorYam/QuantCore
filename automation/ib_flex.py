@@ -328,17 +328,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dir", type=Path, default=Path(__file__).parent,
                         help="放 accounts.json、portfolio_tracker.xlsx 的 automation 目錄")
     args = parser.parse_args(argv)
-    import equity_chart
+    import ledger
 
     try:
         accounts = json.loads((args.dir / "accounts.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         print(f"[X] 讀不到 {args.dir / 'accounts.json'}：{e}")
         return 1
-    equity_chart.PORTFOLIO_FILE = args.dir / "portfolio_tracker.xlsx"
     try:
         lines = check_report(args.account, accounts,
-                             equity_chart.load_equity_series(args.account))
+                             ledger.daily_nav(args.account,
+                                              path=args.dir / "portfolio_tracker.xlsx"))
     except FlexError as e:
         print(f"[X] {e}")
         return 1

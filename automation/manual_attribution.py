@@ -48,6 +48,7 @@ from pathlib import Path
 import sqlite3
 from typing import Callable, Iterable
 
+import manual_order_status
 import manual_orders
 
 log = logging.getLogger(__name__)
@@ -76,7 +77,7 @@ class ManualFill:
     def resolved(self) -> bool:
         # 只有 manual_orders 的結案狀態算結案；其他狀態（含日後新增、本模組
         # 不認得的）一律視為「結果未確認」— 保守暫停。
-        return (self.status in manual_orders.TERMINAL_STATUSES
+        return (self.status in manual_order_status.TERMINAL_STATUSES
                 and self.action in _ACTION_SIGN)
 
 

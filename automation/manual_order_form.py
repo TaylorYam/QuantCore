@@ -11,7 +11,7 @@ import math
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
-from manual_orders import ACTIVE_STATUSES, TERMINAL_STATUSES, UNCONFIRMED_STATUSES
+from manual_order_status import ACTIVE_STATUSES, TERMINAL_STATUSES, UNCONFIRMED_STATUSES
 
 SHARES_MODE = "整股股數"
 CASH_MODE = "美元金額"

@@ -8,6 +8,8 @@
   管理的帳號後先檢查，沒通過就斷線並把例外往上丟，呼叫端拿不到連線。
 - **Connection**：一條已連上的連線上的讀數與送單 — 權益、持倉、參考價、送單時的
   買賣報價、掛單、建合約、送單、撤單、等待、斷線。
+- **IB 委託狀態詞彙**（`IB_DONE_STATUSES`）：送單流程視為「這張單結束了」的 IB 狀態，
+  只定義在這裡（#210）；手動單自己的狀態對應在 `manual_order_status`。
 
 讀數與限價各只有一份（#185 第三階段）：
 - **權益**：只讀所選帳戶的 NetLiquidation（USD）；cushion、excess liquidity 同樣只讀
@@ -171,6 +173,13 @@ def limit_price(action: str, quote: dict, ref: float | None) -> float:
     if not base or base <= 0:
         return 0.0
     return round(base * factor, 2)
+
+
+# ── IB 委託狀態詞彙（#210）────────────────────────────────────────────────
+
+# 送單流程視為「這張單結束了、不必再等」的 IB 委託狀態（成交、取消、API 端取消、
+# 被拒 Inactive）。手動單、交給策略接管都用這一份。
+IB_DONE_STATUSES = frozenset({"Filled", "Cancelled", "ApiCancelled", "Inactive"})
 
 
 # ── 連線 ─────────────────────────────────────────────────────────────────

@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import manual_order_status as mos  # noqa: E402
 import manual_orders as mo  # noqa: E402
 from broker import PAPER_VERIFY_CLIENT_ID, Broker  # noqa: E402
 
@@ -273,22 +274,22 @@ def cmd_probe_2109(args, timeline: Timeline) -> None:
             ib.sleep(0.1)
         events = [event for event in timeline.events if event.order_id == order.orderId]
         warning = next((event for event in events
-                        if event.kind == "error" and event.code == mo._IB_OUTSIDE_RTH_IGNORED), None)
+                        if event.kind == "error" and event.code == mos.IB_OUTSIDE_RTH_IGNORED), None)
         first_status = next((event for event in events
                              if event.kind == "orderStatus"
-                             and event.status not in mo._IB_AWAITING_ACK), None)
+                             and event.status not in mos.IB_AWAITING_ACK), None)
         print("\n  判定：")
         if warning is None:
             print("    未出現 2109：此組合在 paper 上沒有觸發，這次無法驗證順序")
         elif first_status is None or warning.elapsed <= first_status.elapsed:
             print(f"    PASS：2109（+{warning.elapsed:.3f}s）先於第一個狀態回報"
                   + (f"（+{first_status.elapsed:.3f}s）" if first_status else "（未收到狀態）"))
-        elif warning.elapsed <= first_status.elapsed + mo._OUTSIDE_RTH_CONFIRM_SECONDS:
+        elif warning.elapsed <= first_status.elapsed + mos.OUTSIDE_RTH_CONFIRM_SECONDS:
             print(f"    PASS（確認窗內）：2109 晚於狀態 {warning.elapsed - first_status.elapsed:.3f}s，"
-                  f"仍在服務的 {mo._OUTSIDE_RTH_CONFIRM_SECONDS:g} 秒確認窗內，會被取消")
+                  f"仍在服務的 {mos.OUTSIDE_RTH_CONFIRM_SECONDS:g} 秒確認窗內，會被取消")
         else:
             print(f"    FAIL：2109（+{warning.elapsed:.3f}s）晚於第一個狀態回報"
-                  f"（+{first_status.elapsed:.3f}s）超過 {mo._OUTSIDE_RTH_CONFIRM_SECONDS:g} 秒，"
+                  f"（+{first_status.elapsed:.3f}s）超過 {mos.OUTSIDE_RTH_CONFIRM_SECONDS:g} 秒，"
                   "服務會漏掉")
         if not trade.isDone():
             timeline.mark("取消 probe 委託")

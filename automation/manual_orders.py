@@ -27,38 +27,21 @@ from zoneinfo import ZoneInfo
 
 from account_utils import ROLE_MANUAL_ORDER
 # 手動單用的即時報價在 Broker（#185），這裡只用它的結果與規則
-from broker import AccountValueUnavailable, BrokerQuote, realtime_quote
+from broker import IB_DONE_STATUSES, AccountValueUnavailable, BrokerQuote, realtime_quote
+# IB 回報 → 手動單狀態的規則與狀態詞彙在 manual_order_status（#210）
+from manual_order_status import (
+    ACTIVE_STATUSES, IB_AWAITING_ACK, IB_OUTSIDE_RTH_IGNORED, IB_WORKING_STATUSES,
+    OUTSIDE_RTH_CONFIRM_SECONDS, STATUS_LABELS, TERMINAL_STATUSES, UNCONFIRMED_STATUSES,
+    fill_totals, status_from_trade,
+)
 from market_calendar import NYSE_EARLY_CLOSES, official_sessions
 
+
+# ── Constants ───────────────────────────────────────────────────────────────
 
 MANUAL_ORDER_REF_PREFIX = "QUANTCORE_MANUAL:"
 DEFAULT_STORE_PATH = Path(__file__).parent / "manual_orders.sqlite3"
 SUPPORTED_MANUAL_ACCOUNTS = ("Taylor", "Rosa", "Yvonne")
-# Manual-order status vocabulary, defined only here (manual_order_form and
-# manual_attribution import it).  Every status is either active or terminal.
-# Active: the order may still fill; at most one per Account/symbol (the
-# migration-1 unique index repeats this list — a test keeps them equal).
-ACTIVE_STATUSES = (
-    "SENDING", "SENT", "ACCEPTED", "PARTIAL", "CANCEL_PENDING",
-    "CANCEL_UNKNOWN", "IB_UNKNOWN", "SUBMISSION_UNKNOWN",
-)
-TERMINAL_STATUSES = frozenset({"FILLED", "REJECTED", "CANCELLED", "EXPIRED"})
-# Active statuses whose IB outcome is unconfirmed: each episode raises an alert.
-UNCONFIRMED_STATUSES = frozenset({"CANCEL_UNKNOWN", "IB_UNKNOWN", "SUBMISSION_UNKNOWN"})
-_STATUS_LABELS = {
-    "SENDING": "送出中",
-    "SENT": "已送出，等待 IB 回覆",
-    "ACCEPTED": "IB 已接受",
-    "PARTIAL": "部分成交",
-    "FILLED": "已成交",
-    "REJECTED": "遭 IB 拒單",
-    "CANCEL_PENDING": "取消確認中",
-    "CANCEL_UNKNOWN": "取消結果待確認",
-    "IB_UNKNOWN": "IB 狀態待確認",
-    "CANCELLED": "已取消",
-    "EXPIRED": "已失效",
-    "SUBMISSION_UNKNOWN": "送單結果待確認",
-}
 SESSION_LABELS = {
     "REGULAR": "一般時段", "PRE_MARKET": "盤前", "AFTER_HOURS": "盤後",
     "OVERNIGHT": "隔夜",
@@ -71,13 +54,6 @@ _SESSION_WINDOWS = {
     "OVERNIGHT": "IBKR 隔夜市場，美東 20:00–03:50，週日 18:00 起，以 IB 交易時間為準",
 }
 _OVERNIGHT_EXCHANGE = "OVERNIGHT"
-# Paper, 2026-09-29: an OVERNIGHT-routed order is rejected (10329, then 201)
-# unless the Gateway bypasses the redirect precaution for stock API orders.
-_IB_DIRECT_ROUTING_BLOCKED = 10329
-_DIRECT_ROUTING_BLOCKED_MESSAGE = (
-    "遭 IB 拒單：Gateway 的 API 預防設定擋下直接路由；請在該 Gateway 的"
-    "設定 → API → 預防，勾選「股票API委託單跳過重新傳遞委託單警告」"
-)
 # Extended-hours orders are not accepted in a window's last minute, leaving
 # time to confirm outsideRth and, if IB dropped it, to cancel before the
 # regular session (pre-market) or the window's end (after-hours).
@@ -85,24 +61,14 @@ _EXTENDED_SUBMIT_MARGIN = timedelta(minutes=1)
 # A limit this far from the last completed close is flagged, never blocked.
 _PRICE_DEVIATION_WARN = Decimal("0.10")
 _PRIOR_CLOSE_TIMEOUT_SECONDS = 10
-# TWS warning: "Attribute 'Outside Regular Trading Hours' is ignored based on
-# the order type and destination. PlaceOrder is now being processed."
-_IB_OUTSIDE_RTH_IGNORED = 2109
 _OUTSIDE_RTH_IGNORED_REASON = "IB 回報忽略盤前盤後設定（2109）"
 _IB_ACK_TIMEOUT_SECONDS = 10.0
 _IB_ACK_POLL_SECONDS = 0.5
-# TWS sends 2109 only to the connection that placed the order, so that
-# connection keeps listening this long after IB's first status. Only a quiet
-# window marks outsideRth as confirmed; anything else is cancelled.
-_OUTSIDE_RTH_CONFIRM_SECONDS = 5.0
 _UNACKNOWLEDGED_REASON = (
     f"IB 未在 {_IB_ACK_TIMEOUT_SECONDS:g} 秒內回覆委託，無法確認盤前盤後設定"
 )
 _UNCONFIRMED_REASON = "送單連線在確認盤前盤後設定前中斷，可能漏收 IB 2109"
 _IB_RECORD_WITHOUT_OUTSIDE_RTH_REASON = "IB 委託紀錄顯示未套用盤前盤後設定（outsideRth=False）"
-_IB_AWAITING_ACK = frozenset({"", "ApiPending", "PendingSubmit"})
-_IB_WORKING_STATUSES = frozenset({"ApiPending", "PendingSubmit", "PreSubmitted", "Submitted"})
-_IB_DONE_STATUSES = frozenset({"Filled", "Cancelled", "ApiCancelled", "Inactive"})
 
 # SMART-routed US listings returned by IB contract qualification. Unknown
 # primary exchanges fail closed so a USD-denominated foreign listing cannot
@@ -118,6 +84,8 @@ log = logging.getLogger(__name__)
 _IB_EVENT_LOOP_LOCAL = threading.local()
 
 
+# ── Errors ──────────────────────────────────────────────────────────────────
+
 class ManualOrderError(ValueError):
     """A manual-order request failed a user-visible safety check."""
 
@@ -125,6 +93,8 @@ class ManualOrderError(ValueError):
 class DuplicateManualOrder(ManualOrderError):
     """An Account already has an unresolved manual order for the symbol."""
 
+
+# ── Sessions, IB trading hours and share math ───────────────────────────────
 
 def _nyse_day_clock(now: datetime) -> tuple[time, time, time] | None:
     """(Eastern wall clock, regular close, after-hours end) on an NYSE session day.
@@ -276,6 +246,8 @@ def equity_amount(equity: Decimal, pct: Decimal) -> Decimal:
     return (equity * pct / 100).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
 
 
+# ── Preview ─────────────────────────────────────────────────────────────────
+
 @dataclass(frozen=True)
 class ManualOrderPreview:
     account_name: str
@@ -411,6 +383,8 @@ class ManualOrderPreview:
         )
 
 
+# ── Shared helpers and the read-only fills query (#190) ─────────────────────
+
 def is_manual_order(trade_or_order) -> bool:
     """Whether an IB Trade or Order carries this tool's durable source tag."""
     order = getattr(trade_or_order, "order", trade_or_order)
@@ -492,6 +466,8 @@ def read_account_fills(account_name: str, path: str | Path | None = None
              "filled_quantity": int(r[3] or 0), "status": str(r[4])}
             for r in rows]
 
+
+# ── Store (SQLite) ──────────────────────────────────────────────────────────
 
 class ManualOrderStore:
     """SQLite record of manual orders, including their last observed IB state."""
@@ -856,126 +832,7 @@ class ManualOrderStore:
         return cursor.rowcount == 1
 
 
-def _manual_order_fill_totals(fills, *, row: dict, order, trade, ctx
-                              ) -> tuple[int, float | None]:
-    """Aggregate only executions that can be tied to this durable manual order."""
-    stored_perm_id = int(row.get("perm_id") or 0)
-    order_perm_id = int(getattr(order, "permId", 0) or 0)
-    perm_id = stored_perm_id or order_perm_id
-    order_id = int(row.get("broker_order_id") or
-                   getattr(order, "orderId", 0) or 0)
-    order_ref = str(row.get("order_ref") or "")
-    contract = getattr(trade, "contract", None)
-    contract_id = int(row.get("contract_id") or
-                       getattr(contract, "conId", 0) or 0)
-
-    seen: set[str] = set()
-    shares_total = 0.0
-    notional_total = 0.0
-    for fill in fills:
-        execution = getattr(fill, "execution", None)
-        if execution is None:
-            continue
-        account = str(getattr(execution, "acctNumber", "") or "")
-        if account != str(ctx.account):
-            continue
-
-        fill_contract = getattr(fill, "contract", None)
-        fill_contract_id = int(getattr(fill_contract, "conId", 0) or 0)
-        exec_ref = str(getattr(execution, "orderRef", "") or "")
-        exec_perm_id = int(getattr(execution, "permId", 0) or 0)
-        exec_order_id = int(getattr(execution, "orderId", 0) or 0)
-        exec_client_id = int(getattr(execution, "clientId", 0) or 0)
-
-        exact_ref_match = bool(order_ref and exec_ref == order_ref)
-        perm_match = bool(perm_id and exec_perm_id == perm_id)
-        client_order_match = bool(
-            order_id and exec_order_id == order_id
-            and exec_client_id == int(ctx.client_id)
-            and contract_id and fill_contract_id == contract_id
-        )
-        if not (exact_ref_match or perm_match or client_order_match):
-            continue
-        if contract_id and fill_contract_id and fill_contract_id != contract_id:
-            continue
-
-        exec_id = str(getattr(execution, "execId", "") or "")
-        if exec_id and exec_id in seen:
-            continue
-        if exec_id:
-            seen.add(exec_id)
-        try:
-            shares = float(getattr(execution, "shares", 0) or 0)
-            price = float(getattr(execution, "price", 0) or 0)
-        except (TypeError, ValueError):
-            continue
-        if not math.isfinite(shares) or not math.isfinite(price) or shares <= 0 or price <= 0:
-            continue
-        shares_total += shares
-        notional_total += shares * price
-
-    if shares_total <= 0:
-        return 0, None
-    filled = max(0, int(round(shares_total)))
-    avg_price = notional_total / shares_total
-    return filled, avg_price if math.isfinite(avg_price) and avg_price > 0 else None
-
-
-def _status_from_trade(trade, completed_status: str = "",
-                       ) -> tuple[str | None, str, int, float | None]:
-    order_status = getattr(trade, "orderStatus", None)
-    raw_status = str(getattr(order_status, "status", "") or "")
-    filled_value = getattr(order_status, "filled", 0) or 0
-    try:
-        filled = max(0, int(float(filled_value)))
-    except (TypeError, ValueError):
-        filled = 0
-    try:
-        avg_fill = float(getattr(order_status, "avgFillPrice", 0) or 0)
-    except (TypeError, ValueError):
-        avg_fill = 0.0
-    avg_fill_price = avg_fill if math.isfinite(avg_fill) and avg_fill > 0 else None
-
-    quantity = int(float(getattr(getattr(trade, "order", None), "totalQuantity", 0) or 0))
-    mapped = {
-        "ApiPending": "SENT",
-        "PendingSubmit": "SENT",
-        "PreSubmitted": "ACCEPTED",
-        "Submitted": "ACCEPTED",
-        "PartiallyFilled": "PARTIAL",
-        "PendingCancel": "CANCEL_PENDING",
-        # ApiCancelled means the API cancellation was requested before IB
-        # acknowledged the order; only Cancelled confirms the balance is gone.
-        "ApiCancelled": "CANCEL_PENDING",
-        "Cancelled": "CANCELLED",
-        "Filled": "FILLED",
-        "Inactive": "REJECTED",
-        "Expired": "EXPIRED",
-    }.get(raw_status)
-    if mapped == "CANCELLED" and completed_status.startswith("Expired"):
-        # IB ends an unfilled DAY or Overnight order with status Cancelled;
-        # only completedStatus ("Expired (5)") says it expired rather than
-        # being cancelled by the trader (paper, 2026-09-28/29).
-        mapped = "EXPIRED"
-    if filled > 0 and quantity > filled and mapped not in {
-            "CANCEL_PENDING", "CANCEL_UNKNOWN", "CANCELLED", "EXPIRED", "REJECTED"}:
-        mapped = "PARTIAL"
-    elif quantity > 0 and filled >= quantity:
-        mapped = "FILLED"
-    message = _STATUS_LABELS.get(mapped, raw_status or "等待 IB 狀態")
-    entries = getattr(trade, "log", ()) or ()
-    if mapped == "CANCELLED" and any(
-            getattr(entry, "errorCode", 0) == _IB_DIRECT_ROUTING_BLOCKED for entry in entries):
-        # ib_insync marks an order IB refused as Cancelled; this refusal
-        # comes from a Gateway setting the trader has to change.
-        return "REJECTED", _DIRECT_ROUTING_BLOCKED_MESSAGE, filled, avg_fill_price
-    if mapped == "REJECTED":
-        details = [str(getattr(entry, "message", "") or "").strip() for entry in entries]
-        details = [item for item in details if item]
-        if details:
-            message = f"{message}：{details[-1]}"
-    return mapped, message, filled, avg_fill_price
-
+# ── IB sync helpers ─────────────────────────────────────────────────────────
 
 def _ib_order_status(trade) -> str:
     return str(getattr(getattr(trade, "orderStatus", None), "status", "") or "")
@@ -987,7 +844,7 @@ def _await_ib_acknowledgement(ib, trade) -> bool:
     while waited < _IB_ACK_TIMEOUT_SECONDS:
         ib.sleep(_IB_ACK_POLL_SECONDS)
         waited += _IB_ACK_POLL_SECONDS
-        if _ib_order_status(trade) not in _IB_AWAITING_ACK:
+        if _ib_order_status(trade) not in IB_AWAITING_ACK:
             return True
     return False
 
@@ -1000,8 +857,8 @@ def _outside_rth_confirmation_window(ib, trade, warnings: list) -> bool:
     the caller can treat the order as unconfirmed.
     """
     waited = 0.0
-    while (waited < _OUTSIDE_RTH_CONFIRM_SECONDS and not warnings
-           and _ib_order_status(trade) not in _IB_DONE_STATUSES):
+    while (waited < OUTSIDE_RTH_CONFIRM_SECONDS and not warnings
+           and _ib_order_status(trade) not in IB_DONE_STATUSES):
         ib.sleep(_IB_ACK_POLL_SECONDS)
         waited += _IB_ACK_POLL_SECONDS
     return not warnings
@@ -1047,6 +904,8 @@ def _find_manual_trade(trades: Iterable[object], order_ref: str, account: str):
                                  "account", "") or "") == account),
                 None)
 
+
+# ── Service ─────────────────────────────────────────────────────────────────
 
 def _serialize_service_operation(method):
     @wraps(method)
@@ -1098,6 +957,8 @@ class ManualOrderService:
         self._notifier = notifier
         self._operation_lock = threading.RLock()
         self._monitor: ManualOrderMonitor | None = None
+
+    # ── Accounts and connections ────────────────────────────────────────────
 
     def _account_name(self, requested: str) -> str:
         value = str(requested or "").strip()
@@ -1170,6 +1031,8 @@ class ManualOrderService:
         connection underneath moves to the Broker)."""
         with self._connection(account_name) as (ctx, conn):
             yield ctx, conn.ib
+
+    # ── Request checks, sessions and contracts ──────────────────────────────
 
     @staticmethod
     def _check_request(account_name: str, symbol: str,
@@ -1373,6 +1236,8 @@ class ManualOrderService:
             )
         return contract, primary
 
+    # ── IB sync ─────────────────────────────────────────────────────────────
+
     def _sync_trades(self, ib, ctx) -> list:
         # IB connect() synchronizes this client's live trades. Use that cache:
         # ib_insync documents reqOpenOrders() as capable of returning stale
@@ -1425,12 +1290,12 @@ class ManualOrderService:
             if not current:
                 continue
             observed_refs.add(order_ref)
-            status, message, filled, avg_price = _status_from_trade(
+            status, message, filled, avg_price = status_from_trade(
                 trade, completed_status.get(order_ref, ""),
             )
             fill_records = list(fills)
             fill_records.extend(getattr(trade, "fills", ()) or ())
-            execution_filled, execution_avg = _manual_order_fill_totals(
+            execution_filled, execution_avg = fill_totals(
                 fill_records, row=current, order=order, trade=trade, ctx=ctx,
             )
             persisted_filled = int(current.get("filled_quantity") or 0)
@@ -1450,20 +1315,20 @@ class ManualOrderService:
             quantity = int(current["quantity"])
             if quantity > 0 and filled >= quantity:
                 status = "FILLED"
-                message = _STATUS_LABELS[status]
+                message = STATUS_LABELS[status]
             elif (filled > 0 and status not in {
                     "CANCEL_PENDING", "CANCEL_UNKNOWN", "CANCELLED",
                     "EXPIRED", "REJECTED",
             }):
                 status = "PARTIAL"
-                message = _STATUS_LABELS[status]
+                message = STATUS_LABELS[status]
             if current["status"] == "CANCEL_PENDING" and status in {
                 "SENT", "ACCEPTED", "PARTIAL",
             }:
                 # The open-order snapshot can arrive after the cancel request
                 # but before IB's terminal confirmation.
                 status = "CANCEL_PENDING"
-                message = current["status_message"] or _STATUS_LABELS[status]
+                message = current["status_message"] or STATUS_LABELS[status]
             elif current["status"] == "CANCEL_UNKNOWN" and status in {
                 "SENT", "ACCEPTED", "PARTIAL",
             }:
@@ -1487,13 +1352,13 @@ class ManualOrderService:
         for row in self.store.list_active(ctx.name):
             if row["order_ref"] in observed_refs:
                 continue
-            execution_filled, execution_avg = _manual_order_fill_totals(
+            execution_filled, execution_avg = fill_totals(
                 fills, row=row, order=None, trade=None, ctx=ctx,
             )
             if execution_filled >= int(row["quantity"]) > 0:
                 self.store.update(
                     row["order_ref"], status="FILLED",
-                    status_message=_STATUS_LABELS["FILLED"],
+                    status_message=STATUS_LABELS["FILLED"],
                     filled_quantity=execution_filled,
                     avg_fill_price=execution_avg,
                 )
@@ -1516,6 +1381,8 @@ class ManualOrderService:
                 ),
             )
         return open_trades
+
+    # ── Preview ─────────────────────────────────────────────────────────────
 
     def _assert_no_duplicate(self, account_name: str, ctx, symbol: str,
                              open_trades: Iterable[object]) -> None:
@@ -1709,6 +1576,8 @@ class ManualOrderService:
         return replace(fresh, account_equity=preview.account_equity,
                        equity_pct=preview.equity_pct)
 
+    # ── Submit and session routing ──────────────────────────────────────────
+
     @_serialize_service_operation
     def submit(self, preview: ManualOrderPreview) -> dict:
         account = self._account_name(preview.account_name)
@@ -1776,7 +1645,7 @@ class ManualOrderService:
             order.orderRef = order_ref
 
             def on_ib_error(req_id, error_code, _error_string, _contract=None):
-                if (error_code == _IB_OUTSIDE_RTH_IGNORED
+                if (error_code == IB_OUTSIDE_RTH_IGNORED
                         and req_id == getattr(order, "orderId", None)):
                     outside_rth_ignored.append(error_code)
 
@@ -1787,7 +1656,7 @@ class ManualOrderService:
             try:
                 trade = ib.placeOrder(contract, order)
                 self.store.update(
-                    order_ref, status="SENT", status_message=_STATUS_LABELS["SENT"],
+                    order_ref, status="SENT", status_message=STATUS_LABELS["SENT"],
                     broker_order_id=getattr(order, "orderId", None),
                     perm_id=getattr(order, "permId", None),
                 )
@@ -1802,7 +1671,7 @@ class ManualOrderService:
                 else:
                     # Allow immediate IB status/error callbacks to reach ib_insync.
                     ib.sleep(1.0)
-                status, message, filled, avg_price = _status_from_trade(trade)
+                status, message, filled, avg_price = status_from_trade(trade)
                 if status:
                     self.store.update(
                         order_ref, status=status, status_message=message,
@@ -1834,7 +1703,7 @@ class ManualOrderService:
                     self.store.update(order_ref, outside_rth_confirmed_at=_utc_now())
         result = self.store.get(order_ref)
         assert result is not None
-        result["status_label"] = _STATUS_LABELS.get(
+        result["status_label"] = STATUS_LABELS.get(
             result["status"], result["status"]
         )
         self._dispatch_terminal_notifications()
@@ -1863,7 +1732,7 @@ class ManualOrderService:
                 status_message=f"{reason}；取消結果待確認：{exc}",
             )
             return
-        status, message, filled, avg_price = _status_from_trade(trade)
+        status, message, filled, avg_price = status_from_trade(trade)
         if status in TERMINAL_STATUSES:
             self.store.update(
                 order_ref, status=status, status_message=f"{message}；{requested}",
@@ -1908,8 +1777,10 @@ class ManualOrderService:
                     )
             if reason and not row.get("forced_cancel_reason"):
                 self.store.update(row["order_ref"], forced_cancel_reason=reason)
-            if reason and trade is not None and _ib_order_status(trade) in _IB_WORKING_STATUSES:
+            if reason and trade is not None and _ib_order_status(trade) in IB_WORKING_STATUSES:
                 self._force_cancel(ib, trade, row["order_ref"], reason)
+
+    # ── Cancel, status refresh and listing ──────────────────────────────────
 
     @_serialize_service_operation
     def cancel(self, order_ref: str) -> dict:
@@ -1932,7 +1803,7 @@ class ManualOrderService:
             account = self._account_name(row["account_name"])
             row = self.store.update(
                 order_ref, status="CANCEL_PENDING",
-                status_message=_STATUS_LABELS["CANCEL_PENDING"],
+                status_message=STATUS_LABELS["CANCEL_PENDING"],
             ) or row
             try:
                 with self._connected_ib(account) as (ctx, ib):
@@ -2015,13 +1886,15 @@ class ManualOrderService:
     @staticmethod
     def _with_status_label(row: dict) -> dict:
         result = dict(row)
-        result["status_label"] = _STATUS_LABELS.get(
+        result["status_label"] = STATUS_LABELS.get(
             result["status"], result["status"]
         )
         return result
 
+    # ── Notifications ───────────────────────────────────────────────────────
+
     def _notification_message(self, row: dict) -> str:
-        status = _STATUS_LABELS.get(row["status"], row["status"])
+        status = STATUS_LABELS.get(row["status"], row["status"])
         notification_ref = str(row["order_ref"]).rsplit(":", 1)[-1][:12].upper()
         filled = int(row.get("filled_quantity") or 0)
         quantity = int(row["quantity"])
@@ -2046,7 +1919,7 @@ class ManualOrderService:
         )
 
     def _reconciliation_alert_message(self, row: dict) -> str:
-        status = _STATUS_LABELS.get(row["alert_status"], row["alert_status"])
+        status = STATUS_LABELS.get(row["alert_status"], row["alert_status"])
         notification_ref = str(row["order_ref"]).rsplit(":", 1)[-1][:12].upper()
         session = SESSION_LABELS[row["session"]]
         return (
@@ -2093,6 +1966,8 @@ class ManualOrderService:
             or self.store.list_pending_alerts()
         )
 
+    # ── Monitor control ─────────────────────────────────────────────────────
+
     def start_monitor(self, interval_seconds: float = 10.0) -> "ManualOrderMonitor":
         with self._operation_lock:
             if self._monitor is None:
@@ -2105,6 +1980,8 @@ class ManualOrderService:
         if monitor is not None:
             monitor.stop()
 
+
+# ── Monitor thread ──────────────────────────────────────────────────────────
 
 class ManualOrderMonitor:
     """Reconcile orders and retry durable notifications outside the UI window."""

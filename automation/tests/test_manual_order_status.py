@@ -8,6 +8,8 @@ The end-to-end scenarios stay in test_manual_orders.
 from __future__ import annotations
 
 import math
+from pathlib import Path
+import re
 from types import SimpleNamespace as NS
 
 import pytest
@@ -198,9 +200,6 @@ def test_manual_orders_uses_the_public_status_rules():
 
 
 def test_no_production_module_reaches_into_manual_orders_private_names():
-    import re
-    from pathlib import Path
-
     automation = Path(manual_orders.__file__).parent
     pattern = re.compile(r"(?:\bmo|\bmanual_orders)\._[A-Za-z]")
     offenders = [

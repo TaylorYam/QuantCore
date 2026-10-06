@@ -25,7 +25,6 @@ from types import SimpleNamespace as NS
 from typing import Callable
 
 QUOTE = {"bid": 99.9, "ask": 100.1, "mid": 100.0, "last": 100.0, "close": 100.0}
-_DONE = {"Filled", "Cancelled", "ApiCancelled", "Inactive"}
 
 
 def install(monkeypatch, fake: "FakeBroker") -> "FakeBroker":

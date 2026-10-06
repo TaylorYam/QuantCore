@@ -1,7 +1,6 @@
 """權益曲線（#150）與業績曲線（#166）：單一帳戶頁的互動圖、總覽卡片的近 60 天小圖。
 
-資料是 `equity_chart.load_equity_series` 的每日 NAV（portfolio_tracker.xlsx 的 Daily，
-和 Telegram 報表同一份）；這裡只畫圖，Telegram 報表仍用 matplotlib（ADR-0012）。
+資料是 `ledger.daily_nav` 的每日 NAV（portfolio_tracker.xlsx 的 Daily）；這裡只畫圖。
 業績 = 排除出入金的累積報酬（`performance`，出入金來自 IB Flex 報表 `ib_flex`）。
 互動圖只縮放、平移時間軸，縱軸跟著看得到的區間自動調整；滑鼠移上去顯示最近一天的
 日期與數值。滾輪縮放、拖曳平移要先點一下圖才啟用，游標離開圖就停用（#177），

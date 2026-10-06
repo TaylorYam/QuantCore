@@ -10,14 +10,14 @@ Design:
 
 Public API:
     tv = TradesView(parent, theme, fonts)
-    tv.update(trades)      # list of trade dicts
+    tv.update(trades)      # list of trades_display.TradeLine
 """
 
 from __future__ import annotations
 
 import tkinter as tk
 
-from trades_display import EMPTY_TEXT, TRADE_COLUMNS, trade_row
+from trades_display import EMPTY_TEXT, TRADE_COLUMNS
 
 
 _REQUIRED_THEME_KEYS_TRADES = {
@@ -115,10 +115,9 @@ class TradesView:
             tk.Label(hdr, text=txt, font=f["mono_sm"], bg=t["bg2"],
                      fg=t["text_dim"], width=w, anchor="w").pack(side="left")
 
-        for tr in trades:
+        for r in trades:
             row = tk.Frame(self._inner, bg=t["bg2"])
             row.pack(fill="x")
-            r = trade_row(tr)
             # Status cells are wider than their header (14 vs 10), as before
             widths = (14, 7, 5, 5, 8, 10, 14)
             for text, fg, w in zip(r.cells(), r.colors(), widths):

@@ -1,12 +1,11 @@
 """Recent Trades shared by the Tk and Qt Panels (#150).
 
-`read_latest_trades` reads the last 7 days of trade_log.xlsx (moved from
-control_panel so the new Panel can use it without importing the Tk Panel);
-`read_account_trades` is what both Panels call, with the account's Allocation.
-`trade_row` formats one trade the way the Tk TradesView shows it. Sector and
-inverse ETF trades are labelled with the same rule as the Portfolio
-(`strategy_owner`, #187). No GUI imports;
-colors come back as theme key names ("green", "red", "yellow", "text_dim").
+The trades come from `ledger.recent_trades` (#209); this module only turns them
+into screen rows. `read_account_trades` is what both Panels call: one account's
+last 7 days, labelled with that account's Allocation. `trade_line` formats one
+trade the way the Tk TradesView shows it. Sector and inverse ETF trades are
+labelled with the same rule as the Portfolio (`strategy_owner`, #187). No GUI
+imports; colors come back as theme key names ("green", "red", "yellow", "text_dim").
 """
 
 from __future__ import annotations
@@ -14,9 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from strategy_owner import STRATEGY_ETFS, trade_owner
-
-TRADE_FILE = Path(__file__).parent / "trade_log.xlsx"
+import ledger
+from strategy_owner import SR, STRATEGY_ETFS, trade_owner
 
 # (header, Tk label width)
 TRADE_COLUMNS = (
@@ -25,9 +23,15 @@ TRADE_COLUMNS = (
 )
 EMPTY_TEXT = "No recent trades (7 days)"
 
+STOCKS = "Stocks"
+# 不是類股／反向 ETF 的成交：寫入的 Strategy → 畫面標籤。SR 只交易類股 ETF，個股
+# 實際寫的是 SP500、EXIT、Sync 或舊版的「QuantCore Combo／SP500 Only」，都顯示 Stocks；
+# 下面這幾個 SR 的寫法沿用舊版判讀（含 SR、不含 SP500／Combo → SR）。
+_SR_WRITTEN = frozenset({SR, "SR+SkewLS", "QuantCore SR Only"})
+
 
 @dataclass(frozen=True)
-class TradeRow:
+class TradeLine:
     datetime: str
     time: str
     symbol: str
@@ -49,20 +53,32 @@ class TradeRow:
                 self.status_color)
 
 
-def trade_row(tr: dict) -> TradeRow:
-    dt = tr["datetime"]
-    fill_px = tr.get("fill_price", 0)
-    return TradeRow(
+def strategy_label(trade: ledger.TradeRow,
+                   alloc: tuple[float, float] | None = None) -> str:
+    """畫面上的 Strategy。類股／反向 ETF 依帳戶 Allocation（#187）；其他依寫入的 Strategy。
+
+    alloc: 帳戶的 (alloc_sr, alloc_skewls)；None = 不知道，類股 ETF 算 SR。
+    """
+    if trade.symbol in STRATEGY_ETFS:
+        return trade_owner(trade.symbol, alloc)
+    return SR if trade.strategy in _SR_WRITTEN else STOCKS
+
+
+def trade_line(trade: ledger.TradeRow,
+               alloc: tuple[float, float] | None = None) -> TradeLine:
+    dt = trade.datetime
+    fill_px = trade.fill_price
+    return TradeLine(
         datetime=dt,
         time=dt[-8:] if len(dt) >= 8 else dt,
-        symbol=tr["symbol"],
-        action=tr["action"],
-        qty=str(tr["qty"]),
+        symbol=trade.symbol,
+        action=trade.action,
+        qty=str(trade.qty),
         price=f"${fill_px:.2f}" if fill_px > 0 else "—",
-        strategy=tr["strategy"],
-        status=f'{tr["status"]}{" [DRY]" if tr["dry_run"] else ""}',
-        action_color="red" if tr["action"] == "SELL" else "green",
-        status_color="yellow" if "DRY" in tr["status"] else "green",
+        strategy=strategy_label(trade, alloc),
+        status=f'{trade.status}{" [DRY]" if trade.dry_run else ""}',
+        action_color="red" if trade.action == "SELL" else "green",
+        status_color="yellow" if "DRY" in trade.status else "green",
     )
 
 
@@ -76,60 +92,11 @@ def account_alloc(account_name: str) -> tuple[float, float] | None:
         return None
 
 
-def read_account_trades(account_name: str, path: Path | None = None) -> list:
-    """某帳戶最近 7 天的交易，ETF 依該帳戶的 Allocation 標 Strategy（兩個 Panel 用）。"""
-    return read_latest_trades(account_name, path, account_alloc(account_name))
-
-
-def read_latest_trades(account_name: str = "", path: Path | None = None,
-                       alloc: tuple[float, float] | None = None) -> list:
-    """讀取 trade_log.xlsx 最近 7 天的交易記錄，可按帳戶篩選。
-
-    alloc: 帳戶的 (alloc_sr, alloc_skewls)，決定類股 ETF 的 Strategy 標籤；
-    None = 不知道，類股 ETF 算 SR。
-    """
-    trade_file = TRADE_FILE if path is None else path
+def read_account_trades(account_name: str, path: Path | None = None) -> list[TradeLine]:
+    """某帳戶最近 7 天的成交畫面列，新到舊（兩個 Panel 用）。讀不到紀錄當作沒有成交。"""
     try:
-        import pandas as pd
-        if not trade_file.exists():
-            return []
-        df = pd.read_excel(trade_file, sheet_name="Trades")
-        if df.empty:
-            return []
-        # 按帳戶篩選
-        if account_name and "Account" in df.columns:
-            df = df[df["Account"] == account_name]
-            if df.empty:
-                return []
-        # 滾動 7 天（不限筆數）
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-        cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=7)
-        recent = df[df["Date"] >= cutoff].iloc[::-1]
-        trades = []
-        for _, row in recent.iterrows():
-            sym = str(row["Symbol"])
-            raw_strat = str(row.get("Strategy", ""))
-            if sym in STRATEGY_ETFS:
-                strat = trade_owner(sym, alloc)
-            elif "SR" in raw_strat and "SP500" not in raw_strat and "Combo" not in raw_strat:
-                strat = "SR"
-            else:
-                strat = "Stocks"
-            fill_px = row.get("FillPrice", 0)
-            try:
-                fill_px = float(fill_px)
-            except (ValueError, TypeError):
-                fill_px = 0.0
-            trades.append({
-                "datetime": str(row.get("DateTime", "")),
-                "symbol": sym,
-                "action": str(row["Action"]),
-                "qty": int(row["Qty"]),
-                "fill_price": fill_px,
-                "strategy": strat,
-                "status": str(row.get("FillStatus", "")),
-                "dry_run": bool(row.get("DryRun", True)),
-            })
-        return trades
+        trades = ledger.recent_trades(account_name, path=path)
     except Exception:
         return []
+    alloc = account_alloc(account_name)
+    return [trade_line(t, alloc) for t in trades]

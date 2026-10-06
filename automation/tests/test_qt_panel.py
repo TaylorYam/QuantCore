@@ -166,14 +166,14 @@ class FakeExtras:
             "Rosa": {"alloc_sr": 0.50, "alloc_sp500": 0.30, "alloc_skewls": 0.20},
             "Yvonne": {"alloc_sr": 0.75, "alloc_sp500": 0.45, "alloc_skewls": 0.30},
         }
+        from ledger import TradeRow
+        from trades_display import trade_line
         self.trades = {
             "Taylor": [
-                {"datetime": "2026-09-29 21:30:05", "symbol": "XLK", "action": "BUY",
-                 "qty": 10, "fill_price": 230.5, "strategy": "SR", "status": "Filled",
-                 "dry_run": False},
-                {"datetime": "2026-09-28 21:30:06", "symbol": "AAPL", "action": "SELL",
-                 "qty": 3, "fill_price": 0.0, "strategy": "Stocks", "status": "DRY RUN",
-                 "dry_run": True},
+                trade_line(TradeRow("2026-09-29 21:30:05", "XLK", "BUY", 10, 230.5, "SR",
+                                    "Filled", False)),
+                trade_line(TradeRow("2026-09-28 21:30:06", "AAPL", "SELL", 3, 0.0, "SP500",
+                                    "DRY RUN", True)),
             ],
             "Rosa": [],
             "Yvonne": [],
@@ -1452,7 +1452,6 @@ def test_strategy_config_read_failure_is_shown(make_window, qtbot, extras):
 
 def test_recent_trades_match_the_tk_rows_with_full_date(make_window, qtbot, extras):
     from qt_panel import theme
-    from trades_display import trade_row
 
     w = make_window()
     _wait_extras(w, qtbot)
@@ -1462,7 +1461,7 @@ def test_recent_trades_match_the_tk_rows_with_full_date(make_window, qtbot, extr
         ("2026-09-28 21:30:06", "AAPL", "SELL", "3", "—", "Stocks", "DRY RUN [DRY]"),
     ]
     for got, tr in zip(trades.rows(), extras.trades["Taylor"]):
-        assert got[1:] == trade_row(tr).cells()[1:]                      # 和 Tk 同一套格式
+        assert got[1:] == tr.cells()[1:]                                 # 和 Tk 同一套格式
     assert trades.table.item(1, 2).foreground().color().name() == theme.RED
     assert trades.table.item(1, 6).foreground().color().name() == theme.AMBER
     w.portfolio.select("Rosa")

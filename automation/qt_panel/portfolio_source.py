@@ -61,9 +61,9 @@ def read_manual_symbols(account_name: str, path=None) -> dict:
 # ── 單一帳戶頁的其他資料（#150）：都只讀檔，不連 IB ─────────────────
 
 def load_equity(account_name: str):
-    """每日 NAV（和 Telegram 權益曲線同一個來源）。"""
-    from equity_chart import load_equity_series
-    return load_equity_series(account_name)
+    """每日 NAV（portfolio_tracker.xlsx 的 Daily）。"""
+    from ledger import daily_nav
+    return daily_nav(account_name)
 
 
 def read_strategy_allocations(account_name: str) -> dict:

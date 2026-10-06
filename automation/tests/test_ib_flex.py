@@ -326,3 +326,28 @@ def test_check_report_needs_the_flex_settings():
                              download=lambda t, q: "")
     with pytest.raises(FlexError, match="沒有帳戶"):
         ib_flex.check_report("Nobody", [], pd.Series(dtype=float), download=lambda t, q: "")
+
+
+def test_cli_checks_the_daily_nav_from_the_given_directory(tmp_path, monkeypatch, capsys):
+    """#209：CLI 經 ledger 讀 --dir 底下的 portfolio_tracker.xlsx。"""
+    import excel_logger
+
+    class Position:
+        class contract:
+            symbol = "XLK"
+        position, avgCost = 5, 100
+
+    monkeypatch.setattr(excel_logger, "PORTFOLIO_FILE", tmp_path / "portfolio_tracker.xlsx")
+    monkeypatch.delenv("QUANTCORE_LOG_BACKEND", raising=False)
+    excel_logger.append_daily_snapshot(123_456.0, [Position()], {"XLK": 110}, account_name="Rosa")
+    (tmp_path / "accounts.json").write_text("[]", encoding="utf-8")
+    seen = {}
+
+    def fake_report(account, accounts, nav):
+        seen.update(account=account, nav=list(nav))
+        return ["ok"]
+    monkeypatch.setattr(ib_flex, "check_report", fake_report)
+
+    assert ib_flex.main(["Rosa", "--dir", str(tmp_path)]) == 0
+    assert seen == {"account": "Rosa", "nav": [123_456.0]}
+    assert capsys.readouterr().out.strip() == "ok"

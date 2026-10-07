@@ -7,6 +7,7 @@ state 檔是 live runtime state：寫到一半失敗時原檔必須完整，tmp 
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -71,7 +72,6 @@ def test_failed_write_keeps_the_old_file_and_removes_tmp(tmp_path):
 
 
 def test_failed_replace_removes_tmp(tmp_path, monkeypatch):
-    import os
     path = tmp_path / "s.json"
 
     def locked(src, dst):

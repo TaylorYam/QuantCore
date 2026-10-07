@@ -83,7 +83,7 @@ def save_state(account_name: str, state: dict) -> None:
     """原子寫入帳戶狀態。
     先寫 .tmp 檔再 atomic rename，避免寫入中斷造成損壞。"""
     try:
-        json_state.save_atomic(_state_path(account_name), state, indent=2, ensure_ascii=False)
+        json_state.save_atomic(_state_path(account_name), state)
     except Exception as e:
         log.error(f"Failed to save state for {account_name}: {e}")
         raise

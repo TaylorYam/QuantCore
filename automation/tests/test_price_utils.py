@@ -19,16 +19,23 @@ AUTOMATION = Path(__file__).resolve().parent.parent
 
 def test_csv_close_works_when_only_automation_is_on_sys_path(tmp_path):
     """跟排程一樣：腳本在 automation/，工作目錄在別處，沒有 PYTHONPATH。"""
+    (tmp_path / "ZZZ.csv").write_text(
+        "Date,Open,High,Low,Close,Adj Close,Volume\n2026-10-06,1,1,1,18.05,18.05,1\n",
+        encoding="utf-8")
     code = (
         "import sys\n"
+        "from pathlib import Path\n"
         f"sys.path.insert(0, {str(AUTOMATION)!r})\n"
         "import price_utils\n"
-        "import strategies.sp500_momentum.config\n"
+        "from strategies.sp500_momentum import config as sp_cfg\n"
+        f"sp_cfg.ETF_DIR = Path({str(tmp_path)!r})\n"
+        "print(price_utils.load_csv_close('ZZZ'))\n"
     )
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     result = subprocess.run([sys.executable, "-c", code], cwd=tmp_path, env=env,
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "18.05"
 
 
 def test_unreadable_csv_is_logged_not_silent(tmp_path, monkeypatch, caplog):

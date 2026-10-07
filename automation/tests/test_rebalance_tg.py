@@ -112,131 +112,26 @@ def test_add_section_never_raises(monkeypatch):
     assert d.render() is None
 
 
-def _capture_sends(monkeypatch):
+# ── 排程入口：--mode／--order-type 交到每個帳戶的 main（#206）────────
+
+@pytest.mark.parametrize("argv, order_type", [
+    (["--mode", "skewls", "--order-type", "MKT", "--account", "all"], "MKT"),
+    (["--mode", "all", "--account", "Rosa"], "MOO"),             # 沒指定 = 帳戶設定
+])
+def test_run_passes_mode_and_order_type_to_each_account(fake_config, run_status_dir,
+                                                        monkeypatch, argv, order_type):
     import notify
-    sent = []
-    monkeypatch.setattr(notify, "tg_send",
-                        lambda msg, *, token, chat_id: sent.append(msg))
-    return sent
-
-
-def test_run_accounts_sends_one_message_for_all_accounts(fake_config, monkeypatch):
     import rebalance_ib
-    sent = _capture_sends(monkeypatch)
+    import scheduled_run
+    monkeypatch.setattr(notify, "tg_send", lambda msg, *, token, chat_id: None)
+    monkeypatch.setattr(scheduled_run, "setup_logging", lambda key: None)
+    monkeypatch.setattr(scheduled_run, "quiet_ib_console", lambda: None)
     seen = []
-
-    def fake_main(mode, ctx, digest):
-        seen.append((mode, ctx.name, ctx.order_type))
-        rebalance_ib._add_rebalance_section(digest, ctx, placed=PLACED[:1], fill_results=[])
-
-    monkeypatch.setattr(rebalance_ib, "main", fake_main)
-    rebalance_ib.run_accounts(["Taylor", "Rosa", "Yvonne"], mode="skewls", order_type="MKT")
-    assert seen == [("skewls", "Taylor", "MKT"), ("skewls", "Rosa", "MKT"), ("skewls", "Yvonne", "MKT")]
-    assert len(sent) == 1
-    assert sent[0].count("送出 1 筆 MKT") == 1        # 三帳戶內容相同 → 合成一段
-    assert "<b>Taylor、Rosa、Yvonne</b> 送出 1 筆 MKT" in sent[0]
-
-
-def test_run_accounts_uses_callers_digest(fake_config, monkeypatch):
-    """#38：__main__ 傳入 digest，跑完照樣發送，之後讀各帳戶結果寫執行紀錄。"""
-    import rebalance_ib
-    from notify import Digest
-    sent = _capture_sends(monkeypatch)
-
-    def fake_main(mode, ctx, digest):
-        placed = PLACED[:1] if ctx.name == "Rosa" else []
-        rebalance_ib._add_rebalance_section(digest, ctx, placed=placed, fill_results=[])
-
-    monkeypatch.setattr(rebalance_ib, "main", fake_main)
-    d = Digest("調倉 2026-09-16", icon="📤")
-    assert rebalance_ib.run_accounts(["Taylor", "Rosa", "Yvonne"], mode="all", digest=d) == []
-    assert len(sent) == 1 and sent[0].startswith("<b>📤 調倉 2026-09-16</b>")
-    assert d.outcomes(["Taylor", "Rosa", "Yvonne"]) == {
-        "Taylor": ("ok", None),
-        "Rosa": ("ok", "送出 1 筆 MOO [DRY RUN]"),
-        "Yvonne": ("ok", None),
-    }
-
-
-def test_run_accounts_quiet_day_sends_nothing(fake_config, monkeypatch):
-    import rebalance_ib
-    sent = _capture_sends(monkeypatch)
-    monkeypatch.setattr(rebalance_ib, "main",
-                        lambda mode, ctx, digest: rebalance_ib._add_rebalance_section(
-                            digest, ctx, placed=[], fill_results=[]))
-    rebalance_ib.run_accounts(["Taylor", "Rosa", "Yvonne"], mode="skewls")
-    assert sent == []
-
-
-def test_run_accounts_failure_continues_to_next_account(fake_config, monkeypatch):
-    """#29：Taylor 的 Gateway 掛掉，Rosa / Yvonne 照常調倉（以前整輪中止）。"""
-    import rebalance_ib
-    sent = _capture_sends(monkeypatch)
-    ran = []
-
-    def fake_main(mode, ctx, digest):
-        ran.append(ctx.name)
-        if ctx.name == "Taylor":
-            rebalance_ib._add_rebalance_section(digest, ctx, placed=[], fill_results=[],
-                                                error_msg="[WinError 1225] refused")
-            raise ConnectionRefusedError("[WinError 1225] refused")
-        rebalance_ib._add_rebalance_section(digest, ctx, placed=PLACED[:1], fill_results=[])
-
-    monkeypatch.setattr(rebalance_ib, "main", fake_main)
-    failures = rebalance_ib.run_accounts(["Taylor", "Rosa", "Yvonne"], mode="all")
-    assert ran == ["Taylor", "Rosa", "Yvonne"]
-    assert failures == [("Taylor", "[WinError 1225] refused")]
-    assert len(sent) == 1
-    msg = sent[0]
-    assert msg.startswith("<b>❌ 調倉 ")
-    # fake_config 的 dry_run=True；main 已加的段落不重複
-    assert msg.count("Taylor") == 1
-    assert "<b>Taylor</b> ❌ 失敗 [DRY RUN]\n[WinError 1225] refused" in msg
-    assert "<b>Rosa、Yvonne</b> 送出 1 筆 MOO [DRY RUN]" in msg
-    assert "未執行" not in msg
-
-
-def test_run_accounts_all_fail_returns_every_failure(fake_config, monkeypatch):
-    """08-24 / 08-26 情境：三個 Gateway 全掛 → 三帳戶都試過、都回報。"""
-    import rebalance_ib
-    sent = _capture_sends(monkeypatch)
-
-    def fake_main(mode, ctx, digest):
-        raise ConnectionRefusedError("refused")
-
-    monkeypatch.setattr(rebalance_ib, "main", fake_main)
-    failures = rebalance_ib.run_accounts(["Taylor", "Rosa", "Yvonne"], mode="all")
-    assert [n for n, _ in failures] == ["Taylor", "Rosa", "Yvonne"]
-    assert "<b>Taylor、Rosa、Yvonne</b> ❌ 失敗\nrefused" in sent[0]
-
-
-def test_run_accounts_failure_before_main_adds_error(fake_config, monkeypatch):
-    """ctx 建立就失敗（main 沒機會加段落）→ 補失敗段落，後面帳戶照跑。"""
-    import rebalance_ib
-    sent = _capture_sends(monkeypatch)
-    calls = []
-    monkeypatch.setattr(rebalance_ib, "main", lambda mode, ctx, digest: calls.append(ctx.name))
-    failures = rebalance_ib.run_accounts(["Taylor", "Nobody", "Yvonne"], mode="all")
-    assert calls == ["Taylor", "Yvonne"]
-    assert [n for n, _ in failures] == ["Nobody"]
-    assert "<b>Nobody</b> ❌ 失敗" in sent[0]
-
-
-def test_run_accounts_keyboard_interrupt_aborts(fake_config, monkeypatch):
-    """Ctrl+C 仍立即中止：剩下的帳戶標未執行，例外照拋。"""
-    import rebalance_ib
-    sent = _capture_sends(monkeypatch)
-    ran = []
-
-    def fake_main(mode, ctx, digest):
-        ran.append(ctx.name)
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(rebalance_ib, "main", fake_main)
-    with pytest.raises(KeyboardInterrupt):
-        rebalance_ib.run_accounts(["Taylor", "Rosa", "Yvonne"], mode="all")
-    assert ran == ["Taylor"]
-    assert "<b>Rosa、Yvonne</b> ⚠️ 未執行\n手動中止，本輪未執行" in sent[0]
+    monkeypatch.setattr(rebalance_ib, "main", lambda mode, ctx, digest: seen.append(
+        (mode, ctx.name, ctx.order_type)))
+    assert rebalance_ib.run(argv) == 0
+    names = ["Taylor", "Rosa", "Yvonne"] if "all" == argv[-1] else [argv[-1]]
+    assert seen == [(argv[1], n, order_type) for n in names]
 
 
 # ── main() 收尾：Excel 交易紀錄 + Telegram 段落（#29）──────────────────

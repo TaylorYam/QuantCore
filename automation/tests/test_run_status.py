@@ -418,7 +418,7 @@ def entry_point(fake_config, monkeypatch, tmp_path):
 def test_account_entry_points_record_each_account(entry_point, run_status_dir,
                                                   script, args, job, err_headline):
     run, sent = entry_point
-    run(script, *args)
+    assert run(script, *args) == 1                       # 有帳戶失敗 → exit 1（#206 四支一致）
     [path] = run_status_dir.glob(f"{job}_*.json")
     rec = json.loads(path.read_text(encoding="utf-8"))
     assert rec["finished"] and rec["error"] is None
@@ -431,6 +431,14 @@ def test_single_account_run_writes_no_record(entry_point, run_status_dir):
     run("rebalance_ib.py", "--mode", "skewls", "--account", "Taylor")
     run("sp500_daily_check.py", "--account", "Taylor")
     assert not list(run_status_dir.glob("*.json"))
+
+
+def test_moo_entry_point_reports_but_writes_no_record(entry_point, run_status_dir):
+    """21:31 的結果直接附在它自己的 Telegram，不寫執行紀錄。"""
+    run, sent = entry_point
+    assert run("moo_fill_check.py", "--account", "all") == 1
+    assert not list(run_status_dir.glob("*.json"))
+    assert len(sent) == 1 and "<b>Taylor、Rosa、Yvonne</b> ❌ 成交回報失敗" in sent[0]
 
 
 def test_update_entry_point_records(entry_point, run_status_dir):

@@ -25,9 +25,9 @@ order_type 選項：
   "LMT"  - 限價單（需搭配 outside_rth=true 可做盤前盤後）
 """
 
-import argparse
 import html as html_mod
 import json, logging, sys, urllib.request, urllib.parse
+from dataclasses import replace
 from pathlib import Path
 from datetime import date, datetime
 
@@ -47,8 +47,6 @@ if str(ROOT_DIR) not in sys.path:
 
 from excel_logger import append_trade_log
 
-# ── 日誌設定 ──────────────────────────────────────────────────────────────────
-from log_setup import setup_logging, quiet_ib_console
 log = logging.getLogger(__name__)
 
 # ── IB 連線工具 ───────────────────────────────────────────────────────────────
@@ -56,10 +54,14 @@ from ib_insync import util
 
 
 # ── Telegram 通知（統一由 notify.py 提供；三帳戶合併一則，#26）──────────
-from notify import Digest, order_group_lines
+from notify import Digest, error_line, order_group_lines
 
 # ── AccountCtx（S6：ctx 為所有函式的必要參數，模組不再有 mutable globals）
 from account_ctx import AccountCtx
+
+# ── 排程執行殼（log、逐帳戶、失敗段落、執行紀錄、exit code；#206）
+import run_status
+import scheduled_run
 
 # ── IB 連線（#185：經 Broker；讀數與送單都在 broker.Connection 上）
 import ib_fetcher
@@ -176,7 +178,7 @@ def rebalance_tg_section(placed: list[dict], fill_results: list[dict], *,
     body += [html_mod.escape(ln) for ln in drift_alarms]
     body += [html_mod.escape(ln) for ln in drift_advisories]
     if error_msg:
-        body.append(html_mod.escape(str(error_msg)[:300]))   # headline 已帶 ❌
+        body.append(error_line(error_msg))   # headline 已帶 ❌
 
     if error_msg:
         level = "error"
@@ -245,55 +247,11 @@ def _log_trades_and_report(digest: Digest, ctx: AccountCtx, *,
     return excel_error
 
 
-def run_accounts(names: list[str], mode: str,
-                 order_type: str | None = None,
-                 digest: Digest | None = None) -> list[tuple[str, str]]:
-    """依序調倉多個帳戶，Telegram 合併一則（#26）。回傳失敗清單 [(帳戶, 錯誤)]。
-
-    某帳戶失敗（連不上 Gateway、送單後查成交或寫 Excel 出錯…）→ 寫 log、訊息
-    標 ❌，繼續下一個帳戶（#29）：三帳戶的 Gateway port、clientId、state 檔互相
-    獨立，前一個帳戶的 Gateway 掛掉不該拖累其他帳戶。exit code 由 __main__
-    依回傳的失敗清單決定。Ctrl+C（KeyboardInterrupt）仍立即中止，剩下的帳戶
-    標「未執行」。digest 由 caller 傳入時，跑完仍由這裡發送，caller 可再讀
-    各帳戶結果（#38 執行紀錄）。
-    """
-    from dataclasses import replace as _replace
-    from account_utils import ROLE_REBALANCE, telegram_dest
-
-    if digest is None:
-        digest = Digest(f"調倉 {date.today()}", icon="📤")
-    failures: list[tuple[str, str]] = []
-    started: list[str] = []
-    try:
-        for name in names:
-            started.append(name)
-            try:
-                ctx = AccountCtx.from_name(name, ROLE_REBALANCE)
-                if order_type:
-                    ctx = _replace(ctx, order_type=order_type)
-                log.info(f">>> Account: {ctx.name} ({ctx.account}) port={ctx.port} <<<")
-                main(mode=mode, ctx=ctx, digest=digest)
-            except Exception as e:
-                failures.append((name, str(e)))
-                log.error(f"Account {name} failed (continuing to next): {e}")
-                if not digest.has(name):
-                    digest.add(name, "❌ 失敗", [html_mod.escape(str(e)[:300])],
-                               "error", **telegram_dest(name))
-    except BaseException:
-        for name in names[len(started):]:
-            digest.add(name, "⚠️ 未執行", ["手動中止，本輪未執行"],
-                       "warn", **telegram_dest(name))
-        raise
-    finally:
-        digest.send()
-    return failures
-
-
 # ── SR ETF 清單 — R1.3：單一來源在 ib_fetcher.SR_ETFS（已 re-export）
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
-def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
+def main(mode: str, ctx: AccountCtx, digest: Digest):
     """
     mode = "sr"     → 只調 Sector Rotation（週二）；SP500 + SkewLS 維持
     mode = "sp500"  → 只調 SP500 Momentum（週三）；SR + SkewLS 維持
@@ -307,13 +265,9 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
     其他 mode 自動用 state['last_target'] 作為 Skew LS 貢獻，
     確保 SR/SP500 rebal 不會誤砍 Skew LS 倉位（pure-function combine）。
 
-    ctx 為 AccountCtx，從 __main__ block 建立並傳入。
-    Telegram 段落加進 digest（__main__ 三帳戶合併一則發送）；沒給 digest
-    時自己建一則並在結束時發送。
+    ctx 為 AccountCtx，由排程執行殼（scheduled_run）建立並傳入。
+    Telegram 段落加進 digest（排程執行殼三帳戶合併一則發送）。
     """
-    own_digest = digest is None
-    if own_digest:
-        digest = Digest(f"調倉 {date.today()}", icon="📤")
     dry_run     = ctx.dry_run
     order_type  = ctx.order_type
     alloc_sr    = ctx.alloc_sr
@@ -363,8 +317,6 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
         log.error(f"ERROR in signal / IB connect: {e}", exc_info=True)
         _add_rebalance_section(digest, ctx, placed=placed,
                                fill_results=fill_results, error_msg=error_msg)
-        if own_digest:
-            digest.send()
         raise
 
     try:
@@ -490,17 +442,14 @@ def main(mode: str, ctx: AccountCtx, digest: Digest | None = None):
 
         elapsed = (datetime.now() - start_ts).seconds
         log.info(f"Elapsed: {elapsed}s")
-        if own_digest:
-            digest.send()
-        # 已經在往外拋的例外（含 Ctrl+C）優先；沒有時才拋 Excel 錯誤（run_accounts 記為失敗）
+        # 已經在往外拋的例外（含 Ctrl+C）優先；沒有時才拋 Excel 錯誤（執行殼記為失敗）
         if excel_error is not None and sys.exc_info()[1] is None:
             raise excel_error
 
 
-if __name__ == '__main__':
-    setup_logging("rebalance")
-    quiet_ib_console()
-    parser = argparse.ArgumentParser(description="QuantCore Rebalance")
+def run(argv: list[str] | None = None) -> int:
+    """排程入口：解析 --mode／--order-type／--account，交給排程執行殼（#206）。"""
+    parser = scheduled_run.account_parser("QuantCore Rebalance")
     parser.add_argument("--mode", choices=["sr", "sp500", "skewls", "both", "all"],
                         default="both",
                         help="sr=Sector Rotation (Tue), "
@@ -511,25 +460,15 @@ if __name__ == '__main__':
     parser.add_argument("--order-type", choices=["MKT", "MOO", "LMT"],
                         default=None,
                         help="Override order type from ctx (e.g. MKT for manual intraday)")
-    parser.add_argument("--account", required=True,
-                        help="Account name from accounts.json (e.g. Taylor/Rosa/Yvonne), "
-                             "or 'all' to run all accounts sequentially")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    from account_utils import load_accounts
-    import run_status
+    def per_account(ctx: AccountCtx, digest: Digest) -> None:
+        if args.order_type:
+            ctx = replace(ctx, order_type=args.order_type)
+        main(mode=args.mode, ctx=ctx, digest=digest)
 
-    all_accounts = args.account.lower() == 'all'
-    names: list[str] = []
-    digest = Digest(f"調倉 {date.today()}", icon="📤")
-    # 當日排程總結用的執行紀錄（#38）：只記排程的 --account all
-    with run_status.recording("rebalance", lambda: digest.outcomes(names),
-                              enabled=all_accounts):
-        names.extend([a['name'] for a in load_accounts()] if all_accounts
-                     else [args.account])
-        failures = run_accounts(names, mode=args.mode, order_type=args.order_type,
-                                digest=digest)
-    if failures:
-        log.error(f"Rebalance finished with {len(failures)} failure(s): "
-                  + "; ".join(f"{n}={msg}" for n, msg in failures))
-        sys.exit(1)
+    return scheduled_run.run_job(run_status.REBALANCE_JOB, per_account, account=args.account)
+
+
+if __name__ == '__main__':
+    sys.exit(run())

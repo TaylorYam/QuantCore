@@ -29,7 +29,7 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, Sequence
 
-from account_utils import telegram_dest
+from account_utils import ROLE_MOO_CHECK, ROLE_REBALANCE, ROLE_REPORT, telegram_dest
 from notify import LEVEL_ICON, LEVEL_RANK
 
 log = logging.getLogger(__name__)
@@ -48,24 +48,40 @@ _HEAD_ICON = {"ok": "✅", **LEVEL_ICON}
 
 @dataclass(frozen=True)
 class Job:
+    """一個排程的唯一定義：install_all_tasks 的時間與腳本、執行殼（scheduled_run）
+    的 Telegram 標題與失敗段落、當日總結與 Dashboard 的顯示都讀這裡（#206）。"""
     key: str      # 紀錄檔名前綴（= 該腳本的 log 前綴）
     at: str       # 排程時間 HH:MM（台北）
-    script: str   # 排程執行的腳本（對照 install_all_tasks.task_specs）
+    script: str   # 排程執行的腳本（install_all_tasks.task_specs 從這裡取）
     name: str     # 出狀況時顯示的名稱
     quiet: str    # 跑完、沒事時顯示
     active: str   # 跑完、有送單或成交時顯示
+    # 逐帳戶的排程才有（資料更新不分帳戶）：
+    title: str = ""            # Telegram 標題（後面接日期）
+    icon: str = ""             # Telegram 標題沒有警示時的圖示
+    role: int | None = None    # clientId 用途（AccountCtx.from_name）
+    failed: str = ""           # 帳戶失敗時的段落標題
+    records: bool = True       # 排程跑（--account all）時寫執行紀錄
+    summary: bool = False      # 排程跑時在訊息最後附當日總結
 
+
+UPDATE_JOB = Job("update", "04:30", "update_data.py", "資料更新", "資料更新", "資料更新")
+DAILY_REPORT_JOB = Job("daily", "04:40", "daily_report.py", "每日報告", "每日報告", "每日報告",
+                       title="每日報告", icon="📊", role=ROLE_REPORT,
+                       failed="❌ 每日報告失敗")
+DAILY_CHECK_JOB = Job("daily_check", "16:00", "sp500_daily_check.py", "日度風控", "無動作",
+                      "dip-buy 送單", title="日度風控", icon="📤", role=ROLE_MOO_CHECK,
+                      failed="❌ 日度風控失敗")
+REBALANCE_JOB = Job("rebalance", "21:00", "rebalance_ib.py", "調倉", "無需調倉", "送單",
+                    title="調倉", icon="📤", role=ROLE_REBALANCE, failed="❌ 失敗")
+# 總結由 21:31 成交回報自己發：它的結果直接取當輪的 Digest，不寫紀錄
+MOO_JOB = Job("moo_fill", "21:31", "moo_fill_check.py", "成交回報", "無 MOO 單", "成交",
+              title="MOO 成交", icon="✅", role=ROLE_MOO_CHECK, failed="❌ 成交回報失敗",
+              records=False, summary=True)
 
 # 平日總結涵蓋的排程（時間順序），與 install_all_tasks.task_specs() 的平日排程
 # 一致（測試把關）。週三 04:50 成分股更新有自己的 halt 警報，不列入。
-SUMMARY_JOBS = (
-    Job("update", "04:30", "update_data.py", "資料更新", "資料更新", "資料更新"),
-    Job("daily", "04:40", "daily_report.py", "每日報告", "每日報告", "每日報告"),
-    Job("daily_check", "16:00", "sp500_daily_check.py", "日度風控", "無動作", "dip-buy 送單"),
-    Job("rebalance", "21:00", "rebalance_ib.py", "調倉", "無需調倉", "送單"),
-)
-# 總結由 21:31 成交回報自己發：它的結果直接取當輪的 Digest，不寫紀錄
-MOO_JOB = Job("moo_fill", "21:31", "moo_fill_check.py", "成交回報", "無 MOO 單", "成交")
+SUMMARY_JOBS = (UPDATE_JOB, DAILY_REPORT_JOB, DAILY_CHECK_JOB, REBALANCE_JOB)
 
 
 # ── 紀錄讀寫 ──────────────────────────────────────────────────────────
@@ -159,6 +175,13 @@ def _scheduled_run(job: Job, day: date, record: dict | None) -> dict | None:
     if started is None or started < _scheduled(job, day) - EARLY_TOLERANCE:
         return None
     return record
+
+
+def scheduled_record(job: Job, day: date, *,
+                     read: Callable[[str, date], dict | None] | None = None) -> dict | None:
+    """當天這個排程「排程跑的」紀錄；沒有、或是排程前手動跑的 → None。
+    read 預設讀紀錄檔（`load`）；Dashboard 測試給假的。"""
+    return _scheduled_run(job, day, (read or load)(job.key, day))
 
 
 def _has_earlier_records(day: date) -> bool:

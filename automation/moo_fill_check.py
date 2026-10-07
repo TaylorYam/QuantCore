@@ -18,11 +18,10 @@ QuantCore — MOO 開盤成交回報
   python moo_fill_check.py --account Taylor
 """
 
-import html
 import logging
 import sys
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 # ── 路徑設定 ──────────────────────────────────────────────────────────────────
@@ -30,12 +29,10 @@ BASE_DIR = Path(__file__).parent
 LOG_DIR  = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
 
-# ── 日誌設定 ──────────────────────────────────────────────────────────────────
-from log_setup import setup_logging, quiet_ib_console
 log = logging.getLogger(__name__)
 
 # ── Telegram 通知（統一由 notify.py 提供）──────────────────────────────────
-from notify import Digest
+from notify import Digest, error_line
 
 # ── AccountCtx（S6：ctx 為必要參數）────────────────────────────────────
 from account_ctx import AccountCtx
@@ -44,8 +41,9 @@ from account_ctx import AccountCtx
 import ib_fetcher
 from symbol_contract import contract_symbol
 
-# ── 當日排程總結（#38）─────────────────────────────────────────────────
+# ── 排程執行殼與當日排程總結（#38、#206）──────────────────────────────
 import run_status
+import scheduled_run
 
 
 def _classify_direction(action: str, post_position: float,
@@ -223,12 +221,8 @@ def moo_section(rows: list[MooFill], *,
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
 
-def main(ctx: AccountCtx, digest: Digest | None = None):
-    """MOO 成交回報。結果加進 digest（由 caller 合併發送）；
-    沒給 digest 時自己建一則並在結束時發送。"""
-    own_digest = digest is None
-    if own_digest:
-        digest = Digest(f"MOO 成交 {date.today()}", icon="✅")
+def main(ctx: AccountCtx, digest: Digest):
+    """MOO 成交回報。結果加進 digest（排程執行殼三帳戶合併發送）。"""
     dest = {"token": ctx.tg_token, "chat_id": ctx.tg_chat_id}
 
     log.info(f"{'='*60}")
@@ -239,10 +233,7 @@ def main(ctx: AccountCtx, digest: Digest | None = None):
         conn = ib_fetcher.connect(ctx)
     except Exception as e:
         log.error(f"IB connect failed: {e}")
-        digest.add(ctx.name, "❌ IB 連線失敗", [html.escape(str(e)[:300])],
-                   "error", **dest)
-        if own_digest:
-            digest.send()
+        digest.add(ctx.name, "❌ IB 連線失敗", [error_line(e)], "error", **dest)
         return
 
     try:
@@ -280,67 +271,12 @@ def main(ctx: AccountCtx, digest: Digest | None = None):
 
     except Exception as e:
         log.error(f"ERROR: {e}", exc_info=True)
-        digest.add(ctx.name, "❌ 成交回報失敗", [html.escape(str(e)[:300])],
-                   "error", **dest)
+        digest.add(ctx.name, run_status.MOO_JOB.failed, [error_line(e)], "error", **dest)
 
     finally:
         conn.close()
         log.info("Disconnected from IB Gateway.")
-        if own_digest:
-            digest.send()
-
-
-def run_all(names: list[str], *, summary: bool = False,
-            now: datetime | None = None) -> list[tuple[str, str]]:
-    """依序檢查多個帳戶，合成一則發送。回傳失敗清單 [(帳戶, 錯誤)]。
-
-    summary=True（排程的 `--account all`）：平日 21:00 後在訊息最後附當日排程
-    總結；沒有 MOO 單的日子訊息只有總結這一行。
-    """
-    from account_utils import ROLE_MOO_CHECK, telegram_dest
-
-    digest = Digest(f"MOO 成交 {date.today()}", icon="✅")
-    failures = []
-    try:
-        for name in names:
-            try:
-                ctx = AccountCtx.from_name(name, ROLE_MOO_CHECK)
-                log.info(f">>> Account: {ctx.name} ({ctx.account}) port={ctx.port} <<<")
-                main(ctx=ctx, digest=digest)
-            except Exception as e:
-                failures.append((name, str(e)))
-                log.error(f"Account {name} failed (continuing to next): {e}")
-                if not digest.has(name):
-                    digest.add(name, "❌ 成交回報失敗", [html.escape(str(e)[:300])],
-                               "error", **telegram_dest(name))
-    finally:
-        if summary:
-            run_status.attach_daily_summary(digest, names, now=now)
-        digest.send()
-    return failures
 
 
 if __name__ == '__main__':
-    setup_logging("moo_fill")
-    quiet_ib_console()
-    import argparse
-    parser = argparse.ArgumentParser(description="QuantCore MOO Fill Check")
-    parser.add_argument("--account", required=True,
-                        help="Account name from accounts.json (e.g. Taylor/Rosa/Yvonne), "
-                             "or 'all' to run all accounts sequentially")
-    args = parser.parse_args()
-
-    from account_utils import load_accounts
-
-    all_accounts = args.account.lower() == 'all'
-    if all_accounts:
-        names = [a['name'] for a in load_accounts()]
-    else:
-        names = [args.account]
-
-    failures = run_all(names, summary=all_accounts)
-
-    if failures:
-        log.error(f"MOO fill check finished with {len(failures)} failure(s): "
-                  + "; ".join(f"{n}={msg}" for n, msg in failures))
-        sys.exit(1)
+    sys.exit(scheduled_run.run_job(run_status.MOO_JOB, main))

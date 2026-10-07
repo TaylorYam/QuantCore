@@ -138,6 +138,12 @@ def split_message(msg: str, limit: int = TG_MAX_CHARS) -> list[str]:
     return chunks
 
 
+def error_line(e: BaseException | str) -> str:
+    """例外（或錯誤訊息）→ 失敗段落的一行：截 300 字、HTML escape（例外訊息
+    常含 `<...>`，沒 escape 會讓 Telegram 拒收整則）。"""
+    return html.escape(str(e)[:300])
+
+
 def order_group_lines(orders: list[dict], *, show_price: bool = False) -> list[str]:
     """送單清單 → BUY、SELL 各一行，例：`🟢 BUY 55 ERY · 12 XLB`。
 

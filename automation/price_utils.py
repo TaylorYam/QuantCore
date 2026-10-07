@@ -8,7 +8,19 @@ QuantCore — 參考價的兩個基本零件
 `broker.Connection.prices`（#185）。
 """
 
+import logging
+import sys
+from pathlib import Path
+
 import numpy as np
+
+# load_csv_close 要 import repo 根目錄的 strategies 套件；排程從 automation/ 啟動時
+# sys.path 沒有根目錄，不能靠呼叫端剛好先 import 了誰（#217）
+_ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(_ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(_ROOT_DIR))
+
+log = logging.getLogger(__name__)
 
 
 def _ok(x) -> bool:
@@ -32,7 +44,8 @@ def ticker_price(t) -> float:
 
 
 def load_csv_close(symbol: str) -> float:
-    """從本地 CSV 取最後一筆收盤價，查不到回傳 0。"""
+    """從本地 CSV 取最後一筆收盤價；沒有這檔的 CSV 回傳 0（呼叫端回退 IB）。
+    讀檔出錯也回傳 0，但寫 warning（#217：以前靜默回 0，整個帳戶改用 IB 報價沒人發現）。"""
     try:
         import pandas as pd
         from strategies.sp500_momentum import config as sp_cfg
@@ -51,6 +64,6 @@ def load_csv_close(symbol: str) -> float:
                 c = float(df['Close'].dropna().iloc[-1])
                 if _ok(c):
                     return c
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning(f"CSV close unavailable for {symbol}: {type(e).__name__}: {e}")
     return 0.0

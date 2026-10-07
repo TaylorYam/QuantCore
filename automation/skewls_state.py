@@ -42,6 +42,8 @@ import shutil
 from pathlib import Path
 from datetime import date
 
+import json_state
+
 log = logging.getLogger(__name__)
 
 STATE_DIR = Path(__file__).parent
@@ -69,8 +71,7 @@ def load_state(account_name: str = "") -> dict:
         return json.loads(json.dumps(DEFAULT_STATE))  # deep copy
 
     try:
-        with open(path, encoding='utf-8-sig') as f:
-            state = json.load(f)
+        state = json_state.load(path, None)
         # 補齊缺少的鍵
         for k, v in DEFAULT_STATE.items():
             state.setdefault(k, v)
@@ -88,25 +89,10 @@ def load_state(account_name: str = "") -> dict:
 
 def save_state(account_name: str, state: dict) -> None:
     """原子寫入帳戶狀態。"""
-    path = _state_path(account_name)
-    tmp = path.with_suffix(path.suffix + '.tmp')
     try:
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-            f.flush()
-            try:
-                import os
-                os.fsync(f.fileno())
-            except (OSError, AttributeError):
-                pass
-        tmp.replace(path)
+        json_state.save_atomic(_state_path(account_name), state, indent=2, ensure_ascii=False)
     except Exception as e:
         log.error(f"Failed to save skewls state for {account_name}: {e}")
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except Exception:
-                pass
         raise
 
 

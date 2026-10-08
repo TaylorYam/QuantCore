@@ -1,17 +1,31 @@
-"""Manual-order form parsing and display text, shared by the Tk and Qt Panels.
+"""Manual-order form parsing and display text for the Panel's Trading page.
 
-No GUI imports: the windows read their widgets into a ManualOrderForm, call
-these functions, and put the returned strings on screen.  Colors come back as
-theme key names ("text", "text_dim", "yellow") so each toolkit maps its own.
+No GUI imports: the page reads its widgets into a ManualOrderForm, calls these
+functions, and puts the returned strings on screen.  Colors come back as theme
+key names ("text", "text_dim", "yellow") that the Panel theme maps.
 """
 
 from __future__ import annotations
 
 import math
+import unicodedata
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
 from manual_order_status import ACTIVE_STATUSES, TERMINAL_STATUSES, UNCONFIRMED_STATUSES
+
+# NFKC 處理全形英數與「．」；「。」（含半形「｡」經 NFKC 後）另外轉成小數點。
+_IDEOGRAPHIC_STOPS = str.maketrans({"。": "."})
+
+
+def to_ascii_input(text: str) -> str:
+    """英數欄位（#138）：全形英數與中文句點轉成半形；其他字元原樣保留（交給欄位解析報錯）。
+
+    注音開著中文模式時 `.` 是 ㄡ，打 `184.4` 可能收到全形或句點；轉成半形後解析照常
+    報錯或通過，不會默默丟掉字元。
+    """
+    return unicodedata.normalize("NFKC", text).translate(_IDEOGRAPHIC_STOPS)
+
 
 SHARES_MODE = "整股股數"
 CASH_MODE = "美元金額"

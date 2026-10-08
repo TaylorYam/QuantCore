@@ -1,4 +1,4 @@
-"""takeover_preview_text：交給策略接管視窗的按鈕、確認與結果文字（Tk／Qt 共用）。"""
+"""takeover_preview_text：交給策略接管畫面的按鈕、確認與結果文字。"""
 
 from strategy_takeover import TakeoverPreview
 

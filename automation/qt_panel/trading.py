@@ -1,15 +1,15 @@
-"""新 Panel 的 Trading 分頁：手動單（#151）、Sync Pos（#152）、交給策略接管（#153）。
-送去 paper 或實盤由主視窗建的送單目標決定（`order_target`，#183）。
+"""Panel 的 Trading 分頁：手動單（#151）、Sync Pos（#152）、交給策略接管（#153）。
+送去哪、記在哪、通知誰由主視窗建的送單目標決定（`order_target`，#183）。
 
-流程和 Tk 的 `manual_order_view.ManualOrderWindow` 一樣：填欄位 → 預覽 → 再次核對
-（重新向 IB 檢查）→ 確認視窗 → 送出 → 狀態追蹤（部分成交、撤單、過期、修改）。
+手動單流程：填欄位 → 預覽 → 再次核對（重新向 IB 檢查）→ 確認視窗 → 送出 →
+狀態追蹤（部分成交、撤單、過期、修改）。
 欄位解析、預覽與狀態列文字共用 `manual_order_form`（#146），帳戶、合約、送單的
 判斷全在 `manual_orders.ManualOrderService`；流程（各步驟、修改＝先撤再送、刷新）
 在不含 Qt 的 `trading_flow.ManualOrderFlow`（#188）。這裡只做 Qt 那一側：畫面依
 流程狀態（FlowView）更新。
 
-手動單 service、Sync Pos、接管操作都由送單目標提供，送單連線一律經過送單閘門
-（`broker_gate.SendGate`）。IB 在背景執行緒跑，結果排回主執行緒更新畫面。
+手動單 service、Sync Pos、接管操作都由送單目標提供。IB 在背景執行緒跑，結果排回
+主執行緒更新畫面。
 """
 from __future__ import annotations
 
@@ -23,8 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 import manual_order_form as order_form
-from ime_guard import to_ascii_input
-from manual_order_form import ManualOrderForm
+from manual_order_form import ManualOrderForm, to_ascii_input
 
 from qt_panel import theme
 from qt_panel.order_target import SyncOperations, TakeoverOperations
@@ -47,7 +46,7 @@ def ascii_only(edit: QLineEdit) -> None:
     """英數欄位（#138 的 Qt 版）：關掉這個欄位的輸入法，萬一仍收到全形字元就轉半形。
 
     Qt 在 Windows 上對不接受輸入法的焦點元件會自己解除 IME context，
-    不必像 Tk 版用 Win32 ImmAssociateContext。注音實測列在切換檢查清單。
+    不必自己呼叫 Win32 ImmAssociateContext。
     """
     edit.setAttribute(Qt.WA_InputMethodEnabled, False)
     edit.setInputMethodHints(Qt.ImhPreferLatin | Qt.ImhNoPredictiveText)
@@ -243,7 +242,7 @@ class ManualOrderPanel(QWidget):
         self.order_type_box.currentTextChanged.connect(self._order_type_changed)
         self.symbol_edit.textChanged.connect(self._update_symbol_hint)
         self.symbol_edit.textEdited.connect(self._symbol_edited)
-        # 預設用帳戶權益 %（使用者 09-30 決定；Tk 版仍預設整股股數）
+        # 預設用帳戶權益 %（使用者 09-30 決定）
         self.input_mode_box.setCurrentText(order_form.PERCENT_MODE)
 
     # ── 生命週期 ─────────────────────────────────────────────────────
@@ -516,12 +515,12 @@ class ManualOrderPanel(QWidget):
 
 class TradingPage(QWidget):
     """Trading 分頁：送單目標說明＋手動單／Sync Pos／交給策略接管切換。
-    沒有可用的送單服務時只顯示原因。live = 正式模式（送實盤）。"""
+    沒有可用的送單服務時只顯示原因。"""
 
     def __init__(self, account_names: list[str], service, *, unavailable: str = "",
                  target_text: str = "", dialogs, log: Callable[[str], None],
                  symbol_loader: Callable | None = None, sync: SyncOperations | None = None,
-                 takeover: TakeoverOperations | None = None, live: bool = False):
+                 takeover: TakeoverOperations | None = None):
         super().__init__()
         # 內容放進捲動區：確認內容很多行時可以捲，不會撐大主視窗被螢幕切掉（#171）
         outer = QVBoxLayout(self)
@@ -537,20 +536,12 @@ class TradingPage(QWidget):
         lay.setSpacing(12)
         banner = Card()
         if service is None:
-            title = ("正式模式：Trading 目前不能送單" if live
-                     else "並行模式：Trading 只接 paper Gateway，目前不能送單")
+            title = "Trading 目前不能送單"
             detail = unavailable
-        elif live:
-            title = "正式模式：手動單、Sync Pos、接管送到實盤帳戶"
-            detail = ("每個帳戶送到自己的 Gateway，送出前一律跳確認視窗。帳戶、連線身分、"
-                      "紀錄（手動單、手動歸屬、state、trade_log.xlsx）與 Telegram 通知都和 "
-                      "Tk Panel 相同；正式模式下 Tk Panel 不能送單。")
         else:
-            title = f"並行模式：手動單、Sync Pos、接管一律送往 {target_text}，不會送到實盤"
-            detail = ("帳戶選單照列三個帳戶，但全部導向這個 paper 帳號。"
-                      "每條送單連線都會先確認 Gateway 管理的帳號全部是 paper（DU/DF 開頭），"
-                      "否則斷線拒絕。paper 不寫實盤的 state、歸屬與成交紀錄，也不發 Telegram。"
-                      "實盤下單請用 Tk Panel。")
+            title = "手動單、Sync Pos、接管送到實盤帳戶"
+            detail = ("每個帳戶送到自己的 Gateway，送出前一律跳確認視窗。紀錄寫進手動單、"
+                      "手動歸屬、state、trade_log.xlsx，結果發該帳戶 Telegram。")
         self.banner_title = label(title, color=theme.WARN_TEXT)
         self.banner_title.setStyleSheet(f"color: {theme.WARN_TEXT}; font-weight: 600;")
         self.banner_title.setWordWrap(True)

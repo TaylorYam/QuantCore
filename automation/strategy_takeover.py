@@ -2,8 +2,8 @@
 QuantCore — 單一標的交給策略接管（#107）
 
 Panel 手動持倉碰撞提示（Sync Pos 預覽的「⏸ 手動持倉暫停」）按「交給策略
-接管」之後的預覽與送單。此模組不碰 Tk；視窗在 takeover_window，執行緒與
-Telegram 在 control_panel。
+接管」之後的預覽與送單。此模組不碰 GUI；畫面在 qt_panel.takeover，執行緒在
+畫面那側，連線、紀錄與 Telegram 由 Panel 的送單目標（qt_panel.order_target）給。
 
 規則
 ────

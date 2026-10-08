@@ -1,23 +1,12 @@
-"""新 Panel 查權益／持倉（#149），以及單一帳戶頁的權益序列、策略設定、最近成交（#150）。
+"""Panel 查權益／持倉（#149），以及單一帳戶頁的權益序列、策略設定、最近成交（#150）。
 
-查詢本身沿用 `ib_fetcher.fetch_portfolio`（和 Tk Panel 同一套，經 Broker 開唯讀連線、
-查完就斷），只換 clientId：新 Panel 的 Gateway 心跳已經佔著 ROLE_PANEL_READONLY 那組號碼，
-查詢改用 `broker.panel_query_client_id`（Taylor 69／Rosa 79／Yvonne 89），不和
-心跳、Tk Panel、排程搶同一個 clientId（ADR-0012）。
+查詢用 `ib_fetcher.fetch_portfolio`（經 Broker 開唯讀連線、查完就斷），身分是
+ROLE_PANEL：不和 Gateway 心跳（ROLE_MONITOR）、排程搶同一個 clientId。
 
 另外唯讀讀一次手動歸屬紀錄的暫停標的（碰撞進策略 Universe 的手動持倉），持倉表
 才能把它們標成手動（CONTEXT「手動持倉」）；讀不到就在結果裡寫原因，不影響讀數。
 """
 from __future__ import annotations
-
-from dataclasses import replace
-
-
-def portfolio_fetch_for(mode):
-    """並行模式用新 Panel 自己的查詢 clientId；正式模式（#154）接手 Tk Panel 的
-    ROLE_PANEL（Tk 那時改用新 Panel 的查詢號碼，見 control_panel.fetch_ib_portfolio）。"""
-    from qt_panel.mode import PanelMode
-    return fetch_panel_portfolio if mode is PanelMode.PRODUCTION else fetch_readonly_portfolio
 
 
 def fetch_panel_portfolio(account_name: str) -> dict:
@@ -26,16 +15,6 @@ def fetch_panel_portfolio(account_name: str) -> dict:
     from account_utils import ROLE_PANEL
 
     ctx = AccountCtx.from_name(account_name, ROLE_PANEL)
-    return _with_attribution(ib_fetcher.fetch_portfolio(ctx, readonly=True), ctx)
-
-
-def fetch_readonly_portfolio(account_name: str) -> dict:
-    import ib_fetcher
-    from account_ctx import AccountCtx
-    from broker import ROLE_PANEL, panel_query_client_id
-
-    ctx = replace(AccountCtx.from_name(account_name, ROLE_PANEL),
-                  client_id=panel_query_client_id(account_name))
     return _with_attribution(ib_fetcher.fetch_portfolio(ctx, readonly=True), ctx)
 
 
@@ -77,7 +56,7 @@ def read_strategy_allocations(account_name: str) -> dict:
 def write_strategy_allocations(account_name: str, allocations: dict) -> None:
     """把帳戶的 Allocation 寫進 accounts.json 該帳戶的覆寫值（#220）。
 
-    新 Panel 寫 accounts.json 只走這裡：只收三個 Allocation 欄位、每個 0–100%、
+    Panel 寫 accounts.json 只走這裡：只收三個 Allocation 欄位、每個 0–100%、
     合計不超過上限，其他欄位（leverage、port、account 等）一律拒絕。
     """
     from account_utils import update_account_config

@@ -1,10 +1,10 @@
-"""Strategy Parameters display shared by the Tk and Qt Panels (#150).
+"""Strategy Parameters display for the Panel (#150).
 
 No GUI imports: takes the three Allocation values of one Account and returns the
 text each Panel shows. Colors come back as theme key names ("blue", "green",
 "red", "orange") so each toolkit maps its own palette. `allocation_change` checks
 an Allocation edit and builds the confirmation text before a Panel saves it
-(#220, the Tk Save rules).
+(#220, the rules of the former Tk Panel Save).
 
 Leverage is always derived as the sum of the Allocations (CONTEXT「Leverage」);
 the `leverage` field in the config is never read here.
@@ -14,10 +14,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Saving is refused above this total (Tk Panel rule)
+# Saving is refused above this total (kept from the Tk Panel)
 MAX_TOTAL_ALLOCATION = 2.5
 
-# (config key, label, default, theme key) — defaults match the Tk Panel sliders
+# (config key, label, default, theme key) — defaults kept from the Tk Panel sliders
 STRATEGIES = (
     ("alloc_sr", "SR", 0.80, "blue"),
     ("alloc_sp500", "SP500", 0.50, "green"),

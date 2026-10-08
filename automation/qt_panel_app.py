@@ -1,8 +1,8 @@
-"""QuantCore Panel（PySide6）啟動入口 — 與 Tk Panel（control_panel.py）並存。
+"""QuantCore Panel（PySide6）啟動入口。
 
     pythonw qt_panel_app.py
 
-並行模式只看不下單、不值班；正式模式值班＋實盤送單（ADR-0012，#154）。啟動流程見 qt_panel/app.py。
+Panel 值班＋實盤送單（ADR-0012，#154、#155）。啟動流程見 qt_panel/app.py。
 """
 import sys
 

@@ -1,8 +1,7 @@
-"""新 Panel 的啟動流程：管理員權限 → 單一實例 → 讀設定 → 開主視窗（#147）。
+"""Panel 的啟動流程：管理員權限 → 單一實例 → 讀設定 → 開主視窗（#147）。
 
-和 Tk Panel 並存：單一實例鎖、叫回視窗的訊號檔、Windows AppUserModelID 都用
-自己的名字，兩個 Panel 可以同時開。並行模式 IB 連線用唯讀身分；正式模式（#154）
-接手 Tk Panel 的值班與 clientId role（見 gateway_status、portfolio_source）。
+Panel 負責值班與實盤送單（#154 從 Tk Panel 切換，#155 刪除 Tk Panel）。
+單一實例鎖保證同時只有一個 Panel 在值班；第二次開啟只會把已開的視窗叫到前面。
 """
 from __future__ import annotations
 
@@ -33,7 +32,7 @@ def _is_admin() -> bool:
 
 
 def _relaunch_as_admin() -> None:
-    """和 Tk Panel 一樣：不是管理員就用 runas 以 pythonw 重開自己。"""
+    """不是管理員就用 runas 以 pythonw 重開自己。"""
     exe = sys.executable
     if exe.endswith("python.exe"):
         exe = exe.replace("python.exe", "pythonw.exe")
@@ -42,7 +41,7 @@ def _relaunch_as_admin() -> None:
 
 
 class WindowsCredentialStore:
-    """Gateway 帳密存在 Windows 認證管理員（同 Tk Panel 的「更新 Gateway 帳密」）。"""
+    """Gateway 帳密存在 Windows 認證管理員。"""
 
     def read(self, account: str):
         from gateway_start_win import read_credentials
@@ -73,28 +72,21 @@ def main() -> int:
             show_signal_path().write_text("show", encoding="utf-8")
         except OSError:
             pass
-        QMessageBox.information(None, "QuantCore", "新 Panel 已經開著，會把它叫到前面。")
+        QMessageBox.information(None, "QuantCore", "Panel 已經開著，會把它叫到前面。")
         return 0
 
     try:
-        from account_utils import load_accounts, load_base_config
+        from account_utils import load_accounts
         from qt_panel import theme
-        from qt_panel.broker_gate import load_paper_target
-        from qt_panel.gateway_status import gateway_source_for
+        from qt_panel.gateway_status import MonitorGatewaySource
         from qt_panel.main_window import MainWindow
-        from qt_panel.mode import PanelMode, qt_panel_duty, release_live_duty
         from qt_panel.portfolio_source import (
-            load_account_cash_flows, load_equity, portfolio_fetch_for, read_recent_trades,
+            fetch_panel_portfolio, load_account_cash_flows, load_equity, read_recent_trades,
             read_strategy_allocations, write_strategy_allocations,
         )
         from qt_panel.tray import tray_factory_for
 
-        config = load_base_config()
-        # 正式模式要拿得到值班鎖（Tk Panel 還在值班就退回並行模式並說明）
-        mode, note = qt_panel_duty(config)
-        has_duty = mode is PanelMode.PRODUCTION
         accounts = [{"name": a["name"], "port": a.get("port")} for a in load_accounts()]
-        paper_target, paper_problem = load_paper_target(config, accounts)
 
         app.setFont(QFont(theme.UI_FONT, 10))
         app.setStyleSheet(theme.STYLESHEET)
@@ -105,23 +97,17 @@ def main() -> int:
 
         window = MainWindow(
             accounts=accounts,
-            mode=mode,
-            mode_note=note,
-            gateway_source=gateway_source_for(mode, [a["name"] for a in accounts]),
+            gateway_source=MonitorGatewaySource([a["name"] for a in accounts]),
             gateway_ports_factory=lambda ask: gateway_start_win.WindowsPorts(ask_credentials=ask),
             credential_store=WindowsCredentialStore(),
-            portfolio_fetch=portfolio_fetch_for(mode),
+            portfolio_fetch=fetch_panel_portfolio,
             equity_fetch=load_equity,
             cash_flows_fetch=load_account_cash_flows,
             strategy_config_fetch=read_strategy_allocations,
             trades_fetch=read_recent_trades,
             allocation_save=write_strategy_allocations,
-            tray_factory=tray_factory_for(icon, "QuantCore Panel（PySide6・正式模式）"
-                                          if mode is PanelMode.PRODUCTION
-                                          else "QuantCore Panel（PySide6・並行模式）"),
+            tray_factory=tray_factory_for(icon, "QuantCore Panel"),
             show_signal=show_signal_path(),
-            paper_target=paper_target,
-            paper_problem=paper_problem,
         )
         window.quit_requested.connect(app.quit)
         window.start()
@@ -131,6 +117,5 @@ def main() -> int:
             return app.exec()
         finally:
             window.shutdown()
-            release_live_duty(held=has_duty)
     finally:
         release_lock(lock)

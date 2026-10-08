@@ -13,7 +13,7 @@ ACCOUNTS_PATH = BASE_DIR / 'accounts.json'
 # clientId 的規則與用途（role）編號只在 broker（#185）；這裡轉出 role 給既有的
 # AccountCtx.from_name(name, ROLE_…) 呼叫端。
 from broker import (  # noqa: E402,F401
-    ROLE_MANUAL_ORDER, ROLE_MONITOR, ROLE_MOO_CHECK, ROLE_PANEL, ROLE_PANEL_READONLY,
+    ROLE_MANUAL_ORDER, ROLE_MONITOR, ROLE_MOO_CHECK, ROLE_PANEL,
     ROLE_REBALANCE, ROLE_REPORT, ROLE_TAKEOVER,
 )
 

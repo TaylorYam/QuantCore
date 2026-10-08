@@ -17,7 +17,7 @@ import os
 import sys
 from pathlib import Path
 
-# PySide6 Panel 測試（#147）一律離屏：CI 沒有桌面，本機也不跳視窗。Tk 不受影響。
+# PySide6 Panel 測試（#147）一律離屏：CI 沒有桌面，本機也不跳視窗。
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 # Ensure automation/ is importable as flat package, and repo root for strategies
@@ -99,8 +99,7 @@ def _run_status_outside_live_logs(tmp_path_factory):
     """排程執行紀錄（#38）整個測試階段都寫到暫存目錄。
 
     live 工作目錄就是實盤（AGENTS.md §4）：測試若寫進 automation/logs/run_status，
-    當天 21:31 的排程總結會把假紀錄當成真的排程結果。只在階段開始設定一次 —
-    不在每個測試建目錄，避免改動 test_panel_gui 對 Tk 回收時機敏感的節奏。
+    當天 21:31 的排程總結會把假紀錄當成真的排程結果。只在階段開始設定一次。
     """
     import run_status
     with pytest.MonkeyPatch.context() as mp:
@@ -112,7 +111,7 @@ def _run_status_outside_live_logs(tmp_path_factory):
 def _manual_attribution_outside_live(tmp_path_factory):
     """手動持倉歸屬紀錄（#106）整個測試階段都指到暫存目錄。
 
-    Sync Pos / rebalance 的測試會跑到歸屬更新與送單閘門：若用預設路徑，
+    Sync Pos / rebalance 的測試會跑到歸屬更新與送單：若用預設路徑，
     live 工作目錄會被寫出 automation/manual_attribution.sqlite3，或讀到真的
     Panel 手動單。與 run_status 一樣只在階段開始設定一次。
     """
@@ -124,24 +123,6 @@ def _manual_attribution_outside_live(tmp_path_factory):
         mp.setattr(manual_attribution, "DEFAULT_MANUAL_ORDERS_PATH",
                    base / "manual_orders.sqlite3")
         yield
-
-
-@pytest.fixture(scope="session")
-def _live_duty_dir(tmp_path_factory):
-    return tmp_path_factory.mktemp("live_duty")
-
-
-@pytest.fixture(autouse=True)
-def _live_duty_lock_outside_live(_live_duty_dir, request, monkeypatch):
-    """Panel 的值班鎖（#154）指到暫存目錄，每個測試一個檔名（不建目錄）。
-
-    預設在系統暫存資料夾：測試若拿了或刪了它，會把正在跑的 live Tk Panel 擠成
-    只看，或讓它和新 Panel 同時值班。
-    """
-    import re
-    from qt_panel import mode
-    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", request.node.name)[:120]
-    monkeypatch.setattr(mode, "LIVE_DUTY_LOCK", _live_duty_dir / f"{name}.lock")
 
 
 @pytest.fixture

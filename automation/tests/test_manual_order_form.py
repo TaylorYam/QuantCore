@@ -1,4 +1,4 @@
-"""manual_order_form：手動單欄位解析、委託列與提示文字（Tk／Qt 共用，不依賴 GUI）。"""
+"""manual_order_form：手動單欄位解析、委託列與提示文字（Panel Trading 用，不依賴 GUI）。"""
 
 import re
 from decimal import Decimal
@@ -276,7 +276,7 @@ def test_replacement_after_cancel():
 
 
 def test_shared_trading_modules_import_no_gui_toolkit():
-    """Tk 與 Qt 共用的三個模組不能帶進任何 GUI 框架（在乾淨行程裡檢查）。"""
+    """Trading 的三個純邏輯模組不能帶進任何 GUI 框架（在乾淨行程裡檢查）。"""
     import subprocess
     import sys
     from pathlib import Path
@@ -293,3 +293,16 @@ def test_shared_trading_modules_import_no_gui_toolkit():
         capture_output=True, text=True, timeout=120)
     assert done.returncode == 0, done.stderr[-2000:]
     assert done.stdout.strip() == "[]"
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("184.4", "184.4"),
+    ("１８４．４", "184.4"),
+    ("184。4", "184.4"),
+    ("184｡4", "184.4"),
+    ("ＡＡＰＬ", "AAPL"),
+    ("brk.b", "brk.b"),
+    ("18ㄡ4", "18ㄡ4"),          # 組字殘留不丟掉，交給欄位解析報錯
+])
+def test_full_width_input_becomes_ascii(raw, expected):
+    assert mof.to_ascii_input(raw) == expected

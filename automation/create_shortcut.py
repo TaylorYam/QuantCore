@@ -1,23 +1,20 @@
 """
-建立桌面捷徑（帶自訂圖標）
+建立 Panel 的桌面捷徑（帶自訂圖標）
 執行一次即可：python create_shortcut.py
-新 PySide6 Panel（與 Tk Panel 並存，ADR-0012）：python create_shortcut.py --qt
 """
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 AUTOMATION_DIR = Path(__file__).parent.resolve()
-QT_PANEL = "--qt" in sys.argv[1:]
-VBS_PATH = AUTOMATION_DIR / ("QuantCore_QtPanel.vbs" if QT_PANEL else "QuantCore_Panel.vbs")
+VBS_PATH = AUTOMATION_DIR / "QuantCore_QtPanel.vbs"
 ICO_PATH = AUTOMATION_DIR / "quantcore.ico"
 
 # 取得桌面路徑
 DESKTOP = Path(os.path.expanduser("~")) / "Desktop"
 
-SHORTCUT_PATH = DESKTOP / ("QuantCore Qt — Taylor.lnk" if QT_PANEL else "QuantCore — Taylor.lnk")
-DESCRIPTION = "QuantCore — Taylor Panel (PySide6)" if QT_PANEL else "QuantCore — Taylor Control Panel"
+SHORTCUT_PATH = DESKTOP / "QuantCore Qt — Taylor.lnk"
+DESCRIPTION = "QuantCore — Taylor Panel (PySide6)"
 
 ps_script = f'''
 $WshShell = New-Object -ComObject WScript.Shell

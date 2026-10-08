@@ -1,7 +1,7 @@
 """
 NYSE trading-day calendar + Taipei → NYSE session-date mapping.
 
-Used by the ROSA market-window poller in control_panel:
+Used by the ROSA market-window poller (Panel watch, via monitor_engine):
   1. Decide whether a given Taipei datetime falls inside an active polling
      window (US RTH session that maps to a real NYSE trading day).
   2. Provide the NYSE session date that the window points at, for logging.

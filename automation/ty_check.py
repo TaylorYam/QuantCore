@@ -9,8 +9,8 @@ Three pieces:
   * verify_one_account(name, connect) — orchestrates one connect attempt and
                                           turns success / failure into a message
 
-Side effects (real IB connect, Tk after, Telegram send) live in control_panel.
-This module stays pure so the scheduling and message logic can be exercised
+Side effects (real IB connect, timers, Telegram send) live in the Panel's watch
+(monitor_engine + qt_panel.watch). This module stays pure so the scheduling and message logic can be exercised
 in milliseconds without any infrastructure.
 """
 

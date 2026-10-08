@@ -117,7 +117,7 @@ _Avoid_: 目標部位（與 log 的 `target=Xsh` 混淆）、應有部位
 _Avoid_: Rounding error（不帶方向性，掩蓋 floor 的系統性偏低）
 
 **值班 (Watch)**:
-Panel 的三個定時監控統稱：Rosa poll（台北 21:00–05:00 市場窗每 30 分輪詢）、TY check（週二・三 20:05 開盤前驗證手動登入）、Morning check（NYSE 交易日 07:00 健檢 + constituents staleness 提醒）。排程＋派工唯一實作 = `automation/monitor_engine.py`（MonitorEngine + 三張 spec，ports 注入 I/O）；「該不該警報」的純決策與 `next_*_time` 排程計算在 rosa_poll / ty_check / morning_check 各自模組；`control_panel` 只是 Tk adapter（after 計時、worker 結果 marshal 回主線程、Telegram 出口）。防洪紀律：Gateway 斷線**事件不直發 TG**，Rosa 警報一律經 30 分輪詢 gate — 盤外 flapping 不洗版；事件路徑只有斷線 10 分鐘後的一次性 recovery（schedule_once）。
+Panel 的三個定時監控統稱：Rosa poll（台北 21:00–05:00 市場窗每 30 分輪詢）、TY check（週二・三 20:05 開盤前驗證手動登入）、Morning check（NYSE 交易日 07:00 健檢 + constituents staleness 提醒）。排程＋派工唯一實作 = `automation/monitor_engine.py`（MonitorEngine + 三張 spec，ports 注入 I/O）；「該不該警報」的純決策與 `next_*_time` 排程計算在 rosa_poll / ty_check / morning_check 各自模組；Panel 的 `qt_panel/watch.py` 只是 Qt adapter（QTimer 計時、worker 結果 marshal 回主線程、Telegram 出口）。防洪紀律：Gateway 斷線**事件不直發 TG**，Rosa 警報一律經 30 分輪詢 gate — 盤外 flapping 不洗版；事件路徑只有斷線 10 分鐘後的一次性 recovery（schedule_once）。
 _Avoid_: Monitoring（與 GatewayMonitor 心跳連線層混淆）、Alarm job
 
 **當日排程總結 (Daily Run Summary)**:
@@ -135,27 +135,22 @@ _Avoid_: 斷線自動重連（auto-restart 是每天固定一次的重啟，不�
 從 Panel 一鍵開啟三個實盤 Gateway（Taylor／Rosa／Yvonne），把各自帳密填進登入視窗，再依序替每個帳戶按「登入」：一次一個，等它登入完成（手機 IB Key 確認後，Gateway 記錄登入完成；最多 30 秒）才換下一個，讓手機一次只跳一則 IB Key。使用者只負責在手機確認 IB Key。沒登入成功的帳戶不重試，留在它的視窗給使用者手動處理（連續輸錯密碼會鎖帳號）。前提是三個實盤 Gateway 都沒有在執行（有登入或只停在登入畫面都算在執行），否則整批拒絕。模擬帳戶（paper）Gateway 不在範圍內，也不影響判斷。
 _Avoid_: Auto-restart（那是 Gateway 每天自己重啟、免 IB Key，和這個一鍵登入無關）
 
-**並行模式 (Parallel Mode)**:
-Panel 從 Tk 換成 PySide6 的過渡期（ADR-0012）：新 Panel 和 Tk Panel 同時存在，新 Panel 對實盤只看不下單、不值班，IB 連線用自己的唯讀身分；新 Panel 的 Trading 只接 paper Gateway（paper [[送單目標]]，連線經過 [[送單閘門]]）。值班鎖搶不到而退回並行模式時也一樣。值班與實盤下單仍由 Tk Panel 負責。相對的是**正式模式**：切換後值班、系統匣、實盤送單都交給新 Panel。由 `config.json` 的 `qt_panel_mode` 決定，預設並行模式。
-_Avoid_: 測試模式、Paper 模式（並行模式照樣讀實盤帳戶，只是不下單；paper 是模擬帳戶）
-
-**送單閘門 (Send Gate)**:
-新 Panel 所有送單路徑（手動單、Sync Pos、交給策略接管）共用的唯一判斷點：每條送單連線連上 Gateway 後先讀它管理的帳號，並行模式下不是全部 paper（DU/DF 開頭）就斷線拒絕並在畫面說明。正式模式才放行實盤。閘門只判斷這條連線放不放行；送去哪、記在哪、通知誰由 [[送單目標]] 決定，送單目標的連線一律向閘門要。
-_Avoid_: paper 模式（並行模式照樣讀實盤，閘門只管送單）
+**並行模式 (Parallel Mode)**（已移除）:
+Panel 從 Tk 換成 PySide6 的過渡期（ADR-0012）：新 Panel 和 Tk Panel 同時存在、新 Panel 只看不下單、Trading 只接 paper（經「送單閘門」只放行 paper 帳號）。2026-10-03 切換（#154）後，#155 刪除 Tk Panel 時一併拿掉並行模式、paper 送單與送單閘門：Panel 一律值班＋實盤送單，`config.json` 的 `qt_panel_mode`、`qt_panel_paper` 不再有作用。不要再加回「只看」或 paper 模式，除非另有決策。
 
 **送單目標 (Order Target)**:
-新 Panel 這次執行的單送去哪、用哪個 IB 身分、記在哪、通知誰。一次執行只有一個，主視窗依實際生效的模式建一次交給 Trading：**正式模式** → 實盤送單目標（各帳戶自己的 Gateway 與 clientId role、實盤的手動單與手動歸屬紀錄、寫回 SP500／SkewLS state、通知發該帳戶 Telegram、Sync Pos 寫 trade_log.xlsx）；**並行模式**且 `qt_panel_paper` 有效 → paper 送單目標（三個帳戶名稱都導向 paper 帳號、paper 專用紀錄檔、state 只讀不寫、通知只寫 Output Log）；paper 設定缺漏或無效 → 沒有送單目標，Trading 顯示原因。手動單、Sync Pos、交給策略接管的 paper／實盤差異都只在送單目標裡（`automation/qt_panel/order_target.py`）；`sync_position`／`strategy_takeover` 沒拿到送單目標給的連線與紀錄就報錯，沒有「預設實盤」。和 [[送單閘門]] 分工：閘門判斷放不放行，送單目標決定送去哪、記在哪、通知誰。`config.json` 的 `qt_panel_paper`（paper Gateway 位置與帳號）只是 paper 送單目標的連線設定，不是送單目標本身。
-_Avoid_: 送單模式（paper／實盤是送單目標的兩種，不是另一個模式；模式見 [[並行模式 (Parallel Mode)]]）
+Panel 的單送去哪、用哪個 IB 身分、記在哪、通知誰：各帳戶自己的實盤 Gateway 與 clientId role（手動單 ROLE_MANUAL_ORDER、Sync Pos ROLE_REBALANCE、接管 ROLE_TAKEOVER）、實盤的手動單與手動歸屬紀錄、寫回 SP500／SkewLS state、通知發該帳戶 Telegram、Sync Pos 寫 trade_log.xlsx。主視窗建一次交給 Trading（`automation/qt_panel/order_target.py`），連線向 [[Broker（券商連線層）]] 要；`sync_position`／`strategy_takeover` 沒拿到送單目標給的連線與紀錄就報錯，沒有「預設實盤」。
+_Avoid_: 送單模式
 
 **Broker（券商連線層）**:
 QuantCore 跟 IB 打交道的那一層：送單、查成交、查持倉與權益。畫面上使用者操作的單（手動單、Sync Pos、交給策略接管）屬於 Panel 的 Trading；真正把單送進 IB、回報成交的是 Broker。
-實作在 `automation/broker.py`（#185）：依帳戶＋用途開連線（clientId 的分配規則只在這裡，不認得的帳戶名稱直接報錯），一條連線上讀權益、持倉、報價、今日委託與成交，送單、撤單、斷線。新 Panel 的三條送單路徑與 Portfolio、21:00 調倉、16:00 日度風控、04:40 每日報告、21:31 成交回報都向它要連線；新 Panel 的送單閘門包在 Broker 外面，連上後先檢查帳號才交出連線。Gateway 心跳是長駐的值班連線，不讀數不送單，仍自己連。測試用 `automation/tests/fake_broker.py` 的 in-memory Broker。
+實作在 `automation/broker.py`（#185）：依帳戶＋用途開連線（clientId 的分配規則只在這裡，不認得的帳戶名稱直接報錯），一條連線上讀權益、持倉、報價、今日委託與成交，送單、撤單、斷線。Panel 的三條送單路徑與 Portfolio、21:00 調倉、16:00 日度風控、04:40 每日報告、21:31 成交回報都向它要連線。Gateway 心跳是長駐的值班連線，不讀數不送單，仍自己連。測試用 `automation/tests/fake_broker.py` 的 in-memory Broker。
 讀數與限價各只有一份：權益只讀所選帳戶的 NetLiquidation（USD），cushion、excess liquidity 也只讀所選帳戶，讀不到就報錯（不回傳 0、不拿別的帳戶的數字）；參考價（算股數、Portfolio、每日報告標價）走本連線 → 報價 feed port → 延遲報價 → 本地 CSV；送單時的買賣報價把 bid > ask 當成沒有報價；限價一律買 ask×1.003、賣 bid×0.997，缺價依序 mid → last → close → 參考價；手動單的即時報價刻意較嚴，另一份。21:00 以 MOO 下單時不帶限價，交易紀錄的預估價記算股數用的參考價。
 Broker 是純 IB 介面；把一批策略單送進 IB 的程序（閘門、撤舊單、先賣後買、成交彙整）見 [[策略單送出]]。
 _Avoid_: Execution（與 [[執行盤 (Execution Session)]] 撞名）、Orders（架構圖上同時指畫面的單與送單層，見下方 Flagged ambiguities）
 
 **策略單送出**:
-把一批策略單（Rebalance Plan 算出的單、dip-buy 單）送進 IB 並回報成交的程序，唯一實作在 `automation/strategy_orders.py`（#205）：手動持倉暫停閘門（讀不到紀錄一張不送）→ 非 dry run 才撤該帳戶的策略舊單（Panel 手動單、接管單除外）→ LMT 用 [[Broker（券商連線層）]] 的送單報價與統一限價、報價全缺時依序用訂單自帶估價 → 參考價，算不出限價的標的跳過並警告 → 先賣後買、每張隔 0.2 秒 → 等成交 → 每張單的成交股數與均價（均價 = 每筆成交價 × 股數的加權平均）。21:00 調倉、16:00 日度風控（dip-buy）、新 Panel 的 Sync Pos 都呼叫它，各自只決定單清單與進度文字；交給策略接管只借它「建 IB 單」，自己逐秒等那一張單、另有對帳流程。手動單自成一套（嚴格即時報價），不走這裡。
+把一批策略單（Rebalance Plan 算出的單、dip-buy 單）送進 IB 並回報成交的程序，唯一實作在 `automation/strategy_orders.py`（#205）：手動持倉暫停閘門（讀不到紀錄一張不送）→ 非 dry run 才撤該帳戶的策略舊單（Panel 手動單、接管單除外）→ LMT 用 [[Broker（券商連線層）]] 的送單報價與統一限價、報價全缺時依序用訂單自帶估價 → 參考價，算不出限價的標的跳過並警告 → 先賣後買、每張隔 0.2 秒 → 等成交 → 每張單的成交股數與均價（均價 = 每筆成交價 × 股數的加權平均）。21:00 調倉、16:00 日度風控（dip-buy）、Panel 的 Sync Pos 都呼叫它，各自只決定單清單與進度文字；交給策略接管只借它「建 IB 單」，自己逐秒等那一張單、另有對帳流程。手動單自成一套（嚴格即時報價），不走這裡。
 _Avoid_: Execution（與 [[執行盤 (Execution Session)]] 撞名）、下單（太泛，手動單也是下單）
 
 **業績 (Performance)**:

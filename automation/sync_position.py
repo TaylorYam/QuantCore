@@ -2,8 +2,8 @@
 QuantCore — Sync Position logic（S10 從 control_panel 抽出）
 
 Panel 按「Sync Pos」時的核心計算與下單邏輯。此模組只處理資料與 IB 互動，
-**不觸碰 Tk UI** — 預覽對話框、Telegram 通知等 cross-cutting concerns
-保留在 Panel。
+**不觸碰 GUI** — 預覽畫面、Telegram 通知等 cross-cutting concerns
+保留在 Panel（qt_panel.sync_pos、qt_panel.order_target）。
 
 核心流程
 ────────
@@ -68,7 +68,7 @@ def require_records(records: Optional[SyncRecords]) -> SyncRecords:
 
 
 # 決策層的訂單 dataclass（唯一實作在 rebalance_plan）；
-# SyncOrder 為舊名 re-export — panel / sync_preview_window 沿用此路徑。
+# SyncOrder 為舊名 re-export。
 SyncOrder = plan.PlannedOrder
 
 

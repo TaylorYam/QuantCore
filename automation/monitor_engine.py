@@ -2,8 +2,8 @@
 QuantCore — 值班監控引擎（候選 5：panel 監控下沉）
 
 Rosa poll / TY check / Morning check 三個定時監控的「排程 + 派工」唯一實作。
-control_panel 是 caller：提供 Tk adapter（after 計時、worker→主線程 marshal、
-_tg_notify）；測試提供假時鐘 + 假 env — 接線行為（tick→spawn→re-arm 順序、
+Panel 是 caller：`qt_panel.watch` 提供 Qt adapter（QTimer 計時、worker→主線程
+marshal、系統層 Telegram）；測試提供假時鐘 + 假 env — 接線行為（tick→spawn→re-arm 順序、
 取消、一次性排程、無警報不發 TG）從此有考卷。
 
 分工
@@ -18,7 +18,7 @@ _tg_notify）；測試提供假時鐘 + 假 env — 接線行為（tick→spawn�
 只透過 30 分輪詢 gate（rosa_poll_decision），盤外 flapping 才不會洗版。
 事件路徑只有「斷線 10 分鐘後排一發 one-shot recovery」（schedule_once）。
 
-執行緒模型（沿 panel 原設計）：tick 在計時器 context（Tk = 主線程）執行
+執行緒模型（沿 panel 原設計）：tick 在計時器 context（Qt = 主線程）執行
 spec.pre 後，把 worker 丟 daemon thread，再立刻排下一 tick；worker 內只准
 碰 env ports — marshal 回 UI 線程是 adapter（panel）的責任。
 """
@@ -71,8 +71,8 @@ class MonitorEngine:
     """排程引擎：arm → tick →（pre → spawn workers → re-arm）→ …
 
     timer ports：
-      schedule(delay_ms, fn) -> handle   （Tk: self.after)
-      cancel(handle)                     （Tk: self.after_cancel）
+      schedule(delay_ms, fn) -> handle   （Qt: 單次 QTimer）
+      cancel(handle)                     （Qt: 停掉該 QTimer）
       spawn(fn)                          （daemon thread）
     """
 
@@ -112,7 +112,7 @@ class MonitorEngine:
                      f"{nxt.strftime('%Y-%m-%d %H:%M %Z')}")
 
     def _tick(self, spec: MonitorSpec) -> None:
-        """計時器 callback（Tk adapter = 主線程）：前置步 → 派工 → 排下一次。"""
+        """計時器 callback（Qt adapter = 主線程）：前置步 → 派工 → 排下一次。"""
         if spec.pre is not None:
             spec.pre()
         for w in spec.workers():

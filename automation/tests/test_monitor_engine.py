@@ -10,7 +10,7 @@ panel 的排程+派工邏輯首次有考卷：
   - Morning check spec：全綠靜默、離線發報、constituents staleness 第二封、
     未備妥時不 sleep 不發報
 
-fake timer + fake env = MonitorEngine 的第二個 adapter（第一個是 panel 的 Tk）。
+fake timer + fake env = MonitorEngine 的第二個 adapter（第一個是 qt_panel.watch）。
 """
 
 from __future__ import annotations
@@ -168,7 +168,7 @@ def test_stop_all_cancels_pending_and_swallows_cancel_error():
     engine.stop_all()
     assert all(not e["alive"] for e in timer.entries)
 
-    # cancel 丟例外不往外冒（Tk after_cancel 對已觸發 id 可能 raise）
+    # cancel 丟例外不往外冒（計時器對已觸發的 handle 可能 raise）
     from monitor_engine import MonitorEngine
     eng2 = MonitorEngine(env, schedule=lambda ms, fn: object(),
                          cancel=lambda h: (_ for _ in ()).throw(RuntimeError()),

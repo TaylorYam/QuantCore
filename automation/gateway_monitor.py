@@ -101,8 +101,7 @@ class GatewayMonitor:
         連線第一次從 online 變 offline（或首次 connect 失敗）時觸發**一次**。
         同一個 thread 不會再發第二次通知。
     role : int
-        連線身分（決定 clientId），預設值班用的 ROLE_MONITOR。新 PySide6 Panel
-        並行期間用 ROLE_PANEL_READONLY，才不會和 Tk Panel 搶同一個 clientId。
+        連線身分（決定 clientId），預設值班用的 ROLE_MONITOR。
     readonly : bool
         以唯讀 API 連線（不能下單）。
 

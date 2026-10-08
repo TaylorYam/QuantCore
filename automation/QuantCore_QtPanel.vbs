@@ -1,4 +1,4 @@
-' QuantCore — 靜默啟動新 PySide6 Panel（無 Console 視窗；與 Tk Panel 並存，ADR-0012）
+' QuantCore — 靜默啟動 Panel（PySide6，無 Console 視窗）
 ' 自動偵測 Python 安裝路徑
 
 Set WshShell = CreateObject("WScript.Shell")

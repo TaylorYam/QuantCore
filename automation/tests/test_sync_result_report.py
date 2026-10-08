@@ -1,5 +1,5 @@
 """Sync Pos 送出後的紀錄與 Telegram（#154：從 Tk control_panel._sync_execute 抽出，
-Tk 與新 Panel 正式模式共用）。內容與 Tk 原本的逐字相同。"""
+內容與原本逐字相同）。"""
 from __future__ import annotations
 
 from datetime import date

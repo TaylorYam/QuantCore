@@ -35,7 +35,7 @@ def test_launcher_does_not_require_parent_backend_environment(monkeypatch, tmp_p
 
 
 def test_panel_vbs_routes_gui_through_sqlite_backend_wrapper():
-    panel_launcher = Path(__file__).resolve().parents[1] / "QuantCore_Panel.vbs"
+    panel_launcher = Path(__file__).resolve().parents[1] / "QuantCore_QtPanel.vbs"
     launch_command = next(
         line for line in panel_launcher.read_text(encoding="utf-8").splitlines()
         if "WshShell.Run" in line
@@ -43,4 +43,4 @@ def test_panel_vbs_routes_gui_through_sqlite_backend_wrapper():
 
     assert "run_with_sqlite_backend.py" in launch_command
     assert "--script" in launch_command
-    assert "control_panel.py" in launch_command
+    assert "qt_panel_app.py" in launch_command

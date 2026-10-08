@@ -1,9 +1,8 @@
-"""新 Panel 正式模式的 Trading 畫面（#154、#183）。
+"""Panel 的 Trading 畫面送實盤（#154、#183）。
 
-正式模式下 Trading 拿到實盤送單目標：畫面寫出「送往：實盤帳戶」、Output Log 標記
-「實盤」，手動單的背景對帳由主視窗依值班狀態啟停。帳戶身分（clientId role）、紀錄、
-state、Telegram 和 Tk Panel 一樣這件事在 test_qt_order_target 驗證。全部用假的 IB 與
-Telegram，紀錄檔都在 tmp_path。
+Trading 拿到實盤送單目標：畫面寫出「送往：實盤帳戶」、Output Log 標記「實盤」，手動單
+的背景對帳隨主視窗啟停。帳戶身分（clientId role）、紀錄、state、Telegram 在
+test_qt_order_target 驗證。全部用假的 IB 與 Telegram，紀錄檔都在 tmp_path。
 """
 from __future__ import annotations
 
@@ -15,14 +14,12 @@ from tests.test_qt_panel import (  # noqa: F401  fixtures
     dialogs, extras, make_window, portfolio, ports, source,
 )
 from tests.test_qt_order_target import (  # noqa: F401  fixtures
-    broker, live_ctx, live_files, paper_files, pause_xyz, sent, sync_env,
-    takeover_signals, telegram, trade_log,
+    broker, live_ctx, live_files, pause_xyz, sent, sync_env, takeover_signals, telegram,
+    trade_log,
 )
 from tests.test_qt_trading import FakeSymbols
 
 from PySide6.QtCore import Qt
-
-from qt_panel.mode import PanelMode
 
 
 @pytest.fixture
@@ -31,7 +28,6 @@ def prod(make_window, live_files, qtbot):
         from qt_panel.watch import WatchPorts
         from tests.test_qt_production import WatchSource
 
-        kw.setdefault("mode", PanelMode.PRODUCTION)
         kw.setdefault("gateway_source", WatchSource())
         kw.setdefault("watch_ports", WatchPorts(telegram=lambda m: None,
                                                 cold_connect=lambda n: None,
@@ -53,11 +49,11 @@ def _no_manual_service(**_kw):
 def test_trading_banner_says_orders_go_to_live_accounts(prod):
     w = prod(manual_order_service=_no_manual_service)
     text = w.page_text("Trading")
-    assert "正式模式：手動單、Sync Pos、接管送到實盤帳戶" in text
+    assert "手動單、Sync Pos、接管送到實盤帳戶" in text and "並行模式" not in text
     assert "paper" not in w.trading.banner_title.text()
 
 
-def test_manual_order_tracking_runs_in_the_background_like_tk(prod, tmp_path):
+def test_manual_order_tracking_runs_in_the_background(prod, tmp_path):
     started = []
     service = NS(has_active_orders=lambda: False, has_pending_notifications=lambda: False,
                  list_orders=lambda **_: [], start_monitor=lambda: started.append("start"),
@@ -66,16 +62,6 @@ def test_manual_order_tracking_runs_in_the_background_like_tk(prod, tmp_path):
     assert started == ["start"]
     w.shutdown()
     assert started == ["start", "stop"]
-
-
-def test_parallel_mode_does_not_start_background_tracking(make_window):
-    from qt_panel.broker_gate import PaperTarget
-    started = []
-    service = NS(has_active_orders=lambda: False, has_pending_notifications=lambda: False,
-                 list_orders=lambda **_: [], start_monitor=lambda: started.append("start"))
-    make_window(paper_target=PaperTarget("127.0.0.1", 4013, "DU001", 92),
-                manual_order_service=lambda **kw: service)
-    assert started == []
 
 
 # ── Sync Pos、接管：實盤的畫面文字 ───────────────────────────────────

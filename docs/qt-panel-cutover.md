@@ -1,5 +1,9 @@
 # 新 Panel 切換與回退（#154）
 
+> **已完成並封存（2026-10-08）**：2026-10-03 已切到正式模式；#155 刪除了 Tk Panel 與並行模式，
+> 下面的開關、回退步驟已不再適用（`qt_panel_mode` 不再有作用，回到 Tk 只能 git revert）。
+> 留著當切換紀錄。
+
 把值班、實盤送單、桌面捷徑從 Tk Panel 交給新 PySide6 Panel 的步驟。決策見
 [ADR-0012](adr/0012-panel-pyside6-parallel-cutover.md)，spec 見 #144。切換由使用者執行。
 

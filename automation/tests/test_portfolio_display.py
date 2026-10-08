@@ -1,4 +1,4 @@
-"""Portfolio 顯示計算（#149）：Tk PortfolioView 與新 Panel 共用的純函式。"""
+"""Portfolio 顯示計算（#149）：Panel 用的純函式。"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -50,7 +50,7 @@ def test_metrics_text_and_color_thresholds():
               other=[h("BTC", 10, 50.0, 40.0)], upnl=-1234.5)
     got = by_key(metrics(data))
     assert got["nav"][1:] == ("$10,000", "text")
-    assert got["pnl"][1:] == ("$-1,234.50", "red")      # 沿用 Tk 的寫法
+    assert got["pnl"][1:] == ("$-1,234.50", "red")      # 負號在 $ 後（沿用 Tk Panel 的寫法）
     assert got["margin"][1:] == ("8.0%", "red")
     assert got["strat_exp"][1:] == ("150%", "orange")
     assert got["total_exp"][1:] == ("154%", "orange")

@@ -1,7 +1,7 @@
 """Broker（券商連線層，#185）：clientId 規則、ib_insync adapter 與 in-memory fake。
 
 clientId：現有號碼逐一對照不變（手動單認成交靠 clientId 比對）；不認得的帳戶報錯。
-adapter：用一個只會記錄呼叫的假 ib_insync.IB 驗證連線參數、送單閘門的 check、
+adapter：用一個只會記錄呼叫的假 ib_insync.IB 驗證連線參數、check、
 連不上／被拒時收掉 socket。fake：和 adapter 同一個 interface。不連真的 IB。
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ import pytest
 
 import broker
 from broker import (
-    ROLE_MANUAL_ORDER, ROLE_MONITOR, ROLE_MOO_CHECK, ROLE_PANEL, ROLE_PANEL_READONLY,
+    ROLE_MANUAL_ORDER, ROLE_MONITOR, ROLE_MOO_CHECK, ROLE_PANEL,
     ROLE_REBALANCE, ROLE_REPORT, ROLE_TAKEOVER, Broker, Connection, UnknownAccount,
 )
 from tests.fake_broker import FakeBroker, FakeConnection
@@ -33,7 +33,6 @@ EXISTING_IDS = {
     ROLE_MANUAL_ORDER: (26, 36, 46),
     ROLE_MONITOR: (27, 37, 47),
     ROLE_TAKEOVER: (28, 38, 48),
-    ROLE_PANEL_READONLY: (29, 39, 49),
 }
 
 
@@ -50,8 +49,6 @@ def test_account_names_match_case_insensitively():
 def test_unknown_account_is_an_error_not_taylors_client_ids():
     with pytest.raises(UnknownAccount, match="Nobody"):
         broker.client_id("Nobody", ROLE_MANUAL_ORDER, accounts=ACCOUNTS)
-    with pytest.raises(UnknownAccount):
-        broker.panel_query_client_id("Nobody", accounts=ACCOUNTS)
 
 
 def test_client_id_reads_accounts_json_when_not_given(fake_config):
@@ -64,32 +61,14 @@ def test_roles_are_distinct_and_fit_one_account_block():
     assert all(0 <= r < broker._CLIENT_ID_STEP for r in roles)
 
 
-def test_panel_queries_sit_outside_every_account_role():
-    """新 Panel 查權益／持倉（#149）：心跳已佔 ROLE_PANEL_READONLY，查詢另用 69/79/89。"""
-    ids = [broker.panel_query_client_id(a["name"], accounts=ACCOUNTS) for a in ACCOUNTS]
-    assert ids == [69, 79, 89]
-    taken = {i for row in EXISTING_IDS.values() for i in row}
-    assert not taken & set(ids)
-
-
-def test_panel_query_ids_refuse_a_layout_that_would_collide():
-    with pytest.raises(ValueError):
-        broker.panel_query_client_id("A0", accounts=[{"name": f"A{i}"} for i in range(5)])
-
-
 def test_price_feed_client_ids():
     assert broker.price_feed_client_id(25, readonly=True) == 1025
     assert broker.price_feed_client_id(69, readonly=True) == 1069
     assert broker.price_feed_client_id(20, readonly=False) == 99
 
 
-def test_paper_client_ids():
-    assert broker.PAPER_CLIENT_ID == 92 and broker.PAPER_VERIFY_CLIENT_ID == 91
-    assert broker.paper_client_id(92, ROLE_MANUAL_ORDER) == 92
-    assert broker.paper_client_id(92, ROLE_REBALANCE) == 93      # Sync Pos
-    assert broker.paper_client_id(92, ROLE_TAKEOVER) == 94
-    with pytest.raises(ValueError):
-        broker.paper_client_id(92, ROLE_REPORT)
+def test_paper_verify_client_id():
+    assert broker.PAPER_VERIFY_CLIENT_ID == 91
 
 
 def test_account_ctx_takes_its_client_id_from_the_broker_rule(fake_config):

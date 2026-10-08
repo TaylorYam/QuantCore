@@ -1,20 +1,16 @@
-"""Dashboard 要顯示的資料（#148）：值班下次時間、今日排程、資料日期、Tk Panel 是否在值班。
+"""Dashboard 要顯示的資料（#148）：值班下次時間、今日排程、資料日期。
 
 全部是讀取、不執行：值班的下次時間用 rosa_poll／ty_check／morning_check 的
-`next_*_time` 算（和 Tk Panel 值班用的是同一套排程計算），但並行模式下新
-Panel 不跑任何值班 worker、不發 Telegram（ADR-0012）。今日排程讀
-`run_status` 的執行紀錄，規則同「當日排程總結」。
+`next_*_time` 算（和值班本身同一套排程計算）。今日排程讀 `run_status` 的執行
+紀錄，規則同「當日排程總結」。
 """
 from __future__ import annotations
 
 import html
-import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable, Sequence
-
-import psutil
 
 import run_status
 from morning_check import next_morning_check_time
@@ -60,27 +56,13 @@ def format_next_run(now: datetime, when: datetime) -> str:
     return f"{day} {when:%H:%M}"
 
 
-def tk_panel_lockfile() -> Path:
-    """Tk Panel 的單一實例鎖（control_panel._lockfile_path；不 import control_panel：會跳 UAC）。"""
-    return Path(tempfile.gettempdir()) / "quantcore_panel.lock"
-
-
-def tk_panel_running(lockfile: Path | None = None) -> bool:
-    """Tk Panel 開著 = 它的鎖檔記的 PID 還活著；並行模式下代表值班有人在跑。"""
-    try:
-        first = (lockfile or tk_panel_lockfile()).read_text(encoding="utf-8").splitlines()[0]
-        return psutil.pid_exists(int(first.strip()))
-    except (OSError, IndexError, ValueError, OverflowError):
-        return False
-
-
 # ── 資料日期 ─────────────────────────────────────────────────────────
 
 _TAIL_BYTES = 4096
 
 
 def read_data_date(csv_path: Path = DATA_DATE_CSV) -> str:
-    """ETF 資料最後一天（SPY.csv 最後一列的 Date，同 Tk 的 Data: 欄）；讀不到回 —。
+    """ETF 資料最後一天（SPY.csv 最後一列的 Date）；讀不到回 —。
     只讀檔尾，不載入整個檔案。"""
     try:
         with open(csv_path, "rb") as f:

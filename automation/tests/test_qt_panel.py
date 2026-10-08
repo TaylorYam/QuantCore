@@ -33,11 +33,25 @@ ACCOUNTS = [
 
 
 class FakeGatewaySource:
+    """假的 Gateway 來源；也回答值班要的心跳狀態與重連。"""
+
     def __init__(self):
         self.on_state = None
         self.started = 0
         self.stopped = 0
         self.rechecks = 0
+        self.online = {"Taylor": True, "Rosa": True, "Yvonne": True}
+        self.restarted = []
+
+    def is_online(self, name):
+        return self.online.get(name, False)
+
+    def restart(self, name):
+        self.restarted.append(name)
+        return True
+
+    def ready(self):
+        return self.on_state is not None
 
     def start(self, on_state):
         self.on_state = on_state
@@ -288,19 +302,29 @@ def extras():
 
 @pytest.fixture
 def make_window(qtbot, source, ports, dialogs, portfolio, extras, tmp_path):
+    from types import SimpleNamespace as NS
+
     from qt_panel.main_window import MainWindow
-    from qt_panel.mode import PanelMode
     from qt_panel.order_target import OrderFiles
+    from qt_panel.watch import WatchPorts
+    from tests.fake_broker import FakeBroker
+    from tests.test_qt_order_target import live_ctx
 
     def make(**kw):
-        # 送單目標的紀錄檔一律放 tmp_path：測試碰不到 live 目錄的 paper／實盤紀錄
-        kw.setdefault("paper_files", OrderFiles(tmp_path / "w_paper_orders.sqlite3",
-                                                tmp_path / "w_paper_attribution.sqlite3"))
+        # 送單目標的紀錄檔一律放 tmp_path：測試碰不到 live 目錄的實盤紀錄
         kw.setdefault("live_files", OrderFiles(tmp_path / "w_live_orders.sqlite3",
                                                tmp_path / "w_live_attribution.sqlite3"))
         kw.setdefault("accounts", ACCOUNTS)
-        kw.setdefault("mode", PanelMode.PARALLEL)
         kw.setdefault("gateway_source", source)
+        # 值班與送單一律用假的：不連 IB、不發 Telegram、手動單不開背景對帳
+        kw.setdefault("watch_ports", WatchPorts(telegram=lambda m: None,
+                                                cold_connect=lambda n: None,
+                                                sleep=lambda s: None, start_delay_ms=0))
+        kw.setdefault("broker", FakeBroker(managed=["U001"]))
+        kw.setdefault("account_ctx_loader", live_ctx)
+        kw.setdefault("manual_order_service", lambda **_kw: NS(
+            has_active_orders=lambda: False, has_pending_notifications=lambda: False,
+            list_orders=lambda **_: []))
         kw.setdefault("gateway_ports_factory", lambda ask: setattr(ports, "ask", ask) or ports)
         kw.setdefault("credential_store", FakeStore())
         kw.setdefault("portfolio_fetch", portfolio)
@@ -313,7 +337,6 @@ def make_window(qtbot, source, ports, dialogs, portfolio, extras, tmp_path):
         kw.setdefault("dialogs", dialogs)
         kw.setdefault("read_data_date", lambda: "2026-09-28")
         kw.setdefault("today_jobs", lambda now: [])
-        kw.setdefault("tk_panel_running", lambda: True)
         kw.setdefault("taipei_now", lambda: datetime(2026, 9, 29, 20, 30))
         kw.setdefault("clock", lambda: datetime(2026, 9, 29, 20, 30, 5))
         kw.setdefault("symbol_loader", lambda: None)
@@ -326,30 +349,13 @@ def make_window(qtbot, source, ports, dialogs, portfolio, extras, tmp_path):
     return make
 
 
-# ── 模式 ─────────────────────────────────────────────────────────────
-
-def test_mode_defaults_to_parallel():
-    from qt_panel.mode import PanelMode, resolve_mode
-
-    assert resolve_mode({}) == (PanelMode.PARALLEL, "")
-    assert resolve_mode({"qt_panel_mode": "parallel"}) == (PanelMode.PARALLEL, "")
-
-
-def test_unknown_mode_value_stays_parallel():
-    from qt_panel.mode import PanelMode, resolve_mode
-
-    mode, note = resolve_mode({"qt_panel_mode": "yolo"})
-    assert mode is PanelMode.PARALLEL
-    assert "yolo" in note
-
-
 # ── 主視窗 ───────────────────────────────────────────────────────────
 
-def test_header_marks_parallel_mode_and_shows_the_clock(make_window):
+def test_header_shows_the_clock(make_window):
     w = make_window()
     text = w.header_text()
-    assert "並行模式" in text and "只看不下單" in text
     assert "2026-09-29" in text and "20:30:05" in text
+    assert "並行模式" not in text
 
 
 def test_nav_has_three_screens_and_switches_pages(make_window, qtbot):
@@ -398,31 +404,6 @@ def test_state_for_an_unknown_account_is_ignored(make_window, source):
     assert w.dashboard.gateway_names() == ["Taylor", "Rosa", "Yvonne"]
 
 
-def test_trading_without_paper_settings_explains_it_cannot_send(make_window):
-    w = make_window(paper_problem="尚未設定 paper 連線：請在 config.json 加上 qt_panel_paper。")
-    text = w.page_text("Trading")
-    assert "paper" in text and "不能送單" in text and "qt_panel_paper" in text
-    assert w.trading.manual is None
-
-
-def test_duty_lock_fallback_trades_paper_only(make_window):
-    """設定是正式模式但值班鎖搶不到（Tk 還在值班）：退回並行模式，Trading 只接 paper。"""
-    from types import SimpleNamespace as NS
-
-    from qt_panel.broker_gate import PaperTarget
-    from qt_panel.mode import qt_panel_duty
-
-    mode, note = qt_panel_duty({"qt_panel_mode": "production"}, claim=lambda: False)
-    w = make_window(mode=mode, mode_note=note,
-                    paper_target=PaperTarget("127.0.0.1", 4013, "DU001", 92),
-                    manual_order_service=lambda **_kw: NS(
-                        has_active_orders=lambda: False,
-                        has_pending_notifications=lambda: False, list_orders=lambda **_: []))
-    assert w.trading.banner_title.text() == (
-        "並行模式：手動單、Sync Pos、接管一律送往 paper 帳號 DU001（127.0.0.1:4013），"
-        "不會送到實盤")
-
-
 def test_recheck_button_asks_the_source_to_probe_again(make_window, source, qtbot):
     w = make_window()
     qtbot.mouseClick(w.dashboard.recheck_button, Qt.LeftButton)
@@ -437,56 +418,16 @@ class MutableClock:
         return self.now
 
 
-def test_gateways_are_rechecked_automatically_at_the_next_morning_check_time(make_window, source):
-    """並行期間新 Panel 不值班，但比照 Morning check：每個 NYSE 交易日台北 07:00
-    自動重新檢查一次（只重連已斷的帳戶），Gateway 每天 06:00 自動重啟後才會恢復。"""
-    taipei = MutableClock(datetime(2026, 9, 29, 20, 30))      # 週二晚上
-    w = make_window(taipei_now=taipei)
-    assert "09-30 07:00" in w.dashboard.auto_recheck_text()
-
-    w.tick_auto_recheck()
-    assert source.rechecks == 0
-
-    taipei.now = datetime(2026, 9, 30, 7, 0, 30)
-    w.tick_auto_recheck()
-    assert source.rechecks == 1
-    assert "10-01 07:00" in w.dashboard.auto_recheck_text()
-
-    w.tick_auto_recheck()                                        # 同一天不再重複
-    assert source.rechecks == 1
-
-
-def test_auto_recheck_skips_weekends_and_nyse_holidays(make_window, source):
-    taipei = MutableClock(datetime(2026, 10, 2, 8, 0))          # 週五早上
-    w = make_window(taipei_now=taipei)
-    assert "10-05 07:00" in w.dashboard.auto_recheck_text()     # 下週一
-
-
-def test_auto_recheck_stops_after_quit(make_window, source):
-    taipei = MutableClock(datetime(2026, 9, 29, 20, 30))
-    w = make_window(taipei_now=taipei, tray_factory=None)
-    w.close()
-    taipei.now = datetime(2026, 9, 30, 7, 1)
-    w.tick_auto_recheck()
-    assert source.rechecks == 0
-
-
-def test_dashboard_says_watch_runs_in_the_tk_panel(make_window):
-    assert "Tk Panel" in make_window().dashboard.watch_note()
-
-
-def test_watch_telegram_and_trade_log_live_only_in_production_modules():
-    """並行模式不值班、不發 Telegram（ADR-0012）：值班、Telegram、trade_log、策略送單
-    的模組只能出現在值班的 watch.py 與送單目標 order_target.py（#183，paper／實盤的
-    差異只在這裡）；畫面與其他模組碰不到。paper 送單目標不發 Telegram、不寫 trade_log
-    的行為面見 test_qt_order_target，並行模式不值班見 test_qt_production。"""
+def test_watch_telegram_and_trade_log_live_only_in_watch_and_order_target():
+    """值班、Telegram、trade_log、策略送單的模組只能出現在值班的 watch.py 與送單目標
+    order_target.py（#183）；畫面與其他模組碰不到。"""
     forbidden = {"monitor_engine", "notify", "rebalance_ib", "excel_logger"}
     telegram_calls = {"deliver_notices", "notify_new_pauses", "strategy_takeover.notify"}
-    production_only = {"watch.py", "order_target.py"}
+    allowed = {"watch.py", "order_target.py"}
     package = Path(__file__).resolve().parents[1] / "qt_panel"
     offenders = {}
     for path in package.glob("*.py"):
-        if path.name in production_only:
+        if path.name in allowed:
             continue
         found = set()
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
@@ -583,44 +524,13 @@ class FakeMonitor:
         return name == "Rosa"
 
 
-def test_parallel_mode_watches_gateways_with_the_readonly_identity():
-    from account_utils import ROLE_PANEL_READONLY
-    from qt_panel.gateway_status import gateway_source_for
-    from qt_panel.mode import PanelMode
-
-    FakeMonitor.instances = []
-    src = gateway_source_for(PanelMode.PARALLEL, ["Taylor", "Rosa"], monitor_cls=FakeMonitor)
-    seen = []
-    src.start(lambda *args: seen.append(args))
-    mon = FakeMonitor.instances[0]
-
-    assert mon.account_names == ["Taylor", "Rosa"]
-    assert mon.role == ROLE_PANEL_READONLY
-    assert mon.readonly is True
-    assert mon.started
-
-    mon.on_state_change("Taylor", "online")
-    mon.on_disconnected("Rosa", "timeout")
-    assert seen == [("Taylor", "online", ""), ("Rosa", "offline", "timeout")]
-
-    src.recheck()
-    assert mon.restarted == ["Taylor", "Rosa"]
-    assert seen[-1] == ("Rosa", "connecting", "")      # 重新開始連的帳戶先顯示連線中
-    assert ("Taylor", "connecting", "") not in seen     # 還連著的不動
-
-    src.stop()
-    assert mon.stopped
-
-
 # ── 單一實例 ─────────────────────────────────────────────────────────
 
-def test_single_instance_lock_is_separate_from_the_tk_panel():
+def test_single_instance_lock_and_show_signal_names():
     from qt_panel.app import lockfile_path, show_signal_path
 
     assert lockfile_path().name == "quantcore_qt_panel.lock"
     assert show_signal_path().name == "quantcore_qt_panel.show"
-    # Tk Panel 用 quantcore_panel.lock／.show（不 import control_panel：會跳 UAC）
-    assert lockfile_path().name != "quantcore_panel.lock"
 
 
 def test_second_launch_signal_brings_the_window_back(make_window, qtbot, tmp_path):
@@ -833,7 +743,7 @@ def test_credentials_dialog_cancel_returns_nothing(qtbot):
     assert d.credentials() is None
 
 
-# ── 值班（並行模式只顯示）───────────────────────────────────────────
+# ── 值班卡 ───────────────────────────────────────────────────────────
 
 def test_watch_card_shows_the_three_watches_and_their_next_run(make_window):
     taipei = MutableClock(datetime(2026, 9, 29, 20, 10))         # 週二晚上
@@ -844,12 +754,7 @@ def test_watch_card_shows_the_three_watches_and_their_next_run(make_window):
     assert "下次 今天 21:00" in text                              # Rosa poll
     assert "下次 明天 20:05" in text                              # TY check（週三）
     assert "下次 明天 07:00" in text                              # Morning check
-    assert "Tk Panel 值班中" in text
-
-
-def test_watch_card_warns_when_the_tk_panel_is_not_open(make_window):
-    w = make_window(tk_panel_running=lambda: False)
-    assert "沒有人值班" in w.dashboard.watch_text()
+    assert "Panel 值班中" in text and "Tk" not in text
 
 
 def test_watch_next_run_moves_on_with_the_minute_tick(make_window):
@@ -858,23 +763,6 @@ def test_watch_next_run_moves_on_with_the_minute_tick(make_window):
     taipei.now = datetime(2026, 9, 29, 21, 0, 30)
     w.tick_minute()
     assert "下次 今天 21:30" in w.dashboard.watch_text()
-
-
-def test_parallel_mode_runs_no_watch_worker(make_window, source, qtbot):
-    """並行模式：值班時間到了也不跑任何 worker、不發 Telegram，只更新顯示。"""
-    taipei = MutableClock(datetime(2026, 9, 29, 20, 59))
-    w = make_window(taipei_now=taipei)
-    qtbot.waitUntil(lambda: not [t for t in threading.enumerate()
-                                 if t.name.startswith("portfolio-")], timeout=3000)
-    before = {t.ident for t in threading.enumerate()}      # 開啟時的權益查詢已結束
-    for now in (datetime(2026, 9, 29, 21, 0, 5),                # Rosa poll
-                datetime(2026, 9, 30, 20, 5, 5)):               # TY check
-        taipei.now = now
-        w.tick_minute()
-    assert {t.ident for t in threading.enumerate()} <= before
-    # 唯一的連線動作是 #147 的交易日 07:00 Gateway 重新檢查（09-30 07:00 已過）；
-    # Rosa poll、TY check 本身沒有做任何事
-    assert source.rechecks == 1
 
 
 # ── 今日排程、資料日期、重新整理 ──────────────────────────────────────
@@ -909,7 +797,7 @@ def test_manual_refresh_updates_data_date_and_last_update_time(make_window, sour
     qtbot.mouseClick(w.dashboard.refresh_button, Qt.LeftButton)
     assert w.dashboard.data_date_text() == "2026-09-28"
     assert w.dashboard.last_refresh_text() == "2026-09-29 21:05:00"
-    assert source.rechecks == 1                                  # 同 Tk：一併重新檢查 Gateway
+    assert source.rechecks == 1                                  # 一併重新檢查 Gateway
     assert "重新整理完成" in w.dashboard.log_text()
 
 
@@ -992,7 +880,7 @@ def test_clicking_an_account_shows_its_holdings_with_strategy_owner(make_window,
     _wait_portfolio(w, qtbot)
     assert w.portfolio.selected_account() == "Taylor"
     rows = [(r[0], r[1]) for r in w.portfolio.detail.holdings.visible_rows()]
-    # 預設順序同 Tk：ETF → 個股 → 手動，各組市值大的在前
+    # 預設順序：ETF → 個股 → 手動，各組市值大的在前
     assert rows == [("SR", "XLK"), ("SkewLS", "SIJ"), ("SP500", "AAPL"), ("手動", "BTC")]
 
     qtbot.mouseClick(w.portfolio.card("Rosa"), Qt.LeftButton)
@@ -1070,7 +958,7 @@ def test_portfolio_is_read_again_after_gateway_login(make_window, qtbot, portfol
     _wait_portfolio(w, qtbot)
     portfolio.calls.clear()
     _start_and_wait(w, qtbot)
-    qtbot.waitUntil(lambda: len(portfolio.calls) == 3, timeout=3000)   # 同 Tk：登入後 Refresh IB
+    qtbot.waitUntil(lambda: len(portfolio.calls) == 3, timeout=3000)   # 登入後讀一次權益與持倉
 
 
 def test_portfolio_queries_stop_when_the_panel_quits(make_window, qtbot, portfolio):
@@ -1082,17 +970,17 @@ def test_portfolio_queries_stop_when_the_panel_quits(make_window, qtbot, portfol
     assert portfolio.calls == []
 
 
-def test_readonly_portfolio_query_uses_its_own_client_id(fake_config, monkeypatch):
-    """新 Panel 查詢用 69/79/89：心跳佔著 29/39/49，Tk 查詢用 25/35/45（#149）。"""
+def test_portfolio_query_uses_the_panel_identity_readonly(fake_config, monkeypatch):
+    """查詢用 ROLE_PANEL（Rosa 35）唯讀：不和心跳 ROLE_MONITOR（37）、排程撞號。"""
     import ib_fetcher
-    from qt_panel.portfolio_source import fetch_readonly_portfolio
+    from qt_panel.portfolio_source import fetch_panel_portfolio
 
     seen = []
     monkeypatch.setattr(ib_fetcher, "fetch_portfolio",
                         lambda ctx, readonly=False: seen.append((ctx, readonly)) or {})
-    fetch_readonly_portfolio("Rosa")
+    fetch_panel_portfolio("Rosa")
     ctx, readonly = seen[0]
-    assert ctx.client_id == 79 and readonly is True
+    assert ctx.client_id == 35 and readonly is True
     assert ctx.name == "Rosa"
 
 
@@ -1144,7 +1032,6 @@ def test_portfolio_reads_carry_the_accounts_allocation(fake_config, monkeypatch)
                         lambda name: {"manual_symbols": {}})
     ctx = AccountCtx.from_name("Rosa", ROLE_PANEL)
     expected = (ctx.alloc_sr, ctx.alloc_skewls)
-    assert portfolio_source.fetch_readonly_portfolio("Rosa")["strategy_alloc"] == expected
     assert portfolio_source.fetch_panel_portfolio("Rosa")["strategy_alloc"] == expected
 
 
@@ -1479,7 +1366,7 @@ def test_adjusting_allocation_saves_only_this_accounts_alloc_fields(
 
 def test_allocation_dialog_starts_from_the_file_not_the_last_read(
         make_window, qtbot, extras, dialogs):
-    """同 Tk：開對話框前重讀設定，別處改過 Allocation 時初始值與首次啟用判斷才正確。"""
+    """開對話框前重讀設定：別處改過 Allocation 時初始值與首次啟用判斷才正確。"""
     w = make_window()
     _wait_extras(w, qtbot)
     extras.config["Taylor"] = {"alloc_sr": 0.60, "alloc_sp500": 0.50, "alloc_skewls": 0.10}
@@ -1632,7 +1519,7 @@ def test_recent_trades_match_the_tk_rows_with_full_date(make_window, qtbot, extr
         ("2026-09-28 21:30:06", "AAPL", "SELL", "3", "—", "Stocks", "DRY RUN [DRY]"),
     ]
     for got, tr in zip(trades.rows(), extras.trades["Taylor"]):
-        assert got[1:] == tr.cells()[1:]                                 # 和 Tk 同一套格式
+        assert got[1:] == tr.cells()[1:]                                 # 同一套格式
     assert trades.table.item(1, 2).foreground().color().name() == theme.RED
     assert trades.table.item(1, 6).foreground().color().name() == theme.AMBER
     w.portfolio.select("Rosa")

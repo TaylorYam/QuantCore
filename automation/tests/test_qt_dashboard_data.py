@@ -1,12 +1,10 @@
-"""新 Panel Dashboard 的資料讀取（#148）：值班下次時間、今日排程、資料日期、Tk Panel 是否在值班。
+"""Panel Dashboard 的資料讀取（#148）：值班下次時間、今日排程、資料日期。
 
 純函式，不需要 PySide6；全部用 tmp_path 與注入的讀取函式，不碰真實 logs／data。
 """
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
 from datetime import datetime
 
 from qt_panel import dashboard_data as dd
@@ -30,21 +28,6 @@ def test_format_next_run_says_today_tomorrow_or_date():
     assert dd.format_next_run(now, datetime(2026, 9, 29, 21, 0)) == "今天 21:00"
     assert dd.format_next_run(now, datetime(2026, 9, 30, 7, 0)) == "明天 07:00"
     assert dd.format_next_run(now, datetime(2026, 10, 5, 7, 0)) == "10-05（一） 07:00"
-
-
-def test_tk_panel_is_watching_when_its_lock_holds_a_live_pid(tmp_path):
-    lock = tmp_path / "quantcore_panel.lock"
-    assert dd.tk_panel_running(lock) is False                   # 沒有鎖檔
-    lock.write_text(f"{os.getpid()}\n2026-09-29T19:19:02", encoding="utf-8")
-    assert dd.tk_panel_running(lock) is True
-    lock.write_text("not-a-pid", encoding="utf-8")
-    assert dd.tk_panel_running(lock) is False
-
-
-def test_tk_panel_lock_with_a_dead_pid_means_nobody_is_watching(tmp_path):
-    lock = tmp_path / "quantcore_panel.lock"
-    lock.write_text("4294967294\n2026-09-29T19:19:02", encoding="utf-8")
-    assert dd.tk_panel_running(lock) is False
 
 
 # ── 資料日期 ─────────────────────────────────────────────────────────

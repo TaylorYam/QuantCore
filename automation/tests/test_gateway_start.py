@@ -18,6 +18,12 @@ CREDS = {
 }
 
 
+@pytest.fixture(autouse=True)
+def accounts(fake_config):
+    """三個實盤帳戶、accounts.json 還沒補 gateway_dir（用現狀預設，#211）。"""
+
+
+
 class FakePorts:
     """In-memory stand-ins for the four ports; records what they were asked to do."""
 
@@ -309,3 +315,25 @@ def test_an_account_not_ready_yet_gets_another_check_now():
 def test_after_three_check_nows_refresh_anyway():
     # 每帳戶最多連 3 次（2026-04-15：10.41 反覆 connect 會卡死）
     assert next_step_after_login({**ONLINE, "Rosa": "offline"}, checks_done=3) == "refresh"
+
+
+# ── 帳戶清單來自 accounts.json（#211）─────────────────────────────────
+
+def test_live_accounts_are_the_ones_with_a_gateway_dir(monkeypatch):
+    import account_utils
+    from gateway_start import live_gateway_accounts
+    from tests.conftest import FAKE_ACCOUNTS
+
+    assert live_gateway_accounts() == ("Taylor", "Rosa", "Yvonne")   # 現狀，順序照 accounts.json
+    monkeypatch.setattr(account_utils, "load_accounts", lambda: [
+        *FAKE_ACCOUNTS, {"name": "Zoe", "gateway_dir": r"C:\IB-ZOE\ibgateway"},
+        {"name": "Paper"}])
+    assert live_gateway_accounts() == ("Taylor", "Rosa", "Yvonne", "Zoe")
+
+
+def test_a_fourth_account_is_started_and_logged_in_too():
+    ports = FakePorts(stored={**CREDS, "Zoe": CREDS["Taylor"]})
+    result = start_live_gateways(ports, ("Taylor", "Rosa", "Yvonne", "Zoe"))
+    assert list(result.outcomes) == ["Taylor", "Rosa", "Yvonne", "Zoe"]
+    assert result.all_logged_in
+    assert "4 個 Gateway 都已登入" in describe(result)

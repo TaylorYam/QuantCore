@@ -33,16 +33,19 @@ class WatchItem:
     next_run: datetime
 
 
-_WATCHES = (
-    ("Rosa poll", "台北 21:00–05:00 市場窗每 30 分", next_rosa_poll_time),
-    ("TY check", "週二・三 20:05 驗證 Taylor／Yvonne 手動登入", next_ty_check_time),
-    ("Morning check", "NYSE 交易日 07:00 健檢", next_morning_check_time),
-)
-
-
-def watch_items(now_taipei: datetime) -> list[WatchItem]:
-    return [WatchItem(name, schedule, next_time(now_taipei))
-            for name, schedule, next_time in _WATCHES]
+def watch_items(now_taipei: datetime, remote_account: str | None,
+                ty_check_accounts: Sequence[str]) -> list[WatchItem]:
+    """值班卡的監控與下次時間；沒有遠端 Gateway／TY check 帳戶就不列那一項（#211）。"""
+    items = []
+    if remote_account:
+        items.append(WatchItem(f"{remote_account} poll", "台北 21:00–05:00 市場窗每 30 分",
+                               next_rosa_poll_time(now_taipei)))
+    if ty_check_accounts:
+        items.append(WatchItem("TY check", f"週二・三 20:05 驗證 {'／'.join(ty_check_accounts)} 手動登入",
+                               next_ty_check_time(now_taipei)))
+    items.append(WatchItem("Morning check", "NYSE 交易日 07:00 健檢",
+                           next_morning_check_time(now_taipei)))
+    return items
 
 
 def format_next_run(now: datetime, when: datetime) -> str:

@@ -91,7 +91,7 @@ def source_tag(state) -> str:
 # ── 總覽卡片 ─────────────────────────────────────────────────────────
 
 class OverviewCard(Card):
-    def __init__(self, name: str, on_click: Callable[[str], None]):
+    def __init__(self, name: str, on_click: Callable[[str], None], color: str | None = None):
         super().__init__()
         self.name = name
         self._on_click = on_click
@@ -101,7 +101,7 @@ class OverviewCard(Card):
         self.body.setSpacing(4)
         head = QHBoxLayout()
         head.setSpacing(8)
-        head.addWidget(dot(theme.ACCOUNT_COLOR.get(name, theme.NAVY), 8))
+        head.addWidget(dot(color or theme.NAVY, 8))
         head.addWidget(label(name, name="MedNum"))
         head.addStretch(1)
         self._source = label(name="Faint")
@@ -440,7 +440,8 @@ class AccountDetail(QWidget):
 
 class PortfolioPage(QWidget):
     def __init__(self, accounts: list[str], *, on_refresh: Callable[[], None],
-                 on_edit_allocation: Callable[[str], None] | None = None):
+                 on_edit_allocation: Callable[[str], None] | None = None,
+                 colors: dict[str, str] | None = None):
         """on_edit_allocation(帳戶)：策略參數卡按「調整…」（#220）；None = 不能調整。"""
         super().__init__()
         self._states: dict = {}
@@ -463,7 +464,7 @@ class PortfolioPage(QWidget):
         row.setSpacing(GAP)
         self._cards: dict[str, OverviewCard] = {}
         for name in accounts:
-            card = OverviewCard(name, self.select)
+            card = OverviewCard(name, self.select, (colors or {}).get(name))
             self._cards[name] = card
             row.addWidget(card, 1)
         root.addLayout(row)

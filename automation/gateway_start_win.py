@@ -26,7 +26,7 @@ from typing import Callable
 
 import psutil
 
-from gateway_launcher import ACCOUNT_SETTINGS_DIR, live_account_for_cmdline, start_gateway
+from gateway_launcher import gateway_dir, live_account_for_cmdline, start_gateway
 from gateway_start import Credentials, LaunchFailed, WindowNotFound
 
 log = logging.getLogger(__name__)
@@ -352,7 +352,7 @@ def login_completed_in(log_text: str) -> bool:
 
 
 def _launcher_log(account: str):
-    return ACCOUNT_SETTINGS_DIR[account.upper()] / "launcher.log"
+    return gateway_dir(account) / "launcher.log"
 
 
 def _file_size(path) -> int:

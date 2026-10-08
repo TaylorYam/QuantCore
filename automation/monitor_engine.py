@@ -143,8 +143,9 @@ class MonitorEngine:
 
 # ── Spec factories（worker 派工邏輯，自 control_panel 下沉）───────────
 
-def rosa_poll_spec(env: MonitorEnv) -> MonitorSpec:
-    """ROSA 30 分鐘市場窗輪詢（台北 21:00–05:00，XX:00 / XX:30 對齊）。"""
+def rosa_poll_spec(env: MonitorEnv, account: str) -> MonitorSpec:
+    """遠端 Gateway 帳戶（accounts.json 的 remote_gateway，現狀 = Rosa，#211）的
+    30 分鐘市場窗輪詢（台北 21:00–05:00，XX:00 / XX:30 對齊）。log 前綴由帳戶名組成。"""
     from market_calendar import trading_session_date_for
     from rosa_poll import next_rosa_poll_time, rosa_poll_decision
 
@@ -154,31 +155,32 @@ def rosa_poll_spec(env: MonitorEnv) -> MonitorSpec:
         now = env.now()
         msg = rosa_poll_decision(
             now_taipei=now,
-            is_online=lambda: env.is_online("Rosa"),
-            restart=lambda: env.restart("Rosa"),
+            is_online=lambda: env.is_online(account),
+            restart=lambda: env.restart(account),
             sleep=env.sleep,
+            account=account,
         )
         ts = now.strftime("%H:%M")
         if msg is None:
-            env.log(f"[GW] Rosa poll {ts} → ok")
+            env.log(f"[GW] {account} poll {ts} → ok")
         else:
-            env.log(f"[GW] Rosa poll {ts} → ALERT")
+            env.log(f"[GW] {account} poll {ts} → ALERT")
             env.notify(msg)
 
     return MonitorSpec(
-        label="Rosa poll",
+        label=f"{account} poll",
         next_time=next_rosa_poll_time,
         workers=lambda: [run],
         arm_text="next tick at",
         run_at_start=lambda now: trading_session_date_for(now) is not None,
-        start_log_immediate="[GW] Rosa poll: panel start inside window → immediate tick",
-        start_log_waiting="[GW] Rosa poll: panel start outside window → scheduling",
+        start_log_immediate=f"[GW] {account} poll: panel start inside window → immediate tick",
+        start_log_waiting=f"[GW] {account} poll: panel start outside window → scheduling",
     )
 
 
 def rosa_recovery_worker(env: MonitorEnv,
-                         spawn: Callable[[Callable[[], None]], None]
-                         ) -> Callable[[], None]:
+                         spawn: Callable[[Callable[[], None]], None],
+                         account: str) -> Callable[[], None]:
     """Rosa 斷線 10 分鐘後的一次性 recovery（窗外也會跑，涵蓋 06:00 台北
     Gateway 自動重啟情境）。已回線則跳過 — restart_account_thread 對活線程
     也會拒絕 spawn，此處是雙保險。restart 丟 daemon thread 以免未來變種
@@ -186,17 +188,17 @@ def rosa_recovery_worker(env: MonitorEnv,
     def run() -> None:
         if not env.monitor_ready():
             return
-        if env.is_online("Rosa"):
-            env.log("[GW] Rosa one-shot recovery: already online, skip")
+        if env.is_online(account):
+            env.log(f"[GW] {account} one-shot recovery: already online, skip")
             return
-        env.log("[GW] Rosa one-shot recovery: attempting reconnect")
-        spawn(lambda: env.restart("Rosa"))
+        env.log(f"[GW] {account} one-shot recovery: attempting reconnect")
+        spawn(lambda: env.restart(account))
     return run
 
 
-def ty_check_spec(env: MonitorEnv,
-                  accounts: tuple[str, ...] = ("Taylor", "Yvonne")) -> MonitorSpec:
-    """Taylor / Yvonne 週二・週三 20:05 開盤前驗證（每帳戶一條 worker）。
+def ty_check_spec(env: MonitorEnv, accounts: tuple[str, ...]) -> MonitorSpec:
+    """週二・週三 20:05 開盤前驗證（accounts.json ty_check 的帳戶，現狀 = Taylor /
+    Yvonne，#211；每帳戶一條 worker）。
 
     Hybrid：心跳連線已 ONLINE = 活體證明，跳過冷連線（避免 clientId 撞號）；
     否則冷連線探測（10s timeout）。成功只寫 Output Log，失敗才發 TG（#26）。"""

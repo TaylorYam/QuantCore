@@ -4,7 +4,9 @@ QuantCore — 多帳戶工具
 """
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 BASE_DIR      = Path(__file__).parent
 CONFIG_PATH   = BASE_DIR / 'config.json'
@@ -16,6 +18,84 @@ from broker import (  # noqa: E402,F401
     ROLE_MANUAL_ORDER, ROLE_MONITOR, ROLE_MOO_CHECK, ROLE_PANEL,
     ROLE_REBALANCE, ROLE_REPORT, ROLE_TAKEOVER,
 )
+
+
+# ── 帳戶能力（#211）────────────────────────────────────────────────────────
+# accounts.json 每個帳戶可以寫這些欄位（都可省略）：
+#   gateway_dir     Gateway 安裝（＝設定）資料夾；有值才能一鍵啟動，null 明確關掉
+#   manual_orders   可以在 Panel 手動下單（缺＝true）
+#   ty_check        週二・三 20:05 TY check
+#   color           畫面代表色
+#   remote_gateway  遠端／易斷線的 Gateway：系統匣跟著它、斷線 10 分鐘一次性重連、
+#                   市場窗每 30 分 poll（最多一個帳戶）
+# 缺欄位時用下表的現狀值（按名字，不分大小寫）；三台機器的 accounts.json 都補上
+# 欄位之後，這張表就可以拿掉。
+_LEGACY_CAPABILITIES = {
+    "TAYLOR": {"gateway_dir": r"C:\IB-TAYLOR\ibgateway", "ty_check": True,
+               "color": "#d97706"},
+    "ROSA": {"gateway_dir": r"C:\Jts\ibgateway\1041", "remote_gateway": True,
+             "color": "#0284c7"},
+    "YVONNE": {"gateway_dir": r"C:\IB-YIYI\ibgateway", "ty_check": True,
+               "color": "#9333ea"},
+}
+_CAPABILITY_DEFAULTS = {"gateway_dir": None, "manual_orders": True, "ty_check": False,
+                        "color": None, "remote_gateway": False}
+
+
+@dataclass(frozen=True)
+class AccountCapabilities:
+    name: str
+    gateway_dir: Path | None
+    manual_orders: bool
+    ty_check: bool
+    color: str | None
+    remote_gateway: bool
+
+    @property
+    def can_start_gateway(self) -> bool:
+        return self.gateway_dir is not None
+
+
+def capabilities_for(accounts: Iterable[dict]) -> list[AccountCapabilities]:
+    """帳戶設定（accounts.json 的每一筆）→ 能力，順序不變。remote_gateway 多於一個就報錯。"""
+    caps = []
+    for account in accounts:
+        name = account["name"]
+        fields = {**_CAPABILITY_DEFAULTS, **_LEGACY_CAPABILITIES.get(name.upper(), {})}
+        fields.update({k: account[k] for k in _CAPABILITY_DEFAULTS if k in account})
+        caps.append(AccountCapabilities(
+            name=name,
+            gateway_dir=Path(fields["gateway_dir"]) if fields["gateway_dir"] else None,
+            manual_orders=bool(fields["manual_orders"]),
+            ty_check=bool(fields["ty_check"]),
+            color=fields["color"] or None,
+            remote_gateway=bool(fields["remote_gateway"]),
+        ))
+    remote = [c.name for c in caps if c.remote_gateway]
+    if len(remote) > 1:
+        raise ValueError(f"accounts.json 只能有一個 remote_gateway 帳戶，現在有 {remote}")
+    return caps
+
+
+def load_capabilities() -> list[AccountCapabilities]:
+    """accounts.json 每個帳戶的能力（缺欄位＝現狀預設）。"""
+    return capabilities_for(load_accounts())
+
+
+def account_capabilities(name: str) -> AccountCapabilities:
+    """某個帳戶的能力；不認得的名字報錯（同 get_account_config）。"""
+    caps = load_capabilities()
+    for cap in caps:
+        if cap.name.upper() == str(name).upper():
+            return cap
+    raise ValueError(f"Account '{name}' not found in accounts.json. "
+                     f"Available: {[c.name for c in caps]}")
+
+
+def remote_gateway_account(caps: Iterable[AccountCapabilities] | None = None) -> str | None:
+    """遠端 Gateway 的帳戶名（現狀是 Rosa）；沒有就 None。"""
+    caps = load_capabilities() if caps is None else caps
+    return next((c.name for c in caps if c.remote_gateway), None)
 
 
 def load_base_config() -> dict:

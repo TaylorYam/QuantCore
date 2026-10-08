@@ -683,6 +683,53 @@ def test_after_login_a_gateway_that_stays_offline_is_checked_at_most_three_times
 
 # ── Gateway 帳密更新 ─────────────────────────────────────────────────
 
+def test_a_fourth_account_shows_up_in_trading_gateway_and_watch(make_window, tmp_path):
+    """#211：加帳戶只改 accounts.json — 有 gateway_dir 就進 Gateway 帳密／一鍵啟動清單，
+    手動單預設可下（Trading 帳戶選單），ty_check 的進值班卡。"""
+    from account_utils import capabilities_for
+
+    accounts = ACCOUNTS + [{"name": "Zoe", "port": 4004}]
+    caps = capabilities_for([{"name": a["name"]} for a in ACCOUNTS] + [
+        {"name": "Zoe", "gateway_dir": str(tmp_path), "ty_check": True, "color": "#123456"}])
+    w = make_window(accounts=accounts, capabilities=caps)
+    assert [a.text() for a in w.dashboard.credentials_menu.actions()] == [
+        "Taylor", "Rosa", "Yvonne", "Zoe"]
+    assert w.trading.manual is not None
+    box = w.trading.manual.account_box
+    assert [box.itemText(i) for i in range(box.count())] == ["Taylor", "Rosa", "Yvonne", "Zoe"]
+    assert "Taylor／Yvonne／Zoe" in w.dashboard.watch_text()
+    assert "Rosa poll" in w.dashboard.watch_text()
+
+
+def test_an_account_without_manual_orders_is_not_in_trading(make_window):
+    from account_utils import capabilities_for
+
+    caps = capabilities_for([{"name": "Taylor"}, {"name": "Rosa", "manual_orders": False},
+                             {"name": "Yvonne"}])
+    w = make_window(capabilities=caps)
+    box = w.trading.manual.account_box
+    assert [box.itemText(i) for i in range(box.count())] == ["Taylor", "Yvonne"]
+
+
+def test_no_module_hard_codes_the_account_names():
+    """#211：帳戶能力只在 accounts.json（缺欄位的現狀預設只在 account_utils 一處）。"""
+    import re
+
+    automation = Path(__file__).resolve().parents[1]
+    # 名字並列的 tuple／list、大寫鍵表、拿 Rosa 當條件
+    pattern = re.compile(r"""[(\[]\s*["']Taylor["']\s*,\s*["'](Rosa|Yvonne)["']"""
+                         r"""|["'](TAYLOR|ROSA|YVONNE)["']\s*:|==\s*["']Rosa["']"""
+                         r"""|is_online\(["']Rosa["']\)|["'](Taylor|Rosa|Yvonne)["']\s*:\s*["']#""")
+    offenders = []
+    for path in list(automation.glob("*.py")) + list((automation / "qt_panel").glob("*.py")):
+        if path.name == "account_utils.py":
+            continue
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if pattern.search(line):
+                offenders.append(f"{path.name}:{n}: {line.strip()}")
+    assert offenders == []
+
+
 def test_credentials_menu_lists_the_three_live_accounts(make_window):
     w = make_window()
     assert [a.text() for a in w.dashboard.credentials_menu.actions()] == [

@@ -5,7 +5,7 @@
 ## Language
 
 **Account**:
-對應一個 IB 帳戶（U-prefix），自有 NAV / 持倉 / Allocation 設定 / Telegram 通道，由 `accounts.json` 的 `name` 標識（Taylor / Rosa / Yvonne）。
+對應一個 IB 帳戶（U-prefix），自有 NAV / 持倉 / Allocation 設定 / Telegram 通道，由 `accounts.json` 的 `name` 標識（Taylor / Rosa / Yvonne）。帳戶能做什麼（一鍵啟動 Gateway、Panel 手動單、TY check、畫面顏色、是不是遠端 Gateway）也寫在 `accounts.json` 該帳戶的欄位，程式只問 `account_utils.account_capabilities`，不按名字判斷（#211；缺欄位用現狀預設）。
 _Avoid_: User, Client, Sub-account
 
 **Strategy**:

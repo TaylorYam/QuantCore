@@ -2,11 +2,9 @@ r"""
 QuantCore — IB Gateway 啟動器（原生 Gateway，不透過 IBC）
 
 2026-06-01 完全棄用 IBC，全部走原生 Gateway。每個帳戶獨立 Gateway 安裝
-（multi-install model），相互不干擾：
-
-    TAYLOR  C:\IB-TAYLOR\ibgateway\      (10.45)
-    YVONNE  C:\IB-YIYI\ibgateway\        (10.45)
-    ROSA    C:\Jts\ibgateway\1041\     (10.41，尚未遷移)
+（multi-install model），相互不干擾。安裝資料夾是 accounts.json 的 `gateway_dir`
+（#211；沒寫就用 account_utils 的現狀預設：Taylor C:\IB-TAYLOR\ibgateway、
+Yvonne C:\IB-YIYI\ibgateway、Rosa C:\Jts\ibgateway\1041 — 10.41，尚未遷移）。
 
 啟動方式：直接執行 ibgateway.exe，傳 -J-DjtsConfigDir=<settings_dir> 指定
 TWS 設定路徑。三個都已啟用每日 Auto-restart（沿用 token 重連、免 IB Key）；
@@ -25,25 +23,24 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-# ── 每帳戶獨立 Gateway 安裝路徑 ──────────────────────────────────────────────
-# Taylor / Yvonne 已遷移到 Gateway 10.45 個別安裝。
-# Rosa 暫留舊的 10.41 共享 binary，未來再遷移到 C:\IB-ROSA\ibgateway\。
-LEGACY_GATEWAY_DIR = Path(r"C:\Jts\ibgateway\1041")
-
-ACCOUNT_GATEWAY_DIR = {
-    "TAYLOR": Path(r"C:\IB-TAYLOR\ibgateway"),  # 10.45 個別安裝
-    "YVONNE": Path(r"C:\IB-YIYI\ibgateway"),    # 10.45 個別安裝
-    "ROSA":   LEGACY_GATEWAY_DIR,               # 10.41 共享舊裝
-}
-
+# ── 每帳戶獨立 Gateway 安裝路徑（accounts.json 的 gateway_dir，#211）──────────
 # Settings dir = Gateway 安裝路徑（jts.ini / autorestart token 都在 install 內）。
 # Rosa 也一樣：2026-09-29 查 launcher log，每次啟動的 jtsConfigDir 都是
 # C:\Jts\ibgateway\1041；舊的 C:\Jts\gateway_b 是 IBC 時代的設定夾，已不用。
-ACCOUNT_SETTINGS_DIR = {
-    "TAYLOR": Path(r"C:\IB-TAYLOR\ibgateway"),
-    "YVONNE": Path(r"C:\IB-YIYI\ibgateway"),
-    "ROSA":   LEGACY_GATEWAY_DIR,
-}
+
+
+def gateway_dir(account_name: str) -> Path | None:
+    """帳戶的 Gateway 安裝（＝設定）資料夾；不認得或沒設定就 None。"""
+    from account_utils import account_capabilities
+    try:
+        return account_capabilities(account_name).gateway_dir
+    except ValueError:
+        return None
+
+
+def _gateway_dirs() -> list[tuple[str, Path]]:
+    from account_utils import load_capabilities
+    return [(c.name, c.gateway_dir) for c in load_capabilities() if c.can_start_gateway]
 
 _CONFIG_DIR_FLAG = "-J-DjtsConfigDir="
 
@@ -53,7 +50,7 @@ def _same_dir(a: str | Path, b: Path) -> bool:
 
 
 def live_account_for_cmdline(cmdline: list[str]) -> str | None:
-    r"""執行中 Gateway 的 command line → 實盤帳戶名（Taylor/Rosa/Yvonne），不是就 None。
+    r"""執行中 Gateway 的 command line → 實盤帳戶名（accounts.json 的 name），不是就 None。
 
     先看 jtsConfigDir，對不上再看 exe 所在的安裝資料夾：用舊設定夾或從開始選單
     直接開的實盤 Gateway 也要算到（寧可多擋，不可重複開）。
@@ -63,21 +60,22 @@ def live_account_for_cmdline(cmdline: list[str]) -> str | None:
         return None
     config_dir = next((arg[len(_CONFIG_DIR_FLAG):] for arg in cmdline
                        if arg.startswith(_CONFIG_DIR_FLAG)), None)
+    dirs = _gateway_dirs()
     if config_dir is not None:
-        for account, settings_dir in ACCOUNT_SETTINGS_DIR.items():
+        for account, settings_dir in dirs:
             if _same_dir(config_dir, settings_dir):
-                return account.capitalize()
+                return account
     install_dir = Path(cmdline[0]).parent
-    for account, gateway_dir in ACCOUNT_GATEWAY_DIR.items():
-        if _same_dir(install_dir, gateway_dir):
-            return account.capitalize()
+    for account, install in dirs:
+        if _same_dir(install_dir, install):
+            return account
     return None
 
 
-def _restore_exe(gateway_dir: Path):
+def _restore_exe(install: Path):
     """Gateway shutdown 後有時會把 ibgateway.exe 改名 ibgateway1.exe，啟動前還原。"""
-    exe = gateway_dir / "ibgateway.exe"
-    renamed = gateway_dir / "ibgateway1.exe"
+    exe = install / "ibgateway.exe"
+    renamed = install / "ibgateway1.exe"
     if renamed.exists() and not exe.exists():
         renamed.rename(exe)
 
@@ -91,21 +89,21 @@ def start_gateway(account_name: str) -> subprocess.Popen | None:
 
     回傳 Popen 物件，None 表示失敗。
     """
+    install = gateway_dir(account_name)
     account_name = account_name.upper()
-    settings_dir = ACCOUNT_SETTINGS_DIR.get(account_name)
-    gateway_dir = ACCOUNT_GATEWAY_DIR.get(account_name)
+    settings_dir = install
 
-    if not gateway_dir:
+    if not install:
         log.error(f"Unknown account: {account_name}")
         return None
-    if not gateway_dir.exists():
-        log.error(f"Gateway install dir not found: {gateway_dir}")
+    if not install.exists():
+        log.error(f"Gateway install dir not found: {install}")
         return None
 
-    _restore_exe(gateway_dir)
-    gateway_exe = gateway_dir / "ibgateway.exe"
+    _restore_exe(install)
+    gateway_exe = install / "ibgateway.exe"
     if not gateway_exe.exists():
-        log.error(f"ibgateway.exe not found in {gateway_dir}")
+        log.error(f"ibgateway.exe not found in {install}")
         return None
 
     cmd = [
@@ -116,7 +114,7 @@ def start_gateway(account_name: str) -> subprocess.Popen | None:
     proc = subprocess.Popen(cmd)
     log.info(
         f"Gateway [{account_name}] started, PID={proc.pid}, "
-        f"install={gateway_dir}, settings={settings_dir}"
+        f"install={install}, settings={settings_dir}"
     )
     return proc
 
@@ -125,6 +123,6 @@ if __name__ == "__main__":
     import argparse
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser()
-    parser.add_argument("account", help="Account name (TAYLOR, ROSA, YVONNE)")
+    parser.add_argument("account", help="Account name in accounts.json (e.g. Taylor)")
     args = parser.parse_args()
     start_gateway(args.account)

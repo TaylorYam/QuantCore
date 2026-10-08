@@ -24,7 +24,6 @@ ORANGE = "#c2410c"
 WARN_BG = "#ffedd5"
 WARN_TEXT = "#9a3412"
 
-ACCOUNT_COLOR = {"Taylor": "#d97706", "Rosa": "#0284c7", "Yvonne": "#9333ea"}
 GATEWAY_COLOR = {"init": TEXT_FAINT, "connecting": ORANGE, "online": GREEN, "offline": RED}
 GATEWAY_TEXT = {"init": "檢查中…", "connecting": "連線中…", "online": "線上", "offline": "離線"}
 

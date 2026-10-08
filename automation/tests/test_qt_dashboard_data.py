@@ -14,13 +14,23 @@ from qt_panel import dashboard_data as dd
 
 def test_watch_items_list_the_three_watches_with_their_next_run():
     now = datetime(2026, 9, 29, 20, 10)                          # 週二晚上
-    items = dd.watch_items(now)
+    items = dd.watch_items(now, "Rosa", ("Taylor", "Yvonne"))
     assert [i.name for i in items] == ["Rosa poll", "TY check", "Morning check"]
+    assert items[1].schedule == "週二・三 20:05 驗證 Taylor／Yvonne 手動登入"   # 和改動前相同
     rosa, ty, morning = items
     assert rosa.next_run == datetime(2026, 9, 29, 21, 0)
     assert ty.next_run == datetime(2026, 9, 30, 20, 5)            # 今天 20:05 已過 → 週三
     assert morning.next_run == datetime(2026, 9, 30, 7, 0)
     assert all(i.schedule for i in items)
+
+
+def test_watch_items_follow_the_account_capabilities():
+    """沒有遠端 Gateway 或 TY check 帳戶就不列那一項；名字來自 accounts.json（#211）。"""
+    now = datetime(2026, 9, 29, 20, 10)
+    assert [i.name for i in dd.watch_items(now, None, ())] == ["Morning check"]
+    items = dd.watch_items(now, "Zoe", ("Zoe",))
+    assert [i.name for i in items] == ["Zoe poll", "TY check", "Morning check"]
+    assert "驗證 Zoe 手動登入" in items[1].schedule
 
 
 def test_format_next_run_says_today_tomorrow_or_date():

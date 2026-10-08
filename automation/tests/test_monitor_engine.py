@@ -189,7 +189,7 @@ def test_past_due_next_time_clamps_to_1ms():
 def test_rosa_ok_logs_without_telegram():
     from monitor_engine import rosa_poll_spec
     env, rec, _ = make_env(online={"Rosa": True}, now=IN_WINDOW)
-    spec = rosa_poll_spec(env)
+    spec = rosa_poll_spec(env, "Rosa")
     for w in spec.workers():
         w()
     assert any("Rosa poll" in l and "→ ok" in l for l in rec["logs"])
@@ -199,7 +199,7 @@ def test_rosa_ok_logs_without_telegram():
 def test_rosa_offline_alerts_once_and_restarts():
     from monitor_engine import rosa_poll_spec
     env, rec, _ = make_env(online={"Rosa": False}, now=IN_WINDOW)
-    spec = rosa_poll_spec(env)
+    spec = rosa_poll_spec(env, "Rosa")
     for w in spec.workers():
         w()
     assert rec["restarts"] == ["Rosa"], "離線必須先嘗試 restart"
@@ -210,7 +210,7 @@ def test_rosa_offline_alerts_once_and_restarts():
 def test_rosa_skips_when_monitor_not_ready():
     from monitor_engine import rosa_poll_spec
     env, rec, _ = make_env(ready=False, now=IN_WINDOW)
-    spec = rosa_poll_spec(env)
+    spec = rosa_poll_spec(env, "Rosa")
     for w in spec.workers():
         w()
     assert rec["logs"] == [] and rec["notes"] == []
@@ -220,7 +220,7 @@ def test_rosa_recovery_skips_if_online():
     from monitor_engine import rosa_recovery_worker
     env, rec, _ = make_env(online={"Rosa": True})
     spawned = []
-    rosa_recovery_worker(env, spawned.append)()
+    rosa_recovery_worker(env, spawned.append, "Rosa")()
     assert any("already online, skip" in l for l in rec["logs"])
     assert spawned == []
 
@@ -229,7 +229,7 @@ def test_rosa_recovery_restarts_if_offline():
     from monitor_engine import rosa_recovery_worker
     env, rec, _ = make_env(online={"Rosa": False})
     spawned = []
-    rosa_recovery_worker(env, spawned.append)()
+    rosa_recovery_worker(env, spawned.append, "Rosa")()
     assert any("attempting reconnect" in l for l in rec["logs"])
     assert len(spawned) == 1
     spawned[0]()   # 執行被 spawn 的 restart thunk
@@ -241,7 +241,7 @@ def test_rosa_recovery_restarts_if_offline():
 def test_ty_heartbeat_online_skips_cold_connect():
     from monitor_engine import ty_check_spec
     env, rec, _ = make_env(online={"Taylor": True, "Yvonne": True})
-    for w in ty_check_spec(env).workers():
+    for w in ty_check_spec(env, ("Taylor", "Yvonne")).workers():
         w()
     assert rec["cold"] == [], "心跳 ONLINE = 活體證明，不得冷連線（clientId 撞號）"
     assert rec["notes"] == [], "成功不發 TG（#26），只寫 Output Log"
@@ -253,7 +253,7 @@ def test_ty_cold_connect_failure_sends_alert():
     from monitor_engine import ty_check_spec
     env, rec, _ = make_env(online={"Taylor": False, "Yvonne": True},
                            cold_connect_error=ConnectionError("refused"))
-    for w in ty_check_spec(env).workers():
+    for w in ty_check_spec(env, ("Taylor", "Yvonne")).workers():
         w()
     assert rec["cold"] == ["Taylor"], "只有離線帳戶走冷連線"
     assert len(rec["notes"]) == 1 and "Taylor" in rec["notes"][0]

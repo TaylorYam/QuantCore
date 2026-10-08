@@ -237,14 +237,14 @@ def test_rosa_state_recolours_the_tray(prod_window, watch_source, qtbot):
         def hide(self):
             pass
 
-        def update_state(self, state, when):
-            states.append(state)
+        def update_state(self, state, when, account):
+            states.append((state, account))
 
     prod_window(datetime(2026, 9, 29, 15, 0), tray_factory=StateTray)
     watch_source.on_state("Rosa", "online", "")
     watch_source.on_state("Taylor", "offline", "x")
     watch_source.on_state("Rosa", "offline", "timeout")
-    assert states == ["online", "offline"]
+    assert states == [("online", "Rosa"), ("offline", "Rosa")]
 
 
 def test_real_tray_shows_rosa_state_in_colour_and_tooltip(qtbot, tmp_path, monkeypatch):
@@ -255,8 +255,8 @@ def test_real_tray_shows_rosa_state_in_colour_and_tooltip(qtbot, tmp_path, monke
     monkeypatch.setattr(tray, "_state_icon", lambda color: made.append(color) or QIcon())
     t = tray.QtTray(on_show=lambda: None, on_quit=lambda: None, icon=QIcon(),
                     tooltip="QuantCore Panel")
-    t.update_state("offline", datetime(2026, 9, 29, 21, 5))
-    t.update_state("weird", datetime(2026, 9, 29, 21, 6))
+    t.update_state("offline", datetime(2026, 9, 29, 21, 5), "Rosa")
+    t.update_state("weird", datetime(2026, 9, 29, 21, 6), "Rosa")
     assert made == ["red", "gray"]
     assert t._icon.toolTip() == "QuantCore Panel\nRosa: WEIRD (last 21:06)"
 

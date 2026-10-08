@@ -1,11 +1,11 @@
 """Panel 的值班（#154）：Qt 計時器驅動既有的 MonitorEngine。
 
-Rosa poll／TY check／Morning check 的排程與派工全在 `monitor_engine`；這裡只是
+Rosa poll（遠端 Gateway 帳戶）／TY check／Morning check 的排程與派工全在 `monitor_engine`；這裡只是
 Qt 的 adapter：
 - 計時：單次 QTimer；tick 在 Qt 主執行緒跑，worker 丟 daemon thread。
 - 心跳狀態與重連：主視窗的 Gateway 來源（ROLE_MONITOR 的 GatewayMonitor）。
 - Telegram：config.json 的共用設定（系統層警報，不看帳戶覆寫）。
-- Rosa 斷線 10 分鐘後的一次性 recovery。
+- 遠端 Gateway 帳戶（Rosa）斷線 10 分鐘後的一次性 recovery。
 """
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ ROSA_RECOVERY_DELAY_MS = 10 * 60 * 1000
 # 心跳開始後等一下再排值班，
 # 窗內開啟時第一次 Rosa poll 才不會碰上還在連線中的心跳
 WATCH_START_DELAY_MS = 1500
-TY_CHECK_ACCOUNTS = ("Taylor", "Yvonne")
 
 
 def _spawn(fn: Callable[[], None]) -> None:
@@ -54,10 +53,15 @@ class QtWatch(QObject):
 
     def __init__(self, *, source, account_names: list[str], ports: WatchPorts,
                  log: Callable[[str], None], refresh: Callable[[], None],
-                 now: Callable[[], datetime], parent: QObject | None = None):
+                 now: Callable[[], datetime], remote_account: str | None,
+                 ty_check_accounts: tuple[str, ...], parent: QObject | None = None):
+        """remote_account：遠端 Gateway 帳戶（poll 與斷線 recovery，None = 不跑）；
+        ty_check_accounts：週二三 TY check 的帳戶（#211，都來自 accounts.json）。"""
         super().__init__(parent)
         import monitor_engine as me
 
+        self._remote_account = remote_account
+        self._ty_check_accounts = tuple(ty_check_accounts)
         self._ports = ports
         self._log = log
         self.env = me.MonitorEnv(
@@ -90,8 +94,10 @@ class QtWatch(QObject):
         self._start_timer = None
         if not self._running:
             return
-        self.engine.start(me.rosa_poll_spec(self.env))
-        self.engine.start(me.ty_check_spec(self.env, TY_CHECK_ACCOUNTS))
+        if self._remote_account:
+            self.engine.start(me.rosa_poll_spec(self.env, self._remote_account))
+        if self._ty_check_accounts:
+            self.engine.start(me.ty_check_spec(self.env, self._ty_check_accounts))
         self.engine.start(me.morning_check_spec(self.env))
 
     def stop(self) -> None:
@@ -102,13 +108,13 @@ class QtWatch(QObject):
         self.engine.stop_all()
 
     def rosa_went_offline(self) -> None:
-        """Rosa 心跳斷了：10 分鐘後試一次重連（窗外也跑，涵蓋 06:00 Gateway 自動重啟）。"""
+        """遠端 Gateway 心跳斷了：10 分鐘後試一次重連（窗外也跑，涵蓋 06:00 Gateway 自動重啟）。"""
         import monitor_engine as me
 
-        if self._running:
+        if self._running and self._remote_account:
             self.engine.schedule_once(
                 self._ports.recovery_delay_ms,
-                me.rosa_recovery_worker(self.env, self._ports.spawn))
+                me.rosa_recovery_worker(self.env, self._ports.spawn, self._remote_account))
 
     def _notify(self, msg: str) -> None:
         if not self._running:

@@ -13,22 +13,53 @@ import gateway_launcher
 from gateway_launcher import live_account_for_cmdline
 
 
-@pytest.mark.parametrize("account, settings_dir", [
-    ("TAYLOR", r"C:\IB-TAYLOR\ibgateway"),
-    ("YVONNE", r"C:\IB-YIYI\ibgateway"),
-    ("ROSA", r"C:\Jts\ibgateway\1041"),
-])
-def test_gateway_starts_with_the_settings_folder_it_actually_uses(
-        account, settings_dir, tmp_path, monkeypatch):
+@pytest.fixture(autouse=True)
+def accounts(fake_config):
+    """三個實盤帳戶、accounts.json 還沒補 gateway_dir（用現狀預設，#211）。"""
+
+
+@pytest.mark.parametrize("account", ["Taylor", "YVONNE", "rosa"])
+def test_gateway_starts_with_its_own_folder_as_the_settings_folder(
+        account, tmp_path, monkeypatch):
+    import account_utils
+    from tests.conftest import FAKE_ACCOUNTS
+
     (tmp_path / "ibgateway.exe").write_bytes(b"")
-    monkeypatch.setitem(gateway_launcher.ACCOUNT_GATEWAY_DIR, account, tmp_path)
+    monkeypatch.setattr(account_utils, "load_accounts", lambda: [
+        {**a, "gateway_dir": str(tmp_path)} for a in FAKE_ACCOUNTS])
     started = []
     monkeypatch.setattr(gateway_launcher.subprocess, "Popen",
                         lambda cmd: started.append(cmd) or type("P", (), {"pid": 1})())
 
     assert gateway_launcher.start_gateway(account) is not None
 
-    assert started == [[str(tmp_path / "ibgateway.exe"), f"-J-DjtsConfigDir={settings_dir}"]]
+    assert started == [[str(tmp_path / "ibgateway.exe"), f"-J-DjtsConfigDir={tmp_path}"]]
+
+
+@pytest.mark.parametrize("account, folder", [
+    ("Taylor", r"C:\IB-TAYLOR\ibgateway"),
+    ("Yvonne", r"C:\IB-YIYI\ibgateway"),
+    ("Rosa", r"C:\Jts\ibgateway\1041"),
+])
+def test_default_gateway_folders_are_the_ones_actually_used(account, folder):
+    from pathlib import Path
+    assert gateway_launcher.gateway_dir(account) == Path(folder)
+
+
+def test_unknown_or_unconfigured_account_is_not_started(monkeypatch):
+    import account_utils
+    monkeypatch.setattr(account_utils, "load_accounts", lambda: [{"name": "Zoe"}])
+    assert gateway_launcher.start_gateway("Zoe") is None
+    assert gateway_launcher.start_gateway("Nobody") is None
+
+
+def test_a_fourth_account_with_a_gateway_dir_is_recognised(monkeypatch):
+    import account_utils
+    from tests.conftest import FAKE_ACCOUNTS
+    monkeypatch.setattr(account_utils, "load_accounts", lambda: [
+        *FAKE_ACCOUNTS, {"name": "Zoe", "gateway_dir": r"C:\IB-ZOE\ibgateway"}])
+    assert live_account_for_cmdline(
+        [r"C:\IB-ZOE\ibgateway\ibgateway.exe", r"-J-DjtsConfigDir=C:\IB-ZOE\ibgateway"]) == "Zoe"
 
 
 TAYLOR =[r"C:\IB-TAYLOR\ibgateway\ibgateway.exe", "-J-DCHANNEL=stable",

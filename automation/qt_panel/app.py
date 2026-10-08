@@ -76,7 +76,7 @@ def main() -> int:
         return 0
 
     try:
-        from account_utils import load_accounts
+        from account_utils import load_accounts, load_capabilities
         from qt_panel import theme
         from qt_panel.gateway_status import MonitorGatewaySource
         from qt_panel.main_window import MainWindow
@@ -97,6 +97,7 @@ def main() -> int:
 
         window = MainWindow(
             accounts=accounts,
+            capabilities=load_capabilities(),
             gateway_source=MonitorGatewaySource([a["name"] for a in accounts]),
             gateway_ports_factory=lambda ask: gateway_start_win.WindowsPorts(ask_credentials=ask),
             credential_store=WindowsCredentialStore(),

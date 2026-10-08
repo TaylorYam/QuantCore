@@ -20,15 +20,14 @@ Telegram 發不出去」看起來一模一樣（07-20 ~ 09-15 平日有三成多
 from __future__ import annotations
 
 import html
-import json
 import logging
-import os
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, Sequence
 
+import json_state
 from account_utils import ROLE_MOO_CHECK, ROLE_REBALANCE, ROLE_REPORT, telegram_dest
 from notify import LEVEL_ICON, LEVEL_RANK
 
@@ -91,14 +90,12 @@ def _path(job: str, day: date) -> Path:
 
 
 def _save(job: str, day: date, record: dict) -> None:
-    """先寫暫存檔再換名：程式被砍也不會留下半個 JSON。失敗只寫 log。"""
+    """原子寫入（json_state）：程式被砍也不會留下半個 JSON。失敗只寫 log，
+    不影響排程本身。"""
     try:
         path = _path(job, day)
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=1),
-                       encoding="utf-8")
-        os.replace(tmp, path)
+        json_state.save_atomic(path, record, indent=1, ensure_ascii=False)
     except Exception as e:
         log.warning(f"run status write failed ({job}): {e}")
 
@@ -106,10 +103,8 @@ def _save(job: str, day: date, record: dict) -> None:
 def load(job: str, day: date) -> dict | None:
     """當天的紀錄；沒有或讀不到回 None。"""
     path = _path(job, day)
-    if not path.exists():
-        return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json_state.load(path, None)
     except Exception as e:
         log.warning(f"run status unreadable ({path.name}): {e}")
         return None

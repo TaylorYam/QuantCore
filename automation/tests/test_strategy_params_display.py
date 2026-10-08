@@ -35,3 +35,65 @@ def test_allocations_from_config_use_the_same_defaults_as_the_tk_panel():
     assert allocations_from_cfg({}) == (0.80, 0.50, 0.0)
     cfg = {"alloc_sr": 0.75, "alloc_sp500": 0.45, "alloc_skewls": 0.30, "leverage": 9}
     assert allocations_from_cfg(cfg) == (0.75, 0.45, 0.30)   # leverage 欄位不採用，永遠是加總
+
+
+# ── 調整 Allocation（#220）：驗證與確認文字 ──────────────────────────
+
+def test_allocation_change_lists_the_new_values_and_only_touches_this_account():
+    from strategy_params_display import allocation_change
+
+    c = allocation_change("Taylor", {"alloc_sr": 0.80, "alloc_sp500": 0.50, "alloc_skewls": 0.0},
+                          (0.75, 0.45, 0.0))
+    assert c.changed and not c.error and not c.first_enable_skewls
+    assert c.updates() == {"alloc_sr": 0.75, "alloc_sp500": 0.45, "alloc_skewls": 0.0}
+    text = c.confirm_text()
+    for part in ("Taylor", "SR", "75%", "SP500", "45%", "Skew LS", "0%",
+                 "120% (1.2x)", "借款：20%", "只改這個帳戶"):
+        assert part in text
+    assert "放空" not in text
+
+
+def test_allocation_values_are_rounded_like_the_tk_sliders():
+    from strategy_params_display import allocation_change
+
+    c = allocation_change("Rosa", {}, (0.7000000001, 0.35, 0.1499999))
+    assert c.values == (0.70, 0.35, 0.15)
+    assert c.updates() == {"alloc_sr": 0.70, "alloc_sp500": 0.35, "alloc_skewls": 0.15}
+
+
+def test_no_borrow_line_at_or_below_one():
+    from strategy_params_display import allocation_change
+
+    text = allocation_change("Rosa", {}, (0.5, 0.3, 0.2)).confirm_text()
+    assert "100% (1.0x)" in text and "借款" not in text
+
+
+def test_same_values_are_not_a_change():
+    from strategy_params_display import allocation_change
+
+    cfg = {"alloc_sr": 0.75, "alloc_sp500": 0.45, "alloc_skewls": 0.30}
+    assert not allocation_change("Yvonne", cfg, (0.75, 0.45, 0.30)).changed
+    assert not allocation_change("Taylor", {}, (0.80, 0.50, 0.0)).changed   # 沒寫 = 預設值
+    assert allocation_change("Taylor", {}, (0.80, 0.50, 0.05)).changed
+
+
+def test_total_above_250_percent_is_refused():
+    from strategy_params_display import MAX_TOTAL_ALLOCATION, allocation_change
+
+    assert MAX_TOTAL_ALLOCATION == 2.5
+    c = allocation_change("Taylor", {}, (1.0, 1.0, 0.55))
+    assert "255%" in c.error and "250%" in c.error
+    assert not allocation_change("Taylor", {}, (1.0, 1.0, 0.5)).error      # 剛好 250% 可以
+    assert not allocation_change("Taylor", {}, (0.9, 0.85, 0.75)).error    # 浮點加總不誤擋
+
+
+def test_first_enable_of_skewls_warns_about_the_xlc_short():
+    from strategy_params_display import allocation_change
+
+    c = allocation_change("Taylor", {"alloc_skewls": 0.0}, (0.8, 0.5, 0.2))
+    assert c.first_enable_skewls
+    assert "首次啟用" in c.confirm_text() and "放空 XLC" in c.confirm_text()
+    assert "margin" in c.confirm_text()
+    assert allocation_change("Taylor", {}, (0.8, 0.5, 0.2)).first_enable_skewls  # 沒寫 = 0
+    assert not allocation_change("Rosa", {"alloc_skewls": 0.2}, (0.5, 0.3, 0.3)).first_enable_skewls
+    assert not allocation_change("Rosa", {"alloc_skewls": 0.0}, (0.5, 0.3, 0.0)).first_enable_skewls

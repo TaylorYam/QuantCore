@@ -105,6 +105,7 @@ class MainWindow(QMainWindow):
                  cash_flows_fetch: Callable[[str], object],
                  strategy_config_fetch: Callable[[str], dict],
                  trades_fetch: Callable[[str], list],
+                 allocation_save: Callable[[str, dict], None] | None = None,
                  portfolio_next_refresh: Callable[[datetime], datetime] | None = None,
                  dialogs: Dialogs | None = None,
                  read_data_date: Callable[[], str] = dashboard_data.read_data_date,
@@ -138,6 +139,8 @@ class MainWindow(QMainWindow):
         # 出入金要向 IB Flex 下載（可能要等幾秒），排在所有帳戶的本機資料之後
         self._extra_fetchers = ((PARAMS, strategy_config_fetch), (TRADES, trades_fetch),
                                 (EQUITY, equity_fetch), (FLOWS, cash_flows_fetch))
+        self._strategy_config_fetch = strategy_config_fetch
+        self._allocation_save = allocation_save
         self._extras_loading = False
         self._flow_problems: dict[str, str] = {}      # 出入金問題每帳戶同樣的只記一次
         self._today_jobs = today_jobs or (lambda now: dashboard_data.today_jobs(now, names))
@@ -176,7 +179,9 @@ class MainWindow(QMainWindow):
             on_edit_credentials=self.edit_gateway_credentials,
             credential_accounts=LIVE_ACCOUNTS, on_refresh=self.refresh,
             watch_note=PRODUCTION_WATCH_NOTE if self._on_duty() else WATCH_NOTE)
-        self.portfolio = PortfolioPage(names, on_refresh=self.refresh_portfolio)
+        self.portfolio = PortfolioPage(
+            names, on_refresh=self.refresh_portfolio,
+            on_edit_allocation=self.edit_allocation if allocation_save is not None else None)
         # 送單閘門：Trading 每一條 IB 連線都經過它向 Broker 要，並行模式只放行 paper。
         # broker 只給測試換成 in-memory fake（tests/fake_broker.py）
         self.send_gate = SendGate(mode, broker)
@@ -464,6 +469,41 @@ class MainWindow(QMainWindow):
 
     def account_extras_loading(self) -> bool:
         return self._extras_loading
+
+    def edit_allocation(self, name: str) -> None:
+        """調整帳戶的 Allocation（#220，同 Tk 的 Save）：拉桿 → 檢查 → 確認 → 只寫這個帳戶。"""
+        from strategy_params_display import allocation_change, allocations_from_cfg
+
+        cfg = self.portfolio.extra(name, PARAMS)
+        if cfg is None or self._allocation_save is None:
+            return
+        values = self._dialogs.ask_allocation(name, allocations_from_cfg(cfg))
+        if values is None:
+            return
+        change = allocation_change(name, cfg, values)
+        if change.error:
+            self._dialogs.show_message("策略參數", change.error, error=True)
+            return
+        if not change.changed:
+            self.log(f"[{name}] 策略參數沒有變更")
+            return
+        if not self._dialogs.confirm("儲存策略參數", change.confirm_text(),
+                                     warning=change.first_enable_skewls):
+            return
+        try:
+            self._allocation_save(name, change.updates())
+        except Exception as e:
+            self.log(f"[X] [{name}] 策略參數儲存失敗：{e}")
+            self._dialogs.show_message("策略參數", f"[{name}] 儲存失敗：{e}", error=True)
+            return
+        sr, sp, sk = change.values
+        self.log(f"[OK] [{name}] 策略參數已儲存：SR={sr:.0%}  SP500={sp:.0%}  "
+                 f"Skew LS={sk:.0%}  Leverage={sr + sp + sk:.1f}x")
+        try:
+            data, error = self._strategy_config_fetch(name), ""
+        except Exception as e:
+            data, error = None, str(e) or type(e).__name__
+        self._on_account_extra(name, PARAMS, data, error)
 
     def _on_portfolio_change(self, name: str, state) -> None:
         self.portfolio.set_state(name, state)

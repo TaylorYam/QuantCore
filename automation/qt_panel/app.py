@@ -85,7 +85,7 @@ def main() -> int:
         from qt_panel.mode import PanelMode, qt_panel_duty, release_live_duty
         from qt_panel.portfolio_source import (
             load_account_cash_flows, load_equity, portfolio_fetch_for, read_recent_trades,
-            read_strategy_allocations,
+            read_strategy_allocations, write_strategy_allocations,
         )
         from qt_panel.tray import tray_factory_for
 
@@ -115,6 +115,7 @@ def main() -> int:
             cash_flows_fetch=load_account_cash_flows,
             strategy_config_fetch=read_strategy_allocations,
             trades_fetch=read_recent_trades,
+            allocation_save=write_strategy_allocations,
             tray_factory=tray_factory_for(icon, "QuantCore Panel（PySide6・正式模式）"
                                           if mode is PanelMode.PRODUCTION
                                           else "QuantCore Panel（PySide6・並行模式）"),

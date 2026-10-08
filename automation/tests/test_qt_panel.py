@@ -186,6 +186,8 @@ class FakeExtras:
             "Yvonne": FlexNotConfigured("未設定 IB Flex（accounts.json 的 flex_token／flex_query_id）"),
         }
         self.calls = []
+        self.saves = []
+        self.save_error = None
 
     def _get(self, kind, table, name):
         self.calls.append((kind, name))
@@ -206,6 +208,13 @@ class FakeExtras:
     def trades_fetch(self, name):
         return self._get("trades", self.trades, name)
 
+    def config_save(self, name, updates):
+        """假的 Allocation 寫入（#220）：記下來並改掉讀取值，不碰 accounts.json。"""
+        if self.save_error:
+            raise self.save_error
+        self.saves.append((name, dict(updates)))
+        self.config[name] = {**self.config[name], **updates}
+
 
 class FakeDialogs:
     def __init__(self, answers=None):
@@ -214,6 +223,12 @@ class FakeDialogs:
         self.messages = []
         self.confirms = []
         self.confirm_answers = []
+        self.allocation_answers = []
+        self.allocation_asked = []
+
+    def ask_allocation(self, account, current):
+        self.allocation_asked.append((account, tuple(current)))
+        return self.allocation_answers.pop(0) if self.allocation_answers else None
 
     def ask_credentials(self, account, username=""):
         self.asked.append((account, username, threading.current_thread() is threading.main_thread()))
@@ -292,6 +307,7 @@ def make_window(qtbot, source, ports, dialogs, portfolio, extras, tmp_path):
         kw.setdefault("equity_fetch", extras.equity_fetch)
         kw.setdefault("cash_flows_fetch", extras.flows_fetch)
         kw.setdefault("strategy_config_fetch", extras.config_fetch)
+        kw.setdefault("allocation_save", extras.config_save)
         kw.setdefault("trades_fetch", extras.trades_fetch)
         kw.setdefault("portfolio_next_refresh", lambda now: now + timedelta(days=1))
         kw.setdefault("dialogs", dialogs)
@@ -490,15 +506,16 @@ def test_watch_telegram_and_trade_log_live_only_in_production_modules():
     assert offenders == {}
 
 
-def test_new_panel_has_no_path_that_writes_accounts_or_config():
-    """策略參數只顯示（#150）：qt_panel 不引用任何寫 accounts.json／config.json 的函式。"""
+def test_only_the_allocation_writer_touches_accounts_json():
+    """新 Panel 寫 accounts.json 只有一條路（#220）：portfolio_source.write_strategy_allocations。"""
     import account_utils
 
     writers = {"update_account_config"}                        # account_utils 唯一的寫入函式
     assert all(hasattr(account_utils, w) for w in writers)
     package = Path(__file__).resolve().parents[1] / "qt_panel"
-    names = set()
+    users = {}
     for path in package.glob("*.py"):
+        names = set()
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Name):
                 names.add(node.id)
@@ -506,7 +523,9 @@ def test_new_panel_has_no_path_that_writes_accounts_or_config():
                 names.add(node.attr)
             elif isinstance(node, ast.alias):
                 names.add(node.name.split(".")[-1])
-    assert not names & writers
+        if names & writers:
+            users[path.name] = names & writers
+    assert users == {"portfolio_source.py": writers}
 
 
 # ── 關閉與系統匣 ─────────────────────────────────────────────────────
@@ -1422,7 +1441,7 @@ def test_strategy_params_show_each_allocation_and_the_leverage(make_window, qtbo
     params = w.portfolio.detail.params
     text = params.text()
     for part in ("SR", "80%", "SP500", "50%", "Skew LS", "0%", "Leverage",
-                 "130% (1.3x)", "Borrow: 30%", "唯讀"):
+                 "130% (1.3x)", "Borrow: 30%"):
         assert part in text
     assert params.value_color("130% (1.3x)") == theme.ORANGE
     w.portfolio.select("Yvonne")
@@ -1432,14 +1451,140 @@ def test_strategy_params_show_each_allocation_and_the_leverage(make_window, qtbo
     assert params.value_color("100% (1.0x)") == theme.GREEN
 
 
-def test_strategy_params_have_no_controls_to_change_them(make_window, qtbot):
-    from PySide6.QtWidgets import QAbstractButton, QAbstractSlider, QAbstractSpinBox, QLineEdit
+# ── 調整 Allocation（#220）─────────────────────────────────────────
 
+def _edit_params(w, qtbot):
+    w.nav_button("Portfolio").click()
+    qtbot.mouseClick(w.portfolio.detail.params.edit_button, Qt.LeftButton)
+
+
+def test_adjusting_allocation_saves_only_this_accounts_alloc_fields(
+        make_window, qtbot, extras, dialogs):
+    w = make_window()
+    _wait_extras(w, qtbot)
+    w.portfolio.select("Yvonne")
+    dialogs.allocation_answers = [(0.70, 0.40, 0.30)]
+    _edit_params(w, qtbot)
+    assert dialogs.allocation_asked == [("Yvonne", (0.75, 0.45, 0.30))]   # 目前設定當初始值
+    assert extras.saves == [("Yvonne", {"alloc_sr": 0.70, "alloc_sp500": 0.40,
+                                        "alloc_skewls": 0.30})]
+    (title, text, warning), = dialogs.confirms
+    assert "Yvonne" in text and "140% (1.4x)" in text and not warning
+    params = w.portfolio.detail.params
+    assert "70%" in params.text() and "140% (1.4x)" in params.text()   # 寫完重讀刷新
+    assert "[OK] [Yvonne] 策略參數已儲存" in w.dashboard.log_text()
+    w.portfolio.select("Taylor")
+    assert "130% (1.3x)" in params.text()                              # 其他帳戶不變
+
+
+def test_cancelling_the_allocation_dialog_or_the_confirmation_saves_nothing(
+        make_window, qtbot, extras, dialogs):
+    w = make_window()
+    _wait_extras(w, qtbot)
+    _edit_params(w, qtbot)                                              # 對話框按取消
+    assert dialogs.confirms == [] and extras.saves == []
+    dialogs.allocation_answers = [(0.60, 0.50, 0.0)]
+    dialogs.confirm_answers = [False]
+    _edit_params(w, qtbot)                                              # 確認視窗按否
+    assert len(dialogs.confirms) == 1 and extras.saves == []
+    assert "130% (1.3x)" in w.portfolio.detail.params.text()
+
+
+def test_unchanged_allocation_is_not_written(make_window, qtbot, extras, dialogs):
+    w = make_window()
+    _wait_extras(w, qtbot)
+    dialogs.allocation_answers = [(0.80, 0.50, 0.0)]
+    _edit_params(w, qtbot)
+    assert dialogs.confirms == [] and extras.saves == []
+    assert "沒有變更" in w.dashboard.log_text()
+
+
+def test_allocation_above_250_percent_is_refused(make_window, qtbot, extras, dialogs):
+    w = make_window()
+    _wait_extras(w, qtbot)
+    dialogs.allocation_answers = [(1.0, 1.0, 0.55)]
+    _edit_params(w, qtbot)
+    assert extras.saves == [] and dialogs.confirms == []
+    (title, text, error), = dialogs.messages
+    assert error and "250%" in text
+
+
+def test_first_enable_of_skewls_asks_with_a_short_selling_warning(
+        make_window, qtbot, extras, dialogs):
+    w = make_window()
+    _wait_extras(w, qtbot)
+    dialogs.allocation_answers = [(0.80, 0.50, 0.10)]
+    _edit_params(w, qtbot)
+    (title, text, warning), = dialogs.confirms
+    assert warning and "放空 XLC" in text
+    assert extras.saves == [("Taylor", {"alloc_sr": 0.80, "alloc_sp500": 0.50,
+                                        "alloc_skewls": 0.10})]
+
+
+def test_allocation_save_failure_is_shown_and_the_card_keeps_old_values(
+        make_window, qtbot, extras, dialogs):
+    extras.save_error = OSError("accounts.json is locked")
+    w = make_window()
+    _wait_extras(w, qtbot)
+    dialogs.allocation_answers = [(0.60, 0.50, 0.0)]
+    _edit_params(w, qtbot)
+    (title, text, error), = dialogs.messages
+    assert error and "accounts.json is locked" in text
+    assert "130% (1.3x)" in w.portfolio.detail.params.text()
+    assert "[X] [Taylor] 策略參數儲存失敗" in w.dashboard.log_text()
+
+
+def test_allocation_cannot_be_adjusted_until_the_config_is_read(make_window, qtbot, extras):
+    extras.config["Taylor"] = ValueError("Account 'Taylor' not found")
     w = make_window()
     _wait_extras(w, qtbot)
     params = w.portfolio.detail.params
-    for kind in (QAbstractButton, QAbstractSlider, QAbstractSpinBox, QLineEdit):
-        assert params.findChildren(kind) == []
+    assert not params.edit_button.isEnabled()
+    w.portfolio.select("Rosa")
+    assert params.edit_button.isEnabled()
+
+
+def test_allocation_dialog_moves_in_5_percent_steps_and_shows_the_leverage(qtbot):
+    from qt_panel.account_panels import AllocationDialog
+
+    d = AllocationDialog("Taylor", (0.80, 0.50, 0.0))
+    qtbot.addWidget(d)
+    assert d.values() == (0.80, 0.50, 0.0)
+    assert "130% (1.3x)" in d.text() and "Borrow: 30%" in d.text()
+    sr = d.sliders[0]
+    assert (sr.minimum(), sr.maximum(), sr.singleStep()) == (0, 20, 1)   # 每格 5%
+    sr.setValue(sr.value() - 2)
+    assert d.values() == (0.70, 0.50, 0.0)
+    assert "70%" in d.text() and "120% (1.2x)" in d.text()
+    assert d.save_button.isEnabled()
+
+
+def test_allocation_dialog_blocks_saving_above_250_percent(qtbot):
+    from qt_panel.account_panels import AllocationDialog
+
+    d = AllocationDialog("Taylor", (1.0, 1.0, 0.50))
+    qtbot.addWidget(d)
+    assert d.save_button.isEnabled()                                    # 剛好 250% 可以
+    d.sliders[2].setValue(11)
+    assert not d.save_button.isEnabled()
+    assert "255%" in d.text() and "250%" in d.text()
+
+
+def test_allocation_writer_only_writes_alloc_fields(monkeypatch):
+    import account_utils
+    from qt_panel.portfolio_source import write_strategy_allocations
+
+    writes = []
+    monkeypatch.setattr(account_utils, "update_account_config",
+                        lambda name, updates: writes.append((name, updates)))
+    write_strategy_allocations("Rosa", {"alloc_sr": 0.5, "alloc_sp500": 0.3, "alloc_skewls": 0.2})
+    assert writes == [("Rosa", {"alloc_sr": 0.5, "alloc_sp500": 0.3, "alloc_skewls": 0.2})]
+    for bad in ({"alloc_sr": 0.5, "leverage": 3}, {"port": 4001},
+                {"alloc_sr": 1.0, "alloc_sp500": 1.0, "alloc_skewls": 0.6},
+                {"alloc_sr": -0.1}, {"alloc_sr": 1.05}):
+        with pytest.raises(ValueError):
+            write_strategy_allocations("Rosa", bad)
+    assert len(writes) == 1
 
 
 def test_strategy_config_read_failure_is_shown(make_window, qtbot, extras):

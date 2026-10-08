@@ -2,7 +2,7 @@
 
 clientId：現有號碼逐一對照不變（手動單認成交靠 clientId 比對）；不認得的帳戶報錯。
 adapter：用一個只會記錄呼叫的假 ib_insync.IB 驗證連線參數、
-連不上／被拒時收掉 socket。fake：和 adapter 同一個 interface。不連真的 IB。
+連不上時收掉 socket。fake：和 adapter 同一個 interface。不連真的 IB。
 """
 from __future__ import annotations
 

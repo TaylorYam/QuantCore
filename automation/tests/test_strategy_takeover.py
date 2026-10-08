@@ -270,29 +270,29 @@ def test_other_records_keep_the_live_ledger_untouched(env, tmp_path, monkeypatch
     """接管的連線、歸屬紀錄、手動單紀錄都用傳進來的那一組（#183），不碰預設的實盤檔。"""
     live_ledger = tmp_path / "ledger.sqlite3"
     live_before = live_ledger.read_bytes()
-    paper = NS(ledger=tmp_path / "paper_ledger.sqlite3",
+    other = NS(ledger=tmp_path / "paper_ledger.sqlite3",
                orders=tmp_path / "paper_orders.sqlite3", connects=[])
-    _manual_order(paper.orders, "M:9", "Rosa", "ABC", "BUY", 0, "ACCEPTED")
+    _manual_order(other.orders, "M:9", "Rosa", "ABC", "BUY", 0, "ACCEPTED")
 
     def connect(ctx):
-        paper.connects.append(ctx.client_id)
+        other.connects.append(ctx.client_id)
         return env.connect(ctx)
 
-    records = SyncRecords(connect=connect, attribution_ledger=paper.ledger,
-                          manual_orders_store=paper.orders)
-    ma.evaluate("Rosa", dict(env.positions), UNIVERSE, ledger_path=paper.ledger,
-                manual_orders_path=paper.orders)
-    ma.evaluate("Rosa", dict(env.positions), JOINED, ledger_path=paper.ledger,
-                manual_orders_path=paper.orders)
-    with pytest.raises(st.TakeoverRefused, match="未結案"):     # 讀 paper 的手動單紀錄
+    records = SyncRecords(connect=connect, attribution_ledger=other.ledger,
+                          manual_orders_store=other.orders)
+    ma.evaluate("Rosa", dict(env.positions), UNIVERSE, ledger_path=other.ledger,
+                manual_orders_path=other.orders)
+    ma.evaluate("Rosa", dict(env.positions), JOINED, ledger_path=other.ledger,
+                manual_orders_path=other.orders)
+    with pytest.raises(st.TakeoverRefused, match="未結案"):     # 讀 other 的手動單紀錄
         st.build_preview(_ctx(), "ABC", records=records)
 
     env.behavior = "reject"
     result = st.submit(st.build_preview(_ctx(), "XYZ", records=records), _ctx(),
                        records=records)
     assert result.status == "FAILED"
-    assert "XYZ" in ma.paused_symbols("Rosa", path=paper.ledger)
-    assert [n.line for n in ma.pending_notices("Rosa", path=paper.ledger)
+    assert "XYZ" in ma.paused_symbols("Rosa", path=other.ledger)
+    assert [n.line for n in ma.pending_notices("Rosa", path=other.ledger)
             if n.key.startswith("event:")] == [
         "❌ XYZ 接管未完成：IB 拒單（Order rejected - reason: margin）；維持暫停"]
 
@@ -300,8 +300,8 @@ def test_other_records_keep_the_live_ledger_untouched(env, tmp_path, monkeypatch
     result = st.submit(st.build_preview(_ctx(), "XYZ", records=records), _ctx(),
                        records=records)
     assert result.status == "COMPLETED", result.message
-    assert "XYZ" not in ma.paused_symbols("Rosa", path=paper.ledger)
-    assert paper.connects == [98] * 5
+    assert "XYZ" not in ma.paused_symbols("Rosa", path=other.ledger)
+    assert other.connects == [98] * 5
     assert live_ledger.read_bytes() == live_before              # 實盤紀錄一個 byte 都沒動
     assert ma.pending_takeover("Rosa", "XYZ") is None
 

@@ -20,7 +20,7 @@ def test_failure_message_lists_errors_escaped():
     assert "Elapsed: 51s" in msg
 
 
-def test_main_success_does_not_read_config_or_send(monkeypatch):
+def test_main_success_sends_nothing(monkeypatch):
     import sys
     import types
     import update_data

@@ -270,18 +270,18 @@ def deliver_notices(ctx, notices: list[Notice],
                     path: str | Path) -> bool:
     """Panel 發的通知（Sync Pos 發現的暫停、接管結果）：該 Account 一則，送成功
     才在 path 這份歸屬紀錄記已通知 — 必須是讀出這些通知的那一份（#183），沒有
-    預設的實盤檔。send 預設走 ctx 的 Telegram 設定。"""
+    預設的實盤檔。send 預設送該帳戶的 Telegram（`notify.send_account`）。"""
     if not path:
         raise TypeError("deliver_notices 需要指定歸屬紀錄（讀出通知的那一份）")
     if not notices:
         return False
-    if send is None:
-        from notify import tg_send
-
-        def send(msg: str) -> bool:
-            return bool(tg_send(msg, token=ctx.tg_token, chat_id=ctx.tg_chat_id))
     import html
-    lines = [f"<b>[{html.escape(ctx.name)}] 手動持倉</b>"]
+
+    from notify import account_header, send_account
+    if send is None:
+        def send(msg: str) -> bool:
+            return send_account(ctx.name, msg)
+    lines = [account_header(ctx.name, "手動持倉")]
     lines += [html.escape(n.line) for n in notices]
     if not send("\n".join(lines)):
         return False

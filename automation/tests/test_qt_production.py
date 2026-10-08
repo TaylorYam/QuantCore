@@ -91,6 +91,26 @@ def test_rosa_poll_inside_the_window_alerts_when_retry_fails(
     assert len(telegram) == 1 and "Rosa" in telegram[0] and "disconnected" in telegram[0]
 
 
+def test_alert_that_was_not_sent_shows_in_the_output_log(prod_window, watch_source, qtbot):
+    """共用頻道沒設定或送不出去（send_system 回 False）：Output Log 看得到沒送出（#207）。"""
+    from qt_panel.watch import WatchPorts
+
+    tried = []
+    watch_source.online["Rosa"] = False
+    w = prod_window(datetime(2026, 9, 29, 21, 10), watch_ports=WatchPorts(
+        telegram=lambda m: tried.append(m) or False, cold_connect=lambda n: None,
+        sleep=lambda s: None, start_delay_ms=0))
+    wait_log(qtbot, w, "[!] 值班 Telegram 沒送出")
+    assert len(tried) == 1 and "Rosa" in tried[0]
+
+
+def test_watch_alerts_go_to_the_shared_channel_by_default():
+    import notify
+    from qt_panel.watch import WatchPorts
+
+    assert WatchPorts().telegram is notify.send_system
+
+
 def test_rosa_poll_healthy_sends_nothing(prod_window, telegram, qtbot):
     w = prod_window(datetime(2026, 9, 29, 21, 10))
     wait_log(qtbot, w, "Rosa poll 21:10 → ok")

@@ -17,6 +17,8 @@ from typing import Callable
 
 from PySide6.QtCore import QObject, QTimer
 
+from notify import send_system
+
 ROSA_RECOVERY_DELAY_MS = 10 * 60 * 1000
 # 心跳開始後等一下再排值班，
 # 窗內開啟時第一次 Rosa poll 才不會碰上還在連線中的心跳
@@ -26,20 +28,6 @@ TY_CHECK_ACCOUNTS = ("Taylor", "Yvonne")
 
 def _spawn(fn: Callable[[], None]) -> None:
     threading.Thread(target=fn, name="qt-panel-watch", daemon=True).start()
-
-
-def send_system_telegram(msg: str) -> None:
-    """值班警報：config.json 的共用 Telegram 設定。"""
-    from account_utils import load_base_config
-    from notify import tg_send
-
-    try:
-        cfg = load_base_config()
-    except Exception:
-        return
-    token, chat_id = cfg.get("telegram_token", ""), cfg.get("telegram_chat_id", "")
-    if token and chat_id:
-        tg_send(msg, token=token, chat_id=chat_id)
 
 
 def cold_connect(name: str) -> None:
@@ -53,7 +41,7 @@ def cold_connect(name: str) -> None:
 @dataclass
 class WatchPorts:
     """值班對外的 I/O（測試換成假的）。"""
-    telegram: Callable[[str], None] = send_system_telegram
+    telegram: Callable[[str], bool] = send_system
     cold_connect: Callable[[str], None] = cold_connect
     sleep: Callable[[float], None] = time.sleep
     spawn: Callable[[Callable[[], None]], None] = field(default=_spawn)
@@ -126,9 +114,12 @@ class QtWatch(QObject):
         if not self._running:
             return                           # Panel 已關：結果丟掉
         try:
-            self._ports.telegram(msg)
+            sent = self._ports.telegram(msg)
         except Exception as e:
             self._log(f"[!] 值班 Telegram 發送失敗：{e}")
+            return
+        if sent is False:
+            self._log("[!] 值班 Telegram 沒送出（共用頻道沒設定或送不出去）")
 
     def _schedule(self, ms: int, fn: Callable[[], None]) -> QTimer:
         timer = QTimer(self)

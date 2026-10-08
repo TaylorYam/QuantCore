@@ -270,9 +270,8 @@ def test_scheduler_propagates_returned_errors(monkeypatch):
                                    "status": "download_failed", "detail": "download failed",
                                    "rows_added": 0}]
     monkeypatch.setitem(sys.modules, "data.update_data", fake)
-    monkeypatch.setattr(update_data, "telegram_dest", lambda: {"token": "fake", "chat_id": "fake"})
     sent = []
-    monkeypatch.setattr(update_data, "_tg", lambda *args, **kwargs: sent.append(args))
+    monkeypatch.setattr(update_data, "send_system", lambda msg: sent.append((msg,)) or True)
     result = update_data.main()
     assert result == ["SPY: unreadable CSV", "A: download failed"]
     assert len(sent) == 1

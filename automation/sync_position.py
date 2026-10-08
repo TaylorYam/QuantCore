@@ -44,14 +44,13 @@ log = logging.getLogger(__name__)
 class SyncRecords:
     """Sync Pos 與交給策略接管用的 IB 連線與本機紀錄，一律由呼叫端明確給（#183）。
 
-    沒有預設值：Panel 的送單目標（`qt_panel.order_target`）給連線（向 Broker 要）、
-    實盤的歸屬與手動單紀錄，並寫回 SP500／SkewLS state（persist_strategy_state=True）；
-    False = state 只讀不寫。connect 回傳 `broker.Connection`。
+    沒有預設值：Panel 的送單目標（`qt_panel.order_target`）給連線（向 Broker 要）與
+    實盤的歸屬、手動單紀錄。connect 回傳 `broker.Connection`。Sync Pos 一律寫回
+    SP500／SkewLS state（#226 起不再有「只讀」選項）。
     """
     connect: Callable[[AccountCtx], object]
     attribution_ledger: Path
     manual_orders_store: Path
-    persist_strategy_state: bool
 
     def open(self, ctx: AccountCtx):
         return self.connect(ctx)
@@ -144,7 +143,7 @@ def compute_sync_plan(
     #    不套 threshold gating（使用者按 Sync 就是要把帳戶拉到 today's target）；
     #    事後 submit 成功時會更新 state 給未來 threshold 用。
     inputs = plan_inputs.start(ctx, plan_inputs.SYNC,
-                               persist_state=records.persist_strategy_state,
+                               persist_state=True,
                                narrator=_SyncSteps(_log))
 
     # 2. 連 IB → NAV + 持倉 → 手動持倉歸屬（#106，讀寫失敗拋例外：本帳戶這次

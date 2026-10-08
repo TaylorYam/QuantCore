@@ -133,7 +133,7 @@ Leverage = alloc_sr + alloc_sp500 + alloc_skewls
 
 - **MOO（Market-on-Open）**：保證以開盤價成交，須在美東 09:28 前送出
 - 台灣 21:00 = 美東 09:00（夏令），留有 28 分鐘緩衝
-- **Telegram**：只發與下單有關的訊息和錯誤（#26）。21:00 送單清單、21:31 成交回報、16:00 dip-buy 單；同一排程的三帳戶合成一則，沒單就不發。資料更新、TY check、constituents refresh 成功時不通知，失敗照發。Panel 與手動流程的 Telegram 一律經 `notify.send_system`（config.json 共用頻道）或 `notify.send_account`（該帳戶頻道，沒覆寫就用共用頻道）；值班警報送不出去時 Output Log 會寫「沒送出」（#207）
+- **Telegram**：只發與下單有關的訊息和錯誤（#26）。21:00 送單清單、21:31 成交回報、16:00 dip-buy 單；同一排程的三帳戶合成一則，沒單就不發。資料更新、TY check、constituents refresh 成功時不通知，失敗照發。Panel、手動流程與資料更新失敗的 Telegram 一律經 `notify.send_system`（config.json 共用頻道）或 `notify.send_account`（該帳戶頻道，沒覆寫就用共用頻道）；值班警報送不出去時 Output Log 會寫「沒送出」（#207）
 - **當日排程總結**（#38）：平日 21:31 固定一行，列 04:30 資料更新、04:40 每日報告、16:00 日度風控、21:00 調倉、21:31 成交回報有沒有跑完、有沒有出錯；沒單的日子訊息只有這一行，有單時附在成交回報最後。**平日 21:35 還沒收到，就是電腦、排程或 Telegram 出問題**。依據是各排程寫的執行紀錄 `automation/logs/run_status/`
 
 ---

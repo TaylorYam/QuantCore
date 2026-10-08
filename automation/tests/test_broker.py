@@ -1,8 +1,8 @@
 """Broker（券商連線層，#185）：clientId 規則、ib_insync adapter 與 in-memory fake。
 
 clientId：現有號碼逐一對照不變（手動單認成交靠 clientId 比對）；不認得的帳戶報錯。
-adapter：用一個只會記錄呼叫的假 ib_insync.IB 驗證連線參數、check、
-連不上／被拒時收掉 socket。fake：和 adapter 同一個 interface。不連真的 IB。
+adapter：用一個只會記錄呼叫的假 ib_insync.IB 驗證連線參數、
+連不上時收掉 socket。fake：和 adapter 同一個 interface。不連真的 IB。
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from broker import (
     ROLE_MANUAL_ORDER, ROLE_MONITOR, ROLE_MOO_CHECK, ROLE_PANEL,
     ROLE_REBALANCE, ROLE_REPORT, ROLE_TAKEOVER, Broker, Connection, UnknownAccount,
 )
-from tests.fake_broker import FakeBroker, FakeConnection
+from tests.fake_broker import FakeConnection
 
 ACCOUNTS = [{"name": "Taylor"}, {"name": "Rosa"}, {"name": "Yvonne"}]
 
@@ -154,20 +154,6 @@ def test_failed_connect_closes_the_socket():
     assert ib.calls[-1] == ("disconnect",)
 
 
-def test_check_sees_the_managed_accounts_and_a_refusal_disconnects():
-    ib = RecordingIB(managed=["U1", " U2 "])
-    seen = []
-
-    def refuse(accounts):
-        seen.append(accounts)
-        raise PermissionError("no")
-
-    with pytest.raises(PermissionError):
-        Broker(lambda: ib).connect(CTX, check=refuse)
-    assert seen == [["U1", "U2"]]
-    assert ib.calls[-1] == ("disconnect",) and not ib.connected
-
-
 def test_connection_orders_go_to_the_ib_calls():
     ib = RecordingIB()
     conn = Broker(lambda: ib).connect(CTX)
@@ -243,17 +229,6 @@ def _public(cls):
 
 def test_fake_connection_offers_the_same_interface_as_the_adapter():
     assert _public(Connection) <= _public(FakeConnection)
-
-
-def test_fake_broker_check_refusal_closes_and_counts():
-    fake = FakeBroker(managed=["U9"])
-
-    def refuse(accounts):
-        raise PermissionError(accounts)
-
-    with pytest.raises(PermissionError):
-        fake.connect(CTX, check=refuse)
-    assert fake.refused == 1 and fake.closed == 1 and fake.connects == [("127.0.0.1", 4001, 26)]
 
 
 # ── 讀數與限價統一（#185 第三階段）─────────────────────────────────

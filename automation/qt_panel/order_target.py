@@ -44,7 +44,6 @@ LIVE_TARGET_TEXT = "實盤帳戶（各帳戶自己的 Gateway）"
 class OrderTarget:
     """送到各帳戶自己的實盤 Gateway；帳戶身分、紀錄、state 與 Telegram 見模組說明。"""
     venue = "實盤"             # Output Log 標記：「Sync Position（實盤）」「手動持倉·實盤」
-    persist_strategy_state = True
     sync_helper_text = ("計算：讀所選帳戶的實盤權益與持倉，依策略設定算理論持倉與差額；"
                         "確認後以 LMT（ask×1.003／bid×0.997、outside RTH）送出。"
                         "手動持倉暫停中的標的不送。結果發該帳戶 Telegram、寫 trade_log.xlsx。")
@@ -71,8 +70,7 @@ class OrderTarget:
 
         return SyncRecords(connect=self._broker.connect,
                            attribution_ledger=self.files.attribution,
-                           manual_orders_store=self.files.orders,
-                           persist_strategy_state=self.persist_strategy_state)
+                           manual_orders_store=self.files.orders)
 
     # ── 通知（手動持倉的新暫停、接管結果由 sync_position／strategy_takeover 發該帳戶
     #    Telegram）─────────────────────────────────────────────────────

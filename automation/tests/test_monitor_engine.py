@@ -187,9 +187,9 @@ def test_past_due_next_time_clamps_to_1ms():
 # ── Rosa poll spec ────────────────────────────────────────────────────
 
 def test_rosa_ok_logs_without_telegram():
-    from monitor_engine import rosa_poll_spec
+    from monitor_engine import remote_poll_spec
     env, rec, _ = make_env(online={"Rosa": True}, now=IN_WINDOW)
-    spec = rosa_poll_spec(env, "Rosa")
+    spec = remote_poll_spec(env, "Rosa")
     for w in spec.workers():
         w()
     assert any("Rosa poll" in l and "→ ok" in l for l in rec["logs"])
@@ -197,9 +197,9 @@ def test_rosa_ok_logs_without_telegram():
 
 
 def test_rosa_offline_alerts_once_and_restarts():
-    from monitor_engine import rosa_poll_spec
+    from monitor_engine import remote_poll_spec
     env, rec, _ = make_env(online={"Rosa": False}, now=IN_WINDOW)
-    spec = rosa_poll_spec(env, "Rosa")
+    spec = remote_poll_spec(env, "Rosa")
     for w in spec.workers():
         w()
     assert rec["restarts"] == ["Rosa"], "離線必須先嘗試 restart"
@@ -208,28 +208,28 @@ def test_rosa_offline_alerts_once_and_restarts():
 
 
 def test_rosa_skips_when_monitor_not_ready():
-    from monitor_engine import rosa_poll_spec
+    from monitor_engine import remote_poll_spec
     env, rec, _ = make_env(ready=False, now=IN_WINDOW)
-    spec = rosa_poll_spec(env, "Rosa")
+    spec = remote_poll_spec(env, "Rosa")
     for w in spec.workers():
         w()
     assert rec["logs"] == [] and rec["notes"] == []
 
 
 def test_rosa_recovery_skips_if_online():
-    from monitor_engine import rosa_recovery_worker
+    from monitor_engine import remote_recovery_worker
     env, rec, _ = make_env(online={"Rosa": True})
     spawned = []
-    rosa_recovery_worker(env, spawned.append, "Rosa")()
+    remote_recovery_worker(env, spawned.append, "Rosa")()
     assert any("already online, skip" in l for l in rec["logs"])
     assert spawned == []
 
 
 def test_rosa_recovery_restarts_if_offline():
-    from monitor_engine import rosa_recovery_worker
+    from monitor_engine import remote_recovery_worker
     env, rec, _ = make_env(online={"Rosa": False})
     spawned = []
-    rosa_recovery_worker(env, spawned.append, "Rosa")()
+    remote_recovery_worker(env, spawned.append, "Rosa")()
     assert any("attempting reconnect" in l for l in rec["logs"])
     assert len(spawned) == 1
     spawned[0]()   # 執行被 spawn 的 restart thunk

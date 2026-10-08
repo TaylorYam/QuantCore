@@ -37,8 +37,8 @@ from notify import Digest, error_line
 # ── AccountCtx（S6：ctx 為必要參數）────────────────────────────────────
 from account_ctx import AccountCtx
 
-# ── IB 連線（#185：ib_fetcher.connect 經 Broker，讀數在 broker.Connection 上）
-import ib_fetcher
+# ── IB 連線（#185：經 Broker，讀數在 broker.Connection 上）
+import broker
 from symbol_contract import contract_symbol
 
 # ── 排程執行殼與當日排程總結（#38、#206）──────────────────────────────
@@ -230,7 +230,8 @@ def main(ctx: AccountCtx, digest: Digest):
     log.info(f"{'='*60}")
 
     try:
-        conn = ib_fetcher.connect(ctx)
+        conn = broker.Broker().connect(ctx, timeout=20)
+        log.info(broker.connected_line(ctx))
     except Exception as e:
         log.error(f"IB connect failed: {e}")
         digest.add(ctx.name, "❌ IB 連線失敗", [error_line(e)], "error", **dest)

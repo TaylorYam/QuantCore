@@ -24,8 +24,8 @@ QuantCore — Rebalance 離線預演（不連 IB、零 state 寫入）
 
 安全保證（離線預演三不）
 ------------------------
-1. 不連 IB — 本模組不 import ib_fetcher 的連線函式（classify 所需的
-   SR_ETFS / SKEWLS_INVERSE_TICKERS 常數由 rebalance_plan 內部取用）。
+1. 不連 IB — 本模組不 import broker 的連線（classify 所需的類股／反向 ETF 清單
+   由 rebalance_plan 向 strategy_owner 取用）。
 2. 不寫 state — 調倉輸入（plan_inputs）以 persist_state=False 取得：SP500
    訊號只讀 state 不寫回（含 dip-buy / bull counter 推進），本來會寫的 state
    記在 skipped_state_writes 供報表揭露；預演不做 rebalance_ib step 10 的

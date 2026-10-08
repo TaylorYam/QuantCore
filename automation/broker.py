@@ -98,6 +98,13 @@ def client_id(account_name: str, role: int = ROLE_REBALANCE, *,
     return _CLIENT_ID_BASE + _account_index(account_name, accounts) * _CLIENT_ID_STEP + role
 
 
+def connected_line(ctx) -> str:
+    """連上 Gateway 後記的那一行 log（排程入口與 Portfolio 快照；文字與 #185 之前
+    ib_fetcher.connect 記的相同，#208）。"""
+    return (f"Connected  host={ctx.host} port={ctx.port} "
+            f"clientId={ctx.client_id} account={ctx.account}")
+
+
 def price_feed_client_id(connection_client_id: int, *, readonly: bool) -> int:
     """向報價 feed port 借價的那條連線的 clientId。"""
     if readonly:

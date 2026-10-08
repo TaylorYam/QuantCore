@@ -64,8 +64,7 @@ import run_status
 import scheduled_run
 
 # ── IB 連線（#185：經 Broker；讀數與送單都在 broker.Connection 上）
-import ib_fetcher
-from ib_fetcher import SR_ETFS  # R1.3：SR ETF 常數單一來源
+import broker
 
 # ── Rebalance 決策層（分類 / mode 權重選擇 / Combine / 差額訂單的唯一實作）
 import rebalance_plan as plan
@@ -247,9 +246,6 @@ def _log_trades_and_report(digest: Digest, ctx: AccountCtx, *,
     return excel_error
 
 
-# ── SR ETF 清單 — R1.3：單一來源在 ib_fetcher.SR_ETFS（已 re-export）
-
-
 # ── 主流程 ────────────────────────────────────────────────────────────────────
 def main(mode: str, ctx: AccountCtx, digest: Digest):
     """
@@ -310,7 +306,8 @@ def main(mode: str, ctx: AccountCtx, digest: Digest):
 
         # ── 2. 連線 IB ───────────────────────────────────────────────────────
         log.info("Step 2: Connecting to IB Gateway...")
-        conn = ib_fetcher.connect(ctx)
+        conn = broker.Broker().connect(ctx, timeout=20)
+        log.info(broker.connected_line(ctx))
 
     except Exception as e:
         error_msg = str(e)

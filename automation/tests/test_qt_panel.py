@@ -121,24 +121,33 @@ class FakePorts:
 
 
 def holding(sym, sh, cost, px, name=""):
-    return {"symbol": sym, "shares": sh, "avg_cost": cost, "mkt_px": px,
-            "mkt_val": sh * px, "upnl": (px - cost) * sh,
-            "upnl_pct": (px / cost - 1) * 100 if cost else 0, "name": name}
+    from portfolio_snapshot import Holding
+    return Holding(symbol=sym, shares=sh, avg_cost=cost, mkt_px=px, mkt_val=sh * px,
+                   upnl=(px - cost) * sh, upnl_pct=(px / cost - 1) * 100 if cost else 0,
+                   name=name)
 
 
 def portfolio_dict(name, nav=100_000.0, cushion=35.0, etf=(), stocks=(), other=()):
-    etf, stocks, other = list(etf), list(stocks), list(other)
-    strat = sum(x["mkt_val"] for x in etf + stocks)
-    oth = sum(x["mkt_val"] for x in other)
-    return {"available": True, "date": "2026-09-30", "nav": nav, "cushion": cushion,
-            "etf_holdings": etf, "stock_holdings": stocks, "other_holdings": other,
-            "strategy_mktval": strat, "other_mktval": oth, "total_mktval": strat + oth,
-            "total_upnl": sum(x["upnl"] for x in etf + stocks + other),
-            "source": f"IB Live [{name}]"}
+    """一個帳戶的 PortfolioSnapshot（#208）。"""
+    from portfolio_snapshot import PortfolioSnapshot
+    etf, stocks, other = tuple(etf), tuple(stocks), tuple(other)
+    strat = sum(x.mkt_val for x in etf + stocks)
+    oth = sum(x.mkt_val for x in other)
+    return PortfolioSnapshot(
+        date="2026-09-30", source=f"IB Live [{name}]", available=True, nav=nav,
+        cushion=cushion, etf_holdings=etf, stock_holdings=stocks, other_holdings=other,
+        strategy_mktval=strat, other_mktval=oth, total_mktval=strat + oth,
+        total_upnl=sum(x.upnl for x in etf + stocks + other))
+
+
+def with_fields(portfolio, name, **fields):
+    """FakePortfolio 裡某帳戶的快照換成多了這些欄位的新快照（快照不可變）。"""
+    from dataclasses import replace
+    portfolio.results[name] = replace(portfolio.results[name], **fields)
 
 
 class FakePortfolio:
-    """portfolio_fetch 的假實作：每帳戶回傳設定好的 dict，或丟出例外。"""
+    """portfolio_fetch 的假實作：每帳戶回傳設定好的 PortfolioSnapshot，或丟出例外。"""
 
     def __init__(self):
         self.results = {
@@ -972,12 +981,13 @@ def test_portfolio_queries_stop_when_the_panel_quits(make_window, qtbot, portfol
 
 def test_portfolio_query_uses_the_panel_identity_readonly(fake_config, monkeypatch):
     """查詢用 ROLE_PANEL（Rosa 35）唯讀：不和心跳 ROLE_MONITOR（37）、排程撞號。"""
-    import ib_fetcher
+    import portfolio_snapshot
     from qt_panel.portfolio_source import fetch_panel_portfolio
 
     seen = []
-    monkeypatch.setattr(ib_fetcher, "fetch_portfolio",
-                        lambda ctx, readonly=False: seen.append((ctx, readonly)) or {})
+    monkeypatch.setattr(portfolio_snapshot, "fetch_snapshot",
+                        lambda ctx, readonly=False: seen.append((ctx, readonly))
+                        or portfolio_snapshot.PortfolioSnapshot.unavailable("x"))
     fetch_panel_portfolio("Rosa")
     ctx, readonly = seen[0]
     assert ctx.client_id == 35 and readonly is True
@@ -986,7 +996,7 @@ def test_portfolio_query_uses_the_panel_identity_readonly(fake_config, monkeypat
 
 def test_manual_holdings_that_collided_with_a_universe_show_as_manual(make_window, qtbot,
                                                                       portfolio):
-    portfolio.results["Taylor"]["manual_symbols"] = {"AAPL": "手動 30 股，IB 30 股"}
+    with_fields(portfolio, "Taylor", manual_symbols={"AAPL": "手動 30 股，IB 30 股"})
     w = make_window()
     _wait_portfolio(w, qtbot)
     rows = {r[1]: r[0] for r in w.portfolio.detail.holdings.visible_rows()}
@@ -998,7 +1008,7 @@ def test_manual_holdings_that_collided_with_a_universe_show_as_manual(make_windo
 
 def test_long_sector_etfs_show_as_skewls_when_sr_is_off(make_window, qtbot, portfolio):
     """#181：SR 0% 時做多的類股 ETF 歸 SkewLS，篩選 SR 是空的。"""
-    portfolio.results["Taylor"]["strategy_alloc"] = (0.0, 1.0)
+    with_fields(portfolio, "Taylor", strategy_alloc=(0.0, 1.0))
     w = make_window()
     _wait_portfolio(w, qtbot)
     holdings = w.portfolio.detail.holdings
@@ -1011,7 +1021,7 @@ def test_long_sector_etfs_show_as_skewls_when_sr_is_off(make_window, qtbot, port
 
 
 def test_shared_sector_etfs_match_both_strategy_filters(make_window, qtbot, portfolio):
-    portfolio.results["Taylor"]["strategy_alloc"] = (0.5, 0.3)
+    with_fields(portfolio, "Taylor", strategy_alloc=(0.5, 0.3))
     w = make_window()
     _wait_portfolio(w, qtbot)
     holdings = w.portfolio.detail.holdings
@@ -1021,22 +1031,23 @@ def test_shared_sector_etfs_match_both_strategy_filters(make_window, qtbot, port
 
 
 def test_portfolio_reads_carry_the_accounts_allocation(fake_config, monkeypatch):
-    import ib_fetcher
+    import portfolio_snapshot
     from account_ctx import AccountCtx
     from account_utils import ROLE_PANEL
     from qt_panel import portfolio_source
 
-    monkeypatch.setattr(ib_fetcher, "fetch_portfolio",
-                        lambda ctx, readonly=False: {"available": True})
+    monkeypatch.setattr(portfolio_snapshot, "fetch_snapshot",
+                        lambda ctx, readonly=False: portfolio_snapshot.PortfolioSnapshot(
+                            date="2026-10-08", source="IB Live [Rosa]", available=True))
     monkeypatch.setattr(portfolio_source, "read_manual_symbols",
                         lambda name: {"manual_symbols": {}})
     ctx = AccountCtx.from_name("Rosa", ROLE_PANEL)
     expected = (ctx.alloc_sr, ctx.alloc_skewls)
-    assert portfolio_source.fetch_panel_portfolio("Rosa")["strategy_alloc"] == expected
+    assert portfolio_source.fetch_panel_portfolio("Rosa").strategy_alloc == expected
 
 
 def test_manual_attribution_read_failure_is_flagged_not_fatal(make_window, qtbot, portfolio):
-    portfolio.results["Taylor"]["manual_error"] = "手動歸屬紀錄讀取失敗：locked"
+    with_fields(portfolio, "Taylor", manual_error="手動歸屬紀錄讀取失敗：locked")
     w = make_window()
     _wait_portfolio(w, qtbot)
     assert "$50,000" in w.portfolio.card_text("Taylor")

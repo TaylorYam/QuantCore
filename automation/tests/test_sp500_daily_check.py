@@ -48,10 +48,10 @@ def daily_check_env(fake_config, monkeypatch):
     """跑到連 IB 為止的真實流程：SPY 資料、市場狀態用假的，連 IB 一律被拒。"""
     pytest.importorskip("ib_insync")
     import pandas as pd
-    import ib_fetcher
     import signals
     import sp500_daily_check
     from strategies.sp500_momentum import utils
+    from tests.fake_broker import install_connect
 
     env = NS(
         spy=pd.DataFrame({"Close": [750.0, 757.3]},
@@ -62,10 +62,10 @@ def daily_check_env(fake_config, monkeypatch):
     monkeypatch.setattr(utils, "load_benchmark", lambda path: env.spy)
     monkeypatch.setattr(signals, "get_market_regime_state", lambda ref: env.regime)
 
-    def refused(ctx):
+    def refused(ctx, **_kw):
         raise ConnectionRefusedError("[WinError 1225] <refused>")
 
-    monkeypatch.setattr(ib_fetcher, "connect", refused)
+    install_connect(monkeypatch, refused)
     return env
 
 
@@ -125,7 +125,6 @@ def test_nyse_holiday_stays_silent(daily_check_env, monkeypatch):
 def dip_buy(daily_check_env, fake_config, monkeypatch, tmp_path):
     """SPY 跌 16%、在 MA200 下：觸發第一階 dip-buy，真的送單到 in-memory FakeBroker。"""
     import account_utils
-    import ib_fetcher
     import signals
     import sp500_state
     import strategy_orders
@@ -139,7 +138,8 @@ def dip_buy(daily_check_env, fake_config, monkeypatch, tmp_path):
     monkeypatch.setattr(signals, "get_sp500_universe", lambda: {"AAPL"})
     monkeypatch.setattr(strategy_orders.time, "sleep", lambda _s: None)
     fake = FakeBroker(managed=["U17800779"], positions={"AAPL": 10.0}, price=500.0)
-    monkeypatch.setattr(ib_fetcher, "connect", lambda ctx: fake.connect(ctx))
+    from tests.fake_broker import install
+    install(monkeypatch, fake)
     return fake
 
 

@@ -16,6 +16,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
+from tests.fake_broker import install_connect
+
 pytest.importorskip("ib_insync")
 
 
@@ -173,11 +175,24 @@ CTX = NS(account="U1", name="Taylor", host="127.0.0.1", port=4001, client_id=22,
          tg_token="T", tg_chat_id="C")
 
 
+def test_main_connects_through_the_broker_and_logs_the_same_line(monkeypatch, caplog):
+    """#208：直接向 Broker 要連線（timeout 20 秒），連上後那行 log 和 #185 之前逐字相同。"""
+    import moo_fill_check as m
+    from notify import Digest
+    fake = broker_with()
+    seen = []
+    install_connect(monkeypatch, lambda ctx, **kw: seen.append(kw) or fake.connect(ctx))
+    caplog.set_level("INFO")
+    m.main(CTX, digest=Digest("MOO 成交"))
+    assert seen == [{"timeout": 20}]
+    assert "Connected  host=127.0.0.1 port=4001 clientId=22 account=U1" in caplog.messages
+
+
 def test_main_no_moo_orders_stays_silent(monkeypatch):
     import moo_fill_check as m
     from notify import Digest
     fake = broker_with()
-    monkeypatch.setattr(m.ib_fetcher, "connect", fake.connect)
+    install_connect(monkeypatch, fake.connect)
     d = Digest("MOO 成交")
     m.main(CTX, digest=d)
     assert d.render() is None
@@ -192,7 +207,7 @@ def test_main_reports_fills_into_digest(monkeypatch):
         fills=[fill("ERY", "BOT", 55, 12.41, perm=111)],
         positions={"ERY": 55.0},
     )
-    monkeypatch.setattr(m.ib_fetcher, "connect", fake.connect)
+    install_connect(monkeypatch, fake.connect)
     d = Digest("MOO 成交", icon="✅")
     m.main(CTX, digest=d)
     msg = d.render()
@@ -204,10 +219,10 @@ def test_main_connect_failure_adds_error_section(monkeypatch):
     import moo_fill_check as m
     from notify import Digest
 
-    def boom(ctx):
+    def boom(ctx, **_kw):
         raise ConnectionRefusedError("refused <port>")
 
-    monkeypatch.setattr(m.ib_fetcher, "connect", boom)
+    install_connect(monkeypatch, boom)
     d = Digest("MOO 成交", icon="✅")
     m.main(CTX, digest=d)
     msg = d.render()

@@ -1,4 +1,4 @@
-"""Account-scoped portfolio queries; no Tk, config, trading or file I/O.
+"""Account-scoped portfolio queries; no GUI, config, trading or file I/O.
 
 Workers own their event loops. Consumers read detached snapshots or drain changed
 accounts on their own thread, so workers never call a GUI after it is destroyed.
@@ -15,7 +15,7 @@ import time
 
 @dataclass(frozen=True)
 class QueryState:
-    portfolio: dict | None = None
+    portfolio: object | None = None          # portfolio_snapshot.PortfolioSnapshot
     updated_at: datetime | None = None
     running: bool = False
     error: str | None = None
@@ -69,8 +69,8 @@ class PortfolioQueries:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             result = self._fetch(name)
-            if not result.get("available"):
-                raise RuntimeError(result.get("error") or "Query failed (no message)")
+            if not result.available:
+                raise RuntimeError(result.error or "Query failed (no message)")
             self._finish(name, result, None, source)
         except Exception as exc:
             self._finish(name, None, str(exc) or type(exc).__name__, source)

@@ -1,15 +1,16 @@
-"""Read-only query isolation and legacy portfolio characterization, all fake IB.
+"""Portfolio 快照（#208）：唯讀查詢只讀所選帳戶、分組問決策層，以及和舊
+`ib_fetcher.fetch_portfolio` 逐欄一致的 characterization，全部用假 IB。
 
-fetch_portfolio 經 Broker 開連線（#185）：假 IB 接在 broker 的 ib_insync 工廠上，
+fetch_snapshot 經 Broker 開連線（#185）：假 IB 接在 broker 的 ib_insync 工廠上，
 測的是 adapter 自己的讀法（Connection.portfolio_readings：只讀所選帳戶，和排程同一套）。"""
-from datetime import date
+from dataclasses import asdict
 import json
 from pathlib import Path
 from types import SimpleNamespace as NS
 
 import pytest
 
-import ib_fetcher
+import portfolio_snapshot
 from account_ctx import AccountCtx
 from account_utils import ROLE_PANEL
 
@@ -64,34 +65,83 @@ def configure_fake(monkeypatch, module, ctx, scenario):
 @pytest.mark.parametrize("name", ["Taylor", "Rosa", "Yvonne"])
 @pytest.mark.parametrize("scenario", SCENARIOS)
 def test_legacy_snapshot_characterization(fake_config, monkeypatch, name, scenario):
+    """舊 fetch_portfolio 的輸出（fixture）＝新快照的同名欄位，逐欄、逐筆持倉相同。"""
     ctx = AccountCtx.from_name(name, ROLE_PANEL)
-    configure_fake(monkeypatch, ib_fetcher, ctx, scenario)
-    result = ib_fetcher.fetch_portfolio(ctx)
-    result["date"] = "FIXED_DATE"
+    configure_fake(monkeypatch, portfolio_snapshot, ctx, scenario)
+    snap = portfolio_snapshot.fetch_snapshot(ctx)
     fixture = Path(__file__).with_name("fixtures") / "portfolio_legacy.json"
     expected = json.loads(fixture.read_text(encoding="utf-8"))[f"{name}/{scenario}"]
-    assert json.dumps(result, sort_keys=True) == json.dumps(expected, sort_keys=True)
+    assert legacy_view(snap) == expected
+
+
+def legacy_view(snap):
+    """快照轉回舊 dict 的形狀：只留舊有的 key；error 舊碼只在失敗時才有、debug 只在成功時。"""
+    got = asdict(snap)
+    for key in ("manual_symbols", "manual_error", "strategy_alloc"):
+        del got[key]
+    if not got["error"]:
+        del got["error"]
+    if got["debug"] is None:
+        del got["debug"]
+    for key in ("etf_holdings", "stock_holdings", "other_holdings"):
+        got[key] = list(got[key])
+    got["date"] = "FIXED_DATE"
+    return got
+
+
+def test_holdings_are_grouped_by_the_decision_layer(fake_config, monkeypatch):
+    """分組問 rebalance_plan.classify_holdings：類股 ETF→ETF、Universe→個股、其他→手動。"""
+    import rebalance_plan
+
+    ctx = AccountCtx.from_name("Taylor", ROLE_PANEL)
+    configure_fake(monkeypatch, portfolio_snapshot, ctx, "mixed")
+    seen = []
+    real = rebalance_plan.classify_holdings
+    monkeypatch.setattr(rebalance_plan, "classify_holdings",
+                        lambda positions, universe: seen.append((dict(positions), universe))
+                        or real(positions, universe))
+    snap = portfolio_snapshot.fetch_snapshot(ctx)
+    assert seen == [({"XLK": 2, "AAPL": 3, "ZZZ": -1}, {"AAPL"})]
+    assert [h.symbol for h in snap.etf_holdings] == ["XLK"]
+    assert [h.symbol for h in snap.stock_holdings] == ["AAPL"]
+    assert [h.symbol for h in snap.other_holdings] == ["ZZZ"]
+    assert snap.strategy_mktval == 2 * 110 + 3 * 120 and snap.other_mktval == -90
+
+
+def test_inverse_etfs_are_strategy_etfs_not_manual(fake_config, monkeypatch):
+    """SkewLS 反向 ETF 歸 ETF 組（策略持倉），不是手動（2026-06 凍結事故）。"""
+    import broker
+
+    ctx = AccountCtx.from_name("Taylor", ROLE_PANEL)
+    fake = configure_fake(monkeypatch, portfolio_snapshot, ctx, "empty")
+    fake.positions = lambda account="": [NS(account=ctx.account,
+                                            contract=NS(symbol="ERY", secType="STK", longName=""),
+                                            position=5, avgCost=20)]
+    monkeypatch.setattr(broker.Connection, "prices", lambda self, symbols: {"ERY": 21})
+    snap = portfolio_snapshot.fetch_snapshot(ctx)
+    assert [h.symbol for h in snap.etf_holdings] == ["ERY"] and snap.other_holdings == ()
+    assert snap.strategy_mktval == 105
 
 
 def test_readonly_rejects_wrong_account_and_cleans_up(fake_config, monkeypatch):
     ctx = AccountCtx.from_name("Taylor", ROLE_PANEL)
-    fake = configure_fake(monkeypatch, ib_fetcher, ctx, "empty")
+    fake = configure_fake(monkeypatch, portfolio_snapshot, ctx, "empty")
     fake.managedAccounts = lambda: ["OTHER"]
-    result = ib_fetcher.fetch_portfolio(ctx, readonly=True)
-    assert not result["available"]
-    assert "Account" in result["error"]
+    snap = portfolio_snapshot.fetch_snapshot(ctx, readonly=True)
+    assert not snap.available
+    assert "Account" in snap.error
     assert fake.disconnected
 
 
 def test_readonly_does_not_borrow_foreign_positions_or_nav(fake_config, monkeypatch):
     ctx = AccountCtx.from_name("Taylor", ROLE_PANEL)
-    fake = configure_fake(monkeypatch, ib_fetcher, ctx, "foreign")
-    result = ib_fetcher.fetch_portfolio(ctx, readonly=True)
-    assert result["available"] and result["nav"] == 10000
-    assert not any(result[key] for key in ("etf_holdings", "stock_holdings", "other_holdings"))
+    fake = configure_fake(monkeypatch, portfolio_snapshot, ctx, "foreign")
+    snap = portfolio_snapshot.fetch_snapshot(ctx, readonly=True)
+    assert snap.available and snap.nav == 10000
+    assert not (snap.etf_holdings or snap.stock_holdings or snap.other_holdings)
     fake.accountValues = lambda *args: [NS(account="OTHER", tag="NetLiquidation", currency="USD", value="999")]
-    result = ib_fetcher.fetch_portfolio(ctx, readonly=True)
-    assert not result["available"]
+    snap = portfolio_snapshot.fetch_snapshot(ctx, readonly=True)
+    assert not snap.available
     assert fake.disconnected
 
 
@@ -111,7 +161,7 @@ def test_readonly_connect_is_bounded_and_cleanup_on_failure(fake_config, monkeyp
     import broker
     monkeypatch.setattr(broker, "_default_ib", FakeIB)
     with pytest.raises(TimeoutError):
-        ib_fetcher.connect(ctx, readonly=True)
+        broker.Broker().connect(ctx, timeout=20, readonly=True)
     assert calls[0]["readonly"] is True and calls[0]["account"] == ctx.account
     assert calls[-1] == "disconnect"
 

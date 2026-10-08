@@ -28,10 +28,16 @@ QUOTE = {"bid": 99.9, "ask": 100.1, "mid": 100.0, "last": 100.0, "close": 100.0}
 
 
 def install(monkeypatch, fake: "FakeBroker") -> "FakeBroker":
-    """排程入口與 ib_fetcher.connect 用到的 broker.Broker 換成 fake。"""
+    """排程入口與 Portfolio 快照用到的 broker.Broker 換成 fake。"""
     import broker
     monkeypatch.setattr(broker, "Broker", lambda *_a, **_k: fake)
     return fake
+
+
+def install_connect(monkeypatch, connect: Callable) -> None:
+    """broker.Broker().connect(ctx, …) 換成 connect(ctx, …)（測試自己決定連線結果）。"""
+    import broker
+    monkeypatch.setattr(broker, "Broker", lambda *_a, **_k: NS(connect=connect))
 
 
 class FakeBroker:

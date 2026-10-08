@@ -32,6 +32,23 @@ SECTOR_ETFS: frozenset[str] = frozenset(_sr_config.SECTOR_TICKERS)
 INVERSE_ETFS: frozenset[str] = frozenset(_skewls_config.INVERSE_TICKERS)
 STRATEGY_ETFS: frozenset[str] = SECTOR_ETFS | INVERSE_ETFS
 
+# ETF 顯示名稱（Portfolio 持倉表；IB 沒給 longName 時用）。加一檔 ETF 時和上面的清單
+# 一起看這裡（#208）。
+TICKER_NAMES: dict[str, str] = {
+    "XLK": "Technology",      "XLF": "Financials",
+    "XLV": "Health Care",     "XLE": "Energy",
+    "XLI": "Industrials",     "XLY": "Cons Discret",
+    "XLB": "Materials",       "XLP": "Cons Staples",
+    "XLU": "Utilities",       "XLC": "Comm Services",
+    "XLRE": "Real Estate",
+    "REW": "UltraShort Tech",     "SEF": "Short Fin",
+    "RXD": "UltraShort HC",       "ERY": "Bear Energy 3x",
+    "SIJ": "UltraShort Ind",      "SCC": "UltraShort CD",
+    "SMN": "UltraShort Mat",      "SZK": "UltraShort CS",
+    "SDP": "UltraShort Util",     "REK": "Short RE",
+    "SPY": "S&P 500 ETF",         "SSO": "Ultra S&P 500",
+}
+
 SR, SKEWLS, SR_AND_SKEWLS = "SR", "SkewLS", "SR+SkewLS"
 
 

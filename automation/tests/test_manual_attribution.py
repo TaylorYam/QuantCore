@@ -323,8 +323,8 @@ def rebalance_env(paths, monkeypatch):
         env.sp500_calls.append(list(holdings))
         return {"AAPL": 0.5, "XYZ": 0.5}, "2026-09-23"
 
-    import ib_fetcher
-    monkeypatch.setattr(ib_fetcher, "connect", connect)
+    from tests.fake_broker import install_connect
+    install_connect(monkeypatch, connect)
     monkeypatch.setattr(rebalance_ib, "append_trade_log", lambda *a, **k: None)
     monkeypatch.setattr(signals, "get_sr_weights", lambda: ({}, "N/A"))
     monkeypatch.setattr(signals, "get_sp500_weights", sp500_weights)
@@ -565,7 +565,6 @@ class _Tue0915(date):
 def dip_env(paths, fake_config, monkeypatch, tmp_path):
     """sp500_daily_check 熊市 dip-buy 觸發（SPY 回撤 16%）。"""
     import pandas as pd
-    import ib_fetcher
     import signals
     import sp500_daily_check
     import sp500_state
@@ -584,7 +583,8 @@ def dip_env(paths, fake_config, monkeypatch, tmp_path):
         env.broker = _fake_broker({"AAPL": 10.0}, behavior="working")
         return env.broker.connect(ctx)
 
-    monkeypatch.setattr(ib_fetcher, "connect", connect)
+    from tests.fake_broker import install_connect
+    install_connect(monkeypatch, connect)
     env.state_file = tmp_path / "sp500_state_Taylor.json"
     return env
 

@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 import portfolio_display as display
 from portfolio_queries import QueryState
+from portfolio_snapshot import PortfolioSnapshot
 
 from qt_panel import theme
 from qt_panel.account_panels import RecentTradesCard, StrategyParamsCard
@@ -83,7 +84,7 @@ def source_tag(state) -> str:
     """讀數來源（例如 IB Live [Taylor]）；快取時加註。"""
     if not state.portfolio:
         return ""
-    source = state.portfolio.get("source", "Excel")
+    source = state.portfolio.source
     return f"快取 · {source}" if is_cached(state) else source
 
 
@@ -139,14 +140,14 @@ class OverviewCard(Card):
         self.style().polish(self)
 
     def set_state(self, state) -> None:
-        pf = state.portfolio or {"available": False}
+        pf = state.portfolio or PortfolioSnapshot.unavailable("No data yet")
         values = {m.key: m for m in display.metrics(pf)}
         self._nav.setText(values["nav"].text)
         self._upnl.setText(values["pnl"].text)
         self._upnl.setStyleSheet(f"color: {theme.color(values['pnl'].color)};")
-        if pf.get("available"):
+        if pf.available:
             self._meta.setText(f"Account Exposure {values['total_exp'].text} · "
-                               f"Cushion {pf['cushion']:.0f}%")
+                               f"Cushion {pf.cushion:.0f}%")
         else:
             self._meta.setText("")
         self._source.setText(source_tag(state))
@@ -388,13 +389,13 @@ class AccountDetail(QWidget):
         self.trades.set_trades(*extras.get(TRADES, (None, "")))
 
     def show_account(self, name: str, state) -> None:
-        pf = state.portfolio or {"available": False, "error": state.error or "No data yet"}
+        pf = state.portfolio or PortfolioSnapshot.unavailable(state.error or "No data yet")
         self._title.setText(name)
         self._report.setText(display.report_line(pf))
         text, color = display.status_line(state)
         if is_cached(state):
             text = f"快取 · {text}"
-        if pf.get("manual_error"):
+        if pf.manual_error:
             text = f"手動歸屬讀取失敗（歸屬欄只看分類）· {text}"
             color = "yellow"
         self._status.setText(text)
@@ -422,7 +423,7 @@ class AccountDetail(QWidget):
         self._legend.setColumnMinimumWidth(3, 8)
 
         rows = display.all_holding_rows(pf)
-        self.holdings.set_rows(rows, "沒有持倉" if pf.get("available") else "尚無讀數")
+        self.holdings.set_rows(rows, "沒有持倉" if pf.available else "尚無讀數")
 
     def metrics_text(self) -> str:
         widgets = (self._metrics_row.itemAt(i).widget() for i in range(self._metrics_row.count()))

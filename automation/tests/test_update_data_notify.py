@@ -30,14 +30,9 @@ def test_main_success_does_not_read_config_or_send(monkeypatch):
     fake.update_stocks = lambda: None
     monkeypatch.setitem(sys.modules, "data.update_data", fake)
     sent = []
-    monkeypatch.setattr(update_data, "_tg", lambda *a, **k: sent.append(a))
-
-    def no_config():
-        raise AssertionError("成功時不該讀 config / 發 TG")
-
-    monkeypatch.setattr(update_data, "telegram_dest", no_config)
+    monkeypatch.setattr(update_data, "send_system", lambda msg: sent.append(msg) or True)
     assert update_data.main() == []
-    assert sent == []
+    assert sent == []                                          # 成功時不發
 
 
 def test_run_outcome_for_daily_summary():
@@ -61,12 +56,10 @@ def test_main_failure_sends(monkeypatch):
     fake.update_stocks = lambda: None
     monkeypatch.setitem(sys.modules, "data.update_data", fake)
     sent = []
-    monkeypatch.setattr(update_data, "_tg",
-                        lambda msg, *, token, chat_id: sent.append((msg, token, chat_id)))
-    monkeypatch.setattr(update_data, "telegram_dest", lambda: {"token": "T", "chat_id": "C"})
+    monkeypatch.setattr(update_data, "send_system",          # config.json 共用頻道（#226）
+                        lambda msg: sent.append(msg) or True)
     update_data.main()
-    assert len(sent) == 1 and "ETF: yfinance down" in sent[0][0]
-    assert sent[0][1:] == ("T", "C")
+    assert len(sent) == 1 and "ETF: yfinance down" in sent[0]
 
 
 def test_main_failure_writes_each_error_to_the_log(monkeypatch, caplog):
@@ -80,8 +73,7 @@ def test_main_failure_writes_each_error_to_the_log(monkeypatch, caplog):
     fake.update_etfs = lambda: ["SMN: provider 歷史與本地檔核對不過，已停止續寫（scale step）"]
     fake.update_stocks = lambda: None
     monkeypatch.setitem(sys.modules, "data.update_data", fake)
-    monkeypatch.setattr(update_data, "_tg", lambda *a, **k: None)
-    monkeypatch.setattr(update_data, "telegram_dest", lambda: {"token": "T", "chat_id": "C"})
+    monkeypatch.setattr(update_data, "send_system", lambda msg: True)
     with caplog.at_level(logging.WARNING, logger=update_data.log.name):
         update_data.main()
     assert any("SMN: provider 歷史與本地檔核對不過" in r.getMessage() and r.levelno == logging.WARNING

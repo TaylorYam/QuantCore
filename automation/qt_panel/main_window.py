@@ -337,7 +337,7 @@ class MainWindow(QMainWindow):
             if callable(update_tray):
                 update_tray(state, self._clock(), name)  # 系統匣顏色跟著遠端 Gateway 帳戶
             if self._watch is not None and state == "offline":
-                self._watch.rosa_went_offline()
+                self._watch.remote_went_offline()
         if previous is None or state == previous:
             return
         if state == "offline":

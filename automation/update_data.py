@@ -28,8 +28,7 @@ log = logging.getLogger(__name__)
 from data.update_outcomes import outcome_errors
 
 # ── Telegram（統一由 notify.py 提供；config.json 的共用目的地）─────────────
-from account_utils import telegram_dest
-from notify import tg_send as _tg
+from notify import send_system
 
 # ── 排程執行殼（log、執行紀錄；#206）
 import run_status
@@ -85,7 +84,7 @@ def main() -> list[str]:
     # ── 3. Telegram 通知（只在失敗時）──────────────────────────────────────
     msg = failure_message(errors, elapsed, date.today())
     if msg is not None:
-        _tg(msg, **telegram_dest())
+        send_system(msg)                      # config.json 共用頻道（#226）
     log.info(f"Done. Elapsed: {elapsed}s  Errors: {len(errors)}")
     return errors
 

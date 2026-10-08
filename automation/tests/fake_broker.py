@@ -68,22 +68,12 @@ class FakeBroker:
         self.cancelled: list = []
         self.waits: list[float] = []
         self.closed = 0
-        self.refused = 0
 
-    def connect(self, ctx, *, timeout: float = 20, readonly: bool = False,
-                check=None) -> "FakeConnection":
+    def connect(self, ctx, *, timeout: float = 20, readonly: bool = False) -> "FakeConnection":
         self.connects.append((ctx.host, ctx.port, ctx.client_id))
         if self.connect_error is not None:
             raise self.connect_error
-        conn = FakeConnection(self, ctx, readonly)
-        if check is not None:
-            try:
-                check(conn.managed_accounts())
-            except BaseException:
-                self.refused += 1
-                conn.close()
-                raise
-        return conn
+        return FakeConnection(self, ctx, readonly)
 
 
 class FakeConnection:

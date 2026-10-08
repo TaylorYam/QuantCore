@@ -143,7 +143,7 @@ class MonitorEngine:
 
 # ── Spec factories（worker 派工邏輯，自 control_panel 下沉）───────────
 
-def rosa_poll_spec(env: MonitorEnv, account: str) -> MonitorSpec:
+def remote_poll_spec(env: MonitorEnv, account: str) -> MonitorSpec:
     """遠端 Gateway 帳戶（accounts.json 的 remote_gateway，現狀 = Rosa，#211）的
     30 分鐘市場窗輪詢（台北 21:00–05:00，XX:00 / XX:30 對齊）。log 前綴由帳戶名組成。"""
     from market_calendar import trading_session_date_for
@@ -178,10 +178,10 @@ def rosa_poll_spec(env: MonitorEnv, account: str) -> MonitorSpec:
     )
 
 
-def rosa_recovery_worker(env: MonitorEnv,
-                         spawn: Callable[[Callable[[], None]], None],
-                         account: str) -> Callable[[], None]:
-    """Rosa 斷線 10 分鐘後的一次性 recovery（窗外也會跑，涵蓋 06:00 台北
+def remote_recovery_worker(env: MonitorEnv,
+                           spawn: Callable[[Callable[[], None]], None],
+                           account: str) -> Callable[[], None]:
+    """遠端 Gateway 帳戶（現狀 Rosa）斷線 10 分鐘後的一次性 recovery（窗外也會跑，涵蓋 06:00 台北
     Gateway 自動重啟情境）。已回線則跳過 — restart_account_thread 對活線程
     也會拒絕 spawn，此處是雙保險。restart 丟 daemon thread 以免未來變種
     阻塞計時器線程。"""

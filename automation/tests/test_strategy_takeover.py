@@ -67,7 +67,7 @@ def env(tmp_path, monkeypatch):
     # 實盤送單目標給的連線與紀錄（#183：沒有預設，一律明確給）
     env.records = SyncRecords(connect=env.connect,
                               attribution_ledger=tmp_path / "ledger.sqlite3",
-                              manual_orders_store=env.orders, persist_strategy_state=True)
+                              manual_orders_store=env.orders)
     monkeypatch.setattr(signals, "get_sp500_universe", lambda historical=True: set(JOINED))
     monkeypatch.setattr(signals, "get_sr_weights", lambda: (dict(env.sr), "2026-09-28"))
     monkeypatch.setattr(signals, "get_skewls_weights",
@@ -267,7 +267,7 @@ def test_dry_run_changes_nothing(env):
 
 
 def test_other_records_keep_the_live_ledger_untouched(env, tmp_path, monkeypatch):
-    """新 Panel 的 paper 接管（#153）：連線、歸屬紀錄、手動單紀錄都用傳進來的那一組。"""
+    """接管的連線、歸屬紀錄、手動單紀錄都用傳進來的那一組（#183），不碰預設的實盤檔。"""
     live_ledger = tmp_path / "ledger.sqlite3"
     live_before = live_ledger.read_bytes()
     paper = NS(ledger=tmp_path / "paper_ledger.sqlite3",
@@ -279,7 +279,7 @@ def test_other_records_keep_the_live_ledger_untouched(env, tmp_path, monkeypatch
         return env.connect(ctx)
 
     records = SyncRecords(connect=connect, attribution_ledger=paper.ledger,
-                          manual_orders_store=paper.orders, persist_strategy_state=False)
+                          manual_orders_store=paper.orders)
     ma.evaluate("Rosa", dict(env.positions), UNIVERSE, ledger_path=paper.ledger,
                 manual_orders_path=paper.orders)
     ma.evaluate("Rosa", dict(env.positions), JOINED, ledger_path=paper.ledger,

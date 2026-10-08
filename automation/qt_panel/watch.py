@@ -19,7 +19,7 @@ from PySide6.QtCore import QObject, QTimer
 
 from notify import send_system
 
-ROSA_RECOVERY_DELAY_MS = 10 * 60 * 1000
+REMOTE_RECOVERY_DELAY_MS = 10 * 60 * 1000
 # 心跳開始後等一下再排值班，
 # 窗內開啟時第一次 Rosa poll 才不會碰上還在連線中的心跳
 WATCH_START_DELAY_MS = 1500
@@ -44,7 +44,7 @@ class WatchPorts:
     cold_connect: Callable[[str], None] = cold_connect
     sleep: Callable[[float], None] = time.sleep
     spawn: Callable[[Callable[[], None]], None] = field(default=_spawn)
-    recovery_delay_ms: int = ROSA_RECOVERY_DELAY_MS
+    recovery_delay_ms: int = REMOTE_RECOVERY_DELAY_MS
     start_delay_ms: int = WATCH_START_DELAY_MS
 
 
@@ -95,7 +95,7 @@ class QtWatch(QObject):
         if not self._running:
             return
         if self._remote_account:
-            self.engine.start(me.rosa_poll_spec(self.env, self._remote_account))
+            self.engine.start(me.remote_poll_spec(self.env, self._remote_account))
         if self._ty_check_accounts:
             self.engine.start(me.ty_check_spec(self.env, self._ty_check_accounts))
         self.engine.start(me.morning_check_spec(self.env))
@@ -107,14 +107,14 @@ class QtWatch(QObject):
             self._start_timer = None
         self.engine.stop_all()
 
-    def rosa_went_offline(self) -> None:
+    def remote_went_offline(self) -> None:
         """遠端 Gateway 心跳斷了：10 分鐘後試一次重連（窗外也跑，涵蓋 06:00 Gateway 自動重啟）。"""
         import monitor_engine as me
 
         if self._running and self._remote_account:
             self.engine.schedule_once(
                 self._ports.recovery_delay_ms,
-                me.rosa_recovery_worker(self.env, self._ports.spawn, self._remote_account))
+                me.remote_recovery_worker(self.env, self._ports.spawn, self._remote_account))
 
     def _notify(self, msg: str) -> None:
         if not self._running:

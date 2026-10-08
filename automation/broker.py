@@ -3,8 +3,7 @@
 - **clientId**：依帳戶＋用途分配的唯一規則（`client_id`、`price_feed_client_id`）。
   號碼與 #185 之前逐一相同；手動單認成交靠 clientId 比對，所以不能改。不認得的帳戶名稱直接報錯（`UnknownAccount`）。
 - **Broker.connect(ctx)**：依 ctx 的 host／port／client_id 開一條連線。event loop、
-  timeout、唯讀、連不上時收掉 socket 都在這裡；`check`（可選）拿到 Gateway 管理的
-  帳號後先檢查，沒通過就斷線並把例外往上丟，呼叫端拿不到連線。
+  timeout、唯讀、連不上時收掉 socket 都在這裡。
 - **Connection**：一條已連上的連線上的讀數與送單 — 權益、持倉、參考價、送單時的
   買賣報價、掛單、建合約、送單、撤單、等待、斷線。
 - **IB 委託狀態詞彙**（`IB_DONE_STATUSES`）：送單流程視為「這張單結束了」的 IB 狀態，
@@ -179,13 +178,11 @@ class Broker:
     def __init__(self, ib_factory: Callable[[], object] | None = None):
         self._ib_factory = ib_factory or _default_ib
 
-    def connect(self, ctx, *, timeout: float = 20, readonly: bool = False,
-                check: Callable[[list[str]], None] | None = None) -> "Connection":
+    def connect(self, ctx, *, timeout: float = 20, readonly: bool = False) -> "Connection":
         """依 ctx（host／port／client_id／account）連線。
 
         readonly：唯讀連線（不能送單），並指定 ctx.account。
-        check：連上後拿 Gateway 管理的帳號檢查；拋例外時斷線並往上丟。
-        連不上或檢查沒過都會收掉 socket，呼叫端拿不到連線。
+        連不上時收掉 socket，呼叫端拿不到連線。
         """
         ensure_event_loop()
         ib = self._ib_factory()
@@ -197,8 +194,6 @@ class Broker:
             else:
                 ib.connect(ctx.host, ctx.port, clientId=ctx.client_id, timeout=timeout)
             conn = Connection(ib, ctx, readonly=readonly, broker=self)
-            if check is not None:
-                check(conn.managed_accounts())
         except BaseException:
             ib.disconnect()
             raise

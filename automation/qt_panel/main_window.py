@@ -159,7 +159,7 @@ class MainWindow(QMainWindow):
         # broker 只給測試換成 in-memory fake（tests/fake_broker.py）
         target = OrderTarget(files=live_files,
                              account_ctx_loader=account_ctx_loader or _load_account_ctx,
-                             log=self.log, broker=broker)
+                             broker=broker)
         self.trading = self._build_trading(target, manual_order_service, symbol_loader)
         self._pages: dict[str, QWidget] = {"Dashboard": self.dashboard,
                                            "Portfolio": self.portfolio,

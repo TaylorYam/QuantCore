@@ -976,7 +976,7 @@ class ManualOrderService:
         return AccountCtx.from_name(account_name, ROLE_MANUAL_ORDER)
 
     def _open(self, ctx):
-        """向 Broker 開連線（新 Panel 經送單閘門）；預設直接連 ctx 的 Gateway，timeout 10 秒。"""
+        """向 Broker 開連線（Panel 由送單目標給）；預設直接連 ctx 的 Gateway，timeout 10 秒。"""
         if self._connect:
             return self._connect(ctx)
         from broker import Broker

@@ -1508,7 +1508,7 @@ def test_strategy_config_read_failure_is_shown(make_window, qtbot, extras):
     assert "130%" not in w.portfolio.detail.params.text()
 
 
-def test_recent_trades_match_the_tk_rows_with_full_date(make_window, qtbot, extras):
+def test_recent_trades_show_rows_with_full_date(make_window, qtbot, extras):
     from qt_panel import theme
 
     w = make_window()

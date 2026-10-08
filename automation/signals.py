@@ -95,7 +95,7 @@ def get_sp500_weights(current_sp500_holdings: list[str],
     account_name : str
         帳戶名稱，用於讀取 / 寫入 state file（必填）
     persist : bool
-        False = 只讀 state、不寫回（新 Panel 的 paper Sync Pos，#152）
+        False = 只讀 state、不寫回
 
     Returns
     -------

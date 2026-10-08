@@ -25,13 +25,7 @@ from PySide6.QtCore import Qt
 @pytest.fixture
 def prod(make_window, live_files, qtbot):
     def make(**kw):
-        from qt_panel.watch import WatchPorts
-        from tests.test_qt_production import WatchSource
-
-        kw.setdefault("gateway_source", WatchSource())
-        kw.setdefault("watch_ports", WatchPorts(telegram=lambda m: None,
-                                                cold_connect=lambda n: None,
-                                                sleep=lambda s: None, start_delay_ms=0))
+        # 假的 Gateway 來源與值班 I/O 是 make_window 的預設
         kw.setdefault("account_ctx_loader", live_ctx)
         kw.setdefault("live_files", live_files)
         kw.setdefault("symbol_loader", FakeSymbols)

@@ -154,19 +154,14 @@ def trade_log(monkeypatch):
     return rows
 
 
-def make_target(broker, *, live_files, logs):
-    return OrderTarget(files=live_files, account_ctx_loader=live_ctx, log=logs.append,
+def make_target(broker, *, live_files):
+    return OrderTarget(files=live_files, account_ctx_loader=live_ctx,
                        broker=broker)
 
 
 @pytest.fixture
-def logs():
-    return []
-
-
-@pytest.fixture
-def live(broker, live_files, logs):
-    return make_target(broker, live_files=live_files, logs=logs)
+def live(broker, live_files):
+    return make_target(broker, live_files=live_files)
 
 
 # ── 送單目標 ─────────────────────────────────────────────────────────
@@ -176,7 +171,7 @@ def test_live_files_default_to_the_attribution_defaults_at_build_time():
     不在 import 時就固定成 live 目錄的檔案。"""
     import manual_attribution as ma
 
-    target = OrderTarget(account_ctx_loader=live_ctx, log=print, broker=FakeBroker())
+    target = OrderTarget(account_ctx_loader=live_ctx, broker=FakeBroker())
     assert target.text == "實盤帳戶（各帳戶自己的 Gateway）"
     assert target.files == OrderFiles(orders=ma.DEFAULT_MANUAL_ORDERS_PATH,
                                       attribution=ma.DEFAULT_LEDGER_PATH)
@@ -211,7 +206,7 @@ def _cancel_and_close(service, state):
 
 
 def test_live_manual_orders_keep_the_identity_store_and_telegram(
-        live_files, logs, telegram):
+        live_files, telegram):
     ib = _ib("U001")
     # 先前（例如切換前的 Tk Panel）送出的單：同一個實盤紀錄檔、同一個 clientId role
     tk = _service_factory(store=ManualOrderStore(live_files.orders),
@@ -220,7 +215,7 @@ def test_live_manual_orders_keep_the_identity_store_and_telegram(
     tk_order = tk.submit(tk.preview("Taylor", "ZZZZ", 4, 100.0))
     tk_trade = ib.open_trades.pop()
 
-    target = make_target(Broker(lambda: FakeIB(ib)), live_files=live_files, logs=logs)
+    target = make_target(Broker(lambda: FakeIB(ib)), live_files=live_files)
     service = target.manual_order_service(NAMES, _service_factory)
     assert service.store.path == live_files.orders
     trade = _cancel_and_close(service, ib)

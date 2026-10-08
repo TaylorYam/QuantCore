@@ -62,21 +62,16 @@ class OrderTarget:
     text = LIVE_TARGET_TEXT    # 畫面上的「送往：…」
 
     def __init__(self, *, files: OrderFiles | None = None, account_ctx_loader: Callable,
-                 log: Callable[[str], None], broker: Broker | None = None):
+                 broker: Broker | None = None):
         """紀錄檔沒給就用正式的實盤檔；broker 只給測試換成 in-memory fake。"""
         self._broker = broker or Broker()
         self.files = files or default_live_files()
         self._load_ctx = account_ctx_loader
-        self._log = log
 
     # ── 帳戶身分 ─────────────────────────────────────────────────────
 
-    def strategy_ctx(self, account: str, role: int):
-        """Sync Pos（ROLE_REBALANCE）與接管（ROLE_TAKEOVER）用的 AccountCtx。"""
-        return self._load_ctx(account, role)
-
-    def manual_ctx(self, account: str, role: int):
-        """ManualOrderService 的 account_ctx_factory。"""
+    def account_ctx(self, account: str, role: int):
+        """帳戶＋用途（clientId role）的 AccountCtx：手動單、Sync Pos、接管都用它。"""
         return self._load_ctx(account, role)
 
     # ── 連線與紀錄 ───────────────────────────────────────────────────
@@ -90,11 +85,8 @@ class OrderTarget:
                            manual_orders_store=self.files.orders,
                            persist_strategy_state=self.persist_strategy_state)
 
-    # ── 通知 ─────────────────────────────────────────────────────────
-
-    def notice_sender(self) -> Callable[[str], bool] | None:
-        """手動持倉通知（新暫停、接管結果）的送法；None = 該帳戶 Telegram。"""
-        return None
+    # ── 通知（手動持倉的新暫停、接管結果由 sync_position／strategy_takeover 發該帳戶
+    #    Telegram）─────────────────────────────────────────────────────
 
     def manual_order_notice(self, account: str, message: str) -> bool:
         """手動單結案通知；回傳 True 才記已通知。"""
@@ -124,7 +116,7 @@ class OrderTarget:
                 return manual_orders.ManualOrderService(account_names=account_names,
                                                         **kwargs)
         return factory(connect=lambda ctx: self._broker.connect(ctx, timeout=10),
-                       account_ctx_factory=self.manual_ctx,
+                       account_ctx_factory=self.account_ctx,
                        notifier=self.manual_order_notice,
                        store=manual_orders.ManualOrderStore(self.files.orders))
 
@@ -148,7 +140,7 @@ class SyncOperations:
         import sync_position
 
         return sync_position.compute_sync_plan(
-            self._target.strategy_ctx(account, ROLE_REBALANCE), log_fn=log_fn,
+            self._target.account_ctx(account, ROLE_REBALANCE), log_fn=log_fn,
             records=self._target.records())
 
     def take_notices(self, plan) -> list[str]:
@@ -157,7 +149,7 @@ class SyncOperations:
         import sync_position
 
         lines = manual_attribution.pause_notice_lines(plan.pause_notices)
-        sync_position.notify_new_pauses(plan, send=self._target.notice_sender())
+        sync_position.notify_new_pauses(plan)
         return lines
 
     def submit(self, plan, log_fn: Callable[[str], None]):
@@ -177,7 +169,7 @@ class TakeoverOperations:
         self.target_text = target.text
 
     def _ctx(self, account: str):
-        return self._target.strategy_ctx(account, ROLE_TAKEOVER)
+        return self._target.account_ctx(account, ROLE_TAKEOVER)
 
     def paused(self, account: str) -> dict[str, str]:
         """這個帳戶在送單目標的歸屬紀錄裡被暫停的標的 → 原因（唯讀）。"""
@@ -199,6 +191,6 @@ class TakeoverOperations:
         import strategy_takeover
 
         ctx = self._ctx(account)
-        notices = strategy_takeover.notify(ctx, self._target.notice_sender(),
+        notices = strategy_takeover.notify(ctx,
                                            records=self._target.records())
         return manual_attribution.pause_notice_lines(notices)

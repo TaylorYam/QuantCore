@@ -44,9 +44,9 @@ log = logging.getLogger(__name__)
 class SyncRecords:
     """Sync Pos 與交給策略接管用的 IB 連線與本機紀錄，一律由呼叫端明確給（#183）。
 
-    沒有預設值：新 Panel 的送單目標（`qt_panel.order_target`）決定 paper 或實盤
-    — 連線都經過送單閘門；paper 用自己的歸屬與手動單紀錄、SP500／SkewLS state
-    只讀不寫；實盤用實盤的紀錄並寫回 state。connect 回傳 `broker.Connection`。
+    沒有預設值：Panel 的送單目標（`qt_panel.order_target`）給連線（向 Broker 要）、
+    實盤的歸屬與手動單紀錄，並寫回 SP500／SkewLS state（persist_strategy_state=True）；
+    False = state 只讀不寫。connect 回傳 `broker.Connection`。
     """
     connect: Callable[[AccountCtx], object]
     attribution_ledger: Path
@@ -61,7 +61,7 @@ class SyncRecords:
 
 
 def require_records(records: Optional[SyncRecords]) -> SyncRecords:
-    """沒給連線與紀錄就報錯：不能在不知情下連實盤、繞過送單閘門（#183）。"""
+    """沒給連線與紀錄就報錯：不能在不知情下用預設的連線與紀錄連實盤（#183）。"""
     if not isinstance(records, SyncRecords):
         raise TypeError("沒有指定送單目標的連線與紀錄（SyncRecords），不送單")
     return records

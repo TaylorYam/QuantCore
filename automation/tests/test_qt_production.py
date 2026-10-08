@@ -27,28 +27,9 @@ class TickingClock:
         return self.start + timedelta(seconds=time.monotonic() - self.t0)
 
 
-class WatchSource(FakeGatewaySource):
-    """可以回答心跳狀態、重連的假 Gateway 來源（值班用）。"""
-
-    def __init__(self):
-        super().__init__()
-        self.online = {"Taylor": True, "Rosa": True, "Yvonne": True}
-        self.restarted = []
-
-    def is_online(self, name):
-        return self.online.get(name, False)
-
-    def restart(self, name):
-        self.restarted.append(name)
-        return True
-
-    def ready(self):
-        return self.on_state is not None
-
-
 @pytest.fixture
 def watch_source():
-    return WatchSource()
+    return FakeGatewaySource()
 
 
 @pytest.fixture

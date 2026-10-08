@@ -114,8 +114,8 @@ def send(conn, orders: Iterable, ctx, *, attribution_path=None,
 
     conn = broker.Connection；orders = order dict（symbol／action／qty／strategy，可選
     price 估價）或 rebalance_plan.PlannedOrder；ctx 決定 order_type、outside_rth、
-    dry_run、wait_fill_sec。attribution_path = 暫停紀錄檔，None = 實盤預設（paper 的
-    Sync Pos 用自己的檔，#152）。
+    dry_run、wait_fill_sec。attribution_path = 暫停紀錄檔，None = 實盤預設（呼叫端可另給，
+    例如測試）。
     """
     narrator = narrator or Narrator()
 

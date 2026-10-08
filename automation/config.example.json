@@ -17,7 +17,5 @@
   "sinopac_secret_key": "",
   "sinopac_person_id": "",
   "sinopac_ca_path": "",
-  "sinopac_ca_password": "",
-  "qt_panel_mode": "parallel",
-  "qt_panel_paper": {"port": 4013, "account": "DU0000000"}
+  "sinopac_ca_password": ""
 }

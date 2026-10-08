@@ -1,9 +1,9 @@
-"""Recent Trades shared by the Tk and Qt Panels (#150).
+"""Recent Trades for the Panel (#150).
 
 The trades come from `ledger.recent_trades` (#209); this module only turns them
-into screen rows. `read_account_trades` is what both Panels call: one account's
+into screen rows. `read_account_trades` is what the Panel calls: one account's
 last 7 days, labelled with that account's Allocation. `trade_line` formats one
-trade the way the Tk TradesView shows it. Sector and inverse ETF trades are
+trade as a row. Sector and inverse ETF trades are
 labelled with the same rule as the Portfolio (`strategy_owner`, #187). No GUI
 imports; colors come back as theme key names ("green", "red", "yellow", "text_dim").
 """
@@ -16,11 +16,6 @@ from pathlib import Path
 import ledger
 from strategy_owner import SR, SR_AND_SKEWLS, STRATEGY_ETFS, trade_owner
 
-# (header, Tk label width)
-TRADE_COLUMNS = (
-    ("Time", 14), ("Symbol", 7), ("Action", 5), ("Qty", 5),
-    ("Price", 8), ("Strategy", 10), ("Status", 10),
-)
 EMPTY_TEXT = "No recent trades (7 days)"
 
 STOCKS = "Stocks"

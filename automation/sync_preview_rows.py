@@ -1,8 +1,8 @@
-"""Sync Pos preview rows and log summary, shared by the Tk and Qt Panels.
+"""Sync Pos preview rows and log summary for the Panel.
 
 No GUI imports: every function takes a SyncPlan and returns the text the
-window shows.  Colors come back as theme key names ("blue", "green", "red",
-"text") so each toolkit maps its own palette.
+screen shows.  Colors come back as theme key names ("blue", "green", "red",
+"text") that the Panel theme maps.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ from sync_position import SyncPlan
 
 TRADE_COLUMNS = ("Action", "Symbol", "Qty", "Current", "Target",
                  "Est.Price", "Est.Value", "Strategy")
-TRADE_COL_WIDTHS = (7, 7, 6, 8, 8, 10, 11, 8)
 
 
 @dataclass(frozen=True)

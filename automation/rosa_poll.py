@@ -1,8 +1,8 @@
 """
 Pure logic for the ROSA market-window poller.
 
-Two functions, both pure (no Tk, no IB, no real time access except where the
-caller injects it). The Tk wrapper in control_panel reads `next_rosa_poll_time`
+Two functions, both pure (no GUI, no IB, no real time access except where the
+caller injects it). The Panel's watch (monitor_engine) reads `next_rosa_poll_time`
 to schedule itself and runs `rosa_poll_decision` inside each tick, in a daemon
 thread so the wait-for-restart sleep doesn't freeze the UI.
 """

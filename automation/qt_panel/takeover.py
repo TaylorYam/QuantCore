@@ -1,8 +1,8 @@
-"""新 Panel 的交給策略接管（#153）：選帳戶與標的 → 計算進度 → 預覽 → 確認才送。
+"""Panel 的交給策略接管（#153）：選帳戶與標的 → 計算進度 → 預覽 → 確認才送。
 
-流程和 Tk 的 `takeover_window` 一樣；預覽內容是 `TakeoverPreview.lines()`，按鈕、
-確認視窗與結果標題共用 `takeover_preview_text`，預覽與送單沿用 `strategy_takeover`。
-也可以從 Sync Pos 預覽的暫停列直接進來（同 Tk）。
+預覽內容是 `TakeoverPreview.lines()`，按鈕、確認視窗與結果標題來自
+`takeover_preview_text`，預覽與送單沿用 `strategy_takeover`。也可以從 Sync Pos
+預覽的暫停列直接進來。
 
 暫停清單、預覽、送單與通知是送單目標給的 `order_target.TakeoverOperations`
 （#183）：連線、clientId、歸屬紀錄與通知對象都由送單目標決定，這裡只有畫面。

@@ -5,7 +5,7 @@
 （set_extra）。
 
 讀數沿用 portfolio_queries 的 QueryState；指標卡、報表日期、持倉列、圓環圖資料
-都來自 portfolio_display（和 Tk PortfolioView 共用），這裡只負責 Qt 元件。
+都來自不含 GUI 的 portfolio_display，這裡只負責 Qt 元件。
 某帳戶讀取失敗只影響它自己的卡片；有上次讀數時照樣顯示並標「快取」。
 """
 from __future__ import annotations
@@ -170,7 +170,7 @@ class OverviewCard(Card):
 # ── 圓環圖 ───────────────────────────────────────────────────────────
 
 class DonutWidget(QWidget):
-    """portfolio_display.donut 的資料畫成圓環（Tk 版是 matplotlib，這裡用 QPainter）。"""
+    """portfolio_display.donut 的資料畫成圓環（QPainter）。"""
 
     def __init__(self):
         super().__init__()
@@ -196,7 +196,7 @@ class DonutWidget(QWidget):
         inner = rect.adjusted(ring / 2, ring / 2, -ring / 2, -ring / 2)
         start = 90 * 16
         for s in self._donut.slices:
-            span = -round(s.value / total * 360 * 16)     # 順時針，同 Tk 的 counterclock=False
+            span = -round(s.value / total * 360 * 16)     # 順時針
             pen = QPen(QColor(s.color), ring)
             pen.setCapStyle(Qt.FlatCap)
             painter.setPen(pen)
@@ -274,7 +274,7 @@ class HoldingsTable(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
-        # 預設照 Tk 的順序（ETF → 個股 → 手動，各組市值大的在前）；使用者點欄位標題才排序
+        # 預設順序：ETF → 個股 → 手動，各組市值大的在前；使用者點欄位標題才排序
         self.table.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
         lay.addWidget(self.table, 1)
         self._empty = label("", name="Dim")

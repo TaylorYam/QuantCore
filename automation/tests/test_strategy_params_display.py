@@ -1,4 +1,4 @@
-"""策略參數顯示計算（#150）：Tk StrategyParamsView 與新 Panel 共用的純函式。"""
+"""策略參數顯示計算（#150）與 Allocation 調整的檢查（#220）：Panel 用的純函式。"""
 from __future__ import annotations
 
 from strategy_params_display import allocations_from_cfg, strategy_params

@@ -1,12 +1,10 @@
-"""新 Panel 的 Sync Pos（#152）：選帳戶 → 計算進度 → 預覽 → 確認才送。
+"""Panel 的 Sync Pos（#152）：選帳戶 → 計算進度 → 預覽 → 確認才送。
 
-流程和 Tk 的 `sync_preview_window` 一樣；預覽的文字與表格列共用
-`sync_preview_rows`（#146），計算與送單沿用 `sync_position`。
+預覽的文字與表格列來自 `sync_preview_rows`（#146），計算與送單沿用 `sync_position`。
 
 計算、通知與送單是送單目標給的 `order_target.SyncOperations`（#183）：送去哪、
-記在哪、通知誰（paper 只寫 Output Log；實盤發 Telegram、寫 trade_log.xlsx）都由
-送單目標決定，這裡只有畫面。計算中按「放棄」或關掉 Panel，算完的結果直接丟掉。
-暫停列的「交給策略接管」（#153）同 Tk：這份 Sync 預覽作廢，改開該標的的接管預覽。
+記在哪、通知誰（發 Telegram、寫 trade_log.xlsx）都由送單目標決定，這裡只有畫面。計算中按「放棄」或關掉 Panel，算完的結果直接丟掉。
+暫停列的「交給策略接管」（#153）：這份 Sync 預覽作廢，改開該標的的接管預覽。
 """
 from __future__ import annotations
 

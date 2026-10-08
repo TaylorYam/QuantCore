@@ -1,11 +1,10 @@
 """Broker（券商連線層，#185）：QuantCore 跟 IB 打交道的那一層。
 
-- **clientId**：依帳戶＋用途分配的唯一規則（`client_id`、`panel_query_client_id`、
-  `price_feed_client_id`、`paper_client_id`）。號碼與 #185 之前逐一相同；手動單認成交
-  靠 clientId 比對，所以不能改。不認得的帳戶名稱直接報錯（`UnknownAccount`）。
+- **clientId**：依帳戶＋用途分配的唯一規則（`client_id`、`price_feed_client_id`）。
+  號碼與 #185 之前逐一相同；手動單認成交靠 clientId 比對，所以不能改。不認得的帳戶名稱直接報錯（`UnknownAccount`）。
 - **Broker.connect(ctx)**：依 ctx 的 host／port／client_id 開一條連線。event loop、
-  timeout、唯讀、連不上時收掉 socket 都在這裡；`check` 給送單閘門用：拿到 Gateway
-  管理的帳號後先檢查，沒通過就斷線並把例外往上丟，呼叫端拿不到連線。
+  timeout、唯讀、連不上時收掉 socket 都在這裡；`check`（可選）拿到 Gateway 管理的
+  帳號後先檢查，沒通過就斷線並把例外往上丟，呼叫端拿不到連線。
 - **Connection**：一條已連上的連線上的讀數與送單 — 權益、持倉、參考價、送單時的
   買賣報價、掛單、建合約、送單、撤單、等待、斷線。
 - **IB 委託狀態詞彙**（`IB_DONE_STATUSES`）：送單流程視為「這張單結束了」的 IB 狀態，
@@ -62,27 +61,18 @@ ROLE_MANUAL_ORDER = 6
 ROLE_MONITOR = 7
 # 交給策略接管（#107）自己的連線：接管單不會被排程調倉的「全部取消掛單」取消
 ROLE_TAKEOVER = 8
-# 新 PySide6 Panel 並行期間的唯讀連線（#147，ADR-0012）：與 Tk Panel 同時開不互搶
-ROLE_PANEL_READONLY = 9
-
-# 新 Panel 查權益／持倉（#149）：ROLE_PANEL_READONLY 被它的 Gateway 心跳長連線佔著，
-# 同一個 clientId 不能同時連兩條，所以查詢另用一段號碼（Taylor 69／Rosa 79／Yvonne 89）。
-# 帳戶數 ≤ 4 時不會和上面的 BASE + idx*STEP + role 撞號。
-_QT_PANEL_QUERY_CLIENT_ID_BASE = 69
+# role 9 與查詢號碼 69／79／89 曾是 Panel 換成 PySide6 時的並行期間唯讀身分（#147、#149），
+# #155 刪除 Tk Panel 時一併拿掉。
 
 # 本帳戶沒有即時報價時，另開一條連線到報價 feed port 借價：
 # 唯讀連線用 1000 + 本連線的 clientId，一般連線用固定的 99。
 _PRICE_FEED_OFFSET = 1000
 _PRICE_FEED_CLIENT_ID = 99
 
-# paper Gateway：新 Panel 手動單用基準號（config.json qt_panel_paper.client_id，預設 92），
-# Sync Pos 基準＋1、交給策略接管基準＋2（比照實盤各自一個 role）。IB 只允許同一個
-# clientId 撤自己的單，所以手動單固定用基準號。paper 驗證腳本預設 91，錯開才能同時開。
-PAPER_CLIENT_ID = 92
+# paper 驗證腳本（paper_verify_manual_orders）預設的 clientId
 PAPER_VERIFY_CLIENT_ID = 91
 # 多帳戶唯讀驗收工具（check_portfolio_queries）：16025／16035／16045，遠離所有用途
 _ACCEPTANCE_CHECK_CLIENT_ID_BASE = 16025
-_PAPER_OFFSETS = {ROLE_MANUAL_ORDER: 0, ROLE_REBALANCE: 1, ROLE_TAKEOVER: 2}
 
 
 class UnknownAccount(ValueError):
@@ -108,20 +98,6 @@ def client_id(account_name: str, role: int = ROLE_REBALANCE, *,
     return _CLIENT_ID_BASE + _account_index(account_name, accounts) * _CLIENT_ID_STEP + role
 
 
-def panel_query_client_id(account_name: str, *,
-                          accounts: Iterable[dict] | None = None) -> int:
-    """新 Panel 並行期間查權益／持倉用的 clientId（Taylor 69／Rosa 79／Yvonne 89）。"""
-    if accounts is None:
-        from account_utils import load_accounts
-        accounts = load_accounts()
-    accounts = list(accounts)
-    if _CLIENT_ID_BASE + len(accounts) * _CLIENT_ID_STEP > _QT_PANEL_QUERY_CLIENT_ID_BASE:
-        raise ValueError("帳戶超過 4 個，新 Panel 查詢的 clientId 會和既有用途撞號，"
-                         "請先改 _QT_PANEL_QUERY_CLIENT_ID_BASE")
-    return (_QT_PANEL_QUERY_CLIENT_ID_BASE
-            + _account_index(account_name, accounts) * _CLIENT_ID_STEP)
-
-
 def price_feed_client_id(connection_client_id: int, *, readonly: bool) -> int:
     """向報價 feed port 借價的那條連線的 clientId。"""
     if readonly:
@@ -132,14 +108,6 @@ def price_feed_client_id(connection_client_id: int, *, readonly: bool) -> int:
 def acceptance_check_client_id(account_index: int) -> int:
     """唯讀驗收工具（check_portfolio_queries）第 account_index 個帳戶的 clientId。"""
     return _ACCEPTANCE_CHECK_CLIENT_ID_BASE + int(account_index) * _CLIENT_ID_STEP
-
-
-def paper_client_id(base: int, role: int) -> int:
-    """paper Gateway 上各用途的 clientId（base = qt_panel_paper.client_id）。"""
-    try:
-        return int(base) + _PAPER_OFFSETS[role]
-    except KeyError:
-        raise ValueError(f"paper Gateway 沒有分配 role {role} 的 clientId") from None
 
 
 # ── 帳戶數值、報價與限價的規則（#185 第三階段）──────────────────────────

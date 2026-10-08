@@ -1,7 +1,7 @@
 """系統匣（Qt 內建 QSystemTrayIcon）：點圖示叫回視窗，選單可離開。
 
-圖示跟著 Rosa Gateway 的心跳換顏色（灰＝連線中／綠＝連上／紅＝斷線），同 Tk 的
-TrayController，圖檔共用 tray_icons 產生的 assets/tray。
+圖示跟著 Rosa Gateway 的心跳換顏色（灰＝連線中／綠＝連上／紅＝斷線），圖檔是
+tray_icons 產生的 assets/tray。
 """
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ class QtTray:
         self._icon.hide()
 
     def update_state(self, state: str, when: datetime) -> None:
-        """Rosa 心跳狀態 → 圖示顏色與提示文字（同 Tk 的 TrayController.update_state）。"""
+        """Rosa 心跳狀態 → 圖示顏色與提示文字。"""
         icon = _state_icon(STATE_TO_COLOR.get(state, "gray"))
         if icon is not None:
             self._icon.setIcon(icon)

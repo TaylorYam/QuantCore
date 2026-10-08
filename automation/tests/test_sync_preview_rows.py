@@ -1,4 +1,4 @@
-"""sync_preview_rows：Sync Pos 預覽的列內容與 Output Log 摘要（Tk／Qt 共用，不依賴 GUI）。"""
+"""sync_preview_rows：Sync Pos 預覽的列內容與 Output Log 摘要（Panel 用，不依賴 GUI）。"""
 
 from account_ctx import AccountCtx
 from rebalance_plan import PlannedOrder as PO
@@ -116,7 +116,7 @@ def test_trade_rows_sells_first_then_totals():
         rows.TradeRow(("BUY", "AAPL", "150", "100", "250", "$100.00", "$15,000", "SP500"),
                       "green"),
     ]
-    assert len(rows.TRADE_COLUMNS) == len(rows.TRADE_COL_WIDTHS) == 8
+    assert len(rows.TRADE_COLUMNS) == 8
     assert rows.trade_totals_text(plan) == (
         "SELL: $2,527   |   BUY: $15,000   |   Net: +$12,473")
     net_sell = _plan(orders=[PO("AAA", "SELL", 10, 10.0, "SP500", 0, 10)])

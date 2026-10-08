@@ -1,6 +1,6 @@
 """單一帳戶頁的策略參數與最近成交（#150）。
 
-顯示內容來自和 Tk Panel 共用的 strategy_params_display、trades_display。
+顯示內容來自不含 GUI 的 strategy_params_display、trades_display。
 策略參數卡的「調整…」開 AllocationDialog（#220）；驗證、確認與寫檔由主視窗處理，
 這裡只負責元件。
 """
@@ -21,7 +21,7 @@ from qt_panel import theme
 from qt_panel.widgets import Card, all_text, clear_layout, label
 
 TRADE_HEADERS = ("時間", "代號", "方向", "股數", "成交價", "策略", "狀態")
-ALLOCATION_STEP = 0.05          # 拉桿每格 5%，範圍 0–100%（同 Tk 的拉桿）
+ALLOCATION_STEP = 0.05          # 拉桿每格 5%，範圍 0–100%（沿用 Tk Panel 的拉桿）
 ALLOCATION_STEPS = 20
 
 

@@ -1,9 +1,9 @@
-"""Portfolio display calculations shared by the Tk and Qt Panels (#149).
+"""Portfolio display calculations for the Panel (#149).
 
 No GUI imports: every function takes the portfolio dict (`ib_fetcher.fetch_portfolio`
-format) or a `portfolio_queries.QueryState` and returns the text each Panel shows.
+format) or a `portfolio_queries.QueryState` and returns the text the Panel shows.
 Colors come back as theme key names ("text", "text_dim", "green", "red",
-"yellow", "orange") so each toolkit maps its own palette; the donut slice
+"yellow", "orange") that the Panel theme maps; the donut slice
 colors are the chart's own fixed palette.
 """
 

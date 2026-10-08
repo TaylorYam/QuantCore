@@ -1,4 +1,4 @@
-"""交給策略接管（#107）視窗的文字，Tk 與 Qt Panel 共用；不依賴 GUI。
+"""交給策略接管（#107）畫面的文字；不依賴 GUI。
 
 預覽本身的逐行內容在 strategy_takeover.TakeoverPreview.lines()。
 """

@@ -25,7 +25,7 @@ from typing import Optional
 import pandas as pd
 
 # 確保 strategies 套件可 import（QuantCore root 要在 sys.path）
-# 這個 module 可能被 control_panel → ib_fetcher → signals 這條路徑第一個用到，
+# 這個 module 可能被 Panel → ib_fetcher → signals 這條路徑第一個用到，
 # 而 rebalance_ib.py 的 sys.path 設定是懶載入的
 _ROOT_DIR = Path(__file__).parent.parent
 if str(_ROOT_DIR) not in sys.path:
@@ -95,7 +95,7 @@ def get_sp500_weights(current_sp500_holdings: list[str],
     account_name : str
         帳戶名稱，用於讀取 / 寫入 state file（必填）
     persist : bool
-        False = 只讀 state、不寫回（新 Panel 的 paper Sync Pos，#152）
+        False = 只讀 state、不寫回
 
     Returns
     -------

@@ -1,13 +1,11 @@
-"""新 Panel 正式模式的值班（#154）：Qt 計時器驅動既有的 MonitorEngine。
+"""Panel 的值班（#154）：Qt 計時器驅動既有的 MonitorEngine。
 
-Rosa poll／TY check／Morning check 的排程與派工全在 `monitor_engine`（與 Tk Panel
-同一份）；這裡只是 Qt 的 adapter，對應 Tk 的 `_build_monitor_engine`：
-- 計時：單次 QTimer（Tk 的 after）；tick 在 Qt 主執行緒跑，worker 丟 daemon thread。
-- 心跳狀態與重連：主視窗的 Gateway 來源（正式模式 = ROLE_MONITOR 的 GatewayMonitor）。
-- Telegram：config.json 的共用設定（系統層警報，不看帳戶覆寫，同 Tk `_tg_notify`）。
-- Rosa 斷線 10 分鐘後的一次性 recovery，同 Tk 的 on_disconnected。
-
-並行模式不建這個物件（ADR-0012：並存期間值班只由 Tk Panel 跑）。
+Rosa poll／TY check／Morning check 的排程與派工全在 `monitor_engine`；這裡只是
+Qt 的 adapter：
+- 計時：單次 QTimer；tick 在 Qt 主執行緒跑，worker 丟 daemon thread。
+- 心跳狀態與重連：主視窗的 Gateway 來源（ROLE_MONITOR 的 GatewayMonitor）。
+- Telegram：config.json 的共用設定（系統層警報，不看帳戶覆寫）。
+- Rosa 斷線 10 分鐘後的一次性 recovery。
 """
 from __future__ import annotations
 
@@ -20,7 +18,7 @@ from typing import Callable
 from PySide6.QtCore import QObject, QTimer
 
 ROSA_RECOVERY_DELAY_MS = 10 * 60 * 1000
-# 心跳開始後等一下再排值班（Tk 是 Gateway 監測 0.5 秒後、Rosa poll 1.5 秒後），
+# 心跳開始後等一下再排值班，
 # 窗內開啟時第一次 Rosa poll 才不會碰上還在連線中的心跳
 WATCH_START_DELAY_MS = 1500
 TY_CHECK_ACCOUNTS = ("Taylor", "Yvonne")
@@ -31,7 +29,7 @@ def _spawn(fn: Callable[[], None]) -> None:
 
 
 def send_system_telegram(msg: str) -> None:
-    """值班警報：config.json 的共用 Telegram 設定（同 Tk `_tg_notify`）。"""
+    """值班警報：config.json 的共用 Telegram 設定。"""
     from account_utils import load_base_config
     from notify import tg_send
 
@@ -45,7 +43,7 @@ def send_system_telegram(msg: str) -> None:
 
 
 def cold_connect(name: str) -> None:
-    """TY check 的冷連線探測：經 Broker 連上就斷，失敗 raise（同 Tk `_cold_connect`）。"""
+    """TY check 的冷連線探測：經 Broker 連上就斷，失敗 raise。"""
     from account_ctx import AccountCtx
     from broker import ROLE_MONITOR, Broker
 
@@ -126,7 +124,7 @@ class QtWatch(QObject):
 
     def _notify(self, msg: str) -> None:
         if not self._running:
-            return                           # Panel 已關：結果丟掉，同 Tk
+            return                           # Panel 已關：結果丟掉
         try:
             self._ports.telegram(msg)
         except Exception as e:

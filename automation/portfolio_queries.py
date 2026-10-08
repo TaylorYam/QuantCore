@@ -113,7 +113,7 @@ class PortfolioRefreshLoop:
     instead of a monotonic hourly interval.  Startup still does one immediate
     refresh.  Manual refresh is independent of the schedule.
 
-    schedule(ms, callback) and cancel(handle) can be Tk after/after_cancel or a
+    schedule(ms, callback) and cancel(handle) can be single-shot QTimers or a
     fake scheduler.  Polling publishes each finished Account without a batch
     barrier.
     """

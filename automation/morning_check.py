@@ -15,8 +15,8 @@ Three pieces:
                                           I/O companion — the one deliberate
                                           exception to "this module is pure")
 
-Side effects (real IB re-probe, Tk after, Telegram send) live in
-control_panel. This module stays pure so the scheduling and message logic
+Side effects (real IB re-probe, timers, Telegram send) live in the Panel's
+watch (monitor_engine + qt_panel.watch). This module stays pure so the scheduling and message logic
 can be exercised in milliseconds without any infrastructure.
 
 Note on the calendar test: we feed `is_nyse_trading_day` the *Taipei*

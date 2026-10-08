@@ -1,1 +1,1 @@
-"""PySide6 Panel（ADR-0012）：與 Tk Panel 並存，功能補齊後才切換。"""
+"""QuantCore 的 PySide6 Panel（ADR-0012）：值班、權益／持倉、手動單、Sync Pos、接管。"""

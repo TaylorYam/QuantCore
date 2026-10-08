@@ -200,7 +200,7 @@ def test_no_delta_no_order():
 
 def test_sync_order_alias_preserved():
     """sync_position.SyncOrder 舊名必須仍指向決策層的 PlannedOrder
-    （panel / sync_preview_window 沿用此 import 路徑）。"""
+    （SyncPlan 的欄位型別沿用這個名字）。"""
     from rebalance_plan import PlannedOrder
     from sync_position import SyncOrder
 

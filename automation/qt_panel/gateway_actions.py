@@ -1,4 +1,4 @@
-"""新 Panel 的 Gateway 啟動與帳密更新（#148）。
+"""Panel 的 Gateway 啟動與帳密更新（#148）。
 
 判斷全部沿用 gateway_start（CONTEXT.md「Gateway 啟動」：三個實盤 Gateway 有任何
 一個在執行就整批拒絕、依序登入、失敗不重試）；這裡只負責 Qt 那一側：背景

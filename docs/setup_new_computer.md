@@ -231,7 +231,7 @@ C:\QuantCore\
 │   ├── rebalance_plan.py       ← 調倉決策（純函式）
 │   ├── rebalance_ib.py         ← IB 自動調倉
 │   ├── signals.py              ← 三策略訊號整合
-│   ├── control_panel.py        ← Tkinter GUI 控制面板
+│   ├── qt_panel/               ← PySide6 控制面板（qt_panel_app.py 啟動）
 │   ├── monitor_engine.py       ← 值班引擎
 │   ├── accounts.json           ← 帳戶設定（gitignore，從 .example 複製）
 │   └── config.json             ← 連線設定（gitignore，從 .example 複製）

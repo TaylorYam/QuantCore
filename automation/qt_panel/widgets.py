@@ -1,4 +1,4 @@
-"""新 Panel 共用的小元件。"""
+"""Panel 共用的小元件。"""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt

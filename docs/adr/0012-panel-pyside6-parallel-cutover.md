@@ -20,3 +20,4 @@ Panel（約 5,000 行 Tk，12 個模組）換成 PySide6，理由四個一起成
 
 - IB 連線那一支稱 [[Broker（券商連線層）]]，不叫 Execution（與 [[執行盤 (Execution Session)]] 撞名）。
 - 新 Panel 版面：Dashboard（Gateway、值班狀態、Log）／Portfolio（三帳戶總覽 → 點進單一帳戶）／Trading（手動單、Sync Pos、接管；送單一律保留確認視窗）。版面細節以丟棄式原型（假資料、不接 IB）確認後為準。
+- **2026-10-08 收尾（#155、#220）**：切換（2026-10-03，#154）後第 5 天，使用者決定提前刪除 Tk Panel，並一併拿掉並行模式：新 Panel 一律值班＋實盤送單，`qt_panel_mode`／`qt_panel_paper`、paper 送單目標、送單閘門、值班鎖與並行期間的唯讀 clientId（role 9、69／79／89）都移除。Tk 上唯一沒有搬的日常功能「調整 Allocation」先在 #220 補進新 Panel 才刪。`portfolio_calc`（LEGACY）一併刪除。之後要回到 Tk 只能 git revert。

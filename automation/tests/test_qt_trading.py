@@ -1,8 +1,8 @@
-"""新 Panel 的 Trading：送單閘門＋手動單（#151，ADR-0012）。
+"""Panel 的 Trading：手動單（#151）。
 
-從主視窗操作：注入假的 IB 連線工廠（Broker 端）與 paper 連線設定，像使用者一樣
-填欄位、按預覽、按送出，檢查 Broker 端收到了什麼、畫面寫了什麼。不連 IB、
-不發 Telegram、不讀真實 config。
+從主視窗操作：注入假的 IB 連線工廠（Broker 端）與帳戶設定，像使用者一樣填欄位、
+按預覽、按送出，檢查 Broker 端收到了什麼、畫面寫了什麼。不連 IB、不發 Telegram
+（假的）、不讀真實 config。
 """
 from __future__ import annotations
 
@@ -14,7 +14,9 @@ from tests.test_qt_panel import (  # noqa: F401  fixtures
     dialogs, extras, make_window, portfolio, ports, source,
 )
 from tests.test_manual_orders import FakeIB, FakeIBState
-from tests.test_qt_order_target import NOW, PAPER, order_factory
+from tests.test_qt_order_target import (  # noqa: F401  fixtures
+    LIVE_DEST, NOW, live_ctx, order_factory, telegram,
+)
 
 from PySide6.QtCore import Qt
 
@@ -37,16 +39,17 @@ class FakeSymbols:
 @pytest.fixture
 def ib_state():
     state = FakeIBState()
-    state.managed = ["DU001"]
-    state.positions_by_account = {"DU001": {}}
-    state.net_liquidation = {"DU001": "20000"}
+    state.managed = ["U001"]
+    state.positions_by_account = {"U001": {}}
+    state.net_liquidation = {"U001": "20000"}
     state.daily_bars = [(date(2026, 9, 28), 100.0)]
     return state
 
 
 @pytest.fixture
 def services():
-    """手動單 service：連線、帳戶身分、紀錄檔（tmp_path）、通知由送單目標給。"""
+    """手動單 service：連線、帳戶身分、紀錄檔（tmp_path）、通知由送單目標給。
+    背景對帳不開（測試自己按重新整理）；主視窗有沒有啟動它見 test_qt_production_trading。"""
     built = []
 
     def build(**kw):
@@ -54,6 +57,7 @@ def services():
             account_names=["Taylor", "Rosa", "Yvonne"],
             universe_loader=lambda: {"SPY", "SSO"}, order_factory=order_factory,
             clock=lambda: NOW, **kw)
+        service.start_monitor = lambda *a, **k: None
         built.append((service, kw))
         return service
 
@@ -62,9 +66,9 @@ def services():
 
 
 @pytest.fixture
-def trading_window(make_window, ib_state, services, qtbot):
+def trading_window(make_window, ib_state, services, telegram, qtbot):
     def make(**kw):
-        kw.setdefault("paper_target", PAPER)
+        kw.setdefault("account_ctx_loader", live_ctx)
         # 手動單用 ib_insync 本體：真的 Broker 接在 test_manual_orders 的假 IB 上
         kw.setdefault("broker", Broker(lambda: FakeIB(ib_state)))
         kw.setdefault("manual_order_service", services)
@@ -94,67 +98,19 @@ def wait_refreshed(qtbot, panel):
     qtbot.waitUntil(lambda: not panel.refreshing(), timeout=3000)
 
 
-# ── 送單閘門（AC1）──────────────────────────────────────────────────
+# ── 預覽 → 二次確認 → 送出 → 狀態追蹤（AC2、AC4）──────────────────
 
-def test_live_gateway_on_the_paper_port_gets_no_order_and_the_screen_says_why(
-        trading_window, ib_state, qtbot):
-    ib_state.managed = ["U001"]                 # paper port 其實接到實盤 Gateway
-    w = trading_window()
-    panel = w.trading.manual
-    fill(panel)
-    click_and_wait(qtbot, panel, panel.preview_button)
-    text = panel.preview_text.text()
-    assert "送單閘門拒絕" in text and "U001" in text and "沒有送出任何單" in text
-    assert not panel.confirm_button.isEnabled()
-    assert ib_state.placed == []
-    assert all(not ib.connected for ib in ib_state.ib_instances)
-
-
-def test_gateway_turning_live_before_the_recheck_blocks_the_send(
-        trading_window, ib_state, dialogs, qtbot):
-    w = trading_window()
-    panel = w.trading.manual
-    fill(panel)
-    click_and_wait(qtbot, panel, panel.preview_button)
-    assert panel.confirm_button.isEnabled()
-    ib_state.managed = ["U001"]
-    click_and_wait(qtbot, panel, panel.confirm_button)
-    assert "送單閘門拒絕" in panel.preview_text.text()
-    assert dialogs.confirms == []
-    assert ib_state.placed == []
-
-
-def test_gateway_turning_live_while_the_confirm_dialog_is_open_blocks_the_send(
-        trading_window, ib_state, dialogs, qtbot):
-    w = trading_window()
-    panel = w.trading.manual
-    fill(panel)
-    click_and_wait(qtbot, panel, panel.preview_button)
-
-    def switch_then_yes(title, text, *, warning=False):
-        ib_state.managed = ["U001"]
-        return True
-
-    dialogs.confirm = switch_then_yes
-    click_and_wait(qtbot, panel, panel.confirm_button)
-    qtbot.waitUntil(lambda: "送單閘門拒絕" in panel.preview_text.text(), timeout=3000)
-    assert panel.form_status.text() == "送單前重新檢查未通過"
-    assert ib_state.placed == []
-
-
-# ── paper：預覽 → 二次確認 → 送出 → 狀態追蹤（AC2、AC4）─────────────
-
-def test_paper_order_previews_confirms_sends_and_tracks_status(
+def test_order_previews_confirms_sends_and_tracks_status(
         trading_window, ib_state, dialogs, services, qtbot):
     w = trading_window()
-    assert "paper 帳號 DU001" in w.page_text("Trading")
+    assert "送到實盤帳戶" in w.page_text("Trading")
     panel = w.trading.manual
     assert [panel.account_box.itemText(i) for i in range(panel.account_box.count())] == [
         "Taylor", "Rosa", "Yvonne"]
     fill(panel)
     click_and_wait(qtbot, panel, panel.preview_button)
 
-    # 預覽文字就是共用的 ManualOrderPreview.confirmation_text（Tk 版顯示的同一段）
+    # 預覽文字就是 ManualOrderPreview.confirmation_text
     service = services.built[0][0]
     expected = service.preview("Taylor", "AAPL", 5, 100.0).confirmation_text
     assert panel.preview_text.text() == expected
@@ -165,13 +121,13 @@ def test_paper_order_previews_confirms_sends_and_tracks_status(
     [(title, prompt, warning)] = dialogs.confirms
     assert title == "再次核對委託" and not warning
     assert prompt.startswith(expected)
-    assert "送往：paper 帳號 DU001（127.0.0.1:4013）" in prompt
+    assert "送往：實盤帳戶（各帳戶自己的 Gateway）" in prompt
 
     [trade] = ib_state.placed
     assert (trade.order.action, trade.order.totalQuantity, trade.order.lmtPrice,
-            trade.order.account) == ("BUY", 5, 100.0, "DU001")
+            trade.order.account) == ("BUY", 5, 100.0, "U001")
     assert trade.order.orderRef.startswith("QUANTCORE_MANUAL")
-    assert set(ib_state.client_ids) == {92}
+    assert set(ib_state.client_ids) == {26}                     # Taylor 的 ROLE_MANUAL_ORDER
     wait_refreshed(qtbot, panel)
     [row] = panel.order_table()
     assert row[:6] == ("Taylor", "AAPL", "買進", "5", "LMT $100.00", "一般時段 RTH / DAY")
@@ -209,8 +165,8 @@ def test_price_warning_is_shown_and_the_confirm_dialog_warns(
     assert dialogs.confirms[0][2] is True
 
 
-def test_cancel_waits_for_ib_and_the_result_goes_to_the_log_not_telegram(
-        trading_window, ib_state, dialogs, qtbot):
+def test_cancel_waits_for_ib_and_the_result_goes_to_the_accounts_telegram(
+        trading_window, ib_state, dialogs, telegram, qtbot):
     w = trading_window()
     panel = w.trading.manual
     fill(panel)
@@ -229,11 +185,12 @@ def test_cancel_waits_for_ib_and_the_result_goes_to_the_log_not_telegram(
     panel.refresh_status()
     wait_refreshed(qtbot, panel)
     assert panel.order_table() == []
-    qtbot.waitUntil(lambda: "[手動單·paper] Taylor" in w.dashboard.log_text(), timeout=2000)
-    assert "已取消" in w.dashboard.log_text()
+    qtbot.waitUntil(lambda: bool(telegram.messages), timeout=2000)
+    [(msg, dest)] = telegram.messages
+    assert "已取消" in msg and dest == LIVE_DEST
 
 
-def test_ib_expiry_is_tracked_as_expired(trading_window, ib_state, qtbot):
+def test_ib_expiry_is_tracked_as_expired(trading_window, ib_state, telegram, qtbot):
     w = trading_window()
     panel = w.trading.manual
     fill(panel)
@@ -248,7 +205,7 @@ def test_ib_expiry_is_tracked_as_expired(trading_window, ib_state, qtbot):
     panel.refresh_status()
     wait_refreshed(qtbot, panel)
     assert panel.order_table() == []
-    qtbot.waitUntil(lambda: "已失效" in w.dashboard.log_text(), timeout=2000)
+    qtbot.waitUntil(lambda: any("已失效" in m for m, _d in telegram.messages), timeout=2000)
 
 
 def test_modify_loads_the_order_then_cancels_before_offering_a_new_preview(
@@ -343,7 +300,7 @@ def test_tall_trading_content_scrolls_instead_of_growing_the_window(trading_wind
     table_bottom = panel.orders.mapTo(area.viewport(), panel.orders.rect().bottomLeft()).y()
     assert table_bottom <= area.viewport().height()
 
-def test_percent_of_equity_uses_the_paper_account_equity(trading_window, ib_state, qtbot):
+def test_percent_of_equity_uses_the_account_equity(trading_window, ib_state, qtbot):
     w = trading_window()
     panel = w.trading.manual
     fill(panel, quantity="")
@@ -379,19 +336,12 @@ def test_unknown_symbol_hint_still_allows_preview(trading_window, qtbot):
     assert "清單內找不到此代號" in panel.symbol_hint.text()
 
 
-# ── 設定與紀錄檔 ─────────────────────────────────────────────────────
-
-def test_without_a_paper_target_no_service_is_built(make_window, services):
-    w = make_window(manual_order_service=services, paper_problem="尚未設定 paper 連線")
-    assert services.built == []
-    assert w.trading.manual is None
-    assert "尚未設定 paper 連線" in w.page_text("Trading")
-
+# ── 手動單服務 ───────────────────────────────────────────────────────
 
 def test_service_start_failure_is_explained(make_window):
     def broken(**_kw):
         raise OSError("磁碟唯讀")
 
-    w = make_window(paper_target=PAPER, manual_order_service=broken)
+    w = make_window(manual_order_service=broken)
     assert w.trading.manual is None
     assert "磁碟唯讀" in w.page_text("Trading")

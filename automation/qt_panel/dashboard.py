@@ -16,10 +16,7 @@ from qt_panel import theme
 from qt_panel.dashboard_data import JOB_STATE_TEXT, JobRow, WatchItem, format_next_run
 from qt_panel.widgets import Card, all_text, clear_layout, dot, label, set_dot_color, visible_text
 
-WATCH_NOTE = "並行模式：值班由 Tk Panel 執行，新 Panel 只顯示、不值班"
-PRODUCTION_WATCH_NOTE = "正式模式：值班由新 Panel 執行（Tk Panel 不值班）"
-WATCH_OWNER_TEXT = {True: "Tk Panel 值班中", False: "Tk Panel 沒開 — 目前沒有人值班"}
-PRODUCTION_OWNER_TEXT = "新 Panel 值班中"
+WATCH_OWNER_TEXT = "Panel 值班中"
 LOG_MAX_LINES = 5000
 
 
@@ -61,7 +58,7 @@ class Dashboard(QWidget):
                  on_start_gateways: Callable[[], None],
                  on_edit_credentials: Callable[[str], None],
                  credential_accounts: Sequence[str],
-                 on_refresh: Callable[[], None], watch_note: str = WATCH_NOTE):
+                 on_refresh: Callable[[], None]):
         super().__init__()
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 20, 24, 20)
@@ -71,8 +68,6 @@ class Dashboard(QWidget):
         head = QHBoxLayout()
         head.addWidget(label("GATEWAY", name="SectionTitle"))
         head.addStretch(1)
-        self._auto_recheck = label(name="Faint")
-        head.addWidget(self._auto_recheck)
         self.start_gateways_button = QPushButton("一鍵啟動 Gateway")
         self.start_gateways_button.setObjectName("Primary")
         self.start_gateways_button.setToolTip(
@@ -90,7 +85,7 @@ class Dashboard(QWidget):
         self.credentials_button.setMenu(self.credentials_menu)
         head.addWidget(self.credentials_button)
         self.recheck_button = QPushButton("重新檢查")
-        self.recheck_button.setToolTip("斷線的 Gateway 各重連一次；連著的不動（同 Tk 的 Check Now）")
+        self.recheck_button.setToolTip("斷線的 Gateway 各重連一次；連著的不動")
         self.recheck_button.clicked.connect(on_recheck)
         head.addWidget(self.recheck_button)
         root.addLayout(head)
@@ -108,9 +103,6 @@ class Dashboard(QWidget):
         mid.setSpacing(12)
 
         self._watch_card = Card("值班")
-        self._watch_note = label(watch_note, name="Faint")
-        self._watch_note.setWordWrap(True)
-        self._watch_card.body.addWidget(self._watch_note)
         owner_row = QHBoxLayout()
         self._owner_dot = dot(theme.TEXT_FAINT, 8)
         self._owner = label()
@@ -168,21 +160,17 @@ class Dashboard(QWidget):
         if card is not None:
             card.set_state(state, detail)
 
-    def set_next_auto_recheck(self, when: datetime) -> None:
-        self._auto_recheck.setText(f"交易日 07:00 自動重新檢查 · 下次 {when:%m-%d %H:%M}")
-
     def set_gateway_starting(self, starting: bool) -> None:
         self.start_gateways_button.setEnabled(not starting)
         self.start_gateways_button.setText("Gateway 啟動中…" if starting else "一鍵啟動 Gateway")
 
     # ── 值班 ──
 
-    def set_watch(self, items: list[WatchItem], now: datetime, owner: str, on_duty: bool) -> None:
-        """owner = 誰在值班的說明；on_duty = 有人在值班（綠）或沒有（紅）。"""
-        color = theme.GREEN if on_duty else theme.RED
-        set_dot_color(self._owner_dot, color)
-        self._owner.setText(owner)
-        self._owner.setStyleSheet(f"color: {color};")
+    def set_watch(self, items: list[WatchItem], now: datetime) -> None:
+        """值班的三個排程與各自的下次時間；值班一定由這個 Panel 跑。"""
+        set_dot_color(self._owner_dot, theme.GREEN)
+        self._owner.setText(WATCH_OWNER_TEXT)
+        self._owner.setStyleSheet(f"color: {theme.GREEN};")
         clear_layout(self._watch_grid)
         for i, item in enumerate(items):
             self._watch_grid.addWidget(label(item.name), i * 2, 0)
@@ -229,9 +217,6 @@ class Dashboard(QWidget):
 
     # ── 讀取（測試與狀態檢查用）──
 
-    def auto_recheck_text(self) -> str:
-        return self._auto_recheck.text()
-
     def gateway_names(self) -> list[str]:
         return list(self._cards)
 
@@ -243,9 +228,6 @@ class Dashboard(QWidget):
 
     def gateway_text(self, name: str) -> str:
         return visible_text(self._cards[name])
-
-    def watch_note(self) -> str:
-        return self._watch_note.text()
 
     def watch_text(self) -> str:
         return all_text(self._watch_card)

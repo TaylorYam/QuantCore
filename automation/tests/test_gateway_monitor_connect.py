@@ -1,7 +1,7 @@
 """GatewayMonitor 用哪個連線身分連 Gateway（#147）。
 
-Tk Panel 的心跳維持原本的值班身分（ROLE_MONITOR、可寫連線）；新 PySide6 Panel
-並行期間改用唯讀身分，兩個 Panel 同時開才不會互搶 clientId。不連真的 IB。
+預設是值班身分（ROLE_MONITOR、可寫連線）；呼叫端也可以指定別的身分與唯讀連線。
+不連真的 IB。
 """
 from __future__ import annotations
 
@@ -48,12 +48,12 @@ def test_default_monitor_keeps_the_watch_identity(fake_ib):
 
 
 def test_monitor_can_connect_with_a_readonly_identity(fake_ib):
-    from broker import ROLE_PANEL_READONLY, client_id as get_client_id
+    from broker import ROLE_PANEL, client_id as get_client_id
     from gateway_monitor import GatewayMonitor
 
-    mon = GatewayMonitor(["Rosa"], role=ROLE_PANEL_READONLY, readonly=True)
+    mon = GatewayMonitor(["Rosa"], role=ROLE_PANEL, readonly=True)
     call = _run_once(mon, "Rosa")
 
-    assert call["clientId"] == get_client_id("Rosa", ROLE_PANEL_READONLY)
+    assert call["clientId"] == get_client_id("Rosa", ROLE_PANEL)
     assert call["readonly"] is True
     assert call["port"] == 4002

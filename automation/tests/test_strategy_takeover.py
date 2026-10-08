@@ -4,18 +4,13 @@
 以 in-memory Broker（tests/fake_broker.py）走 strategy_takeover 的真實流程：預覽（Account、標的、現有股數、
 策略整數目標、差額與方向；目標 0 = 賣出現有股數）、取消、未結案手動單與
 掛單的拒絕、確認前重算讓舊預覽失效、成功、拒單、部分成交、逾時後重啟再
-完成、per-Strategy 取整，以及其他 Account／標的不受影響。Panel 的兩個視窗
-在自己的 Tk 行程裡驗證。全部離線：不連 IB、不發 Telegram、不寫 SP500 state。
+完成、per-Strategy 取整，以及其他 Account／標的不受影響（Panel 畫面見
+test_qt_takeover）。全部離線：不連 IB、不發 Telegram、不寫 SP500 state。
 """
 
 from __future__ import annotations
 
-import json
-import os
 import sqlite3
-import subprocess
-import sys
-from pathlib import Path
 from types import SimpleNamespace as NS
 
 import pandas as pd
@@ -315,89 +310,3 @@ def test_takeover_orders_survive_strategy_cancel_all():
     takeover = NS(order=NS(orderRef="QUANTCORE_TAKEOVER:ROSA:abc"))
     strategy = NS(order=NS(orderRef=""))
     assert ma.strategy_open_trades([takeover, strategy]) == [strategy]
-
-
-# ── Panel（各自的 Tk 行程；同行程第二個 Tk root 不可靠，見 test_panel_gui）─
-
-_GUI_SCRIPT = r"""
-import json, sys, tkinter as tk
-from tkinter import messagebox
-sys.path[:0] = sys.argv[1:3]
-from account_ctx import AccountCtx
-from rebalance_plan import PlannedOrder
-from strategy_takeover import TakeoverPreview, TakeoverResult
-from sync_position import SyncPlan
-import sync_preview_window as spw
-import takeover_window as tw
-
-tk.Toplevel.grab_set = lambda self: None
-messagebox.askyesno = lambda *a, **k: True
-root = tk.Tk(); root.withdraw()
-theme = dict.fromkeys(("bg", "bg2", "bg3", "accent", "accent_hl", "text",
-                       "text_dim", "blue", "green", "red", "btn_bg"), "#000000")
-btn = lambda parent, text, cmd, *a, **k: tk.Button(parent, text=text, command=cmd)
-
-def texts(widget):
-    for child in widget.winfo_children():
-        if isinstance(child, (tk.Label, tk.Button)):
-            yield child
-        yield from texts(child)
-
-out = {}
-# 1. Sync Pos 預覽的暫停區塊 → 「交給策略接管」
-ctx = AccountCtx(name="Rosa", account="U2", host="127.0.0.1", port=1, client_id=1,
-                 dry_run=True, order_type="LMT", outside_rth=True, wait_fill_sec=0,
-                 alloc_sr=0.0, alloc_sp500=0.5, alloc_skewls=0.0, price_feed_port=None,
-                 tg_token="", tg_chat_id="")
-plan = SyncPlan(ctx=ctx, orders=[], nav=100000.0, sr_wgt={}, sp500_wgt={}, sr_date="N/A",
-                sp500_date="D", prices={"XYZ": 100.0}, targets={}, current_pos={"XYZ": 10.0},
-                current_other_holdings=[], paused={"XYZ": "手動持倉 10 股已進入 SP500 Universe"},
-                paused_orders=[PlannedOrder("XYZ", "BUY", 240, 100.0, "SP500", 250, 10)])
-picked = []
-sync = spw.SyncPreviewWindow(parent=root, account_name="Rosa", theme=theme, log=lambda m: None,
-                             btn_factory=btn, on_confirm=lambda p: None,
-                             on_takeover=picked.append)
-sync.show_computing(); root.update(); sync.show_plan(plan); root.update()
-[button] = [w for w in texts(sync.win) if w.cget("text") == "交給策略接管"]
-button.invoke(); root.update()
-out["picked"] = picked
-out["sync_closed"] = not sync._alive()
-
-# 2. 接管視窗：預覽 → 確認 → 結果
-preview = TakeoverPreview(account_name="Rosa", symbol="XYZ", current=10.0, manual=10.0,
-                          target=0, parts=(("SP500", 0),),
-                          pause_reason="手動持倉 10 股已進入 SP500 Universe",
-                          price=100.0, nav=100000.0, signal_dates="SR N/A｜SP500 2026-09-22")
-confirmed = []
-win = tw.TakeoverWindow(parent=root, account_name="Rosa", symbol="XYZ", theme=theme,
-                        log=lambda m: None, btn_factory=btn, on_confirm=confirmed.append)
-win.show_computing(); win.progress("  Connecting to IB (Rosa)..."); root.update()
-win.show_preview(preview); root.update()
-out["preview"] = [w.cget("text") for w in texts(win.win)]
-[confirm] = [w for w in texts(win.win) if w.cget("text").startswith("確認接管")]
-confirm.invoke(); root.update()
-out["confirmed"] = [p.symbol for p in confirmed]
-win.show_result(TakeoverResult("COMPLETED", "接管完成：IB 0 股，XYZ 恢復策略送單", preview))
-root.update()
-out["result"] = [w.cget("text") for w in texts(win.win)]
-print(json.dumps(out, ensure_ascii=False))
-root.destroy()
-"""
-
-
-def test_panel_takeover_button_preview_and_result():
-    """Sync Pos 暫停區塊的「交給策略接管」開接管流程；預覽寫明目標 0 要賣出現有股數，
-    確認後交給 Panel 送單，結果顯示在同一個視窗。"""
-    automation = Path(__file__).resolve().parents[1]
-    done = subprocess.run(
-        [sys.executable, "-c", _GUI_SCRIPT, str(automation), str(automation.parent)],
-        capture_output=True, timeout=120,
-        env={**os.environ, "PYTHONIOENCODING": "utf-8"})
-    assert done.returncode == 0, done.stderr.decode("utf-8", "replace")[-2000:]
-    out = json.loads(done.stdout.decode("utf-8"))
-    assert out["picked"] == ["XYZ"] and out["sync_closed"]
-    assert "差額：-10 股 — 策略目標為 0，將賣出現有 10 股" in out["preview"]
-    assert "確認接管並送出 SELL 10" in out["preview"]
-    assert out["confirmed"] == ["XYZ"]
-    assert "✅ 接管完成" in out["result"]
-    assert "接管完成：IB 0 股，XYZ 恢復策略送單" in out["result"]

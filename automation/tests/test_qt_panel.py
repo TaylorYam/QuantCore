@@ -1477,6 +1477,32 @@ def test_adjusting_allocation_saves_only_this_accounts_alloc_fields(
     assert "130% (1.3x)" in params.text()                              # 其他帳戶不變
 
 
+def test_allocation_dialog_starts_from_the_file_not_the_last_read(
+        make_window, qtbot, extras, dialogs):
+    """同 Tk：開對話框前重讀設定，別處改過 Allocation 時初始值與首次啟用判斷才正確。"""
+    w = make_window()
+    _wait_extras(w, qtbot)
+    extras.config["Taylor"] = {"alloc_sr": 0.60, "alloc_sp500": 0.50, "alloc_skewls": 0.10}
+    dialogs.allocation_answers = [(0.60, 0.50, 0.20)]
+    _edit_params(w, qtbot)
+    assert dialogs.allocation_asked == [("Taylor", (0.60, 0.50, 0.10))]
+    (title, text, warning), = dialogs.confirms
+    assert not warning                                                  # Skew LS 已經開過
+    assert "130% (1.3x)" in w.portfolio.detail.params.text()                # 存的是 60/50/20
+
+
+def test_allocation_reread_failure_is_shown_without_opening_the_dialog(
+        make_window, qtbot, extras, dialogs):
+    w = make_window()
+    _wait_extras(w, qtbot)
+    extras.config["Taylor"] = OSError("accounts.json missing")
+    _edit_params(w, qtbot)
+    assert dialogs.allocation_asked == [] and extras.saves == []
+    (title, text, error), = dialogs.messages
+    assert error and "accounts.json missing" in text
+    assert "設定讀取失敗" in w.portfolio.detail.params.text()
+
+
 def test_cancelling_the_allocation_dialog_or_the_confirmation_saves_nothing(
         make_window, qtbot, extras, dialogs):
     w = make_window()

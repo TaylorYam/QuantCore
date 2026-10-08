@@ -135,7 +135,7 @@ class MainWindow(QMainWindow):
         self._read_data_date = read_data_date
         names = [a["name"] for a in accounts]
         self._names = names
-        # 單一帳戶頁的權益序列、策略參數（唯讀）、最近成交：讀本機檔案，背景讀；
+        # 單一帳戶頁的權益序列、策略參數、最近成交：讀本機檔案，背景讀；
         # 出入金要向 IB Flex 下載（可能要等幾秒），排在所有帳戶的本機資料之後
         self._extra_fetchers = ((PARAMS, strategy_config_fetch), (TRADES, trades_fetch),
                                 (EQUITY, equity_fetch), (FLOWS, cash_flows_fetch))
@@ -474,9 +474,16 @@ class MainWindow(QMainWindow):
         """調整帳戶的 Allocation（#220，同 Tk 的 Save）：拉桿 → 檢查 → 確認 → 只寫這個帳戶。"""
         from strategy_params_display import allocation_change, allocations_from_cfg
 
-        cfg = self.portfolio.extra(name, PARAMS)
-        if cfg is None or self._allocation_save is None:
+        if self._allocation_save is None:
             return
+        # 開對話框前重讀（同 Tk）：初始值、有沒有變、Skew LS 是否首次啟用都以檔案現況為準
+        try:
+            cfg = self._strategy_config_fetch(name)
+        except Exception as e:
+            self._on_account_extra(name, PARAMS, None, str(e) or type(e).__name__)
+            self._dialogs.show_message("策略參數", f"[{name}] 設定讀取失敗：{e}", error=True)
+            return
+        self.portfolio.set_extra(name, PARAMS, cfg)
         values = self._dialogs.ask_allocation(name, allocations_from_cfg(cfg))
         if values is None:
             return

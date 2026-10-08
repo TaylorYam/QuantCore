@@ -1,9 +1,10 @@
 """Strategy Parameters display shared by the Tk and Qt Panels (#150).
 
 No GUI imports: takes the three Allocation values of one Account and returns the
-text each Panel shows. `allocation_change` checks an Allocation edit and builds the
-confirmation text before a Panel saves it (#220, same rules as the Tk Save). Colors come back as theme key names ("blue", "green",
-"red", "orange") so each toolkit maps its own palette.
+text each Panel shows. Colors come back as theme key names ("blue", "green",
+"red", "orange") so each toolkit maps its own palette. `allocation_change` checks
+an Allocation edit and builds the confirmation text before a Panel saves it
+(#220, the Tk Save rules).
 
 Leverage is always derived as the sum of the Allocations (CONTEXT「Leverage」);
 the `leverage` field in the config is never read here.
@@ -79,14 +80,19 @@ class AllocationChange:
             first = row.key == "alloc_skewls" and self.first_enable_skewls
             note = "  ← 首次啟用（會放空 XLC）" if first else ""
             lines.append(f"  {row.label}：{row.text}{note}")
-        lines.append(f"  合計 Leverage：{params.leverage_text}")
-        total = round(sum(self.values), 2)
-        if total > 1.0:
-            lines.append(f"  借款：{total - 1.0:.0%}")
+        lines.append(f"  合計 Leverage：{params.leverage_text}（{params.detail}）")
         lines += ["", "只改這個帳戶的設定。"]
         if self.first_enable_skewls:
             lines += ["", "注意：Skew LS 含 XLC 放空部位，請確認這個 IB 帳戶能放空（margin 帳戶）。"]
         return "\n".join(lines)
+
+
+def allocation_error(values: tuple[float, float, float]) -> str:
+    """Why these Allocations cannot be saved; empty string when they can."""
+    total = round(sum(round(v, 2) for v in values), 2)
+    if total > MAX_TOTAL_ALLOCATION:
+        return f"合計 {total:.0%} 超過上限 {MAX_TOTAL_ALLOCATION:.0%}，不能儲存。"
+    return ""
 
 
 def allocation_change(account: str, cfg_before: dict,
@@ -94,8 +100,5 @@ def allocation_change(account: str, cfg_before: dict,
     """Check new (SR, SP500, Skew LS) Allocations against the Account's current config."""
     new = tuple(round(v, 2) for v in values)
     old = tuple(round(v, 2) for v in allocations_from_cfg(cfg_before))
-    total = round(sum(new), 2)
-    error = (f"合計 {total:.0%} 超過上限 {MAX_TOTAL_ALLOCATION:.0%}，不能儲存。"
-             if total > MAX_TOTAL_ALLOCATION else "")
-    return AllocationChange(account, new, new != old, error,
+    return AllocationChange(account, new, new != old, allocation_error(new),
                             first_enable_skewls=old[2] == 0.0 and new[2] > 0.0)

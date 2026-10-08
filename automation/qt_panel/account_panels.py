@@ -149,7 +149,7 @@ class AllocationDialog(QDialog):
         leverage.setText(params.leverage_text)
         leverage.setStyleSheet(f"color: {theme.color(params.leverage_color)};")
         detail.setText(params.detail)
-        error = strategy_params_display.allocation_change("", {}, values).error
+        error = strategy_params_display.allocation_error(values)
         self._error.setText(error)
         self._error.setVisible(bool(error))
         self.save_button.setEnabled(not error)

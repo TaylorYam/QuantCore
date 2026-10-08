@@ -311,3 +311,91 @@ def test_digest_on_delivered_only_after_every_chunk_is_sent(monkeypatch):
     d.send()
     assert calls == ["Rosa", "Taylor"]
 
+
+
+# ── send_system／send_account／account_header（#207）─────────────────
+
+@pytest.fixture
+def tg_config(monkeypatch):
+    """假的 config.json／accounts.json（含 Telegram 設定），以及記錄送出的假 tg_send。"""
+    import account_utils
+    import notify
+
+    base = {"telegram_token": "SHARED-T", "telegram_chat_id": "SHARED-C"}
+    accounts = [{"name": "Taylor", "telegram_token": "TAYLOR-T", "telegram_chat_id": "TAYLOR-C"},
+                {"name": "Rosa"}]                       # Rosa 沒覆寫：用共用頻道
+    monkeypatch.setattr(account_utils, "load_base_config", lambda: dict(base))
+    monkeypatch.setattr(account_utils, "load_accounts", lambda: [dict(a) for a in accounts])
+    state = MagicMock(base=base, accounts=accounts, ok=True, sent=[])
+
+    def fake_send(msg, *, token, chat_id):
+        state.sent.append((msg, token, chat_id))
+        return state.ok
+
+    monkeypatch.setattr(notify, "tg_send", fake_send)
+    return state
+
+
+def test_send_system_goes_to_the_shared_channel(tg_config):
+    import notify
+    assert notify.send_system("⚠️ Rosa disconnected") is True
+    assert tg_config.sent == [("⚠️ Rosa disconnected", "SHARED-T", "SHARED-C")]
+
+
+def test_send_account_uses_the_accounts_own_channel(tg_config):
+    import notify
+    assert notify.send_account("taylor", "hi") is True        # 名字不分大小寫
+    assert tg_config.sent == [("hi", "TAYLOR-T", "TAYLOR-C")]
+
+
+def test_send_account_without_its_own_setting_uses_the_shared_channel(tg_config):
+    import notify
+    assert notify.send_account("Rosa", "hi") is True
+    assert tg_config.sent == [("hi", "SHARED-T", "SHARED-C")]
+
+
+def test_send_account_for_an_unknown_account_falls_back_to_the_shared_channel(tg_config):
+    import notify
+    assert notify.send_account("Nobody", "hi") is True
+    assert tg_config.sent == [("hi", "SHARED-T", "SHARED-C")]
+
+
+def test_missing_settings_return_false_without_raising_and_log(tg_config, caplog):
+    import notify
+    tg_config.base.clear()
+    with caplog.at_level("WARNING", logger="notify"):
+        assert notify.send_system("x") is False
+        assert notify.send_account("Rosa", "x") is False
+    assert tg_config.sent == []
+    assert "Telegram" in caplog.text and "Rosa" in caplog.text
+
+
+def test_unreadable_config_returns_false_without_raising(monkeypatch, tg_config):
+    import account_utils
+    import notify
+
+    def broken():
+        raise OSError("config.json missing")
+
+    monkeypatch.setattr(account_utils, "load_base_config", broken)
+    assert notify.send_system("x") is False
+    assert tg_config.sent == []
+
+
+def test_failed_send_returns_false(tg_config):
+    import notify
+    tg_config.ok = False
+    assert notify.send_account("Taylor", "x") is False
+    assert notify.send_system("x") is False
+
+
+def test_account_header_is_bold_and_escaped():
+    import notify
+    assert notify.account_header("Taylor", "手動持倉") == "<b>[Taylor] 手動持倉</b>"
+    assert notify.account_header("A&B", "x<y") == "<b>[A&amp;B] x&lt;y</b>"
+
+
+def test_tests_cannot_reach_the_real_telegram_api():
+    """conftest 的防線：真的 urlopen 到 api.telegram.org 會被擋，tg_send 當成送不出去。"""
+    import notify
+    assert notify.tg_send("x", token="123:real", chat_id="456") is False

@@ -16,7 +16,7 @@ Usage:
     ctx = AccountCtx.from_name('Taylor', ROLE_REBALANCE)
     with Broker().connect(ctx) as conn:
         nav = conn.nav()
-    tg_send(msg, token=ctx.tg_token, chat_id=ctx.tg_chat_id)
+    send_account(ctx.name, msg)          # notify：該帳戶的 Telegram（#207）
 
 Migration 注意事項：
     - 本 module 不動 _apply_config()，只新增 AccountCtx

@@ -2,7 +2,10 @@
 Telegram 通知統一模組。
 
 所有 script 共用這裡的 `tg_send` / `tg_send_photo`，避免 5 份複製漂移。
-Token / chat_id 由 caller 傳入（之後遷移到 AccountCtx 後可直接傳 ctx 欄位）。
+Token / chat_id 由 caller 傳入；手動／Panel 路徑改用 `send_system`（共用頻道）與
+`send_account`（該帳戶頻道：沒覆寫就是共用設定，帳戶讀不到也退回共用），目的地
+只問 `account_utils.telegram_dest`
+（#207）。
 
 訊息原則（#26）：只發與下單有關的訊息和錯誤；`--account all` 的排程用
 `Digest` 把三帳戶合成一則，沒內容就不發。
@@ -17,6 +20,10 @@ Usage:
     from functools import partial
     tg = partial(tg_send, token=TG_TOKEN, chat_id=TG_CHAT_ID)
     tg("hello")
+
+    # 送到哪由設定決定（#207）
+    send_system("⚠️ Rosa disconnected")                     # config.json 共用頻道
+    send_account("Taylor", account_header("Taylor", "手動持倉") + "\n…")
 
     # 多帳戶合併一則
     digest = Digest("調倉 2026-09-15", icon="📤")
@@ -109,6 +116,34 @@ def tg_send_photo(photo_path: str, *, token: str, chat_id: str,
                 log.warning(f"Telegram photo HTTP {resp.status}")
     except Exception as e:
         log.warning(f"Telegram photo failed: {e}")
+
+
+# ── 送到哪（#207）：目的地只問 account_utils.telegram_dest ─────────────
+
+def send_system(msg: str) -> bool:
+    """系統層訊息（值班警報、報表失敗等）→ config.json 的共用頻道。
+    送出才回 True；沒設定或送不出去回 False、記一行 warning，不丟例外。"""
+    from account_utils import telegram_dest
+    return _send_to(telegram_dest(), msg, "共用頻道")
+
+
+def send_account(name: str, msg: str) -> bool:
+    """帳戶訊息 → 該帳戶的頻道（沒覆寫就是共用設定；帳戶讀不到也退回共用頻道；
+    帳戶覆寫成空字串則不送）。回傳與失敗語意同 send_system。"""
+    from account_utils import telegram_dest
+    return _send_to(telegram_dest(name), msg, name)
+
+
+def _send_to(dest: dict, msg: str, who: str) -> bool:
+    if not dest.get("token") or not dest.get("chat_id"):
+        log.warning(f"Telegram 沒設定（{who}），訊息沒送出")
+        return False
+    return bool(tg_send(msg, **dest))           # 送不出去時 tg_send 已記 warning
+
+
+def account_header(name: str, title: str) -> str:
+    """帳戶訊息的第一行：粗體「[帳戶] 標題」（HTML escape）。"""
+    return f"<b>[{html.escape(name)}] {html.escape(title)}</b>"
 
 
 def split_message(msg: str, limit: int = TG_MAX_CHARS) -> list[str]:

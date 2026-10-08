@@ -94,6 +94,28 @@ FAKE_ACCOUNTS = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _block_real_telegram(monkeypatch):
+    """測試不准真的發 Telegram（#207）。
+
+    本機就是 live 機器、config.json 有真的 token：送出口改問 telegram_dest 之後，
+    沒換掉 notify.send_account／tg_send 的測試會讀到真的設定。這裡把對
+    api.telegram.org 的 HTTP 請求一律擋下（tg_send 會當成送不出去、回 False）；
+    test_notify 自己 patch urlopen 的測試不受影響。
+    """
+    import urllib.request
+
+    real_urlopen = urllib.request.urlopen
+
+    def guarded(req, *args, **kwargs):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        if "api.telegram.org" in url:
+            raise RuntimeError("測試試圖真的發 Telegram；請換掉 notify.send_account／tg_send")
+        return real_urlopen(req, *args, **kwargs)
+
+    monkeypatch.setattr(urllib.request, "urlopen", guarded)
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _run_status_outside_live_logs(tmp_path_factory):
     """排程執行紀錄（#38）整個測試階段都寫到暫存目錄。

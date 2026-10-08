@@ -27,9 +27,6 @@ cfg_path = BASE_DIR / 'config.json'
 with open(cfg_path, encoding='utf-8') as f:
     cfg = json.load(f)
 
-TG_TOKEN   = cfg.get('telegram_token',   '')
-TG_CHAT_ID = cfg.get('telegram_chat_id', '')
-
 SINOPAC_API_KEY    = cfg.get('sinopac_api_key',    '')
 SINOPAC_SECRET_KEY = cfg.get('sinopac_secret_key', '')
 SINOPAC_PERSON_ID  = cfg.get('sinopac_person_id',  '')
@@ -37,8 +34,8 @@ SINOPAC_CA_PATH    = cfg.get('sinopac_ca_path',    '')
 SINOPAC_CA_PASSWD  = cfg.get('sinopac_ca_password', '')
 
 
-# ── Telegram（統一由 notify.py 提供）─────────────────────────────────────
-from notify import tg_send as _tg
+# ── Telegram：config.json 共用頻道（notify.send_system，#207）────────────
+from notify import send_system
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
@@ -131,13 +128,12 @@ def main():
             lines.append(f"\n🚨 <b>追繳金額: NT${margin_call:,.0f}</b>")
 
         msg = "\n".join(lines)
-        _tg(msg, token=TG_TOKEN, chat_id=TG_CHAT_ID)
-        log.info("Telegram report sent.")
+        if send_system(msg):
+            log.info("Telegram report sent.")
 
     except Exception as e:
         log.error(f"ERROR: {e}", exc_info=True)
-        _tg(f"<b>❌ 永豐期貨權益報告失敗</b>\n{e}",
-            token=TG_TOKEN, chat_id=TG_CHAT_ID)
+        send_system(f"<b>❌ 永豐期貨權益報告失敗</b>\n{e}")
         raise
 
     finally:

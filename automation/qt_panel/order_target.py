@@ -41,17 +41,6 @@ def default_live_files() -> OrderFiles:
 LIVE_TARGET_TEXT = "實盤帳戶（各帳戶自己的 Gateway）"
 
 
-def account_telegram(account_name: str, msg: str) -> bool:
-    """實盤手動單結案通知：該帳戶的 Telegram。"""
-    from account_utils import telegram_dest
-    from notify import tg_send
-
-    destination = telegram_dest(account_name)
-    if not destination.get("token") or not destination.get("chat_id"):
-        return False
-    return bool(tg_send(msg, **destination))
-
-
 class OrderTarget:
     """送到各帳戶自己的實盤 Gateway；帳戶身分、紀錄、state 與 Telegram 見模組說明。"""
     venue = "實盤"             # Output Log 標記：「Sync Position（實盤）」「手動持倉·實盤」
@@ -89,8 +78,9 @@ class OrderTarget:
     #    Telegram）─────────────────────────────────────────────────────
 
     def manual_order_notice(self, account: str, message: str) -> bool:
-        """手動單結案通知；回傳 True 才記已通知。"""
-        return account_telegram(account, message)
+        """手動單結案通知：該帳戶的 Telegram；回傳 True 才記已通知。"""
+        from notify import send_account
+        return send_account(account, message)
 
     def report_sync(self, plan, placed: list[dict], fills: list[dict],
                     log_fn: Callable[[str], None]) -> None:
@@ -101,9 +91,12 @@ class OrderTarget:
         for step, what in ((sync_position.log_sync_trades, "trade_log.xlsx 寫入"),
                            (sync_position.send_sync_result, "Telegram 通知")):
             try:
-                step(plan, placed, fills)
+                ok = step(plan, placed, fills)
             except Exception as e:
                 log_fn(f"[!] Sync Pos {what}失敗：{e}")
+            else:
+                if ok is False:
+                    log_fn(f"[!] Sync Pos {what}沒送出（該帳戶與共用頻道都沒設定或送不出去）")
 
     # ── Trading 分頁用的三樣 ─────────────────────────────────────────
 

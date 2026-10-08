@@ -35,6 +35,7 @@ from manual_order_status import (
     fill_totals, status_from_trade,
 )
 from market_calendar import NYSE_EARLY_CLOSES, official_sessions
+from notify import account_header
 
 
 # ── Constants ───────────────────────────────────────────────────────────────
@@ -1910,7 +1911,7 @@ class ManualOrderService:
         validity = session if row["session"] == "OVERNIGHT" else f"{session} DAY"
         forced = row.get("forced_cancel_reason")
         return (
-            f"手動委託結果｜{row['account_name']}\n"
+            f"{account_header(row['account_name'], '手動委託結果')}\n"
             f"委託編號：{notification_ref}\n"
             f"{row['action']} {quantity} 股 {row['symbol']}｜"
             f"{price_condition}｜{validity}\n"
@@ -1923,7 +1924,7 @@ class ManualOrderService:
         notification_ref = str(row["order_ref"]).rsplit(":", 1)[-1][:12].upper()
         session = SESSION_LABELS[row["session"]]
         return (
-            f"手動委託需要確認｜{row['account_name']}\n"
+            f"{account_header(row['account_name'], '手動委託需要確認')}\n"
             f"委託編號：{notification_ref}\n"
             f"{row['action']} {row['quantity']} 股 {row['symbol']}｜{session}｜{status}\n"
             "IB 尚未確認最終狀態；系統保留同 Account／標的未結案鎖，"

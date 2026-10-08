@@ -339,8 +339,10 @@ def sync_result_text(plan: SyncPlan, placed: list[dict], fill_results: list[dict
     """送出結果的 Telegram 內容（HTML）；沒有成交回報時列委託。"""
     from datetime import date as _date
 
+    from notify import account_header
+
     lines = [
-        f"<b>[{plan.ctx.name}] Sync Position — LMT</b>",
+        account_header(plan.ctx.name, "Sync Position — LMT"),
         f"Date: {today or _date.today()}",
         f"NAV: <b>${plan.nav:,.2f}</b>",
         f"SR: {plan.sr_date}  |  SP500: {plan.sp500_date}",
@@ -362,8 +364,7 @@ def sync_result_text(plan: SyncPlan, placed: list[dict], fill_results: list[dict
     return "\n".join(lines)
 
 
-def send_sync_result(plan: SyncPlan, placed: list[dict], fill_results: list[dict]) -> None:
-    """送出結果發到該帳戶的 Telegram。"""
-    from notify import tg_send
-    tg_send(sync_result_text(plan, placed, fill_results),
-            token=plan.ctx.tg_token, chat_id=plan.ctx.tg_chat_id)
+def send_sync_result(plan: SyncPlan, placed: list[dict], fill_results: list[dict]) -> bool:
+    """送出結果發到該帳戶的 Telegram；送出才回 True。"""
+    from notify import send_account
+    return send_account(plan.ctx.name, sync_result_text(plan, placed, fill_results))

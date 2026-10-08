@@ -1,6 +1,6 @@
 """Portfolio 畫面（#149、#150）：上方三帳戶總覽，點選後下方顯示該帳戶的細節。
 
-細節：指標卡、權益／業績曲線（pyqtgraph，#150、#166）、策略參數（唯讀）、配置圓環、
+細節：指標卡、權益／業績曲線（pyqtgraph，#150、#166）、策略參數（可調整 Allocation，#220）、配置圓環、
 持倉、最近成交。權益序列、出入金、策略參數、最近成交由主視窗在背景讀好再交給這裡
 （set_extra）。
 
@@ -319,7 +319,7 @@ class AccountDetail(QWidget):
     圖和兩張表跟著視窗伸縮，表格列數多時在卡片內部捲動。
     """
 
-    def __init__(self):
+    def __init__(self, on_edit_params: Callable[[], None] | None = None):
         super().__init__()
         lay = _FitLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -346,7 +346,7 @@ class AccountDetail(QWidget):
         self.equity = EquityChart()
         equity.body.addWidget(self.equity, 1)
         grid.addWidget(equity, 0, 0)
-        self.params = StrategyParamsCard()
+        self.params = StrategyParamsCard(on_edit=on_edit_params)
         _compact(self.params)
         self.params.setFixedWidth(SIDE_WIDTH)
         grid.addWidget(self.params, 0, 1)
@@ -438,7 +438,9 @@ class AccountDetail(QWidget):
 # ── 畫面 ─────────────────────────────────────────────────────────────
 
 class PortfolioPage(QWidget):
-    def __init__(self, accounts: list[str], *, on_refresh: Callable[[], None]):
+    def __init__(self, accounts: list[str], *, on_refresh: Callable[[], None],
+                 on_edit_allocation: Callable[[str], None] | None = None):
+        """on_edit_allocation(帳戶)：策略參數卡按「調整…」（#220）；None = 不能調整。"""
         super().__init__()
         self._states: dict = {}
         self._extras: dict[str, dict] = {name: {} for name in accounts}
@@ -465,7 +467,9 @@ class PortfolioPage(QWidget):
             row.addWidget(card, 1)
         root.addLayout(row)
 
-        self.detail = AccountDetail()
+        self.detail = AccountDetail(
+            None if on_edit_allocation is None
+            else lambda: self._selected and on_edit_allocation(self._selected))
         # 視窗夠大時一頁放得下（#177）；比細節的最小尺寸還小才整頁捲動
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -499,6 +503,10 @@ class PortfolioPage(QWidget):
             self._cards[name].set_equity(series, flows.flows if flows else None)
         if name == self._selected:
             self.detail.show_extras(self._extras[name])
+
+    def extra(self, name: str, kind: str):
+        """背景讀好的某項資料；還沒讀到或讀取失敗回 None。"""
+        return self._extras.get(name, {}).get(kind, (None, ""))[0]
 
     def select(self, name: str) -> None:
         if name not in self._cards:

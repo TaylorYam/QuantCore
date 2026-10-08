@@ -63,6 +63,8 @@ class Dialogs(Protocol):
     def ask_credentials(self, account: str, username: str = "") -> Credentials | None: ...
     def show_message(self, title: str, text: str, *, error: bool = False) -> None: ...
     def confirm(self, title: str, text: str, *, warning: bool = False) -> bool: ...
+    def ask_allocation(self, account: str, current: tuple[float, float, float]
+                       ) -> tuple[float, float, float] | None: ...
 
 
 class QtDialogs:
@@ -90,6 +92,14 @@ class QtDialogs:
         box.setDefaultButton(QMessageBox.No)
         box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         return box.exec() == QMessageBox.Yes
+
+    def ask_allocation(self, account: str, current: tuple[float, float, float]
+                       ) -> tuple[float, float, float] | None:
+        """調整 Allocation 的拉桿對話框（#220）；取消 = None。"""
+        from qt_panel.account_panels import AllocationDialog
+        dialog = AllocationDialog(account, current, self._parent)
+        dialog.exec()
+        return dialog.result_values()
 
 
 class CredentialStore(Protocol):

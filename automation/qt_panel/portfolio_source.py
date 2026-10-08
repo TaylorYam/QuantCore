@@ -74,6 +74,26 @@ def read_strategy_allocations(account_name: str) -> dict:
     return {key: cfg[key] for key, *_ in STRATEGIES if key in cfg}
 
 
+def write_strategy_allocations(account_name: str, allocations: dict) -> None:
+    """把帳戶的 Allocation 寫進 accounts.json 該帳戶的覆寫值（#220）。
+
+    新 Panel 寫 accounts.json 只走這裡：只收三個 Allocation 欄位、每個 0–100%、
+    合計不超過上限，其他欄位（leverage、port、account 等）一律拒絕。
+    """
+    from account_utils import update_account_config
+    from strategy_params_display import MAX_TOTAL_ALLOCATION, STRATEGIES
+    allowed = {key for key, *_ in STRATEGIES}
+    other = sorted(set(allocations) - allowed)
+    if other:
+        raise ValueError(f"只能寫 Allocation 欄位，不能寫 {other}")
+    for key, value in allocations.items():
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"{key} = {value} 超出 0–100%")
+    if round(sum(allocations.values()), 2) > MAX_TOTAL_ALLOCATION:
+        raise ValueError(f"Allocation 合計超過 {MAX_TOTAL_ALLOCATION:.0%}")
+    update_account_config(account_name, dict(allocations))
+
+
 def load_account_cash_flows(account_name: str):
     """出入金（ib_flex.FlowsResult）：IB Flex 報表＋本機快取，同一天只下載一次。
 

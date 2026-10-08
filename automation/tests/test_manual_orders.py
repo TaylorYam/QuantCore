@@ -1715,7 +1715,7 @@ def test_unknown_status_alert_is_deduped_and_cleared_when_ib_reconciles(tmp_path
 
     service.refresh_status()
     assert len(state.notifications) == 1
-    assert "需要確認" in state.notifications[0][1]
+    assert state.notifications[0][1].splitlines()[0] == "<b>[Taylor] 手動委託需要確認</b>"
     service.refresh_status()
     assert len(state.notifications) == 1
 
@@ -1766,6 +1766,9 @@ def test_expired_order_is_terminal_and_notified_once(tmp_path):
 
     assert service.list_orders()[0]["status"] == "EXPIRED"
     assert [account for account, _message in state.notifications] == ["Yvonne"]
+    message = state.notifications[0][1]
+    assert message.splitlines()[0] == "<b>[Yvonne] 手動委託結果</b>"   # 帳戶訊息統一標題（#207）
+    assert "BUY 2 股 ZZZZ" in message
 
 
 def test_background_monitor_reconciles_without_an_open_manual_order_window():

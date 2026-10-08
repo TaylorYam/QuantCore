@@ -197,9 +197,9 @@ def holding_rows(holdings: Iterable[Holding], nav: float, group: str,
 def all_holding_rows(pf: PortfolioSnapshot) -> list[HoldingRow]:
     if not pf.available:
         return []
-    alloc = tuple(pf.strategy_alloc) if pf.strategy_alloc else None
     return [row for group, key in HOLDING_GROUPS
-            for row in holding_rows(getattr(pf, key), pf.nav, group, pf.manual_symbols, alloc)]
+            for row in holding_rows(getattr(pf, key), pf.nav, group, pf.manual_symbols,
+                                    pf.strategy_alloc)]
 
 
 def holdings_text(rows: list[HoldingRow]) -> tuple[str, str]:

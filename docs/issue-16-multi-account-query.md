@@ -22,7 +22,7 @@ Issue: https://github.com/TaylorYam/QuantCore/issues/16
 
 ## 實作方向
 
-- 沿用 `ib_fetcher.fetch_portfolio(ctx)` 的單次查詢生命週期：建立連線、取得結果、結束時清理連線。三帳戶使用各自的 AccountCtx 與工作執行緒／event loop，不跨執行緒共用 IB 物件。
+- 沿用 `ib_fetcher.fetch_portfolio(ctx)`（#208 起為 `portfolio_snapshot.fetch_snapshot`）的單次查詢生命週期：建立連線、取得結果、結束時清理連線。三帳戶使用各自的 AccountCtx 與工作執行緒／event loop，不跨執行緒共用 IB 物件。
 - 查詢協調與每帳戶結果保存獨立於 Tk 畫面；以明確 Account 名稱提供結果與狀態，讓後續三帳戶總覽可直接使用。
 - 保存最後成功資料、最後成功時間、查詢中狀態及最近錯誤。資料先保存在 Panel 程序記憶體中，重啟後重新查詢；本次不新增磁碟快取。
 - Tk 主執行緒捕捉操作及更新畫面，背景結果依 Account 歸屬保存；晚到結果不得覆蓋其他 Account 的畫面。

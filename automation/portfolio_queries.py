@@ -11,11 +11,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import threading
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from portfolio_snapshot import PortfolioSnapshot
 
 
 @dataclass(frozen=True)
 class QueryState:
-    portfolio: object | None = None          # portfolio_snapshot.PortfolioSnapshot
+    portfolio: PortfolioSnapshot | None = None
     updated_at: datetime | None = None
     running: bool = False
     error: str | None = None

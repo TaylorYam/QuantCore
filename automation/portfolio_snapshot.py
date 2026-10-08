@@ -2,8 +2,8 @@
 QuantCore — Portfolio 快照（#208）
 
 一個帳戶此刻的權益、cushion、持倉（含報價、未實現損益）與分組，Panel 的 Portfolio 頁
-與唯讀驗收工具用。`fetch_snapshot(ctx)` 經 Broker 開一條連線讀完就斷，回傳不可變的
-`PortfolioSnapshot`；讀不到的部分照實留空並寫在 `error`，不丟例外。
+與唯讀驗收工具用。`fetch_snapshot(ctx)` 經 Broker 開一條連線讀完就斷（兩者都用
+readonly=True），回傳不可變的 `PortfolioSnapshot`；讀不到的部分照實留空並寫在 `error`，不丟例外。
 
 分組只問決策層：持倉分類（類股 ETF／SP500 Universe／其他）的唯一實作是
 `rebalance_plan.classify_holdings`，21:00 調倉、Sync Pos 用的是同一個函式。ETF 組 =
@@ -72,6 +72,7 @@ def fetch_snapshot(ctx: AccountCtx, *, readonly: bool = False) -> PortfolioSnaps
     from broker import Broker, connected_line
     from rebalance_plan import classify_holdings
     from signals import get_sp500_universe
+    from strategy_owner import INVERSE_ETFS
     from symbol_contract import contract_symbol
 
     source = f"IB Live [{ctx.name}]"
@@ -87,9 +88,11 @@ def fetch_snapshot(ctx: AccountCtx, *, readonly: bool = False) -> PortfolioSnaps
         positions = readings["positions"]
 
         if positions:
-            split = classify_holdings({p.contract.symbol: p.position for p in positions},
-                                      get_sp500_universe() or set())
-            stocks, others = set(split.sp500), set(split.other)
+            held = {p.contract.symbol: p.position for p in positions}
+            split = classify_holdings(held, get_sp500_universe() or set())
+            stocks = set(split.sp500)
+            # 策略持有的 ETF = 類股 ETF ＋ 不在 SP500 組的 SkewLS 反向 ETF
+            etfs = set(split.sr) | {s for s in held if s in INVERSE_ETFS and s not in stocks}
             prices = conn.prices([contract_symbol(p.contract) for p in positions])
             # 0 不當作有效報價：沒有報價時用成本價
             prices = {s: px for s, px in prices.items() if px > 0}
@@ -106,16 +109,15 @@ def fetch_snapshot(ctx: AccountCtx, *, readonly: bool = False) -> PortfolioSnaps
                     mkt_val=mkt_val, upnl=upnl,
                     upnl_pct=(px / avg_cost - 1) * 100 if avg_cost > 0 else 0,
                     name=getattr(p.contract, "longName", "") or "")
-                # 不是 SP500、也不是其他 = 策略持有的 ETF（類股 ETF＋反向 ETF）
-                if sym in others:
-                    buckets["other"].append(holding)
-                    totals["other"] += mkt_val
+                if sym in etfs:
+                    buckets["etf"].append(holding)
+                    totals["strategy"] += mkt_val
                 elif sym in stocks:
                     buckets["stock"].append(holding)
                     totals["strategy"] += mkt_val
-                else:
-                    buckets["etf"].append(holding)
-                    totals["strategy"] += mkt_val
+                else:                                # split.other：策略外 = 手動
+                    buckets["other"].append(holding)
+                    totals["other"] += mkt_val
                 totals["mktval"] += mkt_val
                 totals["upnl"] += upnl
 

@@ -342,6 +342,14 @@ def _run_rebalance(name="Rosa", mode="sp500"):
     return digest
 
 
+def test_rebalance_logs_the_same_connected_line(rebalance_env, caplog):
+    """#208：21:00 調倉直接向 Broker 要連線，連上後那行 log 和 #185 之前逐字相同。"""
+    caplog.set_level("INFO")
+    _run_rebalance()
+    assert ("Connected  host=127.0.0.1 port=4999 clientId=99 account=U00000001"
+            in caplog.messages)
+
+
 def test_rebalance_holds_only_the_paused_symbol(rebalance_env, caplog):
     # 啟用時 XYZ 還是策略外（手動）；之後 XYZ 進入 SP500 Universe
     ma.evaluate("Rosa", {"AAPL": 100.0, "XYZ": 10.0, "BTC": 1.5}, UNIVERSE)

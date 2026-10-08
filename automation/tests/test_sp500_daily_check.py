@@ -150,6 +150,19 @@ def _dip_limit(fake):
     return order.lmt
 
 
+def test_daily_check_logs_the_same_connected_line(dip_buy, caplog):
+    """#208：16:00 日度風控直接向 Broker 要連線，連上後那行 log 和 #185 之前逐字相同。"""
+    from account_ctx import AccountCtx
+    from account_utils import ROLE_MOO_CHECK
+
+    caplog.set_level("INFO")
+    _check()
+    ctx = AccountCtx.from_name("Taylor", ROLE_MOO_CHECK)
+    assert (f"Connected  host={ctx.host} port={ctx.port} clientId={ctx.client_id} "
+            f"account={ctx.account}") in caplog.messages
+    assert dip_buy.connects == [(ctx.host, ctx.port, ctx.client_id)]
+
+
 def test_dip_buy_limit_is_ask_times_1_003(dip_buy):
     assert _dip_limit(dip_buy) == round(100.1 * 1.003, 2)
 

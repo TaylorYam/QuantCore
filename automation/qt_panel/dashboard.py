@@ -21,7 +21,7 @@ LOG_MAX_LINES = 5000
 
 
 class GatewayCard(Card):
-    def __init__(self, name: str, port):
+    def __init__(self, name: str, port, color: str | None = None):
         super().__init__()
         self.name = name
         self.state = "init"
@@ -29,7 +29,7 @@ class GatewayCard(Card):
 
         top = QHBoxLayout()
         top.setSpacing(8)
-        top.addWidget(dot(theme.ACCOUNT_COLOR.get(name, theme.NAVY), 8))
+        top.addWidget(dot(color or theme.NAVY, 8))
         top.addWidget(label(name, name="MedNum"))
         top.addStretch(1)
         self._dot = dot(theme.GATEWAY_COLOR["init"])
@@ -93,7 +93,7 @@ class Dashboard(QWidget):
         row.setSpacing(12)
         self._cards: dict[str, GatewayCard] = {}
         for acct in accounts:
-            card = GatewayCard(acct["name"], acct.get("port"))
+            card = GatewayCard(acct["name"], acct.get("port"), acct.get("color"))
             self._cards[acct["name"]] = card
             row.addWidget(card, 1)
         root.addLayout(row)

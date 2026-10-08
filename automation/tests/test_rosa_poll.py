@@ -3,7 +3,7 @@ Unit tests for rosa_poll — pure logic for the ROSA market-window poller.
 
 Two functions under test:
   * next_rosa_poll_time(now) → datetime  (next clock-aligned tick we should fire)
-  * rosa_poll_decision(now, is_online, restart, sleep) → str | None
+  * rosa_poll_decision(now, is_online, restart, sleep, account=) → str | None
       (the Telegram message to send, or None if all is well)
 
 Both are pure (no Tk, no IB, no real time) so we can pin every branch.
@@ -103,6 +103,7 @@ def test_decision_online_returns_none():
         is_online=lambda: True,
         restart=_never_call,
         sleep=_never_call,
+        account="Rosa",
     )
     assert result is None
 
@@ -116,6 +117,7 @@ def test_decision_outside_window_returns_none():
         is_online=_never_call,              # must short-circuit before checking
         restart=_never_call,
         sleep=_never_call,
+        account="Rosa",
     )
     assert result is None
 
@@ -140,6 +142,7 @@ def test_decision_offline_then_retry_succeeds_returns_none():
         is_online=is_online,
         restart=restart,
         sleep=sleeps.append,
+        account="Rosa",
     )
 
     assert result is None
@@ -157,6 +160,7 @@ def test_decision_offline_retry_fails_returns_alert_message():
         is_online=lambda: False,  # always offline
         restart=lambda: True,     # spawn fired
         sleep=lambda s: None,
+        account="Rosa",
     )
 
     assert result is not None
@@ -174,6 +178,18 @@ def test_decision_offline_restart_refused_still_alerts():
         is_online=lambda: False,
         restart=lambda: False,    # refused (existing thread alive)
         sleep=lambda s: None,
+        account="Rosa",
     )
     assert result is not None
     assert "Rosa" in result
+
+
+def test_alert_names_the_remote_gateway_account():
+    """警報文字由帳戶名組成（#211）；Rosa 的文字和改動前逐字相同。"""
+    from rosa_poll import rosa_poll_decision
+    def alert(account):
+        return rosa_poll_decision(now_taipei=_t(2026, 5, 4, 22, 30), is_online=lambda: False,
+                                  restart=lambda: True, sleep=lambda s: None, account=account)
+    assert alert("Rosa") == ("\U0001F534 <b>Rosa</b> Gateway disconnected\n"
+                             "<code>polling check + retry failed</code>")
+    assert alert("Zoe").startswith("\U0001F534 <b>Zoe</b> Gateway disconnected")

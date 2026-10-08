@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import threading
-from typing import Callable, Protocol
+from typing import Callable, Protocol, Sequence
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
@@ -122,8 +122,10 @@ class GatewayStartFlow(QObject):
     def __init__(self, *, ports_factory: PortsFactory, dialogs: Dialogs,
                  log: Callable[[str], None], recheck: Callable[[], None],
                  states: Callable[[], dict[str, str]], after_checks: Callable[[], None],
-                 step_aside: Callable[[], None]):
+                 step_aside: Callable[[], None], accounts: Sequence[str]):
+        """accounts：一鍵啟動的實盤帳戶（有 gateway_dir 的，#211）。"""
         super().__init__()
+        self._accounts = tuple(accounts)
         self._ports_factory = ports_factory
         self._dialogs = dialogs
         self._log = log
@@ -160,7 +162,8 @@ class GatewayStartFlow(QObject):
 
     def _run(self) -> None:
         try:
-            result = gs.start_live_gateways(self._ports_factory(self._ask_credentials))
+            result = gs.start_live_gateways(self._ports_factory(self._ask_credentials),
+                                            self._accounts)
             self._done.emit(result, gs.describe(result), True)
         except Exception as e:
             self._done.emit(None, f"啟動 Gateway 失敗：{type(e).__name__}: {e}", False)

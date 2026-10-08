@@ -42,7 +42,6 @@ from notify import account_header
 
 MANUAL_ORDER_REF_PREFIX = "QUANTCORE_MANUAL:"
 DEFAULT_STORE_PATH = Path(__file__).parent / "manual_orders.sqlite3"
-SUPPORTED_MANUAL_ACCOUNTS = ("Taylor", "Rosa", "Yvonne")
 SESSION_LABELS = {
     "REGULAR": "一般時段", "PRE_MARKET": "盤前", "AFTER_HOURS": "盤後",
     "OVERNIGHT": "隔夜",
@@ -931,14 +930,14 @@ class ManualOrderService:
                  notifier: Callable[[str, str], bool],
                  store_path: str | Path | None = None):
         if account_names is None:
-            from account_utils import load_accounts
+            # accounts.json 裡可以手動下單的帳戶（manual_orders，缺欄位＝可以；#211）
+            from account_utils import load_capabilities
 
-            account_names = [item["name"] for item in load_accounts()]
-        configured = {str(name).casefold(): str(name) for name in account_names}
-        self.account_names = tuple(
-            configured[name.casefold()] for name in SUPPORTED_MANUAL_ACCOUNTS
-            if name.casefold() in configured
-        )
+            account_names = [c.name for c in load_capabilities() if c.manual_orders]
+        unique = {}
+        for name in account_names:
+            unique.setdefault(str(name).casefold(), str(name))
+        self.account_names = tuple(unique.values())
         if not self.account_names:
             raise ManualOrderError("找不到可用 Account 設定")
         if store is None:

@@ -1,10 +1,10 @@
 """Gateway 啟動（Issue #121、#127）— Panel 一鍵開三個實盤 Gateway、填帳密、依序登入。
 
-用詞見 CONTEXT.md「Gateway 啟動」：開三個實盤 Gateway（Taylor／Rosa／Yvonne），
-把各自帳密填進登入視窗，再一次一個帳戶按「登入」並等它登入完成（最多
-LOGIN_WAIT_SEC 秒），手機一次只跳一則 IB Key。失敗不重試（連續輸錯會鎖帳號）。
-三個之中只要有一個還在執行（含只停在登入畫面）就整批拒絕。paper Gateway
-不在範圍內。
+用詞見 CONTEXT.md「Gateway 啟動」：開每個實盤 Gateway（accounts.json 裡有
+`gateway_dir` 的帳戶，現狀是 Taylor／Rosa／Yvonne，#211），把各自帳密填進登入
+視窗，再一次一個帳戶按「登入」並等它登入完成（最多 LOGIN_WAIT_SEC 秒），手機
+一次只跳一則 IB Key。失敗不重試（連續輸錯會鎖帳號）。只要有一個還在執行（含只停
+在登入畫面）就整批拒絕。paper Gateway 不在範圍內。
 
 唯一入口 start_live_gateways(ports)；碰外部的地方全部經 ports 注入：
 正在執行的 Gateway、認證管理員、Panel 帳密輸入框、開啟 Gateway、填登入視窗、
@@ -14,9 +14,7 @@ LOGIN_WAIT_SEC 秒），手機一次只跳一則 IB Key。失敗不重試（連�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
-
-LIVE_ACCOUNTS = ("Taylor", "Rosa", "Yvonne")
+from typing import Protocol, Sequence
 
 # 送出登入後，等該帳戶登入完成（含手機 IB Key 確認）的上限；逾時就換下一個帳戶（#127）
 LOGIN_WAIT_SEC = 30
@@ -72,15 +70,23 @@ class Ports(Protocol):
     def wait_logged_in(self, account: str, timeout_sec: float) -> bool: ...
 
 
-def start_live_gateways(ports: Ports):
+def live_gateway_accounts() -> tuple[str, ...]:
+    """可以一鍵啟動的實盤帳戶（accounts.json 有 gateway_dir 的），照 accounts.json 的順序。"""
+    from account_utils import load_capabilities
+    return tuple(c.name for c in load_capabilities() if c.can_start_gateway)
+
+
+def start_live_gateways(ports: Ports, accounts: Sequence[str] | None = None):
+    """accounts：要開的實盤帳戶，照這個順序；None = live_gateway_accounts()。"""
+    live = tuple(accounts) if accounts is not None else live_gateway_accounts()
     running = ports.running_live_accounts()
     if running:
         # 實盤帳戶照固定順序在前；認不出是誰的 Gateway 也算在跑，列在後面
-        return Refused(running=[a for a in LIVE_ACCOUNTS if a in running]
-                       + sorted(running - set(LIVE_ACCOUNTS)))
+        return Refused(running=[a for a in live if a in running]
+                       + sorted(running - set(live)))
 
     creds = {}
-    for account in LIVE_ACCOUNTS:
+    for account in live:
         found = ports.get_credentials(account)
         if found is None:
             found = ports.ask_credentials(account)
@@ -89,7 +95,7 @@ def start_live_gateways(ports: Ports):
             ports.set_credentials(account, found)
         creds[account] = found
     outcomes, details = {}, {}
-    for account in LIVE_ACCOUNTS:
+    for account in live:
         try:
             ports.launch(account)
         except LaunchFailed as e:
@@ -97,7 +103,7 @@ def start_live_gateways(ports: Ports):
         except Exception as e:  # 一個帳戶開不起來不能擋住另外兩個
             outcomes[account], details[account] = "launch_failed", f"{type(e).__name__}: {e}"
 
-    for account in LIVE_ACCOUNTS:
+    for account in live:
         if account in outcomes:
             continue
         try:
@@ -110,7 +116,7 @@ def start_live_gateways(ports: Ports):
             outcomes[account] = "filled"
 
     # 一次一個帳戶：手機一次只跳一則 IB Key，使用者知道在確認哪個帳戶
-    for account in LIVE_ACCOUNTS:
+    for account in live:
         if outcomes[account] != "filled":
             continue
         try:
@@ -123,7 +129,7 @@ def start_live_gateways(ports: Ports):
         else:
             outcomes[account] = "login_timeout"
             details[account] = f"已送出，{LOGIN_WAIT_SEC} 秒內沒登入完成"
-    return Started(outcomes={a: outcomes[a] for a in LIVE_ACCOUNTS}, details=details)
+    return Started(outcomes={a: outcomes[a] for a in live}, details=details)
 
 
 def describe(result) -> str:
@@ -139,7 +145,8 @@ def describe(result) -> str:
         else:
             lines.append(f"{account}：未登入 — {result.details.get(account, outcome)}")
     if result.all_logged_in:
-        hint = "三個 Gateway 都已登入。"
+        count = len(result.outcomes)
+        hint = f"{'三個' if count == 3 else f'{count} 個'} Gateway 都已登入。"
     else:
         hint = "未登入的請到該 Gateway 視窗手動登入；逾時的可能還在等手機 IB Key 確認。"
     return "\n".join(lines) + "\n\n" + hint

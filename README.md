@@ -218,6 +218,13 @@ pip freeze > requirements.lock
 1. 複製範本：`automation/config.example.json` → `automation/config.json`
 2. 複製範本：`automation/accounts.example.json` → `automation/accounts.json`
 3. 填入 IB 帳號、port、Telegram token 等
+   - 帳戶能力欄位（#211，都可省略；省略時 Taylor／Rosa／Yvonne 照現狀，其他名字見括號內的預設）：
+     - `gateway_dir`：Gateway 安裝（＝設定）資料夾。有值才會出現在「一鍵啟動 Gateway」與「Gateway 帳密」；`null` 明確關掉（其他帳戶預設沒有）
+     - `manual_orders`：可以在 Panel Trading 手動下單（預設 `true`）
+     - `ty_check`：週二・三 20:05 TY check（預設 `false`；現狀 Taylor、Yvonne 開）
+     - `color`：畫面上的帳戶代表色（預設深藍）
+     - `remote_gateway`：遠端／易斷線的 Gateway — 系統匣顏色跟著它、斷線 10 分鐘後試一次重連、台北 21:00–05:00 每 30 分 poll（預設 `false`；現狀 Rosa 開）。**最多一個帳戶**，多於一個時 Panel 開不起來
+     - 加帳戶只要改 `accounts.json`；預設表在 `automation/account_utils.py`，三台機器都補上欄位後可以拿掉
 4. 從 Google Drive 下載資料解壓縮到 `data/`（見 [setup guide](docs/setup_new_computer.md)）
 
 ### 啟動

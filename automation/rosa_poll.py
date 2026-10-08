@@ -55,6 +55,8 @@ def rosa_poll_decision(
     is_online: Callable[[], bool],
     restart: Callable[[], bool],
     sleep: Callable[[float], None],
+    *,
+    account: str,
 ) -> str | None:
     """Run one polling cycle. Returns the Telegram message to send, or None
     if the system is healthy / outside window.
@@ -83,5 +85,6 @@ def rosa_poll_decision(
     if is_online():
         return None
 
-    return ("\U0001F534 <b>Rosa</b> Gateway disconnected\n"
+    import html
+    return (f"\U0001F534 <b>{html.escape(account)}</b> Gateway disconnected\n"
             "<code>polling check + retry failed</code>")

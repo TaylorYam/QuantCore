@@ -45,7 +45,7 @@ Usage
         update_ui_dot(name, state)
 
     mon = GatewayMonitor(
-        account_names=["Taylor", "Rosa", "Yvonne"],
+        account_names=[a["name"] for a in load_accounts()],
         on_state_change=on_state_change,
         on_connected=on_connected,
         on_disconnected=on_disconnected,

@@ -14,7 +14,7 @@ from __future__ import annotations
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 from zoneinfo import ZoneInfo
 
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from gateway_start import LIVE_ACCOUNTS
+from account_utils import AccountCapabilities, capabilities_for, remote_gateway_account
 from portfolio_queries import PortfolioQueries, PortfolioRefreshLoop
 
 from qt_panel import dashboard_data, theme
@@ -100,8 +100,17 @@ class MainWindow(QMainWindow):
                  symbol_loader: Callable | None = None,
                  live_files: OrderFiles | None = None,
                  account_ctx_loader: Callable | None = None,
-                 watch_ports: WatchPorts | None = None):
+                 watch_ports: WatchPorts | None = None,
+                 capabilities: Sequence[AccountCapabilities] | None = None):
+        """capabilities：各帳戶的能力（accounts.json，#211）；None = 依 accounts 的名字
+        套現狀預設（不讀檔）。"""
         super().__init__()
+        caps = list(capabilities) if capabilities is not None else capabilities_for(accounts)
+        self._remote_account = remote_gateway_account(caps)
+        self._ty_check_accounts = tuple(c.name for c in caps if c.ty_check)
+        self._manual_accounts = [c.name for c in caps if c.manual_orders]
+        gateway_accounts = [c.name for c in caps if c.can_start_gateway]
+        colors = {c.name: c.color for c in caps if c.color}
         self._source = gateway_source
         self._watch_ports = watch_ports or WatchPorts()
         self._watch: QtWatch | None = None
@@ -149,13 +158,15 @@ class MainWindow(QMainWindow):
         self._nav_group = QButtonGroup(self, exclusive=True)
         self._nav: dict[str, QPushButton] = {}
         self.dashboard = Dashboard(
-            accounts, on_recheck=self.recheck_gateways,
+            [{**a, "color": colors.get(a["name"])} for a in accounts],
+            on_recheck=self.recheck_gateways,
             on_start_gateways=self.start_gateways,
             on_edit_credentials=self.edit_gateway_credentials,
-            credential_accounts=LIVE_ACCOUNTS, on_refresh=self.refresh)
+            credential_accounts=gateway_accounts, on_refresh=self.refresh)
         self.portfolio = PortfolioPage(
             names, on_refresh=self.refresh_portfolio,
-            on_edit_allocation=self.edit_allocation if allocation_save is not None else None)
+            on_edit_allocation=self.edit_allocation if allocation_save is not None else None,
+            colors=colors)
         # broker 只給測試換成 in-memory fake（tests/fake_broker.py）
         target = OrderTarget(files=live_files,
                              account_ctx_loader=account_ctx_loader or _load_account_ctx,
@@ -188,7 +199,8 @@ class MainWindow(QMainWindow):
         self._gateway_flow = GatewayStartFlow(
             ports_factory=gateway_ports_factory, dialogs=self._dialogs, log=self.log,
             recheck=self._source.recheck, states=self.dashboard.gateway_states,
-            after_checks=self._after_gateway_login, step_aside=self.showMinimized)
+            after_checks=self._after_gateway_login, step_aside=self.showMinimized,
+            accounts=gateway_accounts)
         self._gateway_flow.running_changed.connect(self.dashboard.set_gateway_starting)
         # 權益／持倉：開啟時一次、美股盤中固定時間，
         # 每個帳戶查完各自更新，一個失敗不影響其他帳戶
@@ -206,9 +218,7 @@ class MainWindow(QMainWindow):
 
     def _build_trading(self, target: OrderTarget, service_factory,
                        symbol_loader) -> TradingPage:
-        from manual_orders import SUPPORTED_MANUAL_ACCOUNTS
-        supported = {n.casefold() for n in SUPPORTED_MANUAL_ACCOUNTS}
-        names = [n for n in self._names if n.casefold() in supported]
+        names = list(self._manual_accounts)
         service, sync, takeover, problem = None, None, None, ""
         try:
             service = target.manual_order_service(names, service_factory)
@@ -229,7 +239,8 @@ class MainWindow(QMainWindow):
         self._watch = QtWatch(source=self._source, account_names=self._names,
                               ports=self._watch_ports, log=self.log,
                               refresh=self.recheck_gateways, now=self._taipei_now,
-                              parent=self)
+                              remote_account=self._remote_account,
+                              ty_check_accounts=self._ty_check_accounts, parent=self)
         self._watch.start()
         self._start_manual_order_tracking()
         self._reload()
@@ -321,10 +332,10 @@ class MainWindow(QMainWindow):
     def _on_gateway_state(self, name: str, state: str, detail: str) -> None:
         previous = self.dashboard.gateway_states().get(name)
         self.dashboard.set_gateway_state(name, state, detail)
-        if name == "Rosa" and state != previous:
+        if name == self._remote_account and state != previous:
             update_tray = getattr(self._tray, "update_state", None)
             if callable(update_tray):
-                update_tray(state, self._clock())       # 系統匣顏色跟著 Rosa
+                update_tray(state, self._clock(), name)  # 系統匣顏色跟著遠端 Gateway 帳戶
             if self._watch is not None and state == "offline":
                 self._watch.rosa_went_offline()
         if previous is None or state == previous:
@@ -520,7 +531,8 @@ class MainWindow(QMainWindow):
     def _update_watch(self) -> None:
         now = self._taipei_now()
         try:
-            items = dashboard_data.watch_items(now)
+            items = dashboard_data.watch_items(now, self._remote_account,
+                                               self._ty_check_accounts)
         except Exception as e:
             self.log(f"[X] 值班時間計算失敗：{e}")
             return

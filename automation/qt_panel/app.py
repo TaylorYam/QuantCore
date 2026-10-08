@@ -76,7 +76,7 @@ def main() -> int:
         return 0
 
     try:
-        from account_utils import load_accounts
+        from account_utils import load_accounts, load_capabilities
         from qt_panel import theme
         from qt_panel.gateway_status import MonitorGatewaySource
         from qt_panel.main_window import MainWindow
@@ -87,6 +87,11 @@ def main() -> int:
         from qt_panel.tray import tray_factory_for
 
         accounts = [{"name": a["name"], "port": a.get("port")} for a in load_accounts()]
+        try:
+            capabilities = load_capabilities()
+        except ValueError as e:              # 例如兩個帳戶都設 remote_gateway（#211）
+            QMessageBox.critical(None, "QuantCore", f"accounts.json 設定有誤，Panel 無法開啟：\n{e}")
+            return 1
 
         app.setFont(QFont(theme.UI_FONT, 10))
         app.setStyleSheet(theme.STYLESHEET)
@@ -97,6 +102,7 @@ def main() -> int:
 
         window = MainWindow(
             accounts=accounts,
+            capabilities=capabilities,
             gateway_source=MonitorGatewaySource([a["name"] for a in accounts]),
             gateway_ports_factory=lambda ask: gateway_start_win.WindowsPorts(ask_credentials=ask),
             credential_store=WindowsCredentialStore(),

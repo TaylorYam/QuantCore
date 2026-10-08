@@ -108,3 +108,12 @@ def test_paper_or_unknown_gateway_is_not_a_live_account(cmdline):
 ])
 def test_live_install_with_another_settings_folder_still_counts(cmdline, account):
     assert live_account_for_cmdline(cmdline) == account
+
+
+def test_a_broken_accounts_file_is_not_reported_as_an_unknown_account(monkeypatch):
+    """設定錯（兩個 remote_gateway）要照實丟出，不能被當成「不認得的帳戶」吞掉。"""
+    import account_utils
+    monkeypatch.setattr(account_utils, "load_accounts", lambda: [
+        {"name": "Rosa"}, {"name": "Taylor", "remote_gateway": True}])
+    with pytest.raises(ValueError, match="remote_gateway"):
+        gateway_launcher.gateway_dir("Taylor")

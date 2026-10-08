@@ -2188,3 +2188,26 @@ def test_read_account_fills_returns_one_accounts_orders_without_writing(tmp_path
          "filled_quantity": 3, "status": "PARTIAL"},
     ]
     assert path.read_bytes() == before
+
+
+# ── 可以手動下單的帳戶（#211：accounts.json 的 manual_orders）──────────────
+
+def test_default_accounts_are_the_ones_allowed_to_place_manual_orders(fake_config, monkeypatch,
+                                                                     tmp_path):
+    import account_utils
+    from tests.conftest import FAKE_ACCOUNTS
+
+    store = ManualOrderStore(tmp_path / "manual.sqlite3")
+    service = ManualOrderService(notifier=lambda *_a: True, store=store)
+    assert service.account_names == ("Taylor", "Rosa", "Yvonne")       # 沒寫欄位＝現狀
+    monkeypatch.setattr(account_utils, "load_accounts", lambda: [
+        {**a, "manual_orders": a["name"] != "Rosa"} for a in FAKE_ACCOUNTS])
+    service = ManualOrderService(notifier=lambda *_a: True, store=store)
+    assert service.account_names == ("Taylor", "Yvonne")
+
+
+def test_given_account_names_are_deduplicated_case_insensitively(tmp_path):
+    store = ManualOrderStore(tmp_path / "manual.sqlite3")
+    service = ManualOrderService(account_names=["Taylor", "taylor", "Zoe"],
+                                 notifier=lambda *_a: True, store=store)
+    assert service.account_names == ("Taylor", "Zoe")

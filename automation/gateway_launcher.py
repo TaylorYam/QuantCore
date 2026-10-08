@@ -30,12 +30,11 @@ log = logging.getLogger(__name__)
 
 
 def gateway_dir(account_name: str) -> Path | None:
-    """帳戶的 Gateway 安裝（＝設定）資料夾；不認得或沒設定就 None。"""
-    from account_utils import account_capabilities
-    try:
-        return account_capabilities(account_name).gateway_dir
-    except ValueError:
-        return None
+    """帳戶的 Gateway 安裝（＝設定）資料夾；不認得或沒設定就 None。
+    accounts.json 讀不了或設定錯（例如兩個 remote_gateway）照實丟出，不當成不認得。"""
+    from account_utils import load_capabilities
+    wanted = str(account_name).upper()
+    return next((c.gateway_dir for c in load_capabilities() if c.name.upper() == wanted), None)
 
 
 def _gateway_dirs() -> list[tuple[str, Path]]:
@@ -89,9 +88,8 @@ def start_gateway(account_name: str) -> subprocess.Popen | None:
 
     回傳 Popen 物件，None 表示失敗。
     """
-    install = gateway_dir(account_name)
+    install = gateway_dir(account_name)          # 設定資料夾就是安裝資料夾
     account_name = account_name.upper()
-    settings_dir = install
 
     if not install:
         log.error(f"Unknown account: {account_name}")
@@ -108,13 +106,13 @@ def start_gateway(account_name: str) -> subprocess.Popen | None:
 
     cmd = [
         str(gateway_exe),
-        f"-J-DjtsConfigDir={settings_dir}",
+        f"-J-DjtsConfigDir={install}",
     ]
 
     proc = subprocess.Popen(cmd)
     log.info(
         f"Gateway [{account_name}] started, PID={proc.pid}, "
-        f"install={install}, settings={settings_dir}"
+        f"install={install}, settings={install}"
     )
     return proc
 

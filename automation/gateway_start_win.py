@@ -352,7 +352,10 @@ def login_completed_in(log_text: str) -> bool:
 
 
 def _launcher_log(account: str):
-    return gateway_dir(account) / "launcher.log"
+    install = gateway_dir(account)
+    if install is None:
+        raise LaunchFailed(f"{account} 沒有設定 gateway_dir（accounts.json）")
+    return install / "launcher.log"
 
 
 def _file_size(path) -> int:

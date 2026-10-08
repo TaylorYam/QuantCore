@@ -934,7 +934,10 @@ class ManualOrderService:
             from account_utils import load_capabilities
 
             account_names = [c.name for c in load_capabilities() if c.manual_orders]
-        self.account_names = tuple(dict.fromkeys(str(name) for name in account_names))
+        unique = {}
+        for name in account_names:
+            unique.setdefault(str(name).casefold(), str(name))
+        self.account_names = tuple(unique.values())
         if not self.account_names:
             raise ManualOrderError("找不到可用 Account 設定")
         if store is None:

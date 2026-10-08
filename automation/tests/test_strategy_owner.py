@@ -45,15 +45,6 @@ def test_etf_lists_come_from_the_strategy_configs():
                                             | strategy_owner.INVERSE_ETFS)
 
 
-def test_ib_fetcher_names_are_the_same_lists():
-    import ib_fetcher
-    import strategy_owner
-
-    assert ib_fetcher.SR_ETFS is strategy_owner.SECTOR_ETFS
-    assert ib_fetcher.SKEWLS_INVERSE_TICKERS is strategy_owner.INVERSE_ETFS
-    assert ib_fetcher.ETF_TICKERS is strategy_owner.STRATEGY_ETFS
-
-
 def test_trade_owner_follows_the_allocation_without_a_position_direction():
     from strategy_owner import trade_owner
 

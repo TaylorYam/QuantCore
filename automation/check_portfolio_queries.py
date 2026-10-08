@@ -58,7 +58,7 @@ def main(argv=None):
     sp_config.REF_DIR = source / "data" / "reference"
     sp_config.ETF_DIR = source / "data" / "etfs"
     sp_config.STOCK_DIR = source / "data" / "stocks"
-    from ib_fetcher import fetch_portfolio
+    from portfolio_snapshot import fetch_snapshot
     logging.disable(logging.CRITICAL)  # IB diagnostic logs can contain Account IDs
 
     timings = {}
@@ -68,7 +68,7 @@ def main(argv=None):
     def fetch(name):
         before = time.monotonic() - started
         try:
-            return fetch_portfolio(contexts[name], readonly=True)
+            return fetch_snapshot(contexts[name], readonly=True)
         finally:
             with lock:
                 timings[name] = {"started_s": before, "finished_s": time.monotonic() - started}
@@ -82,15 +82,15 @@ def main(argv=None):
         report = {}
         for name, ctx in contexts.items():
             state = queries.snapshot(name)
-            data = state.portfolio or {}
+            data = state.portfolio
             report[name] = {
                 "client_id": ctx.client_id,
                 "feed_client_id": price_feed_client_id(ctx.client_id, readonly=True),
                 "success": state.portfolio is not None and state.error is None,
                 "still_running": state.running,
-                "nav_present": bool(data.get("nav")),
-                "holding_count": sum(len(data.get(k, [])) for k in
-                                     ("etf_holdings", "stock_holdings", "other_holdings")),
+                "nav_present": bool(data and data.nav),
+                "holding_count": (len(data.etf_holdings) + len(data.stock_holdings)
+                                  + len(data.other_holdings)) if data else 0,
                 # Deliberately omit balances, symbols, Account IDs and raw errors.
                 "query_failed": state.error is not None,
                 **timings.get(name, {}),

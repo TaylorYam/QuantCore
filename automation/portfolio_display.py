@@ -1,7 +1,7 @@
 """Portfolio display calculations for the Panel (#149).
 
-No GUI imports: every function takes the portfolio dict (`ib_fetcher.fetch_portfolio`
-format) or a `portfolio_queries.QueryState` and returns the text the Panel shows.
+No GUI imports: every function takes a `portfolio_snapshot.PortfolioSnapshot` or a
+`portfolio_queries.QueryState` and returns the text the Panel shows.
 Colors come back as theme key names ("text", "text_dim", "green", "red",
 "yellow", "orange") that the Panel theme maps; the donut slice
 colors are the chart's own fixed palette.
@@ -10,23 +10,10 @@ colors are the chart's own fixed palette.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable
 
-from strategy_owner import STRATEGY_ETFS, etf_owner
-
-TICKER_NAMES: dict[str, str] = {
-    "XLK": "Technology",      "XLF": "Financials",
-    "XLV": "Health Care",     "XLE": "Energy",
-    "XLI": "Industrials",     "XLY": "Cons Discret",
-    "XLB": "Materials",       "XLP": "Cons Staples",
-    "XLU": "Utilities",       "XLC": "Comm Services",
-    "XLRE": "Real Estate",
-    "REW": "UltraShort Tech",     "SEF": "Short Fin",
-    "RXD": "UltraShort HC",       "ERY": "Bear Energy 3x",
-    "SIJ": "UltraShort Ind",      "SCC": "UltraShort CD",
-    "SMN": "UltraShort Mat",      "SZK": "UltraShort CS",
-    "SDP": "UltraShort Util",     "REK": "Short RE",
-    "SPY": "S&P 500 ETF",         "SSO": "Ultra S&P 500",
-}
+from portfolio_snapshot import Holding, PortfolioSnapshot
+from strategy_owner import STRATEGY_ETFS, TICKER_NAMES, etf_owner
 
 
 # ── Metric cards ─────────────────────────────────────────────────────
@@ -48,22 +35,19 @@ METRIC_TITLES = (
 )
 
 
-def exposures(pf: dict) -> tuple[float, float]:
+def exposures(pf: PortfolioSnapshot) -> tuple[float, float]:
     """(Strategy exposure %, Account exposure %) of NAV; 0 when NAV is not positive."""
-    nav = pf["nav"]
-    mktval = pf["total_mktval"]
-    strategy_mktval = pf.get("strategy_mktval", mktval)
-    if nav <= 0:
+    if pf.nav <= 0:
         return 0, 0
-    return strategy_mktval / nav * 100, mktval / nav * 100
+    return pf.strategy_mktval / pf.nav * 100, pf.total_mktval / pf.nav * 100
 
 
-def metrics(pf: dict) -> list[Metric]:
-    if not pf.get("available"):
+def metrics(pf: PortfolioSnapshot) -> list[Metric]:
+    if not pf.available:
         return [Metric(key, title, empty, "text_dim") for key, title, empty in METRIC_TITLES]
 
-    upnl = pf["total_upnl"]
-    cushion = pf["cushion"]
+    upnl = pf.total_upnl
+    cushion = pf.cushion
     strat_exposure, total_exposure = exposures(pf)
     sign = "+" if upnl >= 0 else ""
     if cushion < 10:
@@ -73,7 +57,7 @@ def metrics(pf: dict) -> list[Metric]:
     else:
         m_color = "green"
     values = {
-        "nav": (f"${pf['nav']:,.0f}", "text"),
+        "nav": (f"${pf.nav:,.0f}", "text"),
         "pnl": (f"{sign}${upnl:,.2f}", "green" if upnl >= 0 else "red"),
         "margin": (f"{cushion:.1f}%", m_color),
         "strat_exp": (f"{strat_exposure:.0f}%", "orange" if strat_exposure > 100 else "green"),
@@ -84,13 +68,12 @@ def metrics(pf: dict) -> list[Metric]:
 
 # ── Report date / query state ────────────────────────────────────────
 
-def report_line(pf: dict) -> str:
-    """Report date with the source tag for anything that isn't the Excel snapshot."""
-    if not pf.get("available"):
-        return f"Report: {pf.get('error', 'No data yet')}"
-    source = pf.get("source", "Excel")
-    src_tag = f"  [{source}]" if source != "Excel" else ""
-    return f"Report Date: {pf['date']}{src_tag}"
+def report_line(pf: PortfolioSnapshot) -> str:
+    """Report date with the source tag (e.g. IB Live [Taylor])."""
+    if not pf.available:
+        return f"Report: {pf.error or 'No data yet'}"
+    src_tag = f"  [{pf.source}]" if pf.source else ""
+    return f"Report Date: {pf.date}{src_tag}"
 
 
 def _last_updated(state) -> str:
@@ -120,7 +103,7 @@ def status_line(state) -> tuple[str, str]:
 # ── Holdings rows ────────────────────────────────────────────────────
 
 HOLDING_HEADERS = ("UL", "SH", "Wt%", "Cost", "Price", "P&L", "P&L%", "Name")
-# portfolio dict key per group, in display order (ETF / Stock / Other)
+# PortfolioSnapshot field per group, in display order (ETF / Stock / Other)
 HOLDING_GROUPS = (("etf", "etf_holdings"), ("stock", "stock_holdings"),
                   ("other", "other_holdings"))
 MANUAL = "手動"
@@ -183,7 +166,7 @@ class HoldingRow:
         )
 
 
-def holding_rows(holdings: list, nav: float, group: str,
+def holding_rows(holdings: Iterable[Holding], nav: float, group: str,
                  manual: dict[str, str] | None = None,
                  alloc: tuple[float, float] | None = None) -> list[HoldingRow]:
     """One group's rows, largest |market value| first.
@@ -193,33 +176,30 @@ def holding_rows(holdings: list, nav: float, group: str,
     """
     manual = manual or {}
     rows = []
-    for h in sorted(holdings, key=lambda x: -abs(x["mkt_val"])):
+    for h in sorted(holdings, key=lambda x: -abs(x.mkt_val)):
         rows.append(HoldingRow(
             group=group,
-            owner=owner_of(h["symbol"], h["shares"], group, manual, alloc),
-            symbol=h["symbol"],
-            shares=h["shares"],
-            weight_pct=h["mkt_val"] / nav * 100 if nav > 0 else 0,
-            avg_cost=h.get("avg_cost", 0),
-            mkt_px=h["mkt_px"],
-            mkt_val=h["mkt_val"],
-            upnl=h.get("upnl", 0),
-            upnl_pct=h.get("upnl_pct", 0),
-            name=h.get("name") or TICKER_NAMES.get(h["symbol"], ""),
-            manual_reason=manual.get(h["symbol"], "") if group != "other" else "",
+            owner=owner_of(h.symbol, h.shares, group, manual, alloc),
+            symbol=h.symbol,
+            shares=h.shares,
+            weight_pct=h.mkt_val / nav * 100 if nav > 0 else 0,
+            avg_cost=h.avg_cost,
+            mkt_px=h.mkt_px,
+            mkt_val=h.mkt_val,
+            upnl=h.upnl,
+            upnl_pct=h.upnl_pct,
+            name=h.name or TICKER_NAMES.get(h.symbol, ""),
+            manual_reason=manual.get(h.symbol, "") if group != "other" else "",
         ))
     return rows
 
 
-def all_holding_rows(pf: dict) -> list[HoldingRow]:
-    if not pf.get("available"):
+def all_holding_rows(pf: PortfolioSnapshot) -> list[HoldingRow]:
+    if not pf.available:
         return []
-    nav = pf["nav"]
-    manual = pf.get("manual_symbols") or {}
-    alloc = pf.get("strategy_alloc")
     return [row for group, key in HOLDING_GROUPS
-            for row in holding_rows(pf.get(key, []), nav, group, manual,
-                                    tuple(alloc) if alloc else None)]
+            for row in holding_rows(getattr(pf, key), pf.nav, group, pf.manual_symbols,
+                                    pf.strategy_alloc)]
 
 
 def holdings_text(rows: list[HoldingRow]) -> tuple[str, str]:
@@ -271,26 +251,26 @@ class Donut:
     center: tuple[str, str]   # (text, theme color key)
 
 
-def donut_slices(holdings: list, nav: float, exposure: float,
+def donut_slices(holdings: Iterable[Holding], nav: float, exposure: float,
                  other_val: float = 0) -> list[Slice]:
     """Top 12 strategy holdings, "+N more", manual "Other", then Cash (only under 100%)."""
-    sorted_h = sorted(holdings, key=lambda x: -abs(x["mkt_val"]))
-    total_mktval = sum(abs(h["mkt_val"]) for h in sorted_h)
+    sorted_h = sorted(holdings, key=lambda x: -abs(x.mkt_val))
+    total_mktval = sum(abs(h.mkt_val) for h in sorted_h)
     top_h = sorted_h[:MAX_DONUT_LABELS]
     rest_h = sorted_h[MAX_DONUT_LABELS:]
 
     parts: list[tuple[str, float, str]] = []
     ei = si = 0
     for h in top_h:
-        if h["symbol"] in STRATEGY_ETFS:
+        if h.symbol in STRATEGY_ETFS:
             color = _ETF_BLUES[ei % len(_ETF_BLUES)]
             ei += 1
         else:
             color = _STOCK_GREENS[si % len(_STOCK_GREENS)]
             si += 1
-        parts.append((h["symbol"], abs(h["mkt_val"]), color))
+        parts.append((h.symbol, abs(h.mkt_val), color))
     if rest_h:
-        parts.append((f"+{len(rest_h)} more", sum(abs(h["mkt_val"]) for h in rest_h),
+        parts.append((f"+{len(rest_h)} more", sum(abs(h.mkt_val) for h in rest_h),
                       MORE_COLOR))
     if other_val > 0:
         parts.append(("Other", abs(other_val), OTHER_COLOR))
@@ -307,13 +287,13 @@ def donut_center(exposure: float) -> tuple[str, str]:
     return f"{exposure:.0f}%\nExposure", "green"
 
 
-def donut(pf: dict) -> Donut | None:
+def donut(pf: PortfolioSnapshot) -> Donut | None:
     """Donut data for a portfolio; None when there is nothing to draw."""
-    if not pf.get("available"):
+    if not pf.available:
         return None
-    nav = pf["nav"]
-    holdings = pf.get("etf_holdings", []) + pf.get("stock_holdings", [])
-    other_val = pf.get("other_mktval", 0)
+    nav = pf.nav
+    holdings = pf.etf_holdings + pf.stock_holdings
+    other_val = pf.other_mktval
     if not (holdings or other_val > 0) or nav <= 0:
         return None
     exposure, _ = exposures(pf)

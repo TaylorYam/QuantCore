@@ -1,30 +1,33 @@
 """Panel 查權益／持倉（#149），以及單一帳戶頁的權益序列、策略設定、最近成交（#150）。
 
-查詢用 `ib_fetcher.fetch_portfolio`（經 Broker 開唯讀連線、查完就斷），身分是
-ROLE_PANEL：不和 Gateway 心跳（ROLE_MONITOR）、排程搶同一個 clientId。
+查詢用 `portfolio_snapshot.fetch_snapshot`（經 Broker 開唯讀連線、查完就斷，#208），
+身分是 ROLE_PANEL：不和 Gateway 心跳（ROLE_MONITOR）、排程搶同一個 clientId。
 
 另外唯讀讀一次手動歸屬紀錄的暫停標的（碰撞進策略 Universe 的手動持倉），持倉表
 才能把它們標成手動（CONTEXT「手動持倉」）；讀不到就在結果裡寫原因，不影響讀數。
 """
 from __future__ import annotations
 
+from dataclasses import replace
 
-def fetch_panel_portfolio(account_name: str) -> dict:
-    import ib_fetcher
+
+def fetch_panel_portfolio(account_name: str):
+    """這個帳戶的 PortfolioSnapshot，帶上持倉歸屬要的資料。"""
+    import portfolio_snapshot
     from account_ctx import AccountCtx
     from account_utils import ROLE_PANEL
 
     ctx = AccountCtx.from_name(account_name, ROLE_PANEL)
-    return _with_attribution(ib_fetcher.fetch_portfolio(ctx, readonly=True), ctx)
+    return _with_attribution(portfolio_snapshot.fetch_snapshot(ctx, readonly=True), ctx)
 
 
-def _with_attribution(result: dict, ctx) -> dict:
+def _with_attribution(snapshot, ctx):
     """持倉歸屬要的額外資料：碰撞的手動持倉，和 Allocation（決定做多類股 ETF 歸 SR
-    還是 SkewLS，#181）。"""
-    if result.get("available"):
-        result.update(read_manual_symbols(ctx.name))
-        result["strategy_alloc"] = (ctx.alloc_sr, ctx.alloc_skewls)
-    return result
+    還是 SkewLS，#181）。建立新的快照，不改原本那份。"""
+    if not snapshot.available:
+        return snapshot
+    return replace(snapshot, **read_manual_symbols(ctx.name),
+                   strategy_alloc=(ctx.alloc_sr, ctx.alloc_skewls))
 
 
 def read_manual_symbols(account_name: str, path=None) -> dict:

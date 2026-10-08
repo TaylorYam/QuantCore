@@ -369,7 +369,6 @@ def entry_point(fake_config, monkeypatch, tmp_path):
     """跑腳本的 __main__：log 寫暫存目錄、帳戶 ctx 一律建不起來（絕不碰 IB）。"""
     pytest.importorskip("ib_insync")
     import types
-    import ib_fetcher
     import ib_insync
     import log_setup
     import notify
@@ -382,7 +381,8 @@ def entry_point(fake_config, monkeypatch, tmp_path):
         raise RuntimeError("accounts.json broken")
 
     monkeypatch.setattr(ib_insync.IB, "connect", no_ib)
-    monkeypatch.setattr(ib_fetcher, "connect", no_ib)
+    from tests.fake_broker import install_connect
+    install_connect(monkeypatch, no_ib)
     monkeypatch.setattr(AccountCtx, "from_name", classmethod(no_ctx))
     sent = []
     monkeypatch.setattr(notify, "tg_send", lambda msg, *, token, chat_id: sent.append(msg))

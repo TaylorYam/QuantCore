@@ -204,7 +204,7 @@ def test_heartbeat_uses_the_watch_identity():
 
 
 def test_portfolio_queries_use_the_panel_identity(monkeypatch):
-    import ib_fetcher
+    import portfolio_snapshot
     from account_ctx import AccountCtx
     from account_utils import ROLE_PANEL
     from qt_panel import portfolio_source
@@ -212,9 +212,9 @@ def test_portfolio_queries_use_the_panel_identity(monkeypatch):
     seen = []
     monkeypatch.setattr(AccountCtx, "from_name", classmethod(
         lambda cls, name, role: seen.append((name, role)) or _ctx(name, 20 + role)))
-    monkeypatch.setattr(ib_fetcher, "fetch_portfolio",
+    monkeypatch.setattr(portfolio_snapshot, "fetch_snapshot",
                         lambda ctx, readonly: seen.append((ctx.client_id, readonly))
-                        or {"available": False})
+                        or portfolio_snapshot.PortfolioSnapshot.unavailable("x"))
     portfolio_source.fetch_panel_portfolio("Taylor")
     assert seen == [("Taylor", ROLE_PANEL), (25, True)]
 

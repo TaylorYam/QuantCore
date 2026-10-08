@@ -9,7 +9,7 @@ Coverage:
   - get_sr_weights() non-empty, or verified all-cash (z-threshold 空手為合法輸出)
   - get_sp500_universe() contains SPY and SSO (dip-buy tickers)
   - get_market_regime_state() returns dict with required keys
-  - SR_ETFS constant is single source of truth across modules
+  - Sector ETF list (strategy_owner.SECTOR_ETFS) is the 11 SPDR sector ETFs
 """
 
 from __future__ import annotations
@@ -38,23 +38,12 @@ skip_no_data = pytest.mark.skipif(
 
 def test_sr_etfs_constant_is_11_sector_etfs():
     """SR_ETFS should contain exactly the 11 SPDR sector ETFs."""
-    from ib_fetcher import SR_ETFS
+    from strategy_owner import SECTOR_ETFS as SR_ETFS
     expected = {
         'XLK', 'XLF', 'XLV', 'XLE', 'XLI', 'XLY', 'XLB',
         'XLP', 'XLU', 'XLC', 'XLRE',
     }
     assert SR_ETFS == expected
-
-
-def test_sr_etfs_is_single_source_across_modules():
-    """rebalance_ib should re-export ib_fetcher.SR_ETFS.
-
-    daily_report 自 #26 起不再分類持倉（持倉報告不推播），已不引用 SR_ETFS。
-    """
-    import ib_fetcher
-    import rebalance_ib
-
-    assert rebalance_ib.SR_ETFS is ib_fetcher.SR_ETFS
 
 
 def test_get_market_regime_state_missing_benchmark_fails_closed(monkeypatch):
@@ -159,7 +148,7 @@ def test_get_sr_weights_gross_within_design_bounds():
 def test_get_sr_weights_all_are_sector_etfs():
     """Every SR position should be one of the 11 sector ETFs."""
     from signals import get_sr_weights
-    from ib_fetcher import SR_ETFS
+    from strategy_owner import SECTOR_ETFS as SR_ETFS
 
     wgt, _ = get_sr_weights()
     for sym in wgt:

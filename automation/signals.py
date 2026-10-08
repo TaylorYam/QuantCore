@@ -25,7 +25,7 @@ from typing import Optional
 import pandas as pd
 
 # 確保 strategies 套件可 import（QuantCore root 要在 sys.path）
-# 這個 module 可能被 Panel → ib_fetcher → signals 這條路徑第一個用到，
+# 這個 module 可能被 Panel → portfolio_snapshot → signals 這條路徑第一個用到，
 # 而 rebalance_ib.py 的 sys.path 設定是懶載入的
 _ROOT_DIR = Path(__file__).parent.parent
 if str(_ROOT_DIR) not in sys.path:

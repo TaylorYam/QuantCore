@@ -5,8 +5,15 @@ import threading
 import time
 
 from portfolio_queries import PortfolioQueries, PortfolioRefreshLoop
+from portfolio_snapshot import PortfolioSnapshot
 
 ACCOUNTS = ("Taylor", "Rosa", "Yvonne")
+
+
+
+def snap(**kw):
+    kw.setdefault("source", "IB Live [Taylor]")
+    return PortfolioSnapshot(date="2026-01-01", available=True, **kw)
 
 
 def wait_for(predicate):
@@ -29,7 +36,7 @@ def test_parallel_partial_results_dedup_and_close():
         assert release[name].wait(3)
         if name == "Rosa":
             raise TimeoutError()
-        return {"available": True, "nav": 10, "account": name}
+        return snap(nav=10, source=f"IB Live [{name}]")
 
     queries = PortfolioQueries(ACCOUNTS, fetch)
     try:
@@ -39,7 +46,7 @@ def test_parallel_partial_results_dedup_and_close():
         assert queries.refresh() == ()
         release["Taylor"].set()
         wait_for(lambda: not queries.snapshot("Taylor").running)
-        assert queries.snapshot("Taylor").portfolio["account"] == "Taylor"
+        assert queries.snapshot("Taylor").portfolio.source == "IB Live [Taylor]"
         assert queries.snapshot("Rosa").running
         assert queries.snapshot("Yvonne").running
         release["Rosa"].set()
@@ -64,25 +71,25 @@ def test_parallel_partial_results_dedup_and_close():
 
 def test_failure_retains_success_timestamp_and_detached_data():
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    results = iter([{"available": True, "nav": 100, "holdings": ["XLK"]},
-                    {"available": False, "error": ""},
-                    {"available": True, "nav": 200}])
+    results = iter([snap(nav=100, manual_symbols={"XLK": "手動"}),
+                    PortfolioSnapshot.unavailable(""),
+                    snap(nav=200)])
     queries = PortfolioQueries(["Taylor"], lambda _: next(results), now=lambda: now)
     try:
         queries.refresh()
         wait_for(lambda: not queries.snapshot("Taylor").running)
         saved = queries.snapshot("Taylor")
-        saved.portfolio["holdings"].clear()
-        assert queries.snapshot("Taylor").portfolio["holdings"] == ["XLK"]
+        saved.portfolio.manual_symbols.clear()
+        assert queries.snapshot("Taylor").portfolio.manual_symbols == {"XLK": "手動"}
         queries.refresh()
         wait_for(lambda: not queries.snapshot("Taylor").running)
         failed = queries.snapshot("Taylor")
-        assert failed.error and failed.portfolio["nav"] == 100
+        assert failed.error and failed.portfolio.nav == 100
         assert failed.updated_at == now
         queries.refresh()
         wait_for(lambda: not queries.snapshot("Taylor").running)
         recovered = queries.snapshot("Taylor")
-        assert recovered.error is None and recovered.portfolio["nav"] == 200
+        assert recovered.error is None and recovered.portfolio.nav == 200
     finally:
         queries.close()
 

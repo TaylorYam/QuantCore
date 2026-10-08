@@ -208,17 +208,16 @@ def test_scheduled_reads_go_to_the_ib_calls():
     assert conn.trades() == ["moo"] and conn.fills() == ["fill"]
 
 
-def test_ib_fetcher_connect_hands_back_a_connection_and_logs_the_line(monkeypatch, caplog):
-    """排程入口的連線：經 Broker 開、同一行 log（21:00 log 逐字不變）。"""
-    import ib_fetcher
+def test_scheduled_connect_keeps_the_identity_timeout_and_log_line(monkeypatch):
+    """排程入口的連線（#208 起直接向 Broker 要）：clientId、timeout 20 秒與連上後那行
+    log 都和 #185 之前的 ib_fetcher.connect 相同（21:00 log 逐字不變）。"""
     ib = RecordingIB()
     monkeypatch.setattr(broker, "_default_ib", lambda: ib)
-    caplog.set_level("INFO", logger="ib_fetcher")
-    conn = ib_fetcher.connect(CTX)
+    conn = Broker().connect(CTX, timeout=20)
     assert isinstance(conn, Connection) and conn.ib is ib
-    assert ib.calls == [("connect", "127.0.0.1", 4001, {"clientId": 26, "timeout": 20.0})]
-    assert caplog.messages == [
-        "Connected  host=127.0.0.1 port=4001 clientId=26 account=U1"]
+    assert ib.calls == [("connect", "127.0.0.1", 4001, {"clientId": 26, "timeout": 20})]
+    assert broker.connected_line(CTX) == (
+        "Connected  host=127.0.0.1 port=4001 clientId=26 account=U1")
 
 
 def test_cold_connect_probe_opens_and_closes_through_the_broker(monkeypatch, fake_config):

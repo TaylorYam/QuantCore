@@ -72,7 +72,7 @@ def run_daily_check(ctx: AccountCtx, digest: Digest):
 
     Telegram 內容加進 digest，由排程執行殼三帳戶合併發送（#26）。
     """
-    import ib_fetcher               # #185：經 Broker 開連線（讀數、送單在 Connection 上）
+    import broker                   # #185：經 Broker 開連線（讀數、送單在 Connection 上）
     import manual_attribution       # #106：手動持倉暫停閘門
     from strategy_owner import SECTOR_ETFS   # #187：類股 ETF 清單唯一來源
     from symbol_contract import canonical_symbol
@@ -152,7 +152,8 @@ def run_daily_check(ctx: AccountCtx, digest: Digest):
 
     # ── 連線 IB ────────────────────────────────────────────────────
     try:
-        conn = ib_fetcher.connect(ctx)
+        conn = broker.Broker().connect(ctx, timeout=20)
+        log.info(broker.connected_line(ctx))
     except Exception as e:
         log.error(f"IB connect failed: {e}")
         digest.add(account_name, "❌ IB 連線失敗", [error_line(e)], "error", **tg)

@@ -142,6 +142,10 @@ Panel 從 Tk 換成 PySide6 的過渡期（ADR-0012）：新 Panel 和 Tk Panel 
 Panel 的單送去哪、用哪個 IB 身分、記在哪、通知誰：各帳戶自己的實盤 Gateway 與 clientId role（手動單 ROLE_MANUAL_ORDER、Sync Pos ROLE_REBALANCE、接管 ROLE_TAKEOVER）、實盤的手動單與手動歸屬紀錄、寫回 SP500／SkewLS state、通知發該帳戶 Telegram、Sync Pos 寫 trade_log.xlsx。主視窗建一次交給 Trading（`automation/qt_panel/order_target.py`），連線向 [[Broker（券商連線層）]] 要；`sync_position`／`strategy_takeover` 沒拿到送單目標給的連線與紀錄就報錯，沒有「預設實盤」。
 _Avoid_: 送單模式
 
+**Portfolio 快照 (Portfolio Snapshot)**:
+一個 [[Account]] 此刻的權益、Margin Cushion、持倉（含報價與未實現損益）與分組（策略 ETF／SP500 個股／手動），Panel 的 Portfolio 頁顯示的就是它。唯一實作 `automation/portfolio_snapshot.py`（#208）：經 [[Broker（券商連線層）]] 開一條連線讀完就斷（Panel 用唯讀連線），回傳不可變的 `PortfolioSnapshot`；分組只問決策層 `rebalance_plan.classify_holdings`（和 21:00 調倉、Sync Pos 同一個函式），ETF 組 = 類股 ETF ＋ SkewLS 反向 ETF。Panel 另外帶入手動持倉碰撞與 Allocation（`qt_panel/portfolio_source`）。
+_Avoid_: 每日報告的「帳戶快照」（那是 04:40 寫進 Excel 的 NAV／持倉紀錄）
+
 **Broker（券商連線層）**:
 QuantCore 跟 IB 打交道的那一層：送單、查成交、查持倉與權益。畫面上使用者操作的單（手動單、Sync Pos、交給策略接管）屬於 Panel 的 Trading；真正把單送進 IB、回報成交的是 Broker。
 實作在 `automation/broker.py`（#185）：依帳戶＋用途開連線（clientId 的分配規則只在這裡，不認得的帳戶名稱直接報錯），一條連線上讀權益、持倉、報價、今日委託與成交，送單、撤單、斷線。Panel 的三條送單路徑與 Portfolio、21:00 調倉、16:00 日度風控、04:40 每日報告、21:31 成交回報都向它要連線。Gateway 心跳是長駐的值班連線，不讀數不送單，仍自己連。測試用 `automation/tests/fake_broker.py` 的 in-memory Broker。

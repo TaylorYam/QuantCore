@@ -93,7 +93,7 @@ def main(ctx: AccountCtx, digest: Digest):
     acct_name = ctx.name
 
     log.info(f"QuantCore daily report start — {date.today()}")
-    # 直接向 Broker 要連線（不走 ib_fetcher.connect）：timeout 與這行 log 和 #185 之前相同
+    # 直接向 Broker 要連線：timeout 與這行 log 和 #185 之前相同
     conn = broker.Broker().connect(ctx, timeout=20)
     log.info(f"Connected  account={ctx.account}")
 

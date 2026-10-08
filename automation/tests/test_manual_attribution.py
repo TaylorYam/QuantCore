@@ -323,8 +323,8 @@ def rebalance_env(paths, monkeypatch):
         env.sp500_calls.append(list(holdings))
         return {"AAPL": 0.5, "XYZ": 0.5}, "2026-09-23"
 
-    import ib_fetcher
-    monkeypatch.setattr(ib_fetcher, "connect", connect)
+    from tests.fake_broker import install_connect
+    install_connect(monkeypatch, connect)
     monkeypatch.setattr(rebalance_ib, "append_trade_log", lambda *a, **k: None)
     monkeypatch.setattr(signals, "get_sr_weights", lambda: ({}, "N/A"))
     monkeypatch.setattr(signals, "get_sp500_weights", sp500_weights)
@@ -340,6 +340,14 @@ def _run_rebalance(name="Rosa", mode="sp500"):
     rebalance_ib.main(mode=mode, ctx=_ctx(name, tg=("T", "C")), digest=digest)
     digest.send()
     return digest
+
+
+def test_rebalance_logs_the_same_connected_line(rebalance_env, caplog):
+    """#208：21:00 調倉直接向 Broker 要連線，連上後那行 log 和 #185 之前逐字相同。"""
+    caplog.set_level("INFO")
+    _run_rebalance()
+    assert ("Connected  host=127.0.0.1 port=4999 clientId=99 account=U00000001"
+            in caplog.messages)
 
 
 def test_rebalance_holds_only_the_paused_symbol(rebalance_env, caplog):
@@ -565,7 +573,6 @@ class _Tue0915(date):
 def dip_env(paths, fake_config, monkeypatch, tmp_path):
     """sp500_daily_check 熊市 dip-buy 觸發（SPY 回撤 16%）。"""
     import pandas as pd
-    import ib_fetcher
     import signals
     import sp500_daily_check
     import sp500_state
@@ -584,7 +591,8 @@ def dip_env(paths, fake_config, monkeypatch, tmp_path):
         env.broker = _fake_broker({"AAPL": 10.0}, behavior="working")
         return env.broker.connect(ctx)
 
-    monkeypatch.setattr(ib_fetcher, "connect", connect)
+    from tests.fake_broker import install_connect
+    install_connect(monkeypatch, connect)
     env.state_file = tmp_path / "sp500_state_Taylor.json"
     return env
 

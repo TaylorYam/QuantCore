@@ -8,24 +8,28 @@ from portfolio_display import (
     metrics, owner_of, refresh_summary, report_line, status_line,
 )
 from portfolio_queries import QueryState
+from portfolio_snapshot import Holding, PortfolioSnapshot
 
 
 def h(sym, sh, cost, px, name=""):
-    return {"symbol": sym, "shares": sh, "avg_cost": cost, "mkt_px": px,
-            "mkt_val": sh * px, "upnl": (px - cost) * sh,
-            "upnl_pct": (px / cost - 1) * 100 if cost else 0, "name": name}
+    return Holding(symbol=sym, shares=sh, avg_cost=cost, mkt_px=px, mkt_val=sh * px,
+                   upnl=(px - cost) * sh, upnl_pct=(px / cost - 1) * 100 if cost else 0,
+                   name=name)
 
 
 def pf(nav=100_000, cushion=30.0, etf=(), stocks=(), other=(), upnl=None, **kw):
-    etf, stocks, other = list(etf), list(stocks), list(other)
-    strat = sum(x["mkt_val"] for x in etf + stocks)
-    oth = sum(x["mkt_val"] for x in other)
-    d = {"available": True, "date": "2026-09-30", "nav": nav, "cushion": cushion,
-         "etf_holdings": etf, "stock_holdings": stocks, "other_holdings": other,
-         "strategy_mktval": strat, "other_mktval": oth, "total_mktval": strat + oth,
-         "total_upnl": sum(x["upnl"] for x in etf + stocks + other) if upnl is None else upnl}
-    d.update(kw)
-    return d
+    etf, stocks, other = tuple(etf), tuple(stocks), tuple(other)
+    strat = sum(x.mkt_val for x in etf + stocks)
+    oth = sum(x.mkt_val for x in other)
+    kw.setdefault("source", "")
+    return PortfolioSnapshot(
+        date="2026-09-30", available=True, nav=nav, cushion=cushion,
+        etf_holdings=etf, stock_holdings=stocks, other_holdings=other,
+        strategy_mktval=strat, other_mktval=oth, total_mktval=strat + oth,
+        total_upnl=sum(x.upnl for x in etf + stocks + other) if upnl is None else upnl, **kw)
+
+
+NO_DATA = PortfolioSnapshot(date="2026-09-30", source="")
 
 
 def by_key(ms):
@@ -35,7 +39,7 @@ def by_key(ms):
 # ── 指標卡 ───────────────────────────────────────────────────────────
 
 def test_metrics_without_data_are_dash_placeholders():
-    got = by_key(metrics({"available": False, "error": "timeout"}))
+    got = by_key(metrics(PortfolioSnapshot.unavailable("timeout")))
     assert got == {
         "nav": ("Net Asset Value", "$—", "text_dim"),
         "pnl": ("Unrealized P&L", "$—", "text_dim"),
@@ -74,12 +78,11 @@ def test_exposure_at_exactly_100_is_still_green():
 
 # ── 報表日期、讀取狀態 ────────────────────────────────────────────────
 
-def test_report_line_tags_non_excel_sources():
+def test_report_line_tags_the_source():
     assert report_line(pf(source="IB Live [Taylor]")) == "Report Date: 2026-09-30  [IB Live [Taylor]]"
-    assert report_line(pf(source="Excel")) == "Report Date: 2026-09-30"
     assert report_line(pf()) == "Report Date: 2026-09-30"
-    assert report_line({"available": False, "error": "timeout"}) == "Report: timeout"
-    assert report_line({"available": False}) == "Report: No data yet"
+    assert report_line(PortfolioSnapshot.unavailable("timeout")) == "Report: timeout"
+    assert report_line(NO_DATA) == "Report: No data yet"
 
 
 T = datetime(2026, 9, 30, 1, 2, 3, tzinfo=timezone.utc)
@@ -202,5 +205,5 @@ def test_donut_percent_of_nav_and_over_100_has_no_cash():
 def test_no_donut_without_nav_or_positions():
     assert donut(pf(nav=0, etf=[h("XLK", 1, 1.0, 1.0)])) is None
     assert donut(pf(nav=1000)) is None
-    assert donut({"available": False}) is None
+    assert donut(NO_DATA) is None
     assert donut(pf(nav=1000, other=[h("BTC", 1, 10.0, 10.0)])) is not None

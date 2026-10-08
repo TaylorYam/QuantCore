@@ -32,7 +32,6 @@ NAMES = ["Taylor", "Rosa", "Yvonne"]
 # 2026-09-29（週二）美東 14:00，一般時段；最近已收盤的交易日是 09-28
 NOW = datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc)
 SKEWLS_ALLOC = {"Taylor": 0.0, "Rosa": 0.2, "Yvonne": 0.0}
-LIVE_DEST = {"token": "LIVE-TOKEN", "chat_id": "LIVE-CHAT"}
 
 
 def order_factory(action, quantity, price):
@@ -131,18 +130,17 @@ def pause_xyz(files: OrderFiles, account="Taylor") -> None:
 
 @pytest.fixture
 def telegram(monkeypatch):
-    """假 Telegram：記下 (訊息, 目的地)；ok=False 模擬送不出去。"""
-    import account_utils
+    """假的帳戶 Telegram（`notify.send_account`，#207）：記下 (訊息, 帳戶)；ok=False 模擬送不出去。
+    帳戶頻道怎麼解析在 test_notify。"""
     import notify
 
     sent = NS(messages=[], ok=True)
 
-    def send(msg, **dest):
-        sent.messages.append((msg, dest))
+    def send(name, msg):
+        sent.messages.append((msg, name))
         return sent.ok
 
-    monkeypatch.setattr(notify, "tg_send", send)
-    monkeypatch.setattr(account_utils, "telegram_dest", lambda name=None: dict(LIVE_DEST))
+    monkeypatch.setattr(notify, "send_account", send)
     return sent
 
 
@@ -222,7 +220,7 @@ def test_live_manual_orders_keep_the_identity_store_and_telegram(
     assert (trade.order.account, trade.order.totalQuantity) == ("U001", 5)
     assert set(ib.client_ids) == {20 + ROLE_MANUAL_ORDER}      # 同一個手動單 clientId
     # 結案通知（還有先前那張單暫時查不到的提醒）都發該帳戶 Telegram
-    assert {dest["token"] for _msg, dest in telegram.messages} == {LIVE_DEST["token"]}
+    assert {account for _msg, account in telegram.messages} == {"Taylor"}
     assert any("AAPL" in msg and "已取消" in msg for msg, _dest in telegram.messages)
 
     # 先前那張單後來成交：同一個 clientId 認得它
@@ -261,7 +259,7 @@ def test_live_sync_uses_the_rebalance_identity_and_reports(
     assert plan.pause_notices != []
     telegram.ok = True
     sync.take_notices(plan)
-    assert [dest for _m, dest in telegram.messages] == [LIVE_DEST, LIVE_DEST]
+    assert [account for _m, account in telegram.messages] == ["Taylor", "Taylor"]
     assert "XYZ 策略單暫停" in telegram.messages[-1][0]
     assert sync.compute("Taylor", lambda m: None).pause_notices == []   # 送達才記已通知
 
@@ -270,7 +268,7 @@ def test_live_sync_uses_the_rebalance_identity_and_reports(
     assert sent(broker) == [("AAPL", "BUY", 150, "LMT", "U001")]
     assert [r["account_name"] for r in trade_log] == ["Taylor"]
     [(msg, dest)] = telegram.messages
-    assert "[Taylor] Sync Position — LMT" in msg and dest == LIVE_DEST
+    assert "[Taylor] Sync Position — LMT" in msg and dest == "Taylor"
 
 
 def test_live_sync_report_failures_only_reach_the_output_log(
@@ -282,7 +280,7 @@ def test_live_sync_report_failures_only_reach_the_output_log(
         raise OSError("檔案被 Excel 鎖住")
 
     monkeypatch.setattr(excel_logger, "append_trade_log", broken)
-    monkeypatch.setattr(notify, "tg_send", broken)
+    monkeypatch.setattr(notify, "send_account", broken)
     broker.positions = {"AAPL": 100.0}
     sync = live.sync()
     plan = sync.compute("Taylor", lambda m: None)
@@ -291,6 +289,19 @@ def test_live_sync_report_failures_only_reach_the_output_log(
     assert [p["symbol"] for p in placed] == ["AAPL", "XYZ"]
     assert "[!] Sync Pos trade_log.xlsx 寫入失敗：檔案被 Excel 鎖住" in lines
     assert "[!] Sync Pos Telegram 通知失敗：檔案被 Excel 鎖住" in lines
+
+
+def test_live_sync_result_not_sent_shows_in_the_output_log(
+        live, broker, sync_env, telegram, trade_log):
+    """Telegram 沒設定或送不出去（send_account 回 False）：Output Log 看得到（#207）。"""
+    broker.positions = {"AAPL": 100.0}
+    sync = live.sync()
+    plan = sync.compute("Taylor", lambda m: None)
+    telegram.ok = False
+    lines = []
+    sync.submit(plan, lines.append)
+    assert any(line.startswith("[!] Sync Pos Telegram 通知沒送出") for line in lines)
+    assert len(trade_log) == 2                           # trade_log 照寫
 
 
 # ── 交給策略接管 ─────────────────────────────────────────────────────
@@ -317,6 +328,6 @@ def test_live_takeover_uses_the_takeover_identity_and_telegram(
     telegram.ok = True
     assert takeover.take_notices("Taylor") == first
     assert takeover.take_notices("Taylor") == []         # 送達才記已通知
-    assert [dest for _m, dest in telegram.messages] == [LIVE_DEST, LIVE_DEST]
+    assert [account for _m, account in telegram.messages] == ["Taylor", "Taylor"]
     assert all("XYZ 已交給策略接管" in m for m, _d in telegram.messages)
     assert broker.sp500_states == []                     # 接管不寫 SP500 state

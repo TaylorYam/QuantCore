@@ -15,7 +15,7 @@ from tests.test_qt_panel import (  # noqa: F401  fixtures
 )
 from tests.test_manual_orders import FakeIB, FakeIBState
 from tests.test_qt_order_target import (  # noqa: F401  fixtures
-    LIVE_DEST, NOW, live_ctx, order_factory, telegram,
+    NOW, live_ctx, order_factory, telegram,
 )
 
 from PySide6.QtCore import Qt
@@ -187,7 +187,7 @@ def test_cancel_waits_for_ib_and_the_result_goes_to_the_accounts_telegram(
     assert panel.order_table() == []
     qtbot.waitUntil(lambda: bool(telegram.messages), timeout=2000)
     [(msg, dest)] = telegram.messages
-    assert "已取消" in msg and dest == LIVE_DEST
+    assert "已取消" in msg and dest == "Taylor"
 
 
 def test_ib_expiry_is_tracked_as_expired(trading_window, ib_state, telegram, qtbot):

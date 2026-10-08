@@ -3,7 +3,8 @@ Telegram 通知統一模組。
 
 所有 script 共用這裡的 `tg_send` / `tg_send_photo`，避免 5 份複製漂移。
 Token / chat_id 由 caller 傳入；手動／Panel 路徑改用 `send_system`（共用頻道）與
-`send_account`（該帳戶頻道，缺設定退回共用），目的地只問 `account_utils.telegram_dest`
+`send_account`（該帳戶頻道：沒覆寫就是共用設定，帳戶讀不到也退回共用），目的地
+只問 `account_utils.telegram_dest`
 （#207）。
 
 訊息原則（#26）：只發與下單有關的訊息和錯誤；`--account all` 的排程用
@@ -127,8 +128,8 @@ def send_system(msg: str) -> bool:
 
 
 def send_account(name: str, msg: str) -> bool:
-    """帳戶訊息 → 該帳戶的頻道（沒覆寫、或帳戶讀不到就退回共用頻道）。
-    回傳與失敗語意同 send_system。"""
+    """帳戶訊息 → 該帳戶的頻道（沒覆寫就是共用設定；帳戶讀不到也退回共用頻道；
+    帳戶覆寫成空字串則不送）。回傳與失敗語意同 send_system。"""
     from account_utils import telegram_dest
     return _send_to(telegram_dest(name), msg, name)
 

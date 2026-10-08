@@ -58,13 +58,16 @@ def test_telegram_text_lists_orders_when_there_are_no_fill_reports():
 
 
 def test_send_goes_to_the_account_telegram(monkeypatch):
-    import account_utils
     import notify
     sent = []
-    monkeypatch.setattr(notify, "tg_send", lambda msg, **k: sent.append((msg, k)) or True)
-    monkeypatch.setattr(account_utils, "telegram_dest",       # 目的地只問 telegram_dest（#207）
-                        lambda name=None: {"token": "T", "chat_id": "C"} if name == "Rosa"
-                        else {"token": "SHARED", "chat_id": "S"})
-    sp.send_sync_result(plan(), PLACED, FILLS)
-    [(msg, dest)] = sent
-    assert dest == {"token": "T", "chat_id": "C"} and "[Rosa] Sync Position" in msg
+    monkeypatch.setattr(notify, "send_account",                # 帳戶頻道（#207）
+                        lambda name, msg: sent.append((name, msg)) or True)
+    assert sp.send_sync_result(plan(), PLACED, FILLS) is True
+    [(name, msg)] = sent
+    assert name == "Rosa" and "[Rosa] Sync Position" in msg
+
+
+def test_send_reports_when_the_message_was_not_sent(monkeypatch):
+    import notify
+    monkeypatch.setattr(notify, "send_account", lambda name, msg: False)
+    assert sp.send_sync_result(plan(), PLACED, FILLS) is False

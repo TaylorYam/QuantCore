@@ -91,9 +91,12 @@ class OrderTarget:
         for step, what in ((sync_position.log_sync_trades, "trade_log.xlsx 寫入"),
                            (sync_position.send_sync_result, "Telegram 通知")):
             try:
-                step(plan, placed, fills)
+                ok = step(plan, placed, fills)
             except Exception as e:
                 log_fn(f"[!] Sync Pos {what}失敗：{e}")
+            else:
+                if ok is False:
+                    log_fn(f"[!] Sync Pos {what}沒送出（該帳戶與共用頻道都沒設定或送不出去）")
 
     # ── Trading 分頁用的三樣 ─────────────────────────────────────────
 

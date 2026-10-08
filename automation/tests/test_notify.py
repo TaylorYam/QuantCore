@@ -393,3 +393,9 @@ def test_account_header_is_bold_and_escaped():
     import notify
     assert notify.account_header("Taylor", "手動持倉") == "<b>[Taylor] 手動持倉</b>"
     assert notify.account_header("A&B", "x<y") == "<b>[A&amp;B] x&lt;y</b>"
+
+
+def test_tests_cannot_reach_the_real_telegram_api():
+    """conftest 的防線：真的 urlopen 到 api.telegram.org 會被擋，tg_send 當成送不出去。"""
+    import notify
+    assert notify.tg_send("x", token="123:real", chat_id="456") is False

@@ -364,7 +364,7 @@ def sync_result_text(plan: SyncPlan, placed: list[dict], fill_results: list[dict
     return "\n".join(lines)
 
 
-def send_sync_result(plan: SyncPlan, placed: list[dict], fill_results: list[dict]) -> None:
-    """送出結果發到該帳戶的 Telegram。"""
+def send_sync_result(plan: SyncPlan, placed: list[dict], fill_results: list[dict]) -> bool:
+    """送出結果發到該帳戶的 Telegram；送出才回 True。"""
     from notify import send_account
-    send_account(plan.ctx.name, sync_result_text(plan, placed, fill_results))
+    return send_account(plan.ctx.name, sync_result_text(plan, placed, fill_results))

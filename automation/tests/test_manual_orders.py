@@ -73,11 +73,18 @@ def service_for(tmp_path, state, *, universe=None, notifier=None,
             client_id=20 + 10 * list(accounts).index(name) + role,
         )
 
+    def connect(ctx):
+        import asyncio
+
+        # ib_insync 的同步 API 要在呼叫的執行緒上有 event loop（Panel worker 執行緒）
+        assert asyncio.get_event_loop() is not None
+        return state.connect(ctx, timeout=10)
+
     return ManualOrderService(
         account_names=list(accounts),
         store=ManualOrderStore(tmp_path / "manual.sqlite3"),
         account_ctx_factory=account_ctx,
-        connect=lambda ctx: state.connect(ctx, timeout=10),
+        connect=connect,
         universe_loader=lambda: set(universe or {"SPY", "SSO", "META"}),
         order_factory=lambda action, quantity, price: NS(
             action=action,

@@ -517,3 +517,18 @@ def test_manual_orders_and_paper_verify_never_take_the_ib_insync_object():
         text = (here / name).read_text(encoding="utf-8")
         assert not re.search(r"[\w)]\.ib\b", text), name
     assert not hasattr(Connection, "ib")
+
+
+@pytest.mark.parametrize("manual, expected", [
+    ([("Rosa", False), ("Yvonne", True), ("Taylor", True)], "Yvonne"),
+    ([("Rosa", False)], "paper"),
+    ([], "paper"),            # 沒有 accounts.json（PR 的 worktree）
+])
+def test_paper_verify_label_is_the_first_manual_order_account(monkeypatch, manual, expected):
+    """paper 驗證的服務標籤：第一個可手動下單的 Account，沒有就是 paper（#228）。"""
+    import account_utils
+    import paper_verify_manual_orders as pv
+
+    monkeypatch.setattr(account_utils, "load_capabilities",
+                        lambda: [NS(name=n, manual_orders=m) for n, m in manual])
+    assert pv._default_label() == expected

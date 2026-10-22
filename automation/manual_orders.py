@@ -170,11 +170,6 @@ def ib_trading_hours_include(trading_hours: str, time_zone_id: str,
     return False
 
 
-def read_ib_daily_closes(conn, contract) -> list[tuple[date, float]]:
-    """Recent regular-session daily closes from IB historical bars (broker.Connection)."""
-    return conn.daily_closes(contract)
-
-
 def read_realtime_quote(conn, contract, side: str) -> BrokerQuote:
     """A fresh, selected-side real-time IB quote (broker.Connection)."""
     return conn.realtime_quote(contract, side)
@@ -894,7 +889,6 @@ class ManualOrderService:
                  universe_loader: Callable[[], set[str]] | None = None,
                  order_factory: Callable | None = None,
                  quote_reader: Callable | None = None,
-                 close_reader: Callable | None = None,
                  clock: Callable[[], datetime] | None = None,
                  notifier: Callable[[str, str], bool],
                  store_path: str | Path | None = None):
@@ -919,7 +913,6 @@ class ManualOrderService:
         self._universe_loader = universe_loader or _default_universe_loader
         self._order_factory = order_factory
         self._quote_reader = quote_reader or read_realtime_quote
-        self._close_reader = close_reader or read_ib_daily_closes
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         if not callable(notifier):
             raise TypeError("ManualOrderService requires an injected notifier")
@@ -1069,7 +1062,7 @@ class ManualOrderService:
         if expected is None:
             return None
         try:
-            closes = list(self._close_reader(conn, contract) or ())
+            closes = list(conn.daily_closes(contract) or ())
         except Exception:
             log.warning("Manual order prior close unavailable for %s",
                         getattr(contract, "symbol", ""), exc_info=True)

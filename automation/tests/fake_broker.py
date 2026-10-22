@@ -198,9 +198,10 @@ class FakeConnection:
                 for s, q in b.positions.items() if q]
 
     def position_records(self) -> list:
+        self._read("position_records")
         b = self._broker
         book = (b.positions if b.positions_by_account is None
-                else b.positions_by_account[self.ctx.account])
+                else b.positions_by_account.get(self.ctx.account, {}))
         return [NS(account=self.ctx.account, position=quantity, contract=NS(
                     symbol=symbol, secType="STK", currency="USD", conId=b.con_id))
                 for symbol, quantity in book.items()]

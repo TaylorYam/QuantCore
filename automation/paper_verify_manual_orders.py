@@ -6,9 +6,10 @@ arrives relative to the order's first status, whether a forced cancel from a
 new connection reaches IB, and what IB reports when a DAY order expires.
 
 Safety:
-- Never writes accounts.json / config.json and reads nothing from them but
-  the Panel label (the first Account allowed to place manual orders). Host,
-  port, paper account and clientId come from the command line.
+- Never writes accounts.json / config.json and reads no connection settings
+  from them. Host, port, paper account and clientId come from the command
+  line; only the default --label is the first Account allowed to place manual
+  orders in accounts.json ("paper" when there is none, e.g. in a worktree).
 - Refuses to continue unless every account the Gateway manages is a paper
   account (IDs starting with DU or DF).
 - Never sends Telegram: notifications are printed.
@@ -121,18 +122,17 @@ def paper_ib(timeline: Timeline | None):
     return ib
 
 
-def _label() -> str:
-    """The Account name the service and its store record orders under.
+def _default_label() -> str:
+    """The name the service and its store record orders under.
 
     Only a label: the order goes to --account. The first Account allowed to
-    place manual orders (accounts.json, #211), so no Account name is hardcoded.
+    place manual orders (accounts.json, #211), so no Account name is
+    hardcoded; "paper" where there is no accounts.json (a PR worktree).
     """
     from account_utils import load_capabilities
 
     names = [c.name for c in load_capabilities() if c.manual_orders]
-    if not names:
-        raise SystemExit("accounts.json 沒有可以手動下單的 Account，無法建立驗證用的服務")
-    return names[0]
+    return names[0] if names else "paper"
 
 
 def _paper_ctx(args, name=None):
@@ -442,6 +442,8 @@ def main(argv=None) -> None:
     parser.add_argument("--store", type=Path, default=DEFAULT_STORE)
     parser.add_argument("--log", type=Path, default=DEFAULT_LOG,
                         help="輸出同時附加寫入此 UTF-8 記錄檔")
+    parser.add_argument("--label", help="服務紀錄用的名稱（只是標籤；預設 accounts.json "
+                                        "第一個可手動下單的 Account，沒有就是 paper）")
     sub = parser.add_subparsers(dest="command", required=True)
 
     hours = sub.add_parser("hours", help="讀 IB 合約交易時間並顯示程式判定")
@@ -486,7 +488,7 @@ def main(argv=None) -> None:
     if not args.account.upper().startswith(PAPER_PREFIXES):
         parser.error("--account 必須是 paper 帳號（DU/DF 開頭）")
     args.account = args.account.upper()
-    args.label = _label()
+    args.label = args.label or _default_label()
     commands = {
         "hours": cmd_hours, "probe-2109": cmd_probe_2109,
         "probe-overnight": cmd_probe_overnight, "submit": cmd_submit,

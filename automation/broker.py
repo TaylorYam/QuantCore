@@ -480,7 +480,7 @@ class Connection:
         return self._ib.positions(self.ctx.account)
 
     def daily_closes(self, contract) -> list[tuple[date, float]]:
-        """單一合約最近的一般時段日線收盤 [(日期, 收盤)]，IB 歷史資料，最多等 10 秒。"""
+        """單一合約最近的一般時段日線收盤 [(日期, 收盤)]，IB 歷史資料（逾時 _DAILY_CLOSES_TIMEOUT）。"""
         bars = self._ib.reqHistoricalData(
             contract, endDateTime="", durationStr="10 D", barSizeSetting="1 day",
             whatToShow="TRADES", useRTH=True, formatDate=1,

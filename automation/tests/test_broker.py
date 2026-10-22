@@ -136,7 +136,7 @@ def test_connect_passes_the_ctx_identity():
     ib = RecordingIB()
     conn = Broker(lambda: ib).connect(CTX, timeout=10)
     assert ib.calls == [("connect", "127.0.0.1", 4001, {"clientId": 26, "timeout": 10})]
-    assert isinstance(conn, Connection) and conn.ctx is CTX and conn.ib is ib
+    assert isinstance(conn, Connection) and conn.ctx is CTX and conn._ib is ib
 
 
 def test_readonly_connect_is_bounded_and_names_the_account():
@@ -200,7 +200,7 @@ def test_scheduled_connect_keeps_the_identity_timeout_and_log_line(monkeypatch):
     ib = RecordingIB()
     monkeypatch.setattr(broker, "_default_ib", lambda: ib)
     conn = Broker().connect(CTX, timeout=20)
-    assert isinstance(conn, Connection) and conn.ib is ib
+    assert isinstance(conn, Connection) and conn._ib is ib
     assert ib.calls == [("connect", "127.0.0.1", 4001, {"clientId": 26, "timeout": 20})]
     assert broker.connected_line(CTX) == (
         "Connected  host=127.0.0.1 port=4001 clientId=26 account=U1")
@@ -376,3 +376,144 @@ FULL = {"bid": 9.9, "ask": 10.1, "mid": 10.0, "last": 10.05, "close": 9.8}
 ])
 def test_limit_price_is_one_rule_with_one_fallback_order(action, quote, ref, expected):
     assert broker.limit_price(action, quote, ref) == expected
+
+
+# ── 手動單用的 IB 細節（#228）────────────────────────────────────────
+
+class ManualIB(RecordingIB):
+    """手動單用到的 ib_insync 呼叫：只記下參數、回給定的結果。"""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.connected = True
+        self.errorEvent = object()
+        self.wrapper = NS(completedOrder=lambda *a: None)   # 類別上的 handler 換成實例上的
+
+    def reqContractDetails(self, contract):
+        self.calls.append(("details", contract))
+        return None
+
+    def positions(self, account=""):
+        self.calls.append(("positions", account))
+        return ["row"]
+
+    def reqHistoricalData(self, contract, **kw):
+        self.calls.append(("history", contract, kw))
+        return [NS(date="d1", close=1.5), NS(date="d2", close=2.5)]
+
+    def reqExecutions(self):
+        return None
+
+
+def test_manual_order_reads_go_to_the_ib_calls():
+    ib = ManualIB()
+    conn = Broker(lambda: ib).connect(CTX)
+    contract = NS(symbol="ZZZZ")
+    assert conn.qualify(contract) == [contract] and ("qualify", "ZZZZ") in ib.calls
+    assert conn.contract_details(contract) == []                # IB 給 None
+    assert conn.position_records() == ["row"] and ("positions", "U1") in ib.calls
+    assert conn.executions() == []
+    assert conn.error_event is ib.errorEvent
+
+
+def test_daily_closes_ask_ib_for_ten_regular_session_days():
+    ib = ManualIB()
+    conn = Broker(lambda: ib).connect(CTX)
+    contract = NS(symbol="ZZZZ")
+    assert conn.daily_closes(contract) == [("d1", 1.5), ("d2", 2.5)]
+    [(_, asked, kw)] = [c for c in ib.calls if c[0] == "history"]
+    assert asked is contract
+    assert kw == {"endDateTime": "", "durationStr": "10 D", "barSizeSetting": "1 day",
+                  "whatToShow": "TRADES", "useRTH": True, "formatDate": 1, "timeout": 10}
+
+
+class _Wrapper:
+    """ib_insync 的 Wrapper.completedOrder 把 IB 的紀錄變成 Trade，丟掉 orderState
+    （連同 completedStatus）。"""
+
+    def completedOrder(self, contract, order, order_state):
+        pass
+
+
+def test_completed_orders_capture_completed_status_and_leave_the_wrapper_unchanged():
+    ib = ManualIB()
+    ib.wrapper = _Wrapper()
+    expired = NS(contract="c", order=NS(orderRef="QUANTCORE_MANUAL:T:1"))
+    cancelled = NS(contract="c", order=NS(orderRef="QUANTCORE_MANUAL:T:2"))
+
+    def completed(apiOnly):
+        assert apiOnly is True
+        # IB：到期和使用者撤單的 orderState.status 都是 Cancelled，completedStatus 才分得出來
+        ib.wrapper.completedOrder("c", expired.order, NS(completedStatus="Expired (5)"))
+        ib.wrapper.completedOrder("c", cancelled.order, NS(completedStatus="Cancelled by Trader"))
+        return [expired, cancelled]
+
+    ib.reqCompletedOrders = completed
+    conn = Broker(lambda: ib).connect(CTX)
+    trades, statuses = conn.completed_orders()
+    assert trades == [expired, cancelled]
+    assert statuses == {"QUANTCORE_MANUAL:T:1": "Expired (5)",
+                        "QUANTCORE_MANUAL:T:2": "Cancelled by Trader"}
+    assert "completedOrder" not in vars(ib.wrapper)
+
+
+@pytest.mark.parametrize("market_type,tick_type,accepted", [
+    (1, 2, True),
+    (3, 67, False),
+    (2, 2, False),
+])
+def test_realtime_quote_requires_realtime_selected_side_tick(market_type, tick_type, accepted):
+    from datetime import datetime, timezone
+
+    from ib_insync import Ticker
+    from ib_insync.objects import TickData
+    from broker import NoRealtimeQuote
+
+    now = datetime(2026, 9, 14, 18, 0, tzinfo=timezone.utc)
+
+    class FakeQuoteIB(RecordingIB):
+        def __init__(self):
+            super().__init__()
+            self.ticker = Ticker()
+            self.ticker.marketDataType = market_type
+            self.cancelled = False
+            self.requested_type = None
+
+        def reqMarketDataType(self, value):
+            self.requested_type = value
+
+        def reqMktData(self, contract, generic, snapshot, regulatory):
+            assert (generic, snapshot, regulatory) == ("", False, False)
+            return self.ticker
+
+        def sleep(self, _seconds):
+            self.ticker.ask = 30
+            self.ticker.askSize = 10
+            self.ticker.ticks = [TickData(now, tick_type, 30, 10)]
+            self.ticker.updateEvent.emit(self.ticker)
+
+        def cancelMktData(self, _contract):
+            self.cancelled = True
+
+    ib = FakeQuoteIB()
+    conn = Broker(lambda: ib).connect(CTX)
+    if accepted:
+        result = conn.realtime_quote(NS(symbol="ZZZZ"), "ask")
+        assert (result.price, result.side, result.market_data_type) == (30, "ask", 1)
+    else:
+        with pytest.raises(NoRealtimeQuote, match="明確股數"):
+            conn.realtime_quote(NS(symbol="ZZZZ"), "ask")
+    assert ib.requested_type == 1
+    assert ib.cancelled
+
+
+def test_manual_orders_and_paper_verify_never_take_the_ib_insync_object():
+    """手動單與 paper 驗證只走 Connection 的方法：沒有 `.ib` 可拿（#228）。"""
+    import re
+    from pathlib import Path
+
+    here = Path(__file__).resolve().parent.parent
+    for name in ("manual_orders.py", "paper_verify_manual_orders.py"):
+        text = (here / name).read_text(encoding="utf-8")
+        assert not re.search(r"[\w)]\.ib\b", text), name
+    assert not hasattr(Connection, "ib")

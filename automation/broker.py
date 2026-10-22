@@ -5,7 +5,8 @@
 - **Broker.connect(ctx)**：依 ctx 的 host／port／client_id 開一條連線。event loop、
   timeout、唯讀、連不上時收掉 socket 都在這裡。
 - **Connection**：一條已連上的連線上的讀數與送單 — 權益、持倉、參考價、送單時的
-  買賣報價、掛單、建合約、送單、撤單、等待、斷線。
+  買賣報價、掛單、建合約、送單、撤單、等待、斷線；手動單另外要的 IB 細節（合約確認與
+  細節、已完成委託與成交明細、日線收盤、錯誤事件、嚴格即時報價）也在這裡（#228）。
 - **IB 委託狀態詞彙**（`IB_DONE_STATUSES`）：送單流程視為「這張單結束了」的 IB 狀態，
   只定義在這裡（#210）；手動單自己的狀態對應在 `manual_order_status`。
 
@@ -17,7 +18,7 @@
 - **送單時的買賣報價**（`Connection.quotes`）：bid > ask 當成沒有 bid／ask，價差過大記 log。
 - **限價**（`limit_price`）：買 ask×1.003、賣 bid×0.997，缺價依序 mid → last → close →
   呼叫端給的參考價。
-- **手動單用的即時報價**（`realtime_quote`）：刻意比較嚴，必須是即時、有量的新報價。
+- **手動單用的即時報價**（`Connection.realtime_quote`）：刻意比較嚴，必須是即時、有量的新報價。
 
 seam 兩側各一個 adapter：本模組（ib_insync，實盤與 paper）與
 `tests/fake_broker.py`（in-memory fake，測試用）。
@@ -25,11 +26,8 @@ seam 兩側各一個 adapter：本模組（ib_insync，實盤與 paper）與
 新 Panel（手動單、Sync Pos、接管、Portfolio）與 21:00 調倉、16:00 日度風控、
 04:40 每日報告、21:31 成交回報都向 Broker 要連線。
 Gateway 心跳（`gateway_monitor`）是長駐連線、不讀數不送單，仍自己建 ib_insync 連線。
-
-`Connection.ib`（ib_insync 本體）只給兩個地方用：
-- ManualOrderService：業務規則（盤後路由、成交對帳等）用到很多 IB 細節，#185 決定
-  只換它底下的連線（權益仍向 Connection 讀）。
-- `paper_verify_manual_orders`：paper 驗證要直接核對 IB 自己的委託紀錄。
+ib_insync 本體不交出去：手動單（ManualOrderService）與 paper 驗證腳本也只用 Connection
+的方法（#228）。
 
 不 import ib_insync（用到時才載入）：純 clientId 規則在離線工具與測試也能用。
 """
@@ -39,7 +37,7 @@ import asyncio
 import logging
 import math
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Callable, Iterable
 
@@ -129,6 +127,9 @@ _NON_NAV_CURRENCIES = ("USD", "")
 # 送單報價的價差超過 mid 的 5% 記 log（沿用 16:00 dip-buy）
 _WIDE_SPREAD = 0.05
 
+# 手動單限價偏離警示讀的日線收盤，最多等 10 秒
+_DAILY_CLOSES_TIMEOUT = 10
+
 # 限價：買 ask×1.003、賣 bid×0.997
 _LIMIT_BUY = 1.003
 _LIMIT_SELL = 0.997
@@ -215,11 +216,6 @@ class Connection:
 
     def __exit__(self, *_exc) -> None:
         self.close()
-
-    @property
-    def ib(self):
-        """ib_insync 本體 — 只給模組說明列的三個地方用。"""
-        return self._ib
 
     def managed_accounts(self) -> list[str]:
         return [str(item).strip() for item in (self._ib.managedAccounts() or [])]
@@ -469,6 +465,96 @@ class Connection:
         """等 IB 回報（期間會處理成交、狀態更新等事件）。"""
         self._ib.sleep(seconds)
 
+    # ── 手動單用的 IB 細節（#228）──────────────────────────────────
+
+    def qualify(self, contract) -> list:
+        """向 IB 確認合約（就地補上 conId、primaryExchange 等），回傳 IB 認得的合約。"""
+        return list(self._ib.qualifyContracts(contract) or [])
+
+    def contract_details(self, contract) -> list:
+        """IB ContractDetails（tradingHours、timeZoneId、validExchanges …）。"""
+        return list(self._ib.reqContractDetails(contract) or [])
+
+    def position_records(self) -> list:
+        """所選帳戶的 IB Position 原樣（含 conId、幣別；不過濾、不合併）。"""
+        return self._ib.positions(self.ctx.account)
+
+    def daily_closes(self, contract) -> list[tuple[date, float]]:
+        """單一合約最近的一般時段日線收盤 [(日期, 收盤)]，IB 歷史資料，最多等 10 秒。"""
+        bars = self._ib.reqHistoricalData(
+            contract, endDateTime="", durationStr="10 D", barSizeSetting="1 day",
+            whatToShow="TRADES", useRTH=True, formatDate=1,
+            timeout=_DAILY_CLOSES_TIMEOUT,
+        )
+        return [(bar.date, bar.close) for bar in bars or ()]
+
+    def completed_orders(self) -> tuple[list, dict[str, str]]:
+        """IB 的已完成委託（只限 API 下的單），以及每張的 completedStatus（依 orderRef）。
+
+        ib_insync 的 Wrapper.completedOrder 只留 orderState.status — 到期和使用者撤單都是
+        Cancelled — 丟掉 completedStatus。這次請求期間攔下它，結束後還原。
+        """
+        statuses: dict[str, str] = {}
+        wrapper = getattr(self._ib, "wrapper", None)
+        original = getattr(wrapper, "completedOrder", None)
+        try:
+            hooked = callable(original) and "completedOrder" not in vars(wrapper)
+        except TypeError:
+            hooked = False
+        if hooked:
+            def capture(contract, order, order_state):
+                statuses[str(getattr(order, "orderRef", "") or "")] = str(
+                    getattr(order_state, "completedStatus", "") or ""
+                )
+                return original(contract, order, order_state)
+
+            wrapper.completedOrder = capture
+        try:
+            trades = list(self._ib.reqCompletedOrders(apiOnly=True) or [])
+        finally:
+            if hooked:
+                del wrapper.completedOrder
+        return trades, statuses
+
+    def executions(self) -> list:
+        """向 IB 查今天的成交明細（ib_insync Fill）；重新連線後 fills() 不一定重播。"""
+        return list(self._ib.reqExecutions() or [])
+
+    @property
+    def error_event(self):
+        """IB 的錯誤／警告事件（`+=` 訂閱、`-=` 退訂，handler 收 reqId, code, 訊息, 合約）。"""
+        return self._ib.errorEvent
+
+    def realtime_quote(self, contract, side: str) -> "BrokerQuote":
+        """手動單用的即時報價：等這次訂閱新到、所選那一邊（bid／ask）的即時 tick。"""
+        if side not in {"bid", "ask"}:
+            raise ValueError(side)
+        ib = self._ib
+        ib.reqMarketDataType(1)
+        ticker = ib.reqMktData(contract, "", False, False)
+        seen = None
+
+        def on_update(updated):
+            nonlocal seen
+            for tick in updated.ticks:
+                if tick.tickType == (1 if side == "bid" else 2):
+                    seen = BrokerQuote(tick.price, tick.time, side,
+                                       updated.marketDataType)
+
+        ticker.updateEvent += on_update
+        try:
+            for _ in range(25):
+                ib.sleep(0.2)
+                if seen is not None and ticker.marketDataType == 1:
+                    current = ticker.bid if side == "bid" else ticker.ask
+                    size = ticker.bidSize if side == "bid" else ticker.askSize
+                    if current == seen.price and math.isfinite(size) and size > 0:
+                        return seen
+            raise NoRealtimeQuote("沒有有效的 IB 即時報價；請改用明確股數")
+        finally:
+            ticker.updateEvent -= on_update
+            ib.cancelMktData(contract)
+
     def close(self) -> None:
         """斷線；已斷或斷線出錯都不拋。"""
         try:
@@ -478,7 +564,7 @@ class Connection:
             pass
 
 
-# ── 手動單用的即時報價 ────────────────────────────────────────────────────
+# ── 手動單用的即時報價（讀法是 Connection.realtime_quote）────────────────
 # 刻意比參考價、送單報價嚴：一定要是即時（market data type 1）、有量、這次訂閱新到的
 # 報價，否則手動單拒絕以權益%／金額換算股數（規則在 ManualOrderService._market_quote）。
 
@@ -494,35 +580,3 @@ class BrokerQuote:
 class NoRealtimeQuote(RuntimeError):
     """等不到有效的 IB 即時報價。"""
 
-
-def realtime_quote(ib, contract, side: str) -> BrokerQuote:
-    """Wait for a fresh, selected-side tick on a real-time IB subscription.
-
-    ib = ib_insync 本體（手動單用 `Connection.ib`）。
-    """
-    if side not in {"bid", "ask"}:
-        raise ValueError(side)
-    ib.reqMarketDataType(1)
-    ticker = ib.reqMktData(contract, "", False, False)
-    seen = None
-
-    def on_update(updated):
-        nonlocal seen
-        for tick in updated.ticks:
-            if tick.tickType == (1 if side == "bid" else 2):
-                seen = BrokerQuote(tick.price, tick.time, side,
-                                   updated.marketDataType)
-
-    ticker.updateEvent += on_update
-    try:
-        for _ in range(25):
-            ib.sleep(0.2)
-            if seen is not None and ticker.marketDataType == 1:
-                current = ticker.bid if side == "bid" else ticker.ask
-                size = ticker.bidSize if side == "bid" else ticker.askSize
-                if current == seen.price and math.isfinite(size) and size > 0:
-                    return seen
-        raise NoRealtimeQuote("沒有有效的 IB 即時報價；請改用明確股數")
-    finally:
-        ticker.updateEvent -= on_update
-        ib.cancelMktData(contract)

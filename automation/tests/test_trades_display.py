@@ -99,7 +99,7 @@ def test_account_trades_are_screen_rows_newest_first_with_that_accounts_allocati
         ("XLK", "BUY", "3", "$12.50", "SkewLS", "Filled"),
         ("AAPL", "BUY", "3", "—", "Stocks", "DRY_RUN"),
     ]
-    assert read_account_trades("Taylor")[0].strategy == "SR"       # 讀不到設定：舊規則
+    assert read_account_trades("Taylor")[0].strategy == "SR"       # 沒有 alloc：類股 ETF 算 SR
 
 
 def test_missing_or_broken_log_shows_no_trades(tmp_path):

@@ -1,7 +1,6 @@
-"""「調整…」Allocation 的流程（qt_panel.allocation_flow，#231）與 Gateway 狀態轉換規則
-（gateway_status.gateway_transition）：純規則，不開 Qt。
+"""「調整…」Allocation 的流程（qt_panel.allocation_flow，#231）：純規則，不開 Qt。
 
-Panel 上同樣的情境另有 Qt 接線題（test_qt_panel 的 Allocation 與 Gateway 測試）。
+Panel 上同樣的情境另有 Qt 接線題（test_qt_panel 的 Allocation 測試）。
 No IB, no files.
 """
 from __future__ import annotations
@@ -9,7 +8,6 @@ from __future__ import annotations
 import pytest
 
 from qt_panel.allocation_flow import edit_allocation
-from qt_panel.gateway_status import GatewayTransition, gateway_transition
 
 
 class Dialogs:
@@ -140,33 +138,3 @@ def test_a_failed_read_after_saving_does_not_undo_the_save():
     config.read = read
     logs = run(config, dialogs)
     assert config.saves and logs[0].startswith("[OK] [Taylor] 策略參數已儲存")
-
-
-# ── Gateway 狀態轉換 ─────────────────────────────────────────────────
-
-@pytest.mark.parametrize("name, previous, state, detail, expected", [
-    # 第一次回報：不寫 log；遠端帳戶照樣換托盤色
-    ("Taylor", None, "init", "", GatewayTransition()),
-    ("Rosa", None, "online", "", GatewayTransition(update_tray=True)),
-    # 狀態沒變：什麼都不做
-    ("Rosa", "online", "online", "", GatewayTransition()),
-    ("Taylor", "offline", "offline", "x", GatewayTransition()),
-    # 離線：寫 log（帶原因）；遠端帳戶另外換托盤色、告訴值班
-    ("Taylor", "online", "offline", "socket closed",
-     GatewayTransition(log="[GW] Taylor 離線 — socket closed")),
-    ("Rosa", "online", "offline", "",
-     GatewayTransition(update_tray=True, remote_offline=True, log="[GW] Rosa 離線")),
-    # 連上：從 init 第一次連上不寫，之後才寫
-    ("Taylor", "init", "online", "", GatewayTransition()),
-    ("Taylor", "offline", "online", "", GatewayTransition(log="[GW] Taylor 已連上")),
-    ("Rosa", "connecting", "online", "", GatewayTransition(update_tray=True,
-                                                          log="[GW] Rosa 已連上")),
-    ("Taylor", "online", "connecting", "", GatewayTransition()),
-])
-def test_gateway_transition(name, previous, state, detail, expected):
-    assert gateway_transition(name, previous, state, detail, remote_account="Rosa") == expected
-
-
-def test_gateway_transition_without_a_remote_account_never_touches_the_tray():
-    todo = gateway_transition("Rosa", "online", "offline", "", remote_account=None)
-    assert todo == GatewayTransition(log="[GW] Rosa 離線")

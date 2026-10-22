@@ -39,6 +39,7 @@ from qt_panel.order_target import OrderFiles, OrderTarget
 from qt_panel.portfolio import PortfolioPage
 from qt_panel.portfolio_page import SNAPSHOT, PageChange, PageFetchers, PortfolioPageSource
 from qt_panel.trading import TradingPage
+from qt_panel.trading_common import MainThread
 from qt_panel.watch import QtWatch, WatchPorts
 from qt_panel.widgets import label, visible_text
 
@@ -55,7 +56,6 @@ class _Bridge(QObject):
     """背景 thread 的回呼 → Qt 主執行緒（跨執行緒的 signal 會自動排隊）。"""
     gateway_changed = Signal(str, str, str)
     log = Signal(str)
-    call = Signal(object)                             # 在主執行緒執行這個函式
 
 
 class _Header(QFrame):
@@ -190,7 +190,7 @@ class MainWindow(QMainWindow):
         self._bridge = _Bridge()
         self._bridge.gateway_changed.connect(self._on_gateway_state)
         self._bridge.log.connect(self._append_log)
-        self._bridge.call.connect(lambda fn: fn())
+        self._main_thread = MainThread()          # Portfolio 頁讀數從背景轉回主執行緒
         self._gateway_flow = GatewayStartFlow(
             ports_factory=gateway_ports_factory, dialogs=self._dialogs, log=self.log,
             recheck=self._source.recheck, states=self.dashboard.gateway_states,
@@ -201,7 +201,7 @@ class MainWindow(QMainWindow):
             names, PageFetchers(snapshot=portfolio_fetch, params=strategy_config_fetch,
                                 trades=trades_fetch, equity=equity_fetch,
                                 flows=cash_flows_fetch),
-            schedule=self._schedule, cancel=self._cancel, post=self._bridge.call.emit,
+            schedule=self._schedule, cancel=self._cancel, post=self._main_thread.call.emit,
             on_change=self._on_page_change, log=self.log,
             next_refresh_time=portfolio_next_refresh)
         self._clock_timer = QTimer(self, interval=1000, timeout=self._update_clock)

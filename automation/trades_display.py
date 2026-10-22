@@ -2,8 +2,9 @@
 
 The trades come from `ledger.recent_trades` (#209); this module only turns them
 into screen rows. `read_account_trades` is what the Panel calls: one account's
-last 7 days, labelled with that account's Allocation (the Portfolio page source
-passes the pair it just read, #231). `trade_line` formats one trade as a row. Sector and inverse ETF trades are
+last 7 days, labelled with that account's Allocation (the Portfolio page
+source passes the pair it just read, #231). `trade_line` formats one trade
+as a row. Sector and inverse ETF trades are
 labelled with the same rule as the Portfolio (`strategy_owner`, #187). No GUI
 imports; colors come back as theme key names ("green", "red", "yellow", "text_dim").
 """

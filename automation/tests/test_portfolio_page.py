@@ -101,17 +101,34 @@ class Reads:
             flows=lambda n: self._get(FLOWS, self.flows, n))
 
 
-@pytest.fixture
-def world():
+def make_world(**fetchers):
     reads, main, timers = Reads(), Main(), Timers()
     changes, logs = [], []
     source = PortfolioPageSource(
-        NAMES, reads.fetchers(), schedule=timers.schedule, cancel=timers.cancel,
-        post=main.post, on_change=changes.append, log=logs.append,
+        NAMES, replace(reads.fetchers(), **fetchers), schedule=timers.schedule,
+        cancel=timers.cancel, post=main.post, on_change=changes.append, log=logs.append,
         next_refresh_time=lambda now: now + timedelta(hours=1),
         now=lambda: datetime(2026, 10, 22, 10, 0))
-    yield reads, main, timers, source, changes, logs
-    source.stop()
+    return reads, main, timers, source, changes, logs
+
+
+@pytest.fixture
+def world():
+    w = make_world()
+    yield w
+    w[3].stop()
+
+
+def _settle_snapshots(timers, changes, rounds=1):
+    """觸發 poll 直到每個帳戶都收到第 rounds 次「讀完」的快照通知。"""
+    def done():
+        finished = [c.name for c in changes if c.kind == SNAPSHOT and not c.data.running]
+        return all(finished.count(n) >= rounds for n in NAMES)
+    deadline = time.monotonic() + 3
+    while not done():
+        assert time.monotonic() < deadline, "snapshot read did not finish"
+        timers.poll()
+        threading.Event().wait(0.001)
 
 
 def _drain_extras(main, source):
@@ -134,7 +151,9 @@ def test_extras_are_read_in_order_and_trades_get_the_allocation_read_in_the_same
         (FLOWS, "Taylor"), (FLOWS, "Rosa"),
     ]
     assert _extras(changes) == [(k, n) for k in pp.EXTRA_ORDER for n in NAMES]
-    assert logs == ["[GW] Portfolio refresh: next at 2026-10-22 11:00 "]
+    assert logs[0] == "[GW] Portfolio refresh: next at 2026-10-22 11:00 "
+    # 其他讀數全部讀到、沒有失敗：不寫 log（快照讀完的 [OK] 看執行緒快慢，可能已經有）
+    assert [l for l in logs[1:] if "權益／持倉已更新" not in l] == []
 
 
 def test_trades_label_with_no_allocation_when_the_params_read_fails(world):
@@ -157,20 +176,19 @@ def test_changes_reach_the_page_only_on_the_main_thread(world):
     assert len(_extras(changes)) == 8 and not source.extras_loading()
 
 
-def test_extras_are_not_read_twice_at_once_and_stop_drops_late_results(world):
-    reads, main, timers, source, changes, logs = world
+def test_extras_are_not_read_twice_at_once_and_stop_drops_late_results():
     release = threading.Event()
 
     def flows(name):
         assert release.wait(3)                                    # 出入金下載很慢
         return Flows()
 
-    source._fetchers = replace(source._fetchers, flows=flows)
+    reads, main, timers, source, changes, logs = make_world(flows=flows)
     source.start()
     assert source.refresh_extras() is False                       # 上一輪還沒讀完
     source.stop()
     release.set()
-    wait_for(lambda: main.queue and main.queue[-1] == source._extras_finished)
+    wait_for(lambda: len(main.queue) == len(pp.EXTRA_ORDER) * len(NAMES) + 1)
     main.run()
     assert _extras(changes) == [] and source.refresh_extras() is False
 
@@ -178,13 +196,11 @@ def test_extras_are_not_read_twice_at_once_and_stop_drops_late_results(world):
 def test_a_failed_snapshot_keeps_the_last_reading_and_only_that_account_is_marked(world):
     reads, main, timers, source, changes, logs = world
     source.start()
-    wait_for(lambda: all(not source._queries.snapshot(n).running for n in NAMES))
-    timers.poll()
+    _settle_snapshots(timers, changes)
     reads.snapshots["Rosa"] = TimeoutError()
     logs.clear()
     assert source.refresh() == NAMES
-    wait_for(lambda: all(not source._queries.snapshot(n).running for n in NAMES))
-    timers.poll()
+    _settle_snapshots(timers, changes, rounds=2)
     finished = {c.name: c.data for c in changes if c.kind == SNAPSHOT and not c.data.running}
     assert finished["Taylor"].error is None
     assert finished["Rosa"].error == "TimeoutError" and finished["Rosa"].portfolio.nav == 1.0
@@ -261,7 +277,7 @@ def test_snapshots_follow_the_market_hours_schedule(world):
     source.start()
     hour = [h for h in timers.armed if h[0] == 3_600_000]
     assert len(hour) == 1                                         # 下一個時段：一小時後
-    wait_for(lambda: all(not source._queries.snapshot(n).running for n in NAMES))
+    _settle_snapshots(timers, changes)
     reads.calls.clear()
     timers.armed.remove(hour[0])
     hour[0][1]()                                                  # 時段到了

@@ -32,7 +32,6 @@ from strategy_owner import includes
 
 OWNER_FILTERS = ("全部", "SR", "SkewLS", "SP500", display.MANUAL)
 TABLE_COLUMNS = ("歸屬", "代號", "股數", "權重", "成本", "現價", "損益", "損益%", "名稱")
-# 主視窗在背景讀的帳戶資料（set_extra 的 kind）
 # 版面（#177）：卡片間距、右側兩欄寬度、表格列高
 GAP = 10
 SIDE_WIDTH = 240

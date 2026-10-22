@@ -200,6 +200,21 @@ def test_config_backend_routes_the_write_to_sqlite_without_env(monkeypatch, tmp_
     assert pd.read_excel(portfolio, sheet_name="Daily").shape[0] == 1
 
 
+@pytest.mark.parametrize("text, reason", [
+    ("{not json", "讀不到"),
+    ("[]", "不是 JSON 物件"),
+    ('{"log_backend": true}', "log_backend 要是"),
+])
+def test_an_unreadable_config_names_the_cause(tmp_path, monkeypatch, text, reason):
+    """config.json 壞了不猜後端：錯誤說清楚是設定檔的問題（呼叫端照舊記成寫入失敗）。"""
+    import excel_logger
+    config = tmp_path / "config.json"
+    config.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(excel_logger, "CONFIG_FILE", config)
+    with pytest.raises(ValueError, match=reason):
+        excel_logger._log_backend()
+
+
 def test_unknown_backend_is_refused_before_writing(monkeypatch, tmp_path):
     portfolio, _, db = _patch_paths(monkeypatch, tmp_path)
     _backend_world(monkeypatch, tmp_path, {"log_backend": "csv"})

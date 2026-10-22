@@ -157,7 +157,7 @@ def _schema(conn: sqlite3.Connection) -> None:
         raise StoreError(f"unsupported SQLite schema version: {row[0]}")
 
 
-# ── Live adapter（excel_logger 每次寫入都會用到）──────────────────────────────
+# ── Live adapter: used by excel_logger on every write ─────────────────────────
 
 def initialize(path: str | Path) -> Path:
     """Create or validate a store and return its resolved path."""
@@ -556,7 +556,7 @@ def export_excel(path: str | Path, portfolio_file: str | Path,
     return {"portfolio_snapshots": len(snapshots), "trades": len(trades)}
 
 
-# ── 搬遷與稽核工具（人工執行；排程與 Panel 不會呼叫）──────────────────────────
+# ── Migration and audit tools: run by hand, never by the schedule or Panel ────
 
 def _hash_records(records: Mapping[str, dict]) -> str:
     # Source Excel order and the database query order are intentionally

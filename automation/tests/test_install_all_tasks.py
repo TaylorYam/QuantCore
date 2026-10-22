@@ -45,7 +45,7 @@ def test_task_actions_run_the_job_script_directly_without_a_backend_wrapper():
         assert "run_with_sqlite_backend" not in spec.argument, spec.name
         assert "QUANTCORE_LOG_BACKEND" not in spec.argument, spec.name
         assert spec.argument.startswith(f'"{spec.script}"'), spec.name
-        if spec.name != "QuantCore_ConstituentsRefresh_Wed":
+        if spec.name != "QuantCore_ConstituentsRefresh_Wed":   # 不寫 run_status，沒有 Job
             assert os.path.basename(spec.script) in jobs, spec.name
 
 

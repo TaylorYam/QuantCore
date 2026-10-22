@@ -71,9 +71,10 @@ is retained as a separate occurrence. Callers can pass `capture_id` to
 available for trade rows. The code falls back to Excel when neither the
 environment variable nor `log_backend` is set. Until #230 is deployed, live
 scheduled writers and the panel process selected SQLite through the checked-in
-wrapper (activation section below); `install_all_tasks.py` and
-`QuantCore_QtPanel.vbs` no longer use it, so `config.json` must carry
-`"log_backend": "sqlite"` before they run.
+wrapper (activation section below). `install_all_tasks.py` never added the
+wrapper (the live actions were rewritten by hand in #73) and
+`QuantCore_QtPanel.vbs` no longer uses it, so `config.json` must carry
+`"log_backend": "sqlite"` before either runs.
 
 The isolated staging copy measured a 473.76 ms median to read both Excel
 workbooks versus 22.99 ms for the equivalent SQLite queries (5,054 snapshots

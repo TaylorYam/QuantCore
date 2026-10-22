@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,6 +34,7 @@ UNREADABLE = "unreadable"
 EMPTY = "empty"
 NO_CLOSE = "no Close column"
 OUTSIDE_ALIAS = "no bars inside the historical alias window"
+BAD_CLOSE = "last Close is not a positive number"
 
 
 def data_root() -> Path:
@@ -87,7 +89,8 @@ class BarsRead:
         return self.problem is None
 
 
-def _failed(path: Path, problem: str, error: Exception | None = None) -> BarsRead:
+def report(path: Path, problem: str, error: Exception | None = None) -> BarsRead:
+    """寫一行 log（缺檔 INFO、其餘 WARNING），回傳這個失敗的 BarsRead。"""
     if problem == MISSING:
         log.info(f"行情 CSV 缺檔：{path}")
     elif error is not None:
@@ -103,17 +106,17 @@ def read_bars(path: str | Path, *, kind: str = "raw") -> BarsRead:
         raise ValueError(f"unknown bars kind: {kind!r}")
     path = Path(path)
     if not path.exists():
-        return _failed(path, MISSING)
+        return report(path, MISSING)
     try:
         frame = pd.read_csv(path, index_col="Date", parse_dates=True)
         frame.index = pd.to_datetime(frame.index).normalize()
         frame = frame[~frame.index.duplicated(keep="last")].sort_index()
     except Exception as e:
-        return _failed(path, UNREADABLE, e)
+        return report(path, UNREADABLE, e)
     if frame.empty:
-        return _failed(path, EMPTY)
+        return report(path, EMPTY)
     if "Close" not in frame.columns:
-        return _failed(path, NO_CLOSE)
+        return report(path, NO_CLOSE)
     if kind == "total_return":
         frame = total_return_ohlc(frame)
     return BarsRead(path, frame)
@@ -126,7 +129,7 @@ def bars(folder: str | Path, symbol: str, *, as_of=None, kind: str = "raw") -> B
         return read
     frame = alias_window(read.frame, symbol, as_of)
     if frame.empty:
-        return _failed(read.path, OUTSIDE_ALIAS)
+        return report(read.path, OUTSIDE_ALIAS)
     return BarsRead(read.path, frame)
 
 
@@ -157,20 +160,27 @@ def require_bars(folder: str | Path, symbol: str, *, kind: str = "raw") -> pd.Da
 def last_close(symbol: str, *, root: str | Path | None = None) -> float | None:
     """最近一筆收盤（`Close` 去掉空值後的最後一筆）：先找 etfs/、再找 stocks/。
 
-    兩處都沒有檔、或找到的檔不能用 → None（已寫 log）。
+    兩處都沒有檔、或找到的檔不能用 → None（已寫 log）。etfs/ 的最後收盤不是正數時
+    照舊再找 stocks/。
     """
     base = Path(root) if root is not None else data_root()
+    found = False
     for folder in ("etfs", "stocks"):
         path = csv_path(base / folder, symbol)
         if not path.exists():
             continue
+        found = True
         read = read_bars(path)
         if not read.ok:
             return None
         closes = read.frame["Close"].dropna()
         if closes.empty:
-            _failed(path, EMPTY)
+            report(path, EMPTY)
             return None
-        return float(closes.iloc[-1])
-    log.info(f"行情 CSV 缺檔：{symbol}（{base / 'etfs'}、{base / 'stocks'} 都沒有）")
+        value = float(closes.iloc[-1])
+        if math.isfinite(value) and value > 0:
+            return value
+        report(path, BAD_CLOSE)
+    if not found:
+        log.info(f"行情 CSV 缺檔：{symbol}（{base / 'etfs'}、{base / 'stocks'} 都沒有）")
     return None

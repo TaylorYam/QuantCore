@@ -126,6 +126,45 @@ def test_last_close_missing_everywhere_or_all_nan_is_none_and_logged(tmp_path, c
     assert "NAN.csv" in caplog.records[1].getMessage()
 
 
+def test_last_close_falls_through_to_stocks_when_the_etf_close_is_not_positive(tmp_path, caplog):
+    _write(tmp_path / "etfs", "ZZZ", ["2026-10-06,1,1,1,0,0,1"])
+    _write(tmp_path / "stocks", "ZZZ", ["2026-10-06,1,1,1,42,42,1"])
+    with caplog.at_level(logging.WARNING, logger=md.log.name):
+        assert md.last_close("ZZZ", root=tmp_path) == 42.0
+    assert md.BAD_CLOSE in caplog.text
+    (tmp_path / "stocks" / "ZZZ.csv").unlink()
+    assert md.last_close("ZZZ", root=tmp_path) is None
+
+
+def test_sp500_selection_reads_and_logs_a_missing_file_once(tmp_path, monkeypatch, caplog):
+    """回測每個 session 都會問同一檔：缺檔只讀一次、只記一行（#229 review）。"""
+    from strategies.sp500_momentum import config, utils
+    from strategies.sp500_momentum.selection import SelectionEngine
+
+    monkeypatch.setattr(config, "STOCK_DIR", tmp_path)
+    engine = SelectionEngine.__new__(SelectionEngine)
+    engine.data_cache, engine._unusable = {}, set()
+    reads = []
+    monkeypatch.setattr(utils, "load_stock", lambda p: reads.append(p) or md.read_bars(p).frame)
+    with caplog.at_level(logging.INFO, logger=md.log.name):
+        assert engine._get_ticker_data("ZZZ") is None
+        assert engine._get_ticker_data("ZZZ") is None
+    assert len(reads) == 1 and len(caplog.records) == 1 and engine.data_cache == {}
+
+
+def test_sp500_selection_logs_bars_outside_the_alias_window(tmp_path, monkeypatch, caplog):
+    from strategies.sp500_momentum import config
+    from strategies.sp500_momentum.selection import SelectionEngine
+
+    _write(tmp_path, "GAP", ["2023-01-03,1,1,1,9,9,1"])
+    monkeypatch.setattr(config, "STOCK_DIR", tmp_path)
+    engine = SelectionEngine.__new__(SelectionEngine)
+    engine.data_cache, engine._unusable = {}, set()
+    with caplog.at_level(logging.WARNING, logger=md.log.name):
+        assert engine._get_ticker_data("GPS", as_of="2022-02-02") is None
+    assert md.OUTSIDE_ALIAS in caplog.text and "GAP.csv" in caplog.text
+
+
 def test_last_close_defaults_to_data_root(tmp_path, monkeypatch):
     _write(tmp_path / "etfs", "ZZZ", ["2026-10-06,1,1,1,7,7,1"])
     monkeypatch.setattr(md, "DATA_ROOT", tmp_path)

@@ -8,8 +8,7 @@ from pathlib import Path
 
 from data import market_data
 # 命名契約（provider symbol、#56 歷史別名、本地檔名）在 data/market_data（#229）
-from data.market_data import (historical_alias, provider_symbol,  # noqa: F401
-                              source_symbol as data_provider_symbol)
+from data.market_data import provider_symbol  # noqa: F401
 
 
 def stock_csv_path(stock_dir: str | Path, symbol: str, as_of=None) -> Path:

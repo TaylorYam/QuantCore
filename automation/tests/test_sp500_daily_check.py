@@ -196,7 +196,7 @@ def test_dip_buy_dry_run_neither_sends_nor_cancels_existing_orders(dip_buy, fake
 
 # ── #2: daily_report marks at Reference Close, IB only as fallback ──
 
-def test_daily_report_marks_at_reference_close_then_ib_fallback(monkeypatch):
+def test_daily_report_marks_at_reference_close_then_ib_fallback(monkeypatch, caplog):
     pytest.importorskip("ib_insync")
     import price_utils
     import daily_report
@@ -205,8 +205,10 @@ def test_daily_report_marks_at_reference_close_then_ib_fallback(monkeypatch):
                         lambda s: {"CIEN": 488.21}.get(s, 0.0))
     asked = []
     conn = NS(prices=lambda syms: asked.append(list(syms)) or {"STX": 912.0})
-    marks = daily_report.mark_at_reference_close(conn, ["CIEN", "STX"])
+    with caplog.at_level("INFO", logger=daily_report.log.name):
+        marks = daily_report.mark_at_reference_close(conn, ["CIEN", "STX"])
     assert asked == [["STX"]]         # 只有 CSV 缺的才問 IB
+    assert "沒有本地收盤，改用 IB 參考價：STX" in caplog.text     # #229：回退寫進 log
     assert marks["CIEN"] == 488.21    # official close, NOT a stale weekend tick
     assert marks["STX"] == 912.0      # CSV missing → IB fallback
 

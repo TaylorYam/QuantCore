@@ -6,34 +6,10 @@ SP500 Momentum — 資料工具函數
 import pandas as pd
 from pathlib import Path
 
-from data.historical_aliases import HistoricalAlias, alias_for
-
-
-# ── 代碼命名契約 ──────────────────────────────────────────────────────────────
-# Constituents symbol：S&P / Wikipedia 寫法，類股以 "." 分隔（BRK.B）。
-# Provider symbol：Yahoo 寫法，類股以 "-" 分隔（BRK-B）；update_data 以檔名當下載代碼。
-# 本地檔名：{provider symbol}.csv。
-# 一般只做同一證券的格式轉換；#56 的明確日期別名由 historical_aliases
-# 提供，改名、合併、代碼重用仍不由 provider metadata 自動推論。
-
-def provider_symbol(symbol: str) -> str:
-    """Constituents symbol → provider (Yahoo) symbol / 本地檔名 stem。"""
-    return symbol.strip().replace(".", "-")
-
-
-def historical_alias(symbol: str, as_of=None) -> HistoricalAlias | None:
-    """Return the reviewed historical identity active on a session, if any."""
-    return alias_for(symbol, as_of) if as_of is not None else None
-
-
-def data_provider_symbol(symbol: str, as_of=None) -> str:
-    """Resolve a provider stem for a dated read.
-
-    With no session this remains the format-only contract.  A session is
-    required before one of the explicit #56 historical aliases can apply.
-    """
-    alias = historical_alias(symbol, as_of)
-    return alias.provider_symbol if alias else provider_symbol(symbol)
+from data import market_data
+# 命名契約（provider symbol、#56 歷史別名、本地檔名）在 data/market_data（#229）
+from data.market_data import (historical_alias, provider_symbol,  # noqa: F401
+                              source_symbol as data_provider_symbol)
 
 
 def stock_csv_path(stock_dir: str | Path, symbol: str, as_of=None) -> Path:
@@ -43,26 +19,15 @@ def stock_csv_path(stock_dir: str | Path, symbol: str, as_of=None) -> Path:
     only need the ordinary format conversion.  Historical aliases are used
     only when the caller supplies the session being read.
     """
-    return Path(stock_dir) / f"{data_provider_symbol(symbol, as_of)}.csv"
+    return market_data.csv_path(stock_dir, symbol, as_of)
 
 
 def load_stock(path: str | Path) -> pd.DataFrame | None:
     """
     讀取股票 CSV（標準格式：Date, Open, High, Low, Close, Volume）。
-    回傳 DataFrame；找不到或錯誤回傳 None。
+    回傳 DataFrame；找不到或錯誤回傳 None（data/market_data 寫 log）。
     """
-    path = Path(path)
-    if not path.exists():
-        return None
-    try:
-        df = pd.read_csv(path, index_col="Date", parse_dates=True)
-        df.index = pd.to_datetime(df.index).normalize()
-        df = df[~df.index.duplicated(keep="last")].sort_index()
-        if df.empty or "Close" not in df.columns:
-            return None
-        return df
-    except Exception:
-        return None
+    return market_data.read_bars(path).frame
 
 
 def load_benchmark(path: str | Path) -> pd.DataFrame | None:

@@ -36,8 +36,9 @@ from data.price_continuity import (OVERLAP_DAYS, PRICE_COLS, SPLIT_COL,  # noqa:
                                    replacement, window_check)
 from strategies.sector_rotation import config as _sr_config  # noqa: E402
 from strategies.sector_skew_ls import config as _skewls_config  # noqa: E402
+from data.market_data import data_root  # noqa: E402
 
-ROOT      = Path(__file__).resolve().parent.parent / "data"
+ROOT      = data_root()
 ETF_DIR   = ROOT / "etfs"
 STOCK_DIR = ROOT / "stocks"
 IDENTITY_MANIFEST_PATH = ROOT / "identity_dispositions.json"

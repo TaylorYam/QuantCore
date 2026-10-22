@@ -8,6 +8,8 @@ import pandas as pd
 import numpy as np
 import scipy.stats as stats
 
+from data import market_data
+
 from . import config
 from . import utils
 from .constituents import load_constituents
@@ -81,22 +83,19 @@ class SelectionEngine:
         session cannot accidentally reuse the successor's bars outside the
         reviewed identity interval.
         """
-        source = utils.data_provider_symbol(ticker, as_of)
-        cache_key = ticker if source == utils.provider_symbol(ticker) else (ticker, source)
+        source = market_data.source_symbol(ticker, as_of)
+        cache_key = ticker if source == market_data.provider_symbol(ticker) else (ticker, source)
         if ticker in self.data_cache and as_of is None:
             return self.data_cache[ticker]
         if cache_key in self.data_cache:
             return self.data_cache[cache_key]
 
-        df = utils.load_stock(utils.stock_csv_path(config.STOCK_DIR, ticker, as_of))
+        df = utils.load_stock(market_data.csv_path(config.STOCK_DIR, ticker, as_of))
 
         if df is not None and not df.empty:
-            alias = utils.historical_alias(ticker, as_of)
-            if alias is not None:
-                df = df[(df.index >= pd.Timestamp(alias.valid_from)) &
-                        (df.index <= pd.Timestamp(alias.valid_to))]
-                if df.empty:
-                    return None
+            df = market_data.alias_window(df, ticker, as_of)
+            if df.empty:
+                return None
             # 優先用 Adj Close 計算 EMA（與原始系統一致）
             price_col = "Adj Close" if "Adj Close" in df.columns else "Close"
             for period in self.PRECOMPUTED_EMA_PERIODS:

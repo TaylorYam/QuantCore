@@ -89,24 +89,16 @@ def trade_log(monkeypatch, tmp_path):
     return write
 
 
-def test_account_trades_are_screen_rows_newest_first_with_that_accounts_allocation(
-        trade_log, monkeypatch):
-    import account_utils
-
+def test_account_trades_are_screen_rows_newest_first_with_that_accounts_allocation(trade_log):
+    """alloc 由 Portfolio 頁讀數來源從同一輪的策略參數帶進來（#231），這裡不再讀設定。"""
     trade_log("Taylor", "AAPL", "SP500", fill=False)
     trade_log("Taylor", "XLK", "SR+SkewLS")
     trade_log("Rosa", "XLB", "SR")
-    monkeypatch.setattr(account_utils, "get_account_config",
-                        lambda name: {"alloc_sr": 0.0, "alloc_skewls": 1.0, "alloc_sp500": 0.4})
-    rows = read_account_trades("Taylor")
+    rows = read_account_trades("Taylor", alloc=(0.0, 1.0))
     assert [r.cells()[1:] for r in rows] == [
         ("XLK", "BUY", "3", "$12.50", "SkewLS", "Filled"),
         ("AAPL", "BUY", "3", "—", "Stocks", "DRY_RUN"),
     ]
-
-    def missing(name):
-        raise ValueError("Account not found")
-    monkeypatch.setattr(account_utils, "get_account_config", missing)
     assert read_account_trades("Taylor")[0].strategy == "SR"       # 讀不到設定：舊規則
 
 

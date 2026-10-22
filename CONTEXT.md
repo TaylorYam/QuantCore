@@ -143,7 +143,7 @@ Panel 的單送去哪、用哪個 IB 身分、記在哪、通知誰：各帳戶�
 _Avoid_: 送單模式
 
 **Portfolio 快照 (Portfolio Snapshot)**:
-一個 [[Account]] 此刻的權益、Margin Cushion、持倉（含報價與未實現損益）與分組（策略 ETF／SP500 個股／手動），Panel 的 Portfolio 頁顯示的就是它。唯一實作 `automation/portfolio_snapshot.py`（#208）：經 [[Broker（券商連線層）]] 開一條連線讀完就斷（Panel 用唯讀連線），回傳不可變的 `PortfolioSnapshot`；分組只問決策層 `rebalance_plan.classify_holdings`（和 21:00 調倉、Sync Pos 同一個函式），ETF 組 = 類股 ETF ＋ SkewLS 反向 ETF。Panel 另外帶入手動持倉碰撞與 Allocation（`qt_panel/portfolio_source`）。
+一個 [[Account]] 此刻的權益、Margin Cushion、持倉（含報價與未實現損益）與分組（策略 ETF／SP500 個股／手動），Panel 的 Portfolio 頁顯示的就是它。唯一實作 `automation/portfolio_snapshot.py`（#208）：經 [[Broker（券商連線層）]] 開一條連線讀完就斷（Panel 用唯讀連線），回傳不可變的 `PortfolioSnapshot`；分組只問決策層 `rebalance_plan.classify_holdings`（和 21:00 調倉、Sync Pos 同一個函式），ETF 組 = 類股 ETF ＋ SkewLS 反向 ETF。Panel 另外帶入手動持倉碰撞與 Allocation（`qt_panel/portfolio_source`）。Portfolio 頁的讀數（快照、權益紀錄、策略參數、最近成交、出入金）只從 `qt_panel/portfolio_page` 來（#231）。
 _Avoid_: 每日報告的「帳戶快照」（那是 04:40 寫進 Excel 的 NAV／持倉紀錄）
 
 **Broker（券商連線層）**:

@@ -11,12 +11,37 @@ ROLE_MONITOR、一般連線（非唯讀）。
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Callable, Protocol
 
 from account_utils import ROLE_MONITOR
 from gateway_monitor import GatewayMonitor
 
 OnState = Callable[[str, str, str], None]
+
+
+@dataclass(frozen=True)
+class GatewayTransition:
+    """一次 Gateway 狀態回報後主視窗要做的事（#231）。"""
+    update_tray: bool = False       # 系統匣顏色跟著遠端 Gateway 帳戶
+    remote_offline: bool = False    # 告訴值班：遠端 Gateway 剛離線
+    log: str = ""                   # 要寫的 log；空字串 = 不寫
+
+
+def gateway_transition(name: str, previous: str | None, state: str, detail: str,
+                       remote_account: str | None) -> GatewayTransition:
+    """previous：這個帳戶上一次的狀態（第一次回報是 None）。只有狀態真的變了才換托盤色、
+    才寫 log；從 init 第一次連上不寫「已連上」。"""
+    changed = state != previous
+    remote = name == remote_account and changed
+    log = ""
+    if previous is not None and changed:
+        if state == "offline":
+            log = f"[GW] {name} 離線" + (f" — {detail}" if detail else "")
+        elif state == "online" and previous != "init":
+            log = f"[GW] {name} 已連上"
+    return GatewayTransition(update_tray=remote, remote_offline=remote and state == "offline",
+                             log=log)
 
 
 class GatewaySource(Protocol):

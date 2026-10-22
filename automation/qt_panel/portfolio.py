@@ -26,13 +26,13 @@ from portfolio_snapshot import PortfolioSnapshot
 from qt_panel import theme
 from qt_panel.account_panels import RecentTradesCard, StrategyParamsCard
 from qt_panel.equity import EquityChart, Sparkline, recent_change
+from qt_panel.portfolio_page import EQUITY, FLOWS, PARAMS, TRADES
 from qt_panel.widgets import Card, all_text, clear_layout, dot, label
 from strategy_owner import includes
 
 OWNER_FILTERS = ("全部", "SR", "SkewLS", "SP500", display.MANUAL)
 TABLE_COLUMNS = ("歸屬", "代號", "股數", "權重", "成本", "現價", "損益", "損益%", "名稱")
 # 主視窗在背景讀的帳戶資料（set_extra 的 kind）
-EQUITY, FLOWS, PARAMS, TRADES = "equity", "flows", "params", "trades"
 # 版面（#177）：卡片間距、右側兩欄寬度、表格列高
 GAP = 10
 SIDE_WIDTH = 240

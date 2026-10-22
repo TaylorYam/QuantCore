@@ -209,6 +209,7 @@ class FakeExtras:
             "Yvonne": FlexNotConfigured("未設定 IB Flex（accounts.json 的 flex_token／flex_query_id）"),
         }
         self.calls = []
+        self.trade_allocs = []      # trades_fetch 收到的 (帳戶, alloc)（#231）
         self.saves = []
         self.save_error = None
 
@@ -228,7 +229,8 @@ class FakeExtras:
     def flows_fetch(self, name):
         return self._get("flows", self.flows, name)
 
-    def trades_fetch(self, name):
+    def trades_fetch(self, name, alloc=None):
+        self.trade_allocs.append((name, alloc))
         return self._get("trades", self.trades, name)
 
     def config_save(self, name, updates):

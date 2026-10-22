@@ -54,9 +54,12 @@ source of truth for recovery.
 
 ## Runtime writer seam
 
-`automation/excel_logger.py` continues to use Excel when
-`QUANTCORE_LOG_BACKEND` is unset (or set to `excel`). Setting
-`QUANTCORE_LOG_BACKEND=sqlite` makes the logger initialize or validate
+The backend is chosen in one place (#230): `config.json` `log_backend`
+(`"sqlite"` or `"excel"`; missing means Excel). The environment variable
+`QUANTCORE_LOG_BACKEND`, when set, still overrides it during the transition, so
+scheduled actions that go through `run_with_sqlite_backend.py` keep working.
+The logger logs the backend and its source the first time a process writes.
+Selecting `sqlite` makes the logger initialize or validate
 `automation/quantcore_logs.sqlite3`, append through `sqlite_store.append_runtime`
 in one transaction, and regenerate both Excel workbooks as compatibility
 projections after the database commit. Runtime state JSON files are untouched.
@@ -65,10 +68,12 @@ Runtime appends require an explicit capture or order identity. Reusing that
 identity updates the same row; a new identity on the same date/account/symbol
 is retained as a separate occurrence. Callers can pass `capture_id` to
 `append_daily_snapshot` and `append_trade_log`; broker order ids are used when
-available for trade rows. The code still falls back to Excel when the backend
-environment variable is unset. Live scheduled writers and the panel manual-order
-process explicitly select SQLite through the checked-in wrapper, as recorded in
-the activation section below.
+available for trade rows. The code falls back to Excel when neither the
+environment variable nor `log_backend` is set. Until #230 is deployed, live
+scheduled writers and the panel process selected SQLite through the checked-in
+wrapper (activation section below); `install_all_tasks.py` and
+`QuantCore_QtPanel.vbs` no longer use it, so `config.json` must carry
+`"log_backend": "sqlite"` before they run.
 
 The isolated staging copy measured a 473.76 ms median to read both Excel
 workbooks versus 22.99 ms for the equivalent SQLite queries (5,054 snapshots

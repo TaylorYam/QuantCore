@@ -35,6 +35,20 @@ def test_task_specs_match_live_schedule():
     assert got == EXPECTED
 
 
+def test_task_actions_run_the_job_script_directly_without_a_backend_wrapper():
+    """安裝器產生的排程動作＝Job 表的腳本，不包 run_with_sqlite_backend.py（#230）：
+    交易紀錄後端由 config.json 決定，重跑安裝器不會改變紀錄寫去哪。"""
+    import run_status
+    from install_all_tasks import task_specs
+    jobs = {j.script for j in vars(run_status).values() if isinstance(j, run_status.Job)}
+    for spec in task_specs():
+        assert "run_with_sqlite_backend" not in spec.argument, spec.name
+        assert "QUANTCORE_LOG_BACKEND" not in spec.argument, spec.name
+        assert spec.argument.startswith(f'"{spec.script}"'), spec.name
+        if spec.name != "QuantCore_ConstituentsRefresh_Wed":
+            assert os.path.basename(spec.script) in jobs, spec.name
+
+
 def test_every_task_script_exists():
     """腳本改名或搬家時，排程會靜靜失敗 — 在測試就擋下來。"""
     from install_all_tasks import task_specs

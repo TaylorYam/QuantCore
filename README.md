@@ -225,6 +225,7 @@ pip freeze > requirements.lock
      - `color`：畫面上的帳戶代表色（預設深藍）
      - `remote_gateway`：遠端／易斷線的 Gateway — 系統匣顏色跟著它、斷線 10 分鐘後試一次重連、台北 21:00–05:00 每 30 分 poll（預設 `false`；現狀 Rosa 開）。**最多一個帳戶**，多於一個時 Panel 開不起來
      - 加帳戶只要改 `accounts.json`；預設表在 `automation/account_utils.py`，三台機器都補上欄位後可以拿掉
+   - 交易紀錄後端（#230）：`config.json` 的 `log_backend`，`"sqlite"`＝寫 `quantcore_logs.sqlite3` 再匯出 `portfolio_tracker.xlsx`／`trade_log.xlsx`，`"excel"` 或省略＝直接寫兩本 xlsx。04:40／21:00 排程與 Panel 都讀這一個欄位；啟動後第一次寫紀錄時 log 會寫「交易紀錄後端：sqlite（config.json 的 log_backend）」。過渡期環境變數 `QUANTCORE_LOG_BACKEND` 仍優先（舊的 `run_with_sqlite_backend.py` 排程動作靠它）
 4. 從 Google Drive 下載資料解壓縮到 `data/`（見 [setup guide](docs/setup_new_computer.md)）
 
 ### 啟動

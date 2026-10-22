@@ -1,9 +1,18 @@
-"""Transactional staging store for portfolio snapshots and trade records.
+"""Transactional store for portfolio snapshots and trade records.
 
-This module is deliberately separate from the live Excel logger.  It provides
-the reversible part of roadmap item 3: import the existing Excel logs into a
-single SQLite file, reconcile the rows, and export them again.  Runtime state
-files (strategy counters and threshold state) are not part of this store.
+Two halves (#230):
+
+- **Live adapter** — what ``excel_logger`` calls on every write when the log
+  backend is ``sqlite`` (``config.json`` ``log_backend``): ``initialize``,
+  ``import_excel`` (first use only, when the database does not exist yet),
+  ``append_runtime`` and ``export_excel`` (refreshes the two compatibility
+  workbooks).
+- **Migration and audit tools** — run by hand, never by the schedule or the
+  Panel: ``reconcile``, ``backup``, ``restore`` and the command line
+  (``python sqlite_store.py ...``).
+
+Runtime state files (strategy counters and threshold state) are not part of
+this store.
 """
 
 from __future__ import annotations
@@ -147,6 +156,8 @@ def _schema(conn: sqlite3.Connection) -> None:
     elif int(row[0]) != SCHEMA_VERSION:
         raise StoreError(f"unsupported SQLite schema version: {row[0]}")
 
+
+# ── Live adapter（excel_logger 每次寫入都會用到）──────────────────────────────
 
 def initialize(path: str | Path) -> Path:
     """Create or validate a store and return its resolved path."""
@@ -544,6 +555,8 @@ def export_excel(path: str | Path, portfolio_file: str | Path,
         trades.to_excel(writer, sheet_name=TRADE_SHEET, index=False)
     return {"portfolio_snapshots": len(snapshots), "trades": len(trades)}
 
+
+# ── 搬遷與稽核工具（人工執行；排程與 Panel 不會呼叫）──────────────────────────
 
 def _hash_records(records: Mapping[str, dict]) -> str:
     # Source Excel order and the database query order are intentionally

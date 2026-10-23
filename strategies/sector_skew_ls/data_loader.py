@@ -11,22 +11,15 @@ Sector Skew LS — 資料載入
 from __future__ import annotations
 import pandas as pd
 
+from data import market_data
 from data.price_semantics import total_return_ohlc
 from . import config
 
 
 def _load_one(local_name: str) -> pd.DataFrame:
-    """讀取單檔 CSV，回傳 DataFrame（index=Date, columns=Open/Close/...）。"""
-    path = config.DATA_DIR / f"{local_name}.csv"
-    if not path.exists():
-        raise FileNotFoundError(
-            f"找不到資料檔：{path}\n"
-            f"請先執行 `python automation/update_data.py`"
-        )
-    df = pd.read_csv(path, index_col="Date", parse_dates=True)
-    df.index = pd.to_datetime(df.index).normalize()
-    df = df[~df.index.duplicated(keep="last")].sort_index()
-    return df
+    """讀取單檔 CSV，回傳 DataFrame（index=Date, columns=Open/Close/...）。
+    讀法與缺檔政策（raise）在 data/market_data，與 SR 同一段（#229）。"""
+    return market_data.require_bars(config.DATA_DIR, local_name)
 
 
 def load_data() -> dict:

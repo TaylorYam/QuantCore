@@ -15,7 +15,7 @@ _Avoid_: Model, Signal generator, Engine
 
 **Constituents**:
 某個 [[Strategy]] 在指定日期可交易的 ticker 集合（時間函數）。[[SP500]] 的 constituents 隨 S&P index rebalance 變動；[[SR]] / [[Skew LS]] 的 constituents 固定為各自的 sector ETF 清單。Strategy 的訊號產生器只能從當日 constituents 裡選股。
-代碼寫法：constituents 用 S&P 寫法（類股 `BRK.B`），行情檔用 provider 寫法（`BRK-B.csv`）；一般情況只做格式轉換（`strategies/sp500_momentum/utils.provider_symbol`），改名、合併、代碼重用不自動推論。#56 的 `data/historical_aliases.json` 是唯一例外：其中明列的 8 組歷史身份，只有在 inclusive session 日期界限內，才由 reader 與 coverage audit 共用 resolver 對應到 successor provider 檔；界限外仍不對應，跨股別（例如 DISCK）也不對應。下單用的 broker 代碼是另一套寫法，不在此資料契約內：IB 類股由 `automation/symbol_contract.py` 將 `BRK.B`／`BF.B` 轉成 `BRK B`／`BF B`，IB 回傳後再正規化回 constituents symbol；其他代碼維持原值。
+代碼寫法：constituents 用 S&P 寫法（類股 `BRK.B`），行情檔用 provider 寫法（`BRK-B.csv`）；一般情況只做格式轉換（`data/market_data.provider_symbol`），改名、合併、代碼重用不自動推論。#56 的 `data/historical_aliases.json` 是唯一例外：其中明列的 8 組歷史身份，只有在 inclusive session 日期界限內，才由 reader 與 coverage audit 共用 resolver 對應到 successor provider 檔；界限外仍不對應，跨股別（例如 DISCK）也不對應。本地行情 CSV 的讀取（根目錄、檔名、別名、排序去重、`Close`／`Adj Close`、缺檔與壞檔的 log）只在 `data/market_data.py`（#229）：策略的 data loader、SP500 選股、參考價的 CSV 後備、預演都是它的 caller，缺檔時 raise 或改用 IB 由各 caller 決定。下單用的 broker 代碼是另一套寫法，不在此資料契約內：IB 類股由 `automation/symbol_contract.py` 將 `BRK.B`／`BF.B` 轉成 `BRK B`／`BF B`，IB 回傳後再正規化回 constituents symbol；其他代碼維持原值。
 _Avoid_: Tradeable list, Selection pool, Ticker pool
 
 **Universe**:

@@ -58,6 +58,8 @@ def main(argv=None):
     sp_config.REF_DIR = source / "data" / "reference"
     sp_config.ETF_DIR = source / "data" / "etfs"
     sp_config.STOCK_DIR = source / "data" / "stocks"
+    from data import market_data      # 參考價的 CSV 後備讀這個根目錄（#229）
+    market_data.DATA_ROOT = source / "data"
     from portfolio_snapshot import fetch_snapshot
     logging.disable(logging.CRITICAL)  # IB diagnostic logs can contain Account IDs
 

@@ -18,7 +18,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = ROOT / "data"
+if str(ROOT) not in sys.path:  # python data/checksum.py
+    sys.path.insert(0, str(ROOT))
+from data.market_data import data_root  # noqa: E402
+
+DATA_DIR = data_root()
 CHECKSUM_FILE = DATA_DIR / "checksums.sha256"
 
 SCAN_DIRS = ["etfs", "stocks", "reference"]

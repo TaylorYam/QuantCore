@@ -43,7 +43,7 @@ import pandas as pd
 
 from data.trading_calendar import mc  # official NYSE registry (automation/market_calendar.py)
 from data.historical_aliases import manifest_entry
-from strategies.sp500_momentum.utils import provider_symbol
+from data.market_data import provider_symbol
 
 ROOT = Path(__file__).resolve().parent.parent
 DISPOSITIONS = ROOT / "data" / "coverage_dispositions.json"

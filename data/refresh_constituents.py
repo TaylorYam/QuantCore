@@ -54,7 +54,7 @@ for _path in (ROOT, ROOT / "automation"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 import market_calendar as mc  # noqa: E402
-from strategies.sp500_momentum.utils import provider_symbol  # noqa: E402
+from data.market_data import provider_symbol  # noqa: E402
 
 WIKI_CURRENT_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 WIKI_HISTORY_URL = "https://en.wikipedia.org/wiki/Historical_components_of_the_S%26P_500"

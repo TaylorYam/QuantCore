@@ -4,19 +4,14 @@ Sector Rotation MOM — 資料載入
 """
 
 import pandas as pd
-from pathlib import Path
+from data import market_data
 from data.price_semantics import total_return_ohlc
 from . import config
 
 
 def _load_ticker(ticker: str) -> pd.DataFrame:
-    path = config.DATA_DIR / f"{ticker}.csv"
-    if not path.exists():
-        raise FileNotFoundError(f"找不到資料檔：{path}")
-    df = pd.read_csv(path, index_col="Date", parse_dates=True)
-    df.index = pd.to_datetime(df.index).normalize()
-    df = df[~df.index.duplicated(keep="last")].sort_index()
-    return df
+    """單檔原始 OHLC；讀法與缺檔政策（raise）在 data/market_data，與 SkewLS 同一段（#229）。"""
+    return market_data.require_bars(config.DATA_DIR, ticker)
 
 
 def load_data() -> dict:

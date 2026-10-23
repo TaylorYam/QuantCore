@@ -5,11 +5,13 @@ SP500 Momentum — 參數設定
 
 from pathlib import Path
 
-# ── 資料路徑 ──────────────────────────────────────────────────
+from data.market_data import data_root
+
+# ── 資料路徑（根目錄只有 data_root() 一份，#229）────────────────
 _ROOT     = Path(__file__).resolve().parent.parent.parent
-STOCK_DIR = _ROOT / "data" / "stocks"
-ETF_DIR   = _ROOT / "data" / "etfs"
-REF_DIR   = _ROOT / "data" / "reference"
+STOCK_DIR = data_root() / "stocks"
+ETF_DIR   = data_root() / "etfs"
+REF_DIR   = data_root() / "reference"
 
 # 參考檔案
 CONST_FILE     = "sp500_constituents_daily.xlsx"   # ADR-0002 refresh output (old *_2015_2026 was frozen at 2026-01-14)

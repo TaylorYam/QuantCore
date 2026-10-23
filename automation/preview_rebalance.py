@@ -66,16 +66,15 @@ ROOT_DIR = BASE_DIR.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-import pandas as pd
-
 from account_ctx import AccountCtx
 from account_utils import ROLE_REBALANCE
 import plan_inputs
 import rebalance_plan as plan
+from data.market_data import data_root
 
 log = logging.getLogger(__name__)
 
-DATA_DIR = ROOT_DIR / "data"
+DATA_DIR = data_root()
 
 MODES = ("sr", "sp500", "skewls", "both", "all")
 MODE_LABEL = {
@@ -88,22 +87,12 @@ MODE_LABEL = {
 # ── 報價（本地 CSV 最新收盤；replay_hotfix 同款）─────────────────────────
 
 def local_close(symbol: str, data_dir: Path | None = None) -> Optional[float]:
-    """data/etfs、data/stocks 最新收盤；兩處皆無檔 → None。"""
-    base = Path(data_dir) if data_dir else DATA_DIR
-    from strategies.sp500_momentum.utils import stock_csv_path
+    """data/etfs、data/stocks 最新收盤；兩處皆無檔或檔不能用 → None（data/market_data 寫 log）。"""
+    from data import market_data
     from symbol_contract import canonical_symbol
 
-    symbol = canonical_symbol(symbol)
-    for sub in ("etfs", "stocks"):
-        p = (base / sub / f"{symbol}.csv" if sub == "etfs"
-             else stock_csv_path(base / sub, symbol))
-        if p.exists():
-            try:
-                return float(pd.read_csv(p)["Close"].iloc[-1])
-            except Exception as e:
-                log.warning(f"  {symbol}: 讀取 {p.name} 失敗 ({e})")
-                return None
-    return None
+    return market_data.last_close(canonical_symbol(symbol),
+                                  root=Path(data_dir) if data_dir else DATA_DIR)
 
 
 def resolve_prices(symbols: list[str],

@@ -137,6 +137,13 @@ class Scheduler:
     def advance(self, seconds: float):
         self.advance_to(self.now_dt + timedelta(seconds=seconds))
 
+    def fire_late(self, when: datetime, at: datetime):
+        """The timer armed for *when* fires at *at* (system slept); no other job runs."""
+        self.now_dt = at
+        key = next(k for k, (w, _) in self.jobs.items() if w == when)
+        _, fn = self.jobs.pop(key)
+        fn()
+
 
 def _fixed_schedule(*slots):
     """Return a next_refresh_time function that cycles through fixed ET times."""
@@ -214,17 +221,35 @@ def test_late_timer_skips_refresh():
     assert len(calls) == 1  # startup
     # Simulate system sleep: jump from 09:00 straight to 13:50
     # The 09:30 timer fires at 13:50 — 4h20m late → skip refresh
-    scheduler.now_dt = _et(2026, 9, 14, 13, 50)
-    # Manually fire the pending 09:30 timer
-    pending = list(scheduler.jobs.items())
-    for key, (when, fn) in pending:
-        if when <= _et(2026, 9, 14, 9, 31):  # the 09:30 timer
-            del scheduler.jobs[key]
-            fn()
+    scheduler.fire_late(slots[0], at=_et(2026, 9, 14, 13, 50))
     assert len(calls) == 1  # no catch-up refresh
     # Now armed for 14:00; advance normally
     scheduler.advance_to(_et(2026, 9, 14, 14, 0))
     assert len(calls) == 2  # fires on time
+    loop.stop()
+
+
+def test_on_scheduled_refresh_runs_only_after_on_time_slots():
+    """Startup and manual refreshes do not call it; an on-time slot does; a late slot does not."""
+    from types import SimpleNamespace
+    t0 = _et(2026, 9, 14, 9, 0)
+    slots = [_et(2026, 9, 14, 9, 30), _et(2026, 9, 14, 10, 0), _et(2026, 9, 14, 11, 0)]
+    scheduler = Scheduler(t0)
+    calls, extra = [], []
+    queries = SimpleNamespace(
+        refresh=lambda **kw: calls.append(kw["source"]),
+        drain_changes=lambda: {}, close=lambda: None)
+    loop = PortfolioRefreshLoop(
+        queries, scheduler.schedule, scheduler.cancel, lambda *_: None,
+        next_refresh_time=_fixed_schedule(*slots), now=scheduler.now,
+        on_scheduled_refresh=lambda: extra.append((calls[-1], scheduler.now())))
+    loop.start()
+    loop.refresh()
+    assert calls == ["auto", "manual"] and extra == []
+    scheduler.advance_to(_et(2026, 9, 14, 9, 30))
+    assert extra == [("auto", slots[0])]                          # after the slot's own refresh
+    scheduler.fire_late(slots[1], at=_et(2026, 9, 14, 10, 6))     # 10:00 fires 6 min late
+    assert len(extra) == 1
     loop.stop()
 
 
@@ -246,11 +271,6 @@ def test_late_timer_within_threshold_still_fires():
     loop.start()
     assert len(calls) == 1
     # Timer fires 2 min late
-    scheduler.now_dt = _et(2026, 9, 14, 9, 32)
-    pending = list(scheduler.jobs.items())
-    for key, (when, fn) in pending:
-        if when <= _et(2026, 9, 14, 9, 31):
-            del scheduler.jobs[key]
-            fn()
+    scheduler.fire_late(slots[0], at=_et(2026, 9, 14, 9, 32))
     assert len(calls) == 2  # refresh happened (within 5-min threshold)
     loop.stop()

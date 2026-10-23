@@ -116,6 +116,9 @@ class PortfolioRefreshLoop:
     Refresh fires at fixed NYSE trading-hour slots (09:30, 10:00, …, 16:00 ET)
     instead of a monotonic hourly interval.  Startup still does one immediate
     refresh.  Manual refresh is independent of the schedule.
+    on_scheduled_refresh() runs after each on-time slot refresh (not at
+    startup, not for manual or late slots) so callers can re-read other data
+    on the same schedule.
 
     schedule(ms, callback) and cancel(handle) can be single-shot QTimers or a
     fake scheduler.  Polling publishes each finished Account without a batch
@@ -124,10 +127,12 @@ class PortfolioRefreshLoop:
     _LATE_THRESHOLD_SEC = 300
 
     def __init__(self, queries, schedule, cancel, on_change, *,
-                 next_refresh_time=None, now=None, log=None):
+                 next_refresh_time=None, now=None, log=None,
+                 on_scheduled_refresh=None):
         self.queries = queries
         self._schedule, self._cancel = schedule, cancel
         self._on_change = on_change
+        self._on_scheduled_refresh = on_scheduled_refresh
         self._log = log
         self._next_refresh_time = next_refresh_time
         self._now = now
@@ -174,6 +179,8 @@ class PortfolioRefreshLoop:
             late_sec = (now - self._armed_for).total_seconds()
             if late_sec <= self._LATE_THRESHOLD_SEC:
                 self.refresh(source="auto")
+                if self._on_scheduled_refresh is not None:
+                    self._on_scheduled_refresh()
         self._arm_next()
 
     def _poll(self):

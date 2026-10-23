@@ -5,6 +5,7 @@
 - 其他讀數：策略參數 → 最近成交 → 權益紀錄 → 出入金，單一背景執行緒依這個順序
   讀完所有帳戶；出入金要向 IB Flex 下載（可能要等幾秒），所以排最後。最近成交的
   策略標籤要用帳戶的 (alloc_sr, alloc_skewls)，取自同一輪剛讀到的策略參數。
+  開啟時、按「重新讀取 IB」時、交易時段的排程時間到時都重讀（#241），上一輪沒讀完不重複。
 
 對外只有一種變更通知：`on_change(PageChange)`，一律在主執行緒呼叫——背景執行緒的
 結果經注入的 `post`（主視窗用 Qt signal）轉回主執行緒。讀取結果的 log 也在這裡寫，
@@ -88,12 +89,13 @@ class PortfolioPageSource:
         self._queries = PortfolioQueries(self._names, fetchers.snapshot)
         self._loop = PortfolioRefreshLoop(
             self._queries, schedule, cancel, self._snapshot_changed,
-            next_refresh_time=next_refresh_time, now=now, log=log)
+            next_refresh_time=next_refresh_time, now=now, log=log,
+            on_scheduled_refresh=self.refresh_extras)
 
     # ── 生命週期 ─────────────────────────────────────────────────────
 
     def start(self) -> None:
-        """開啟時讀一次全部讀數，之後快照依美東交易時段排程。"""
+        """開啟時讀一次全部讀數，之後依美東交易時段排程重讀（快照與其他讀數一起，#241）。"""
         self._active = True
         self._loop.start()
         self.refresh_extras()

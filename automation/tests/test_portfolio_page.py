@@ -23,6 +23,7 @@ from qt_panel.portfolio_page import (
 )
 
 NAMES = ("Taylor", "Rosa")
+SLOT_MS = 3_600_000                                               # make_world 的排程：一小時後
 
 
 def wait_for(predicate, timeout=3.0):
@@ -75,6 +76,16 @@ class Timers:
         self.armed.remove(handle)
         handle[1]()
 
+    def slots(self):
+        """排好的時段計時器（假的排程固定排一小時後）。"""
+        return [h for h in self.armed if h[0] == SLOT_MS]
+
+    def fire_slot(self):
+        """時段到了：觸發排好的那一個。"""
+        handle, = self.slots()
+        self.armed.remove(handle)
+        handle[1]()
+
 
 class Reads:
     def __init__(self):
@@ -101,14 +112,13 @@ class Reads:
             flows=lambda n: self._get(FLOWS, self.flows, n))
 
 
-def make_world(**fetchers):
+def make_world(now=lambda: datetime(2026, 10, 22, 10, 0), **fetchers):
     reads, main, timers = Reads(), Main(), Timers()
     changes, logs = [], []
     source = PortfolioPageSource(
         NAMES, replace(reads.fetchers(), **fetchers), schedule=timers.schedule,
         cancel=timers.cancel, post=main.post, on_change=changes.append, log=logs.append,
-        next_refresh_time=lambda now: now + timedelta(hours=1),
-        now=lambda: datetime(2026, 10, 22, 10, 0))
+        next_refresh_time=lambda now: now + timedelta(hours=1), now=now)
     return reads, main, timers, source, changes, logs
 
 
@@ -132,7 +142,11 @@ def _settle_snapshots(timers, changes, rounds=1):
 
 
 def _drain_extras(main, source):
-    wait_for(lambda: main.run() or not source.extras_loading())
+    """跑主執行緒直到這一輪讀完（讀完的通知排在所有讀數之後）。"""
+    def done():
+        main.run()
+        return not source.extras_loading()
+    wait_for(done)
 
 
 def _extras(changes):
@@ -275,13 +289,69 @@ def test_read_params_publishes_on_the_main_thread_and_raises_on_failure(world):
 def test_snapshots_follow_the_market_hours_schedule(world):
     reads, main, timers, source, changes, logs = world
     source.start()
-    hour = [h for h in timers.armed if h[0] == 3_600_000]
-    assert len(hour) == 1                                         # 下一個時段：一小時後
+    assert len(timers.slots()) == 1                               # 下一個時段：一小時後
     _settle_snapshots(timers, changes)
     reads.calls.clear()
-    timers.armed.remove(hour[0])
-    hour[0][1]()                                                  # 時段到了
+    timers.fire_slot()                                            # 時段到了
     wait_for(lambda: sorted(c[1] for c in reads.calls if c[0] == SNAPSHOT) == sorted(NAMES))
+
+
+def test_other_readings_are_read_again_at_each_scheduled_slot(world):
+    """Panel 開著跨日：排程時段到時權益紀錄等也重讀，跟按「重新讀取 IB」一樣（#241）。"""
+    reads, main, timers, source, changes, logs = world
+    source.start()
+    _drain_extras(main, source)
+    for _ in range(2):
+        reads.calls.clear()
+        changes.clear()
+        timers.fire_slot()
+        assert source.extras_loading()                            # 時段當下就開始這一輪
+        _drain_extras(main, source)
+        assert [c for c in reads.calls if c[0] != SNAPSHOT] == [
+            (PARAMS, "Taylor"), (PARAMS, "Rosa"),
+            (TRADES, "Taylor", (0.0, 1.0)), (TRADES, "Rosa", (0.5, 0.2)),
+            (EQUITY, "Taylor"), (EQUITY, "Rosa"),
+            (FLOWS, "Taylor"), (FLOWS, "Rosa"),
+        ]
+        assert _extras(changes) == [(k, n) for k in pp.EXTRA_ORDER for n in NAMES]
+
+
+def test_a_slot_while_the_last_pass_is_still_reading_starts_no_second_pass():
+    release = threading.Event()
+    flow_calls = []
+
+    def flows(name):
+        flow_calls.append(name)
+        assert release.wait(3)                                    # 出入金下載很慢
+        return Flows()
+
+    reads, main, timers, source, changes, logs = make_world(flows=flows)
+    try:
+        source.start()
+        timers.fire_slot()                                        # 開啟時那一輪還沒讀完
+        assert source.extras_loading() and source.refresh_extras() is False
+        release.set()
+        _drain_extras(main, source)
+        assert flow_calls == list(NAMES)                          # 只讀了一輪
+    finally:
+        release.set()
+        source.stop()
+
+
+def test_a_late_slot_starts_no_other_readings():
+    """電腦睡眠醒來、時段晚到超過 5 分鐘：其他讀數跟快照一樣略過這一輪，只排下一個時段。
+    （快照略過的規則在 test_portfolio_queries 的 late timer 題。）"""
+    clock = {"now": datetime(2026, 10, 22, 10, 0)}
+    reads, main, timers, source, changes, logs = make_world(now=lambda: clock["now"])
+    try:
+        source.start()
+        _drain_extras(main, source)
+        clock["now"] = datetime(2026, 10, 22, 11, 6)              # 11:00 的時段晚了 6 分鐘
+        timers.fire_slot()
+        assert not source.extras_loading() and main.queue == []   # 沒有開始新的一輪
+        assert len(timers.slots()) == 1                           # 下一個時段照排
+    finally:
+        source.stop()
 
 
 def test_the_page_rules_do_not_need_qt():

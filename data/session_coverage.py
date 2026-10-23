@@ -20,7 +20,7 @@ from time import perf_counter
 import numpy as np
 import pandas as pd
 
-from data.trading_calendar import mc
+from automation import market_calendar as mc  # official NYSE registry（#234：不再經 data.trading_calendar 轉手）
 from data.market_data import csv_path as stock_csv_path, historical_alias
 
 

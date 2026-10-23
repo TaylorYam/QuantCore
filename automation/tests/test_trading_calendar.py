@@ -50,13 +50,13 @@ def test_session_counts_per_year_match_the_announcements():
                       2021: 252, 2022: 251, 2023: 250, 2024: 252, 2025: 250, 2026: 251, 2027: 251}
 
 
-def test_live_fallback_unchanged_for_2026_2027():
+def test_registry_closures_unchanged_for_2026_2027():
     previous = {date(2026, 1, 1), date(2026, 1, 19), date(2026, 2, 16), date(2026, 4, 3),
                 date(2026, 5, 25), date(2026, 6, 19), date(2026, 7, 3), date(2026, 9, 7),
                 date(2026, 11, 26), date(2026, 12, 25), date(2027, 1, 1), date(2027, 1, 18),
                 date(2027, 2, 15), date(2027, 3, 26), date(2027, 5, 31), date(2027, 6, 18),
                 date(2027, 7, 5), date(2027, 9, 6), date(2027, 11, 25), date(2027, 12, 24)}
-    assert {d for d in mc._HOLIDAYS_FALLBACK if d.year >= 2026} == previous
+    assert {d for d in mc.NYSE_FULL_DAY_CLOSURES if d.year >= 2026} == previous
 
 
 def test_registry_refuses_to_guess_outside_its_years():

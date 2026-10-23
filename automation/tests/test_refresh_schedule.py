@@ -4,15 +4,16 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from market_calendar import is_early_close
 from refresh_schedule import (
-    _SLOTS_EARLY,
     _SLOTS_REGULAR,
-    is_early_close,
     next_refresh_time,
     refresh_slots,
 )
 
 ET = ZoneInfo("America/New_York")
+# 提前收盤日（13:00 收盤）的刷新時刻：收盤時間只在 market_calendar（#234）
+_SLOTS_EARLY = tuple(s for s in _SLOTS_REGULAR if s <= time(13, 0))
 
 
 def _et(y, m, d, h, mi=0, s=0):
@@ -128,13 +129,9 @@ def test_preserves_timezone():
     assert nxt.tzinfo is ET
 
 
-def test_no_trading_day_within_scan_raises():
+def test_no_trading_day_within_scan_raises(monkeypatch):
     # Monkey-patch to make every day non-trading
     import refresh_schedule as mod
-    orig = mod.is_nyse_trading_day
-    mod.is_nyse_trading_day = lambda d: False
-    try:
-        with pytest.raises(RuntimeError, match="no NYSE trading day"):
-            next_refresh_time(_et(2026, 9, 14, 8, 0))
-    finally:
-        mod.is_nyse_trading_day = orig
+    monkeypatch.setattr(mod, "session_clock", lambda d: None)
+    with pytest.raises(RuntimeError, match="no NYSE trading day"):
+        next_refresh_time(_et(2026, 9, 14, 8, 0))

@@ -121,7 +121,7 @@ Leverage = alloc_sr + alloc_sp500 + alloc_skewls
 04:30  每日       資料更新                      yfinance 抓取最新收盤價
 04:40  每日       帳戶快照 → Excel              Margin Cushion < 25% 或失敗才發 Telegram
 04:50  週三       Constituents 自動 refresh     gated 寫入 + diff 報告（ADR-0009）
-07:00  交易日     Morning check                 健檢 + constituents staleness 提醒
+07:00  交易日     Morning check                 健檢 + constituents staleness／NYSE 假日表到期提醒
 16:00  交易日     SP500 Daily Check             熊市 dip-buy 觸發（LMT outsideRTH）
 20:05  週二/三    TY check                      驗證 Gateway 手動登入
 21:00  週二       Tue Rebalance (--mode all)     三策略合併：SR + SP500 hold + SkewLS check
@@ -204,9 +204,12 @@ pip install -r requirements.lock       # 精確版本鎖
 
 可選：
 ```bash
-pip install pandas_market_calendars   # NYSE 假日精確排程
 pip install quantstats                # 回測 HTML 報告
 ```
+
+NYSE 交易日只看 `automation/market_calendar.py` 的官方登錄表（逐年附 NYSE 公告），
+不用 `pandas_market_calendars`——裝了也不會被讀到（#234）。登錄表到期前 90 天
+Morning check 會提醒補下一年度假日表。
 
 更新 lock file（在已驗證環境上執行）：
 ```bash

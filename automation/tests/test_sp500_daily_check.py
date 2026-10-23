@@ -6,7 +6,6 @@ Scope note (ADR-0004): the fixed 20% stop-loss and 50% gap-exit were removed —
 they created a live-only stop→stale-rebuy whipsaw. So `evaluate_exits` is gone;
 daily_check now only does the bear dip-buy check. What remains here:
 
-  - _prev_trading_day  : staleness guard helper (still used for dip-buy freshness)
   - daily_report mark_at_reference_close : EOD mark = CSV close, IB fallback (ADR-0003)
   - logging: import must not hijack root; quiet_ib_console keeps INFO file logs
 
@@ -21,17 +20,8 @@ from types import SimpleNamespace as NS
 import pytest
 
 
-# ── staleness guard helper ──────────────────────────────────────────
-
-def test_prev_trading_day_monday_returns_friday():
-    from sp500_daily_check import _prev_trading_day
-    assert _prev_trading_day(date(2026, 6, 8)) == date(2026, 6, 5)  # Mon → Fri
-
-
-def test_prev_trading_day_skips_weekend_and_juneteenth():
-    # Mon 2026-06-22: back past Sun/Sat and Fri 6/19 (Juneteenth) → Thu 6/18
-    from sp500_daily_check import _prev_trading_day
-    assert _prev_trading_day(date(2026, 6, 22)) == date(2026, 6, 18)
+# 前一個交易日（staleness guard 的預期 Reference Close）= market_calendar.previous_session，
+# 考卷在 test_market_calendar（#234）。
 
 
 # ── 失敗要發 ❌（#38：以前連不上 IB、讀不到資料、例外都只寫 log）─────────
@@ -87,6 +77,18 @@ def test_ib_connect_failure_is_reported(daily_check_env):
     assert _check(daily_check_env).render() == (
         "<b>❌ 日度風控 2026-09-15</b>\n\n"
         "<b>Taylor</b> ❌ IB 連線失敗\n[WinError 1225] &lt;refused&gt;")
+
+
+def test_stale_spy_close_aborts_before_ib(daily_check_env):
+    """SPY 最後一根不是上一個交易日（market_calendar.previous_session，#234）→
+    中止並告警，不連 IB。週二 09-15 的預期 Reference Close = 週一 09-14。"""
+    import pandas as pd
+    daily_check_env.spy = pd.DataFrame({"Close": [745.0, 750.0]},
+                                       index=pd.to_datetime(["2026-09-10", "2026-09-11"]))
+    rendered = _check(daily_check_env).render()
+    assert "日度風控中止" in rendered
+    assert "SPY 最後 2026-09-11，預期 2026-09-14" in rendered
+    assert "IB 連線失敗" not in rendered
 
 
 def test_missing_spy_history_is_reported(daily_check_env):

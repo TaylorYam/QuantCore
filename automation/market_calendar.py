@@ -1,27 +1,35 @@
 """
-NYSE trading-day calendar + Taipei → NYSE session-date mapping.
+NYSE Sessions：哪天開盤、盤中時鐘、最近收完的 session — 全專案只問這裡（#234）。
 
-Used by the ROSA market-window poller (Panel watch, via monitor_engine):
-  1. Decide whether a given Taipei datetime falls inside an active polling
-     window (US RTH session that maps to a real NYSE trading day).
-  2. Provide the NYSE session date that the window points at, for logging.
+日層只有一個答案：下面的官方登錄表（2014–2027，逐年附 NYSE／ICE 公告）。
+不看環境裝了什麼套件；超出登錄表範圍一律 raise ValueError，不猜「應該是交易日」。
+登錄表快用完時 Morning check 會提醒（registry_horizon）。
 
-Behavior:
-  * If `pandas_market_calendars` is importable, defer to NYSE schedule.
-  * If not, fall back to a hardcoded NYSE-holiday set (warns once).
+  is_nyse_trading_day(d)        日期 d 有沒有 session（提前收盤日也算）
+  official_sessions(start, end) [start, end] 內的 session 清單
+  previous_session(d)           d 之前（不含 d）最近的 session
+  session_clock(d)              d 的盤前／開盤／收盤／盤後結束時間（美東；提前收盤日 13:00）
+  session_phase(now)            now 是 PRE_MARKET／REGULAR／AFTER_HOURS 或 None
+  last_completed_session(now)   收盤時間已過的最近 session（手動單的 [[前收 (Reference Close)]]）
+  trading_session_date_for(now) 台北時間 → Rosa 輪詢窗對應的 NYSE session 日
 
-Window mapping (Taipei local time-of-day):
-    21:00 – 23:59  → same Taipei calendar date (NYSE date = Taipei date)
-    00:00 – 05:00  → previous Taipei calendar date (NYSE date = prev day)
-    else           → outside polling window (returns None)
+吃 aware datetime 的 session_phase／last_completed_session 是下單用的閘門：
+naive、非交易日、超出登錄表都回 None（fail closed），不 raise。
+
+Rosa 輪詢窗（台北時間）：
+    21:00 – 23:59  → 同一個台北日期（NYSE date = Taipei date）
+    00:00 – 05:00  → 前一個台北日期（NYSE date = prev day）
+    else           → 不在輪詢窗（回 None）
+
+另外兩個 session 來源 data/reference/us_trading_days.xlsx 與 SPY.csv 的 index
+由 data/trading_calendar.py check／Constituents refresh 對照這份登錄表核對。
 """
 
 from __future__ import annotations
 
-import logging
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-
-log = logging.getLogger(__name__)
+from zoneinfo import ZoneInfo
 
 
 # ── Official NYSE calendar registry (2014–2027) ─────────────────────
@@ -119,66 +127,129 @@ NYSE_EARLY_CLOSES: dict[date, str] = {
     _day(y, d): src for y, (src, _, early) in _REGISTRY.items() for d in early}
 
 
+def registry_horizon() -> date:
+    """登錄表涵蓋的最後一天；之後的日期一律 raise，要先補上 NYSE 公告的年度假日表。"""
+    return REGISTRY_LAST
+
+
+def _check_covered(start: date, end: date) -> None:
+    if start < REGISTRY_FIRST or end > REGISTRY_LAST:
+        raise ValueError(f"official NYSE registry covers {REGISTRY_FIRST}..{REGISTRY_LAST}, "
+                         f"not {start}..{end}; add the announced calendar first")
+
+
+def is_nyse_trading_day(d: date) -> bool:
+    """True iff NYSE has a session on date `d` (NY local date).
+    Weekends → False. NYSE holidays → False. Half-days → True.
+    Raises ValueError outside the registry years — never guesses."""
+    _check_covered(d, d)
+    return d.weekday() < 5 and d not in NYSE_FULL_DAY_CLOSURES
+
+
 def official_sessions(start: date, end: date) -> list[date]:
     """NYSE sessions in [start, end] per the official registry (half days
     included). Raises ValueError outside the registry years — never guesses."""
     if start > end:
         raise ValueError(f"start {start} is after end {end}")
-    if start < REGISTRY_FIRST or end > REGISTRY_LAST:
-        raise ValueError(f"official NYSE registry covers {REGISTRY_FIRST}..{REGISTRY_LAST}, "
-                         f"not {start}..{end}; add the announced calendar first")
+    _check_covered(start, end)
     out, cur = [], start
     while cur <= end:
-        if cur.weekday() < 5 and cur not in NYSE_FULL_DAY_CLOSURES:
+        if is_nyse_trading_day(cur):
             out.append(cur)
         cur += timedelta(days=1)
     return out
 
 
-# NYSE closures used when pandas_market_calendars unavailable.
-_HOLIDAYS_FALLBACK: frozenset[date] = frozenset(NYSE_FULL_DAY_CLOSURES)
+def previous_session(d: date) -> date:
+    """Most recent NYSE session strictly before date `d`.
+    Raises ValueError when that would reach outside the registry."""
+    cur = d - timedelta(days=1)
+    while not is_nyse_trading_day(cur):
+        cur -= timedelta(days=1)
+    return cur
 
 
-def _holiday_set_via_lib() -> frozenset[date] | None:
-    """Try to build holiday set from pandas_market_calendars.
-    Returns None if the library is unavailable / errors during load."""
+# ── 盤中時鐘（美東）─────────────────────────────────────────────────
+
+ET = ZoneInfo("America/New_York")
+
+REGULAR = "REGULAR"
+PRE_MARKET = "PRE_MARKET"
+AFTER_HOURS = "AFTER_HOURS"
+
+
+@dataclass(frozen=True)
+class SessionClock:
+    """一個 session 日的美東時鐘：盤前 [pre_market_open, regular_open)、
+    一般時段 [regular_open, regular_close)、盤後 [regular_close, after_hours_end)。"""
+    pre_market_open: time
+    regular_open: time
+    regular_close: time
+    after_hours_end: time
+
+
+_REGULAR_DAY = SessionClock(time(4), time(9, 30), time(16), time(20))
+_EARLY_CLOSE_DAY = SessionClock(time(4), time(9, 30), time(13), time(17))
+
+
+def is_early_close(d: date) -> bool:
+    """官方 1:00 p.m. 提前收盤日（仍是 session）。"""
+    return d in NYSE_EARLY_CLOSES
+
+
+def session_clock(d: date) -> SessionClock | None:
+    """d 的美東時鐘；非 session 日回 None。超出登錄表 raise ValueError。"""
+    if not is_nyse_trading_day(d):
+        return None
+    return _EARLY_CLOSE_DAY if is_early_close(d) else _REGULAR_DAY
+
+
+def _eastern_clock(now: datetime) -> tuple[datetime, SessionClock] | None:
+    """(美東時間, 當天時鐘)；naive、非 session 日、超出登錄表 → None（fail closed）。"""
+    if now.tzinfo is None:
+        return None
+    eastern = now.astimezone(ET)
     try:
-        import pandas_market_calendars as mcal  # type: ignore
-    except Exception:
+        clock = session_clock(eastern.date())
+    except ValueError:
+        return None
+    return (eastern, clock) if clock is not None else None
+
+
+def session_phase(now: datetime) -> str | None:
+    """PRE_MARKET／REGULAR／AFTER_HOURS（含提前收盤日）；其餘時間、naive、
+    非 session 日、超出登錄表 → None。隔夜時段由 IB 交易時間決定，不在這裡。"""
+    found = _eastern_clock(now)
+    if found is None:
+        return None
+    eastern, clock = found
+    t = eastern.time()
+    if clock.pre_market_open <= t < clock.regular_open:
+        return PRE_MARKET
+    if clock.regular_open <= t < clock.regular_close:
+        return REGULAR
+    if clock.regular_close <= t < clock.after_hours_end:
+        return AFTER_HOURS
+    return None
+
+
+def last_completed_session(now: datetime) -> date | None:
+    """The latest NYSE session whose regular close is at or before now.
+
+    Today once it has closed (after hours), otherwise the previous session.
+    None for naive times and dates beyond the official registry.
+    """
+    found = _eastern_clock(now)
+    if found is not None:
+        eastern, clock = found
+        if eastern.time() >= clock.regular_close:
+            return eastern.date()
+    if now.tzinfo is None:
         return None
     try:
-        nyse = mcal.get_calendar("NYSE")
-        # Pull a generous range so callers don't need to refresh per-year.
-        sched = nyse.schedule(start_date="2026-01-01", end_date="2030-12-31")
-        trading_days = {d.date() for d in sched.index}
-        # Build the inverse: every weekday in range that is NOT a trading day.
-        out: set[date] = set()
-        cur = date(2026, 1, 1)
-        end = date(2030, 12, 31)
-        while cur <= end:
-            if cur.weekday() < 5 and cur not in trading_days:
-                out.add(cur)
-            cur += timedelta(days=1)
-        return frozenset(out)
-    except Exception as e:
-        log.warning(f"market_calendar: pandas_market_calendars load failed ({e!r})"
-                    f" — falling back to hardcoded NYSE holidays")
+        return previous_session(now.astimezone(ET).date())
+    except ValueError:
         return None
-
-
-# Resolve once at import.
-_HOLIDAYS: frozenset[date] = _holiday_set_via_lib() or _HOLIDAYS_FALLBACK
-if _HOLIDAYS is _HOLIDAYS_FALLBACK:
-    log.info("market_calendar: using hardcoded NYSE holidays "
-             "(pandas_market_calendars not installed)")
-
-
-def is_nyse_trading_day(d: date) -> bool:
-    """True iff NYSE has a regular session on date `d` (NY local date).
-    Weekends → False. NYSE holidays → False. Half-days → True."""
-    if d.weekday() >= 5:  # Sat=5, Sun=6
-        return False
-    return d not in _HOLIDAYS
 
 
 # ── Taipei → NYSE session date mapping ─────────────────────────────

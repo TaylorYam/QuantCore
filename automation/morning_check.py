@@ -14,6 +14,9 @@ Three pieces:
                                           (read_constituents_last_date is its
                                           I/O companion — the one deliberate
                                           exception to "this module is pure")
+  * registry_horizon_warning(...)       — Telegram reminder when the official
+                                          NYSE registry (market_calendar) runs
+                                          out within 90 days (#234)
 
 Side effects (real IB re-probe, timers, Telegram send) live in the Panel's
 watch (monitor_engine + qt_panel.watch). This module stays pure so the scheduling and message logic
@@ -156,4 +159,28 @@ def constituents_staleness_warning(
         f"⚠️ <b>SP500 constituents</b> 已 {age_days} 天未更新"
         f"（最後快照 {last_snapshot.isoformat()}）"
         f"— 請跑 <code>{_REFRESH_CMD}</code>"
+    )
+
+
+# ── NYSE 假日登錄表到期提醒（#234）──────────────────────────────────
+# market_calendar 超出登錄表範圍會 raise（不猜交易日）；年度假日表要在那之前
+# 依 NYSE 公告補進 automation/market_calendar.py。提醒而已，不會自己補。
+
+REGISTRY_WARN_DAYS = 90
+
+
+def registry_horizon_warning(
+    horizon: date,
+    today: date,
+    warn_days: int = REGISTRY_WARN_DAYS,
+) -> str | None:
+    """Telegram reminder body when fewer than warn_days calendar days of the
+    NYSE holiday registry are left, None while there is enough runway."""
+    days_left = (horizon - today).days
+    if days_left >= warn_days:
+        return None
+    return (
+        f"⚠️ <b>NYSE 假日表</b> 只登錄到 {horizon.isoformat()}（剩 {days_left} 天）"
+        f"— 請依 NYSE 公告把下一年度休市／提前收盤日補進 "
+        f"<code>automation/market_calendar.py</code>，否則之後的排程會停下報錯"
     )

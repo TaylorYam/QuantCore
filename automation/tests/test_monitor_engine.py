@@ -115,6 +115,32 @@ def make_engine(env, events=None):
 
 # ── Engine 行為 ───────────────────────────────────────────────────────
 
+def test_unschedulable_monitor_stops_loudly():
+    """排不出下一次（例如 NYSE 假日表用完會 raise，#234）：不 arm、寫 log、發一則告警。"""
+    from dataclasses import replace
+
+    def no_more(now):
+        raise ValueError("official NYSE registry covers 2014-01-01..2027-12-31")
+
+    env, rec, _ = make_env()
+    engine, timer, _ = make_engine(env)
+    engine.start(replace(dummy_spec([]), next_time=no_more))
+    assert timer.entries == []
+    assert any("Dummy: cannot schedule next run" in l for l in rec["logs"])
+    assert len(rec["notes"]) == 1 and "Dummy" in rec["notes"][0]
+
+
+def test_failing_start_check_still_arms():
+    def boom(now):
+        raise ValueError("registry covers")
+
+    env, rec, _ = make_env()
+    engine, timer, _ = make_engine(env)
+    engine.start(dummy_spec([], run_at_start=boom))
+    assert len(timer.entries) == 1, "立跑判斷失敗只是不立跑，照樣排下一次"
+    assert any("Dummy: start check failed" in l for l in rec["logs"])
+
+
 def test_start_arms_with_computed_delay():
     env, rec, _ = make_env()
     engine, timer, _ = make_engine(env)
@@ -323,6 +349,20 @@ def test_morning_stale_constituents_second_notify(monkeypatch):
         w()
     assert len(rec["notes"]) == 1, "staleness 警告獨立發送（gateway 全綠仍要提醒）"
     assert any("constituents stale" in l for l in rec["logs"])
+
+
+def test_morning_registry_ending_sends_its_own_reminder(monkeypatch):
+    """NYSE 假日表剩不到 90 天：gateway 全綠、constituents 新鮮也要提醒（#234）。"""
+    import market_calendar
+    import monitor_engine as me
+    _patch_constituents(monkeypatch, IN_WINDOW.date())
+    monkeypatch.setattr(market_calendar, "registry_horizon",
+                        lambda: IN_WINDOW.date() + timedelta(days=30))
+    env, rec, _ = make_env(online={})
+    for w in me.morning_check_spec(env).workers():
+        w()
+    assert len(rec["notes"]) == 1 and "NYSE 假日表" in rec["notes"][0]
+    assert any("holiday registry ending" in l for l in rec["logs"])
 
 
 def test_morning_pre_logs_then_refreshes():

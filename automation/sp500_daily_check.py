@@ -43,17 +43,6 @@ import strategy_orders                          # #205：策略單送出（撤�
 log = logging.getLogger(__name__)
 
 
-def _prev_trading_day(d):
-    """Most recent NYSE trading day strictly before date ``d``."""
-    from datetime import timedelta
-    cur = d - timedelta(days=1)
-    for _ in range(10):
-        if market_calendar.is_nyse_trading_day(cur):
-            return cur
-        cur -= timedelta(days=1)
-    return cur
-
-
 class _DipBuySend(strategy_orders.Narrator):
     """dip-buy 送單的進度 log（文字與 #205 之前逐字相同）。"""
 
@@ -128,7 +117,7 @@ def run_daily_check(ctx: AccountCtx, digest: Digest, source=None):
     # Staleness guard: Reference Close must be the most recent trading day strictly
     # before today. If the data pipeline lagged/failed, abort rather than act on a
     # stale close (ADR-0003: halt + alert, never trade on bad data).
-    expected_ref = _prev_trading_day(today_nyse)
+    expected_ref = market_calendar.previous_session(today_nyse)
     if ref_date.date() != expected_ref:
         log.error(f"  STALE DATA: SPY last bar {ref_date.date()} != expected "
                   f"Reference Close {expected_ref}; aborting daily risk check")

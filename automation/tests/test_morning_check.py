@@ -7,6 +7,7 @@ Two pieces under test:
                                           skipped)
   * format_morning_check_message(names) → Telegram alert string, or None
                                           when nothing is offline
+  * registry_horizon_warning(...)       → NYSE 假日表到期前 90 天提醒（#234）
 
 All pure (no IB, no Tk, no real time).
 """
@@ -255,3 +256,18 @@ def test_read_last_date_no_year_sheets_returns_none(tmp_path):
     p = tmp_path / "empty.xlsx"
     wb.save(p)
     assert read_constituents_last_date(p) is None
+
+
+# ── registry_horizon_warning（#234）────────────────────────────────
+
+def test_registry_horizon_far_away_stays_silent():
+    from morning_check import registry_horizon_warning
+    assert registry_horizon_warning(date(2027, 12, 31), date(2026, 10, 23)) is None
+
+
+def test_registry_horizon_warns_under_90_days():
+    from morning_check import registry_horizon_warning
+    assert registry_horizon_warning(date(2027, 12, 31), date(2027, 10, 2)) is None   # 剩 90 天
+    msg = registry_horizon_warning(date(2027, 12, 31), date(2027, 10, 3))            # 剩 89 天
+    assert msg is not None and "2027-12-31" in msg and "89" in msg
+    assert "automation/market_calendar.py" in msg

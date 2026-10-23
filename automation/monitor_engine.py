@@ -25,6 +25,7 @@ spec.pre 後，把 worker 丟 daemon thread，再立刻排下一 tick；worker �
 
 from __future__ import annotations
 
+import html
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -95,7 +96,12 @@ class MonitorEngine:
         """啟動一個監控：視 run_at_start 決定是否立跑一次，然後 arm。"""
         self._handles[spec.label] = None
         if spec.run_at_start is not None:
-            if spec.run_at_start(self.env.now()):
+            try:
+                immediate = spec.run_at_start(self.env.now())
+            except Exception as exc:          # 例如 NYSE 假日表用完（#234）；_arm 會告警
+                self.env.log(f"[GW] {spec.label}: start check failed — {exc}")
+                immediate = False
+            if immediate:
                 if spec.start_log_immediate:
                     self.env.log(spec.start_log_immediate)
                 for w in spec.workers():
@@ -106,7 +112,16 @@ class MonitorEngine:
 
     def _arm(self, spec: MonitorSpec) -> None:
         now = self.env.now()
-        nxt = spec.next_time(now)
+        try:
+            nxt = spec.next_time(now)
+        except Exception as exc:
+            # 排不出下一次（例如 NYSE 假日表用完，market_calendar 拒絕猜交易日，
+            # #234）：這個監控停下，但要大聲說 — 不能靜靜不再跑（ADR-0003）。
+            self._handles[spec.label] = None
+            self.env.log(f"[GW] {spec.label}: cannot schedule next run — {exc}")
+            self.env.notify(f"⚠️ <b>{html.escape(spec.label)}</b> 已停止排程："
+                            f"<code>{html.escape(str(exc))}</code>")
+            return
         delay_ms = max(1, int((nxt - now).total_seconds() * 1000))
         self._handles[spec.label] = self._schedule(
             delay_ms, lambda: self._tick(spec))
@@ -228,12 +243,14 @@ def ty_check_spec(env: MonitorEnv, accounts: tuple[str, ...]) -> MonitorSpec:
 def morning_check_spec(env: MonitorEnv) -> MonitorSpec:
     """每 NYSE 交易日 07:00 台北：主線程先跑 Check Now 等效 re-probe（pre），
     worker 等 12 秒沉澱後只在有帳戶離線時發 TG（全綠靜默）；另附
-    constituents staleness 提醒（獨立於 gateway 狀態）。"""
+    constituents staleness 與 NYSE 假日表到期提醒（獨立於 gateway 狀態）。"""
+    from market_calendar import registry_horizon
     from morning_check import (MORNING_SETTLE_SEC,
                                constituents_staleness_warning,
                                format_morning_check_message,
                                next_morning_check_time,
-                               read_constituents_last_date)
+                               read_constituents_last_date,
+                               registry_horizon_warning)
 
     def pre() -> None:
         env.log("[GW] Morning check 07:00 → re-probing all Gateways")
@@ -263,6 +280,12 @@ def morning_check_spec(env: MonitorEnv) -> MonitorSpec:
         )
         if warn is not None:
             env.log("[GW] Morning check → constituents stale")
+            env.notify(warn)
+
+        # 假日登錄表快用完（#234）：超出範圍後 market_calendar 會 raise。
+        warn = registry_horizon_warning(registry_horizon(), env.now().date())
+        if warn is not None:
+            env.log("[GW] Morning check → NYSE holiday registry ending")
             env.notify(warn)
 
     return MonitorSpec(

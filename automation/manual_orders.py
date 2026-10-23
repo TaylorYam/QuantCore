@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from functools import wraps
 import logging
@@ -34,7 +34,9 @@ from manual_order_status import (
     OUTSIDE_RTH_CONFIRM_SECONDS, STATUS_LABELS, TERMINAL_STATUSES, UNCONFIRMED_STATUSES,
     fill_totals, status_from_trade,
 )
-from market_calendar import NYSE_EARLY_CLOSES, official_sessions
+# 交易日、盤中時鐘與最近收完的 session 只問 market_calendar（#234）
+from market_calendar import (AFTER_HOURS, PRE_MARKET, REGULAR, last_completed_session,
+                             session_phase)
 from notify import account_header
 
 
@@ -46,7 +48,7 @@ SESSION_LABELS = {
     "REGULAR": "一般時段", "PRE_MARKET": "盤前", "AFTER_HOURS": "盤後",
     "OVERNIGHT": "隔夜",
 }
-_EXTENDED_SESSIONS = frozenset({"PRE_MARKET", "AFTER_HOURS"})
+_EXTENDED_SESSIONS = frozenset({PRE_MARKET, AFTER_HOURS})
 _LMT_ONLY_SESSIONS = _EXTENDED_SESSIONS | {"OVERNIGHT"}
 _SESSION_WINDOWS = {
     "PRE_MARKET": "美東 04:00–09:30",
@@ -95,45 +97,15 @@ class DuplicateManualOrder(ManualOrderError):
 
 # ── Sessions, IB trading hours and share math ───────────────────────────────
 
-def _nyse_day_clock(now: datetime) -> tuple[time, time, time] | None:
-    """(Eastern wall clock, regular close, after-hours end) on an NYSE session day.
-
-    None for naive times, non-session days, and dates beyond the registry.
-    """
-    if now.tzinfo is None:
-        return None
-    eastern = now.astimezone(ZoneInfo("America/New_York"))
-    try:
-        if not official_sessions(eastern.date(), eastern.date()):
-            return None
-    except ValueError:
-        return None
-    clock = eastern.time().replace(tzinfo=None)
-    if eastern.date() in NYSE_EARLY_CLOSES:
-        return clock, time(13), time(17)
-    return clock, time(16), time(20)
-
-
 def is_regular_session(now: datetime) -> bool:
     """NYSE regular session, including official early closes; fail closed beyond registry."""
-    day_clock = _nyse_day_clock(now)
-    if day_clock is None:
-        return False
-    clock, close, _after_hours_end = day_clock
-    return time(9, 30) <= clock < close
+    return session_phase(now) == REGULAR
 
 
 def extended_session_at(now: datetime) -> str | None:
     """PRE_MARKET or AFTER_HOURS on an NYSE session day; fail closed beyond registry."""
-    day_clock = _nyse_day_clock(now)
-    if day_clock is None:
-        return None
-    clock, close, after_hours_end = day_clock
-    if time(4) <= clock < time(9, 30):
-        return "PRE_MARKET"
-    if close <= clock < after_hours_end:
-        return "AFTER_HOURS"
-    return None
+    phase = session_phase(now)
+    return phase if phase in _EXTENDED_SESSIONS else None
 
 
 _IB_HOURS_DAY_RE = re.compile(r"\d{8}")
@@ -173,25 +145,6 @@ def ib_trading_hours_include(trading_hours: str, time_zone_id: str,
 def read_realtime_quote(conn, contract, side: str) -> BrokerQuote:
     """A fresh, selected-side real-time IB quote (broker.Connection)."""
     return conn.realtime_quote(contract, side)
-
-
-def last_completed_session(now: datetime) -> date | None:
-    """The latest NYSE session whose regular close is at or before now.
-
-    Today once it has closed (after hours), otherwise the previous session.
-    None for naive times and dates beyond the official registry.
-    """
-    if now.tzinfo is None:
-        return None
-    today = now.astimezone(ZoneInfo("America/New_York")).date()
-    day_clock = _nyse_day_clock(now)
-    if day_clock is not None and day_clock[0] >= day_clock[1]:
-        return today
-    try:
-        sessions = official_sessions(today - timedelta(days=14), today - timedelta(days=1))
-    except ValueError:
-        return None
-    return sessions[-1] if sessions else None
 
 
 def whole_share_quantity(*, shares: int | None = None,

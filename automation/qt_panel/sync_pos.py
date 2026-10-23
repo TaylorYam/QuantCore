@@ -163,6 +163,8 @@ class SyncPosPanel(QWidget):
         self._plan = plan if plan.orders else None
         for line in preview_rows.log_summary_lines(plan):
             self._log(line)
+        for line in plan.state_notices:
+            self._log(f"[!] [{plan.ctx.name}] {line}")
         try:
             for line in self._sync.take_notices(plan):
                 self._log(f"[手動持倉·{self._sync.venue}] [{plan.ctx.name}] {line}")
@@ -213,6 +215,9 @@ class SyncPosPanel(QWidget):
             for text, line_key in lines:
                 self._sections.addWidget(_mono(text, line_key))
 
+        if plan.state_notices:
+            section("State 檔讀不出來（需要人工處理）", "red",
+                    [(line, "red") for line in plan.state_notices])
         for sec in preview_rows.target_sections(plan):
             section(sec.title, sec.color, [(line, "text") for line in sec.lines])
         holdings = preview_rows.current_holding_rows(plan)

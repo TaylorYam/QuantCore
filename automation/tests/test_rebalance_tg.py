@@ -215,3 +215,11 @@ def test_digest_renders_three_accounts_in_one_message():
         "<b>Rosa</b> 送出 1 筆 MOO\n"
         "🟢 BUY 55 ERY"
     )
+
+
+def test_state_alarm_sends_a_warning_even_without_orders():
+    """#233：state 檔讀不出來 → 每一輪都發，直到人工處理。"""
+    headline, body, level = section(state_alarms=["⚠️ SP500 state 讀不出來：a<b>.json"])
+    assert headline == "沒有送單，⚠️ 有策略停下（state 讀不出來）"
+    assert body == ["⚠️ SP500 state 讀不出來：a&lt;b&gt;.json"]
+    assert level == "warn"

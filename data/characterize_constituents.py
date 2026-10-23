@@ -62,7 +62,8 @@ def capture(data_root: Path, state_dir: Path) -> dict:
     original_state = {p.name: p.read_bytes() for p in state_dir.glob("sp500_state_*.json")}
     created = set()
     try:
-        with patch.multiple(config, **bindings), patch.object(sp500_state, "STATE_DIR", state_dir):
+        # state 讀寫在 account_state（#233）；取 sp500_state 實際 import 的那個模組物件
+        with patch.multiple(config, **bindings), patch.object(sp500_state.account_state, "STATE_DIR", state_dir):
             selector = SelectionEngine()
             constituents = frame_characterization(selector.constituents_df)
             matrix = {}

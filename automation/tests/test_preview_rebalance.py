@@ -48,10 +48,8 @@ def _make_ctx(alloc_sr: float = 0.80, alloc_sp500: float = 0.50,
 @pytest.fixture
 def isolated_state(monkeypatch, tmp_path):
     """State 目錄指到 tmp — 檔案系統層驗證『預演零寫入』。"""
-    import sp500_state
-    import skewls_state
-    monkeypatch.setattr(sp500_state, "STATE_DIR", tmp_path)
-    monkeypatch.setattr(skewls_state, "STATE_DIR", tmp_path)
+    import account_state
+    monkeypatch.setattr(account_state, "STATE_DIR", tmp_path)
     return tmp_path
 
 

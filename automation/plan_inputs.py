@@ -23,6 +23,12 @@ mode：
 persist_state：SP500 訊號要不要寫回 state，以及 SkewLS 調倉後要不要記新目標。
 False 時不寫，並在 skipped_state_writes 記下「本來會寫哪個 state」（預演報表揭露用）。
 
+state 檔讀不出來（account_state.StateCorrupted，#233，使用者選 C）：該帳戶該策略這一輪
+不算訊號、不送它的單，其他策略照常；state_notices() 給各入口告警文字。
+  - SP500：不進 Combine，持股維持現有股數（與非 SP500 mode 同一個 hold）。
+  - SkewLS（排程 mode）：類股 ETF＋反向 ETF 全部維持現有股數（apply_holds）。
+  - SkewLS（SYNC）：照常同步；送出後 record_skewls_rebalance 用新目標覆寫 state。
+
 訊號來源（#232）：start(..., source=) 給 signals.StrategySource；None ＝ 本地 data 的
 signals.LiveSource（這次調倉的 SR／SP500／SkewLS／Universe 都問同一個）。排程一次
 跑三個帳戶時由入口傳同一個來源，選股引擎只建一次。
@@ -40,6 +46,7 @@ from datetime import date
 from typing import TYPE_CHECKING, Callable, Optional
 
 import rebalance_plan as plan
+from account_state import MANUAL_FIX, StateCorrupted
 
 if TYPE_CHECKING:                       # signals 在 start() 才 import（會載入策略套件）
     from signals import StrategySource
@@ -52,8 +59,10 @@ class Narrator:
     """各入口自己的進度文字；預設什麼都不說。依呼叫順序：
 
     sr → skewls_latest（僅 SYNC、alloc_skewls > 0）→〔caller 連 IB〕→ nav → positions
-    → holdings → sp500 → skewls（排程 mode：check / hold / disabled）→ skewls_gate
-    （僅 check）→ prices
+    → holdings → sp500 → skewls（排程 mode：check / hold / disabled / halted）→
+    skewls_gate（僅 check）→ prices
+
+    halted：SkewLS state 讀不出來，這一輪凍結類股／反向 ETF（#233）。
     """
 
     def sr(self) -> None: ...
@@ -91,6 +100,9 @@ class PlanInputs:
     skewls_today: dict[str, float] = field(default_factory=dict)  # 今日 SkewLS 訊號（有算才有）
     prices: dict[str, float] = field(default_factory=dict)
     skipped_state_writes: list[str] = field(default_factory=list)
+    # state 檔讀不出來（#233）：該策略這一輪停下
+    sp500_state_error: Optional[StateCorrupted] = None
+    skewls_state_error: Optional[StateCorrupted] = None
 
     # ── mode 語意 ────────────────────────────────────────────────────
 
@@ -105,9 +117,47 @@ class PlanInputs:
         return self.mode in ("skewls", "all")
 
     @property
+    def sp500_in_combine(self) -> bool:
+        """SP500 這一輪的新訊號進 Combine（重算了、state 也讀得出來）；否則 hold。"""
+        return self.run_sp500 and self.sp500_state_error is None
+
+    @property
     def sp500_for_combine(self) -> dict[str, float]:
         """進 Combine 的 SP500 權重：沒重算時為空（佔位權重只為帶進報價清單）。"""
-        return self.sp500_wgt if self.run_sp500 else {}
+        return self.sp500_wgt if self.sp500_in_combine else {}
+
+    @property
+    def skewls_frozen(self) -> bool:
+        """排程 mode 的 SkewLS state 讀不出來：類股／反向 ETF 這一輪維持現有股數。
+        SYNC 不凍結（使用者選照常同步、送完覆寫 state）。"""
+        return self.mode != SYNC and self.skewls_state_error is not None
+
+    def apply_holds(self, targets: dict) -> dict:
+        """Combine 之後套 hold：SP500 沒進 Combine 時持股不動、SkewLS 凍結時
+        類股／反向 ETF 不動。各入口共用這一處。"""
+        targets = plan.apply_sp500_hold(targets, self.sp500_in_combine,
+                                        self.split.sp500, self.positions)
+        return plan.apply_etf_freeze(targets, self.skewls_frozen, self.positions)
+
+    def state_notices(self) -> list[str]:
+        """state 檔讀不出來的告警文字（Telegram／Panel 預覽共用，#233）。"""
+        lines = []
+        if self.sp500_state_error is not None:
+            lines.append(f"⚠️ SP500 state 讀不出來：{self.sp500_state_error.where()}。"
+                         f"這一輪 SP500 不算訊號、不送單，持股維持不動；{MANUAL_FIX}")
+        if self.skewls_state_error is not None:
+            where = self.skewls_state_error.where()
+            if self.skewls_frozen:
+                lines.append(f"⚠️ SkewLS state 讀不出來：{where}。這一輪類股 ETF＋反向 ETF "
+                             "全部維持現有股數、不送單；請人工修好或刪掉該檔，"
+                             "或用 Sync Pos 重建")
+            elif self.skewls_to_record() is not None:
+                lines.append(f"⚠️ SkewLS state 讀不出來：{where}。這次照常同步，"
+                             "送出後用新目標覆寫 state（損毀檔的備份保留）")
+            else:                           # 接管／paper／沒有 SkewLS 目標：這次不寫 state
+                lines.append(f"⚠️ SkewLS state 讀不出來：{where}。這次不會覆寫，"
+                             f"下次 21:00 SkewLS 仍會停下；{MANUAL_FIX}")
+        return lines
 
     # ── 讀帳戶 ──────────────────────────────────────────────────────
 
@@ -142,8 +192,13 @@ class PlanInputs:
             vet(self)
 
         say.sp500(self.run_sp500)
+        signal = None
         if self.run_sp500:
-            signal = self.source.sp500(self.split.sp500, ctx.name)
+            try:
+                signal = self.source.sp500(self.split.sp500, ctx.name)
+            except StateCorrupted as e:     # 這一輪 SP500 hold，不寫 state（#233）
+                self.sp500_state_error = e
+        if signal is not None:
             self.sp500_wgt, self.sp500_date = signal.weights, signal.signal_date
             if self.persist_state:
                 import sp500_state
@@ -171,7 +226,12 @@ class PlanInputs:
         if ctx.alloc_skewls <= 0:
             self.narrator.skewls("disabled")
             return
-        state = skewls_state.load_state(ctx.name)
+        try:
+            state = skewls_state.load_state(ctx.name)
+        except StateCorrupted as e:         # 不算訊號、不記 state；apply_holds 凍結 ETF
+            self.skewls_state_error = e
+            self.narrator.skewls("halted")
+            return
         today_date = "N/A"
         if self.run_skewls:
             self.narrator.skewls("check")
@@ -213,7 +273,10 @@ class PlanInputs:
             return None
         import skewls_state
         target, signal_date = record
-        state = skewls_state.load_state(self.ctx.name)
+        if self.skewls_state_error is not None:   # SYNC：損毀檔不讀，從預設值覆寫（#233）
+            state = skewls_state.default_state()
+        else:
+            state = skewls_state.load_state(self.ctx.name)
         state = skewls_state.update_after_rebal(
             state, new_target=target, signal_date=signal_date,
             rebal_date=str(date.today()))
@@ -242,4 +305,10 @@ def start(ctx, mode: str, *, persist_state: bool,
         skewls = source.skewls()
         inputs.skewls_wgt, inputs.skewls_date = skewls.weights, skewls.signal_date
         inputs.skewls_today = dict(inputs.skewls_wgt)
+        # SYNC 不套門檻、用不到 state；先讀一次，讀不出來就在預覽告警（#233）
+        import skewls_state
+        try:
+            skewls_state.load_state(ctx.name)
+        except StateCorrupted as e:
+            inputs.skewls_state_error = e
     return inputs

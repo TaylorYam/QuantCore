@@ -64,6 +64,7 @@ def run_daily_check(ctx: AccountCtx, digest: Digest, source=None):
     import manual_attribution       # #106：手動持倉暫停閘門
     from strategy_owner import SECTOR_ETFS   # #187：類股 ETF 清單唯一來源
     from symbol_contract import canonical_symbol
+    from account_state import MANUAL_FIX, StateCorrupted
     from sp500_state import (load_state, save_state, update_bull_counter,
                              mark_dip_triggered, is_dip_triggered)
     # S7：config / utils 是資料載入 helper（不是策略 business logic），可保留
@@ -179,7 +180,15 @@ def run_daily_check(ctx: AccountCtx, digest: Digest, source=None):
         orders = []
 
         # ── Step 3: 熊市 dip-buy 每日檢查 ──────────────────────────
-        state = load_state(account_name)
+        try:
+            state = load_state(account_name)
+        except StateCorrupted as e:
+            # #233：不從預設值重來（會重複觸發已買過的 dip 階層），停下等人工處理
+            digest.add(account_name, "⚠️ 日度風控中止",
+                       [f"SP500 state 讀不出來：{e.where()}。本次沒有做 dip-buy 檢查；"
+                        f"{MANUAL_FIX}"],
+                       "warn", **tg)
+            return
         ALLOC_MAP = sp_cfg.DIP_BUY_ALLOCATIONS
 
         # 非 rebal day：只觸發新的 dip 階層，不改 bull_counter

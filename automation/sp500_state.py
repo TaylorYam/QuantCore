@@ -10,21 +10,14 @@ strategies.sp500_momentum.state —— 那是純 dict 運算、不認得 Account
 純函式，讓既有 `from sp500_state import update_bull_counter, ...` 的呼叫
 維持不變。
 
-檔案操作原則：
-  - 原子寫入：先寫 .tmp 再 rename，避免 power loss 造成損壞
-  - 讀取失敗時備份損壞檔案 + 記錄錯誤（不 silent fail）
-  - account name 以 regex 清洗，防路徑注入
+讀寫規則（路徑清洗、原子寫入、損毀 → 備份＋拋 StateCorrupted）只在
+automation/account_state.py（#233）；本模組只給 SP500 的前綴與預設值。
 """
 
-import json
-import logging
-import re
-import shutil
 from pathlib import Path
-from datetime import date
-from typing import Optional
 
-import json_state
+import account_state
+from account_state import StateCorrupted  # noqa: F401  caller 用 sp500_state.StateCorrupted
 
 import _repo_root  # noqa: E402,F401  strategies 套件在 repo 根目錄
 
@@ -38,53 +31,21 @@ from strategies.sp500_momentum.state import (  # noqa: E402,F401
     is_dip_triggered,
 )
 
-log = logging.getLogger(__name__)
-
-STATE_DIR = Path(__file__).parent
+SPEC = account_state.StateSpec(prefix="sp500_state", defaults=DEFAULT_STATE,
+                               label="State file", owner="SP500")
 
 
 def _state_path(account_name: str) -> Path:
-    # 嚴格清洗 account name，防檔案系統注入（/ \ : * ? " < > |）
-    safe = re.sub(r'[/\\:*?"<>|\s]', '_', account_name or 'default')
-    safe = safe.strip('._') or 'default'
-    return STATE_DIR / f"sp500_state_{safe}.json"
+    return account_state.path(SPEC, account_name)
 
 
 def load_state(account_name: str = "") -> dict:
     """讀取帳戶狀態，不存在則回傳預設值。
-    損壞則備份原檔案並記錄錯誤。"""
-    path = _state_path(account_name)
-    if not path.exists():
-        return json.loads(json.dumps(DEFAULT_STATE))  # deep copy
-
-    try:
-        state = json_state.load(path, None)
-        # 補齊缺少的鍵
-        for k, v in DEFAULT_STATE.items():
-            state.setdefault(k, v)
-        return state
-    except Exception as e:
-        # 備份損壞檔案
-        backup = path.with_suffix(f'.corrupt.{int(date.today().strftime("%Y%m%d"))}.json')
-        try:
-            shutil.copy2(path, backup)
-            log.error(f"State file corrupted: {path} ({e}) — backed up to {backup}")
-        except Exception as be:
-            log.error(f"State file corrupted: {path} ({e}) — backup failed: {be}")
-        log.warning(f"Resetting {account_name} state to defaults. Manual review recommended.")
-        return json.loads(json.dumps(DEFAULT_STATE))
+    損壞則備份原檔案、記錄錯誤並拋 StateCorrupted（#233）。"""
+    return account_state.load(SPEC, account_name)
 
 
 def save_state(account_name: str, state: dict) -> None:
     """原子寫入帳戶狀態。
     先寫 .tmp 檔再 atomic rename，避免寫入中斷造成損壞。"""
-    try:
-        json_state.save_atomic(_state_path(account_name), state)
-    except Exception as e:
-        log.error(f"Failed to save state for {account_name}: {e}")
-        raise
-
-
-# 純狀態語意（update_bull_counter / is_bull_confirmed / reset_dip_state /
-# mark_dip_triggered / is_dip_triggered / DEFAULT_STATE）已搬到
-# strategies.sp500_momentum.state，於檔案頂端 re-export。
+    account_state.save(SPEC, account_name, state, what="state")

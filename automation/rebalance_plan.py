@@ -29,6 +29,8 @@ from dataclasses import dataclass, field, replace as _replace
 
 import numpy as np
 
+import _repo_root  # noqa: F401  SkewLS 的純 state 語意在 strategies 套件（#233）
+
 log = logging.getLogger(__name__)
 
 
@@ -45,7 +47,7 @@ class PlannedOrder:
     action: str          # 'BUY' | 'SELL'  (IB 從 current 推斷 SHORT/COVER)
     qty: int             # > 0 (絕對值)
     price: float         # 決策時的參考價（快照報價）
-    strategy: str        # 'SR' | 'SP500' | 'SkewLS' | 'SR+SkewLS' | 'SP500 (hold)' | 'EXIT' | ...
+    strategy: str        # 'SR' | 'SP500' | 'SkewLS' | 'SR+SkewLS' | 'SP500 (hold)' | 'ETF (frozen)' | 'EXIT' | ...
     target: int          # 理論目標股數 (可為負，XLC short)
     current: int         # 當前實際股數 (可為負，已 short)
 
@@ -145,7 +147,7 @@ def select_skewls_weights(run_skewls: bool, alloc_skewls: float,
     - 其他 mode → 一律 state last_target，**不檢查**（triggered=None）—
       確保 SR/SP500 rebal 不會誤砍 SkewLS 倉位（pure-function combine）。
     """
-    import skewls_state
+    from strategies.sector_skew_ls.state import should_rebal  # 純語意（#233），不經 I/O module
     from strategy_owner import skewls_rebal_threshold
     threshold = skewls_rebal_threshold()
 
@@ -153,7 +155,7 @@ def select_skewls_weights(run_skewls: bool, alloc_skewls: float,
         return SkewlsDecision({}, "N/A", None, None, threshold)
 
     if run_skewls:
-        triggered, delta = skewls_state.should_rebal(
+        triggered, delta = should_rebal(
             state, today_target, threshold,
         )
         if triggered:
@@ -270,6 +272,28 @@ def apply_sp500_hold(targets: dict, run_sp500: bool,
                             'strategy': 'SP500 (hold)', 'alloc_w': 0}
         else:
             targets[sym]['strategy'] = targets[sym]['strategy'] + '|SP500-hold'
+    return targets
+
+
+def apply_etf_freeze(targets: dict, frozen: bool,
+                     positions: dict[str, float]) -> dict:
+    """
+    SkewLS state 損毀（#233，使用者選 C）：這一輪類股 ETF＋反向 ETF（含 XLC 空單）
+    一律維持現有股數，不建新倉。
+
+    SkewLS 與 SR 共用類股 ETF、Combine 直接加總股數 — state 壞了就分不出哪些股數
+    屬於 SkewLS，所以整批凍結（同帳戶有開 SR 時，SR 這一輪也等於不動這些 ETF）。
+    SP500 個股不受影響。
+    """
+    if not frozen:
+        return targets
+    from strategy_owner import STRATEGY_ETFS
+    for sym in sorted((set(targets) | set(positions)) & STRATEGY_ETFS):
+        if sym in positions:
+            targets[sym] = {'shares': int(positions[sym]),
+                            'strategy': 'ETF (frozen)', 'alloc_w': 0}
+        else:
+            targets.pop(sym, None)
     return targets
 
 

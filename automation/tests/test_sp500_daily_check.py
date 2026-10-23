@@ -130,8 +130,8 @@ def test_nyse_holiday_stays_silent(daily_check_env, monkeypatch):
 @pytest.fixture
 def dip_buy(daily_check_env, fake_config, monkeypatch, tmp_path):
     """SPY 跌 16%、在 MA200 下：觸發第一階 dip-buy，真的送單到 in-memory FakeBroker。"""
+    import account_state
     import account_utils
-    import sp500_state
     import strategy_orders
     from tests.fake_broker import FakeBroker
 
@@ -139,7 +139,7 @@ def dip_buy(daily_check_env, fake_config, monkeypatch, tmp_path):
     daily_check_env.regime = {"SPY_Close": 600.0, "SPY_MA200": 700.0, "SPY_DD": -0.16}
     monkeypatch.setattr(account_utils, "load_base_config",
                         lambda: {**base, "dry_run": False})
-    monkeypatch.setattr(sp500_state, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(account_state, "STATE_DIR", tmp_path)
     daily_check_env.universe = {"AAPL"}
     monkeypatch.setattr(strategy_orders.time, "sleep", lambda _s: None)
     fake = FakeBroker(managed=["U17800779"], positions={"AAPL": 10.0}, price=500.0)
@@ -288,3 +288,16 @@ def test_run_shares_one_signal_source_across_accounts(fake_config, run_status_di
     assert [name for name, _ in seen] == ["Taylor", "Rosa", "Yvonne"]
     assert isinstance(seen[0][1], signals.LiveSource)
     assert all(source is seen[0][1] for _, source in seen)
+
+
+
+def test_corrupt_sp500_state_skips_the_dip_check_and_alerts(dip_buy, tmp_path):
+    """#233：不從預設值重來（會重買已觸發過的 dip 階層）— 不送單、不寫 state、告警。"""
+    path = tmp_path / "sp500_state_Taylor.json"
+    path.write_bytes(b'{"dip_state": {"0.15": true},')
+    text = _check(dip_buy.env).render()
+    assert dip_buy.placed == []
+    assert path.read_bytes() == b'{"dip_state": {"0.15": true},'
+    assert ("<b>Taylor</b> ⚠️ 日度風控中止\n"
+            "SP500 state 讀不出來：sp500_state_Taylor.json（已備份為") in text
+    assert "本次沒有做 dip-buy 檢查" in text

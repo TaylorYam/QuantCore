@@ -6,7 +6,7 @@ QuantCore — Rebalance 離線預演（不連 IB、零 state 寫入）
 「快照 → 訂單」全鏈，輸出預期訂單表 + 理論 vs 實際對帳，但**不落地**：
 
     classify_holdings → 訊號 (SR / SP500 / SkewLS) → select_skewls_weights
-      → combine_targets → apply_sp500_hold → build_order_list
+      → combine_targets → apply_holds（SP500 hold／SkewLS 凍結）→ build_order_list
 
 輸入（擇一）
 ------------
@@ -143,6 +143,7 @@ class PreviewResult:
     split: plan.HoldingsSplit
     missing_prices: list[str] = field(default_factory=list)
     blocked_state_writes: list[str] = field(default_factory=list)
+    state_notices: list[str] = field(default_factory=list)   # state 檔讀不出來（#233）
 
 
 # ── 核心：離線重放決策鏈 ──────────────────────────────────────────────
@@ -190,8 +191,7 @@ def compute_preview(mode: str, ctx: AccountCtx, nav: float,
     # 6. Combine + hold + 差額訂單（決策層唯一實作，ADR-0008 內部不動）
     targets = plan.combine_targets(nav, inputs.sr_wgt, inputs.sp500_for_combine,
                                    prices, ctx=ctx, skewls_wgt=inputs.skewls_wgt)
-    targets = plan.apply_sp500_hold(targets, inputs.run_sp500, split.sp500,
-                                    positions)
+    targets = inputs.apply_holds(targets)
 
     orders = plan.build_order_list(
         targets=targets,
@@ -216,6 +216,7 @@ def compute_preview(mode: str, ctx: AccountCtx, nav: float,
         current_pos=dict(positions), split=split,
         missing_prices=account.missing,
         blocked_state_writes=list(inputs.skipped_state_writes),
+        state_notices=inputs.state_notices(),
     )
 
 
@@ -298,6 +299,7 @@ def render_report(res: PreviewResult) -> list[str]:
             f"  [{o.strategy}]  {o.current} → {o.target}"
         )
 
+    lines.extend(res.state_notices)
     if res.missing_prices:
         lines.append("⚠️ 無報價（snapshot 未提供且本地 CSV 缺檔）: "
                      + ", ".join(res.missing_prices))
@@ -336,6 +338,8 @@ def result_to_dict(res: PreviewResult) -> dict:
                        sorted(res.rows, key=lambda r: r.symbol)],
         "missing_prices": sorted(res.missing_prices),
         "blocked_state_writes": list(res.blocked_state_writes),
+        # 只在有的時候才出現，沒事時的輸出與 #233 之前相同
+        **({"state_notices": list(res.state_notices)} if res.state_notices else {}),
     }
 
 

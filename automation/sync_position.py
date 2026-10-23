@@ -96,6 +96,8 @@ class SyncPlan:
     paused: dict[str, str] = field(default_factory=dict)        # 標的 → 原因
     paused_orders: list[SyncOrder] = field(default_factory=list)
     pause_notices: list[manual_attribution.Notice] = field(default_factory=list)  # 尚未通知
+    # state 檔讀不出來（#233）：SP500 這次持股不動；SkewLS 照常同步、送完覆寫 state
+    state_notices: list[str] = field(default_factory=list)
     # 送單沿用計算時的連線與紀錄；只做預覽文字的 plan 可以沒有，但不能送出
     records: Optional[SyncRecords] = None
     # 算這份 plan 的調倉輸入（plan_inputs）；送出後由它記 SkewLS state
@@ -164,8 +166,10 @@ def compute_sync_plan(
         attribution = inputs.attribution
 
         # 6. 合併三策略目標（[[Combine]]，唯一實作 = rebalance_plan.combine_targets）
-        targets = plan.combine_targets(nav, inputs.sr_wgt, inputs.sp500_wgt, prices,
-                                       ctx=ctx, skewls_wgt=inputs.skewls_wgt)
+        #    SP500 state 讀不出來時 SP500 不進 Combine、持股不動（apply_holds，#233）
+        targets = plan.combine_targets(nav, inputs.sr_wgt, inputs.sp500_for_combine,
+                                       prices, ctx=ctx, skewls_wgt=inputs.skewls_wgt)
+        targets = inputs.apply_holds(targets)
 
     finally:
         conn.close()
@@ -192,7 +196,7 @@ def compute_sync_plan(
         orders=orders,
         nav=nav,
         sr_wgt=inputs.sr_wgt,
-        sp500_wgt=inputs.sp500_wgt,
+        sp500_wgt=inputs.sp500_for_combine,
         sr_date=inputs.sr_date,
         sp500_date=inputs.sp500_date,
         prices=prices,
@@ -204,6 +208,7 @@ def compute_sync_plan(
         paused=dict(attribution.paused),
         paused_orders=paused_orders,
         pause_notices=list(attribution.new_notices),
+        state_notices=inputs.state_notices(),
         records=records,
         inputs=inputs,
     )

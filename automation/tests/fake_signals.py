@@ -2,7 +2,8 @@
 
 每個訊號可以給 (權重, 訊號日期) 或一個 callable（拿到同樣的參數，回傳 (權重, 日期)），
 需要等待、拋例外或依參數回答時用 callable。SP500 另回 state（預設把 sp500_state
-當成這次訊號之後的 state；caller 決定寫不寫）。
+當成這次訊號之後的 state；caller 決定寫不寫）；和 LiveSource 一樣會先讀該帳戶的
+state 檔，損毀時拋 account_state.StateCorrupted。
 
     source = FakeSource(sr=({"XLK": 1.0}, "2026-09-28"), universe={"AAPL"})
     plan_inputs.start(ctx, mode, persist_state=False, source=source)
@@ -32,6 +33,9 @@ class FakeSource:
 
     def sp500(self, holdings, account_name) -> StrategySignal:
         self.calls.append(("sp500", list(holdings), account_name))
+        # 和 LiveSource 一樣先讀該帳戶的 SP500 state：讀不出來就拋 StateCorrupted（#233）
+        import sp500_state
+        sp500_state.load_state(account_name)
         weights, date = self._answer(self._sp500, holdings, account_name)
         return StrategySignal(dict(weights), date, dict(self.sp500_state))
 

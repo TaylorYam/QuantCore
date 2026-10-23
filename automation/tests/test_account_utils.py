@@ -127,7 +127,7 @@ def accounts_file(tmp_path, monkeypatch):
     return path
 
 
-def test_written_bytes_are_the_same_as_the_old_writer(accounts_file, tmp_path):
+def test_update_account_config_writes_the_same_bytes_as_before(accounts_file, tmp_path):
     """indent=2、不跳脫中文、結尾換行、文字模式換行（Windows 是 \\r\\n）：跟 #243 之前的寫法逐字相同。"""
     import account_utils
     account_utils.update_account_config("Taylor", {"alloc_sr": 0.75, "alloc_skewls": 0.3})
@@ -141,7 +141,7 @@ def test_written_bytes_are_the_same_as_the_old_writer(accounts_file, tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["accounts.json", "old"]   # 沒留下 .tmp
 
 
-def test_a_failed_write_keeps_the_old_accounts_json(accounts_file):
+def test_update_account_config_failure_keeps_the_old_file(accounts_file):
     import account_utils
     before = accounts_file.read_bytes()
     with pytest.raises(TypeError):
@@ -150,19 +150,25 @@ def test_a_failed_write_keeps_the_old_accounts_json(accounts_file):
     assert list(accounts_file.parent.iterdir()) == [accounts_file]
 
 
-def test_saving_waits_for_a_reader_that_holds_accounts_json(accounts_file):
-    """排程／Panel 正好開著 accounts.json 在讀：存檔等它讀完再換上，不報錯。"""
-    import threading
+def test_update_account_config_waits_for_a_busy_file(accounts_file, monkeypatch):
+    """排程／Panel 正好開著 accounts.json：存檔把 BUSY_WAIT_S 交給換檔重試（細節在 test_json_state）。"""
     import account_utils
-    reader = open(accounts_file, encoding="utf-8")
-    threading.Timer(0.2, reader.close).start()
+    import json_state
+    seen = {}
+    real = json_state.save_atomic
+
+    def save_atomic(path, obj, **kw):
+        seen.update(kw)
+        real(path, obj, **kw)
+
+    monkeypatch.setattr(json_state, "save_atomic", save_atomic)
     account_utils.update_account_config("Rosa", {"alloc_sr": 0.4})
-    with open(accounts_file, encoding="utf-8") as f:
-        assert json.load(f)[1]["alloc_sr"] == 0.4
+    assert seen["busy_wait"] == account_utils.BUSY_WAIT_S > 0
 
 
-def test_a_reader_never_sees_a_partial_accounts_json(accounts_file):
-    """一邊連續存檔、一邊頻繁讀：讀到的永遠是完整的 JSON（舊或新）。"""
+def test_update_account_config_readers_never_see_a_partial_file(accounts_file):
+    """一邊連續存檔、一邊頻繁讀：讀到的永遠是完整的 JSON（舊或新）。
+    機率性的補充；寫入失敗原檔不變那題才是確定會抓到截斷寫法的。"""
     import threading
     import account_utils
     errors, reads, stop = [], [], threading.Event()
@@ -172,10 +178,10 @@ def test_a_reader_never_sees_a_partial_accounts_json(accounts_file):
             try:
                 with open(accounts_file, encoding="utf-8") as f:
                     reads.append(json.load(f)[0]["alloc_sr"])
-            except json.JSONDecodeError as e:
-                errors.append(e)
             except PermissionError:
                 pass                          # Windows：換檔那一瞬間開不了檔，不是半個檔
+            except Exception as e:            # 半個檔（JSONDecodeError）或其他意外都算失敗
+                errors.append(e)
             stop.wait(0.001)                  # 真的讀者讀完就關檔，不會一直開著
 
     reader = threading.Thread(target=read_often)

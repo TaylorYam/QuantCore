@@ -1,5 +1,6 @@
 """
-JSON 檔原子寫入（#212：sp500／skewls state 與 run_status 共用的一份實作）.
+JSON 檔原子寫入（#212：sp500／skewls state 與 run_status 共用的一份實作；#243 起
+accounts.json 也用，多了結尾換行與換檔被鎖時的重試）.
 
 state 檔是 live runtime state：寫到一半失敗時原檔必須完整，tmp 不留下。
 """
@@ -142,7 +143,12 @@ def test_a_real_reader_holding_the_file_is_waited_for(tmp_path):
     path = tmp_path / "s.json"
     json_state.save_atomic(path, {"v": 1})
     reader = open(path, encoding="utf-8")
-    threading.Timer(0.2, reader.close).start()
-    json_state.save_atomic(path, {"v": 2}, busy_wait=5)
+    closer = threading.Timer(0.05, reader.close)
+    closer.start()
+    try:
+        json_state.save_atomic(path, {"v": 2}, busy_wait=5)
+    finally:
+        closer.join()
+        reader.close()
     assert json_state.load(path, None) == {"v": 2}
     assert list(tmp_path.iterdir()) == [path]

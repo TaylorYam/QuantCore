@@ -13,7 +13,7 @@ import json_state
 BASE_DIR      = Path(__file__).parent
 CONFIG_PATH   = BASE_DIR / 'config.json'
 ACCOUNTS_PATH = BASE_DIR / 'accounts.json'
-ACCOUNTS_BUSY_WAIT_S = 1.0   # 存檔時 accounts.json 正被排程／Panel 讀取，最多等這麼久再換檔
+BUSY_WAIT_S   = 1.0   # 存檔時 accounts.json 正被排程／Panel 讀取：最多等這麼久再換檔
 
 # clientId 的規則與用途（role）編號只在 broker（#185）；這裡轉出 role 給既有的
 # AccountCtx.from_name(name, ROLE_…) 呼叫端。
@@ -197,7 +197,7 @@ def update_account_config(name: str, updates: dict) -> None:
         raise ValueError(f"Account '{name}' not found in accounts.json")
 
     json_state.save_atomic(ACCOUNTS_PATH, accounts, indent=2, ensure_ascii=False,
-                           trailing_newline=True, busy_wait=ACCOUNTS_BUSY_WAIT_S)
+                           trailing_newline=True, busy_wait=BUSY_WAIT_S)
 
 
 def get_all_account_configs() -> list[dict]:

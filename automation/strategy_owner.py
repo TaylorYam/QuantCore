@@ -2,7 +2,7 @@
 最近成交共用同一套規則；類股 ETF／反向 ETF 清單也只在這裡取（#187）。
 
 清單的唯一來源是策略設定：類股 ETF = `strategies/sector_rotation/config`，
-反向 ETF = `strategies/sector_skew_ls/config`。
+反向 ETF = `strategies/sector_skew_ls/config`。決策層的兩個門檻也在這裡取（#232）。
 
 IB 只給代號與股數，不知道是哪個 Strategy 買的，所以依代號、方向與該帳戶的
 Allocation 推測：
@@ -18,19 +18,29 @@ Allocation 推測：
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-_ROOT_DIR = Path(__file__).resolve().parent.parent
-if str(_ROOT_DIR) not in sys.path:  # strategies 套件在 repo 根目錄
-    sys.path.insert(0, str(_ROOT_DIR))
+import _repo_root  # noqa: F401  strategies 套件在 repo 根目錄
 
 from strategies.sector_rotation import config as _sr_config  # noqa: E402
 from strategies.sector_skew_ls import config as _skewls_config  # noqa: E402
+from strategies.sp500_momentum import config as _sp500_config  # noqa: E402
 
 SECTOR_ETFS: frozenset[str] = frozenset(_sr_config.SECTOR_TICKERS)
 INVERSE_ETFS: frozenset[str] = frozenset(_skewls_config.INVERSE_TICKERS)
 STRATEGY_ETFS: frozenset[str] = SECTOR_ETFS | INVERSE_ETFS
+
+
+# 決策層（Rebalance Plan）用的策略門檻也從這裡取，不直接 import 策略包（#232）。
+# 讀當下的策略設定（不是 import 時的快照）。
+
+def position_rebalance_threshold() -> float:
+    """單檔差額門檻（%NAV）：差額小於它且同向時不調。三策略共用，數值定義在
+    SP500 的策略設定（REBALANCE_THRESHOLD）。"""
+    return _sp500_config.REBALANCE_THRESHOLD
+
+
+def skewls_rebal_threshold() -> float:
+    """SkewLS 換倉門檻：今日目標與 state 的 last_target 差距超過它才換。"""
+    return _skewls_config.REBAL_THRESHOLD
 
 # ETF 顯示名稱（Portfolio 持倉表；IB 沒給 longName 時用）。加一檔 ETF 時和上面的清單
 # 一起看這裡（#208）。

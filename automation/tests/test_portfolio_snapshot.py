@@ -10,12 +10,17 @@ from types import SimpleNamespace as NS
 
 import pytest
 
+from tests.fake_signals import FakeSource
+
 import portfolio_snapshot
 from account_ctx import AccountCtx
 from account_utils import ROLE_PANEL
 
 
 SCENARIOS = ("empty", "mixed", "foreign", "timeout")
+
+
+SOURCE = FakeSource(universe={"AAPL"})   # 分類持倉的 Universe（#232）
 
 
 def configure_fake(monkeypatch, module, ctx, scenario):
@@ -54,8 +59,6 @@ def configure_fake(monkeypatch, module, ctx, scenario):
     fake = FakeIB()
 
     import broker
-    import signals
-    monkeypatch.setattr(signals, "get_sp500_universe", lambda: {"AAPL"})
     monkeypatch.setattr(broker, "_default_ib", lambda: fake)
     monkeypatch.setattr(broker.Connection, "prices",
                         lambda self, symbols: {"XLK": 110, "AAPL": 120, "ZZZ": 90})
@@ -68,7 +71,7 @@ def test_legacy_snapshot_characterization(fake_config, monkeypatch, name, scenar
     """舊 fetch_portfolio 的輸出（fixture）＝新快照的同名欄位，逐欄、逐筆持倉相同。"""
     ctx = AccountCtx.from_name(name, ROLE_PANEL)
     configure_fake(monkeypatch, portfolio_snapshot, ctx, scenario)
-    snap = portfolio_snapshot.fetch_snapshot(ctx)
+    snap = portfolio_snapshot.fetch_snapshot(ctx, strategy_source=SOURCE)
     fixture = Path(__file__).with_name("fixtures") / "portfolio_legacy.json"
     expected = json.loads(fixture.read_text(encoding="utf-8"))[f"{name}/{scenario}"]
     assert legacy_view(snap) == expected
@@ -100,7 +103,7 @@ def test_holdings_are_grouped_by_the_decision_layer(fake_config, monkeypatch):
     monkeypatch.setattr(rebalance_plan, "classify_holdings",
                         lambda positions, universe: seen.append((dict(positions), universe))
                         or real(positions, universe))
-    snap = portfolio_snapshot.fetch_snapshot(ctx)
+    snap = portfolio_snapshot.fetch_snapshot(ctx, strategy_source=SOURCE)
     assert seen == [({"XLK": 2, "AAPL": 3, "ZZZ": -1}, {"AAPL"})]
     assert [h.symbol for h in snap.etf_holdings] == ["XLK"]
     assert [h.symbol for h in snap.stock_holdings] == ["AAPL"]
@@ -118,7 +121,7 @@ def test_inverse_etfs_are_strategy_etfs_not_manual(fake_config, monkeypatch):
                                             contract=NS(symbol="ERY", secType="STK", longName=""),
                                             position=5, avgCost=20)]
     monkeypatch.setattr(broker.Connection, "prices", lambda self, symbols: {"ERY": 21})
-    snap = portfolio_snapshot.fetch_snapshot(ctx)
+    snap = portfolio_snapshot.fetch_snapshot(ctx, strategy_source=SOURCE)
     assert [h.symbol for h in snap.etf_holdings] == ["ERY"] and snap.other_holdings == ()
     assert snap.strategy_mktval == 105
 
@@ -127,7 +130,7 @@ def test_readonly_rejects_wrong_account_and_cleans_up(fake_config, monkeypatch):
     ctx = AccountCtx.from_name("Taylor", ROLE_PANEL)
     fake = configure_fake(monkeypatch, portfolio_snapshot, ctx, "empty")
     fake.managedAccounts = lambda: ["OTHER"]
-    snap = portfolio_snapshot.fetch_snapshot(ctx, readonly=True)
+    snap = portfolio_snapshot.fetch_snapshot(ctx, readonly=True, strategy_source=SOURCE)
     assert not snap.available
     assert "Account" in snap.error
     assert fake.disconnected
@@ -136,11 +139,11 @@ def test_readonly_rejects_wrong_account_and_cleans_up(fake_config, monkeypatch):
 def test_readonly_does_not_borrow_foreign_positions_or_nav(fake_config, monkeypatch):
     ctx = AccountCtx.from_name("Taylor", ROLE_PANEL)
     fake = configure_fake(monkeypatch, portfolio_snapshot, ctx, "foreign")
-    snap = portfolio_snapshot.fetch_snapshot(ctx, readonly=True)
+    snap = portfolio_snapshot.fetch_snapshot(ctx, readonly=True, strategy_source=SOURCE)
     assert snap.available and snap.nav == 10000
     assert not (snap.etf_holdings or snap.stock_holdings or snap.other_holdings)
     fake.accountValues = lambda *args: [NS(account="OTHER", tag="NetLiquidation", currency="USD", value="999")]
-    snap = portfolio_snapshot.fetch_snapshot(ctx, readonly=True)
+    snap = portfolio_snapshot.fetch_snapshot(ctx, readonly=True, strategy_source=SOURCE)
     assert not snap.available
     assert fake.disconnected
 
@@ -226,3 +229,25 @@ def test_feed_connection_receives_unique_id_and_closes():
     assert calls[0]["clientId"] == 1025 and calls[0]["readonly"] is True
     assert calls[0]["timeout"] == 10 and calls[0]["account"] == ""
     assert calls[-1] == "disconnect"
+
+
+def test_universe_defaults_to_a_live_source(fake_config, monkeypatch):
+    """沒給訊號來源時用 LiveSource 的 Universe（每次讀快照一個新的，Panel 跨天也不舊）。"""
+    import signals
+
+    ctx = AccountCtx.from_name("Taylor", ROLE_PANEL)
+    configure_fake(monkeypatch, portfolio_snapshot, ctx, "mixed")
+    built = []
+
+    class Live:
+        def __init__(self):
+            built.append(self)
+
+        def sp500_universe(self, historical=True):
+            return {"AAPL"}
+
+    monkeypatch.setattr(signals, "LiveSource", Live)
+    snap = portfolio_snapshot.fetch_snapshot(ctx)
+    assert snap.available and [h.symbol for h in snap.stock_holdings] == ["AAPL"]
+    portfolio_snapshot.fetch_snapshot(ctx)
+    assert len(built) == 2

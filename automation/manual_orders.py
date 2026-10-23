@@ -418,20 +418,18 @@ def _canonical_symbol(symbol: str) -> str:
 
 
 def _default_universe_loader() -> set[str]:
-    """Load the historical SP500 Universe and all SR/Skew LS instruments."""
-    from signals import get_sp500_universe
-    from strategies.sector_skew_ls import config as skewls_config
-    from strategies.sector_rotation import config as sr_config
+    """Load the historical SP500 Universe and all SR/Skew LS instruments.
+
+    The ETF lists come from strategy_owner (#187/#232); Skew LS's direct short
+    (XLC) is one of the sector ETFs."""
+    from signals import LiveSource
+    from strategy_owner import STRATEGY_ETFS
     from symbol_contract import canonical_symbol
 
-    historical = get_sp500_universe(historical=True)
+    historical = LiveSource().sp500_universe(historical=True)
     if not historical:
         raise ManualOrderError("歷史 SP500 Universe 為空，無法安全檢查標的資格")
-    symbols = set(historical)
-    symbols.update(sr_config.SECTOR_TICKERS)
-    symbols.update(skewls_config.INVERSE_TICKERS)
-    symbols.update(skewls_config.DIRECT_SHORT_TICKERS)
-    symbols.update({"SPY", "SSO"})
+    symbols = set(historical) | STRATEGY_ETFS | {"SPY", "SSO"}
     return {canonical_symbol(symbol) for symbol in symbols}
 
 

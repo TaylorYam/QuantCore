@@ -103,7 +103,7 @@ def compute_threshold_delta(state: dict, today_target: dict[str, float]) -> floa
     Parameters
     ----------
     state        : load_state 結果
-    today_target : 今天從 get_skewls_weights 算出的 strategy-normalized 權重
+    today_target : 今天從 signals 的 skewls() 算出的 strategy-normalized 權重
 
     Returns
     -------

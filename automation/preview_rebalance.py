@@ -62,9 +62,7 @@ from typing import Callable, Optional
 
 # ── 路徑設定（與 rebalance_ib 相同慣例）─────────────────────────────────
 BASE_DIR = Path(__file__).parent
-ROOT_DIR = BASE_DIR.parent
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+import _repo_root  # noqa: E402,F401  QuantCore root 可 import strategies
 
 from account_ctx import AccountCtx
 from account_utils import ROLE_REBALANCE
@@ -153,6 +151,7 @@ def compute_preview(mode: str, ctx: AccountCtx, nav: float,
                     positions: dict[str, float],
                     snapshot_prices: dict[str, float] | None = None,
                     price_lookup: Callable[[str], Optional[float]] | None = None,
+                    source=None,
                     ) -> PreviewResult:
     """
     以快照（NAV + 持倉 [+ 報價]）重放 rebalance_ib.main 的決策段
@@ -166,6 +165,7 @@ def compute_preview(mode: str, ctx: AccountCtx, nav: float,
     nav / positions : 快照
     snapshot_prices : 部分報價（缺的 fallback price_lookup）
     price_lookup    : symbol -> price|None（預設 local_close；測試可注入）
+    source          : signals.StrategySource（預設 LiveSource；測試可注入）
     """
     if mode not in MODES:
         raise ValueError(f"mode 必須是 {MODES}，收到 {mode!r}")
@@ -179,7 +179,7 @@ def compute_preview(mode: str, ctx: AccountCtx, nav: float,
     #   手動持倉歸屬。
     account = SnapshotAccount(nav, positions, snapshot_prices, price_lookup)
     inputs = plan_inputs.start(ctx, mode, persist_state=False,
-                               narrator=_PreviewSteps())
+                               narrator=_PreviewSteps(), source=source)
     inputs.read(account, attribution=False)
     for skipped in inputs.skipped_state_writes:
         module, account_name = skipped.split(":", 1)
@@ -375,7 +375,8 @@ def load_snapshot(path: str | Path) -> tuple[float, dict[str, float],
     return nav, positions, prices
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, source=None) -> int:
+    """CLI 入口。source：訊號來源（測試注入；None ＝ LiveSource）。"""
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
@@ -429,7 +430,7 @@ def main(argv: list[str] | None = None) -> int:
     ctx = AccountCtx.from_name(args.account, ROLE_REBALANCE)  # 唯讀
     res = compute_preview(args.mode, ctx, nav, positions,
                           snapshot_prices=snap_prices,
-                          price_lookup=price_lookup)
+                          price_lookup=price_lookup, source=source)
 
     print("\n".join(render_report(res)))
 

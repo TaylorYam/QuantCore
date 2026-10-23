@@ -1,14 +1,16 @@
 """
-Integration tests for signals.py.
+Tests for signals.py（[[Strategy]] 訊號來源，#232）.
 
-These tests depend on real data files (SP500 constituents, SPY/SSO CSVs, ETF
-price data). On machines without that data, they skip gracefully.
+Data-dependent tests use the real data files (SP500 constituents, SPY/SSO CSVs,
+ETF price data); on machines without that data they skip gracefully.
 
 Coverage:
-  - get_sr_weights() gross within design bounds (≤1.0; WEIGHT_STEP 取整殘差留現金)
-  - get_sr_weights() non-empty, or verified all-cash (z-threshold 空手為合法輸出)
-  - get_sp500_universe() contains SPY and SSO (dip-buy tickers)
-  - get_market_regime_state() returns dict with required keys
+  - LiveSource().sr() gross within design bounds (≤1.0; WEIGHT_STEP 取整殘差留現金)
+  - LiveSource().sr() non-empty, or verified all-cash (z-threshold 空手為合法輸出)
+  - 三個 Strategy 的訊號日期語意（SR 週二、SP500 週三、SkewLS 最後收盤）
+  - SP500 state bridge：讀一次、不寫（寫不寫由 caller 決定）；選股引擎一次執行只建一次
+  - sp500_universe() contains SPY and SSO (dip-buy tickers)
+  - market_regime() returns dict with required keys
   - Sector ETF list (strategy_owner.SECTOR_ETFS) is the 11 SPDR sector ETFs
 """
 
@@ -46,7 +48,7 @@ def test_sr_etfs_constant_is_11_sector_etfs():
     assert SR_ETFS == expected
 
 
-def test_get_market_regime_state_missing_benchmark_fails_closed(monkeypatch):
+def test_market_regime_missing_benchmark_fails_closed(monkeypatch):
     """Missing SSO must return no state, not leak a NoneType exception."""
     import pandas as pd
     import signals
@@ -61,13 +63,13 @@ def test_get_market_regime_state_missing_benchmark_fails_closed(monkeypatch):
         return None if Path(path).name == "SSO.csv" else spy
 
     monkeypatch.setattr(utils, "load_benchmark", fake_load)
-    assert signals.get_market_regime_state(pd.Timestamp("2026-09-22")) == {}
+    assert signals.LiveSource().market_regime(pd.Timestamp("2026-09-22")) == {}
 
 
 # ── Data-dependent tests ─────────────────────────────────────────────
 
 @skip_no_data
-def test_get_sr_weights_non_empty_or_verified_all_cash():
+def test_sr_non_empty_or_verified_all_cash():
     """SR 有持倉，或空手時 z-threshold 空手前置條件確實成立。
 
     設計（CONTEXT.md [[Strategy]] 詞條；strategies/sector_rotation/signal.py）：
@@ -77,9 +79,10 @@ def test_get_sr_weights_non_empty_or_verified_all_cash():
     空 dict 時改驗證前置條件「無 ETF 同時 z > thresh 且 score > 0」，
     以區分設計內空手與資料／管線故障造成的意外空輸出。
     """
-    from signals import get_sr_weights
+    from signals import LiveSource
 
-    wgt, sig_date = get_sr_weights()
+    sig = LiveSource().sr()
+    wgt, sig_date = sig.weights, sig.signal_date
     assert isinstance(wgt, dict)
     assert sig_date  # non-empty string
 
@@ -113,7 +116,7 @@ def test_get_sr_weights_non_empty_or_verified_all_cash():
 
 
 @skip_no_data
-def test_get_sr_weights_gross_within_design_bounds():
+def test_sr_gross_within_design_bounds():
     """SR gross sum 落在設計界限內：≤ 1.0，且 ≥ 1 − n×(WEIGHT_STEP/2)。
 
     設計（strategies/sector_rotation/signal.py，回測同源）：
@@ -124,10 +127,10 @@ def test_get_sr_weights_gross_within_design_bounds():
     （例：2026-06-29 raw 0.506/0.274/0.220 三檔同時向下取整）。
     全數未過 z-threshold 時空手（空 dict）也是合法輸出。
     """
-    from signals import get_sr_weights
+    from signals import LiveSource
     from strategies.sector_rotation import config as sr_config
 
-    wgt, _ = get_sr_weights()
+    wgt = LiveSource().sr().weights
     total = sum(wgt.values())
     step = sr_config.WEIGHT_STEP
 
@@ -145,42 +148,42 @@ def test_get_sr_weights_gross_within_design_bounds():
 
 
 @skip_no_data
-def test_get_sr_weights_all_are_sector_etfs():
+def test_sr_all_are_sector_etfs():
     """Every SR position should be one of the 11 sector ETFs."""
-    from signals import get_sr_weights
+    from signals import LiveSource
     from strategy_owner import SECTOR_ETFS as SR_ETFS
 
-    wgt, _ = get_sr_weights()
+    wgt = LiveSource().sr().weights
     for sym in wgt:
         assert sym in SR_ETFS, f"{sym} is not a known sector ETF"
 
 
 @skip_no_data
-def test_get_sp500_universe_contains_spy_sso():
+def test_sp500_universe_contains_spy_sso():
     """The universe helper must include SPY + SSO for dip-buy classification."""
-    from signals import get_sp500_universe
+    from signals import LiveSource
 
-    universe = get_sp500_universe()
+    universe = LiveSource().sp500_universe()
     assert isinstance(universe, set)
     assert "SPY" in universe
     assert "SSO" in universe
 
 
 @skip_no_data
-def test_get_sp500_universe_has_500_plus_tickers():
+def test_sp500_universe_has_500_plus_tickers():
     """S&P 500 should have ~500 constituents (may vary ±10 for rebalance weeks)."""
-    from signals import get_sp500_universe
+    from signals import LiveSource
 
-    universe = get_sp500_universe()
+    universe = LiveSource().sp500_universe()
     assert len(universe) > 400, f"SP500 universe too small: {len(universe)}"
 
 
 @skip_no_data
-def test_get_market_regime_state_has_required_keys():
+def test_market_regime_has_required_keys():
     """MarketRegime state dict must expose SPY close / MA200 / DD / ATH."""
-    from signals import get_market_regime_state
+    from signals import LiveSource
 
-    state = get_market_regime_state()
+    state = LiveSource().market_regime()
     assert isinstance(state, dict)
     required_keys = {"SPY_Close", "SPY_MA200", "SPY_DD"}
     missing = required_keys - set(state.keys())
@@ -188,31 +191,130 @@ def test_get_market_regime_state_has_required_keys():
 
 
 @skip_no_data
-def test_get_market_regime_numeric_values():
+def test_market_regime_numeric_values():
     """SPY_Close and SPY_MA200 should be positive floats."""
-    from signals import get_market_regime_state
+    from signals import LiveSource
 
-    state = get_market_regime_state()
+    state = LiveSource().market_regime()
     assert state["SPY_Close"] > 0
     assert state["SPY_MA200"] > 0
     # DD is negative or zero (drawdown from ATH)
     assert state["SPY_DD"] <= 0.001  # small epsilon
 
 
-def test_get_sp500_weights_without_persist_reads_but_never_writes_state(monkeypatch):
-    """新 Panel 的 paper Sync Pos（#152）只讀實盤帳戶的 SP500 state、不寫回。"""
+def _fake_sp500(monkeypatch, built):
+    """純策略函式與選股引擎換成假的：記下拿到的 as_of 與 selector。"""
+    import pandas as pd
+    from strategies.sp500_momentum import selection
+    from strategies.sp500_momentum import signal as sp_signal
+
+    seen = []
+
+    class Engine:
+        constituents_df = pd.DataFrame({"2026-09-01": ["AAPL.txt", "MSFT"]})
+
+        def __init__(self):
+            built.append(self)
+
+    def live(holdings, state, as_of_date=None, selector=None):
+        seen.append((list(holdings), dict(state), as_of_date, selector))
+        return {"AAPL": 1.0}, pd.Timestamp("2026-09-23"), dict(state, bull_weeks_counter=4)
+
+    monkeypatch.setattr(selection, "SelectionEngine", Engine)
+    monkeypatch.setattr(sp_signal, "get_latest_weights_live", live)
+    return seen
+
+
+def test_sp500_bridge_reads_state_once_and_leaves_writing_to_the_caller(monkeypatch):
+    """SP500 state：讀一次、交回新 state、自己不寫（排程與 Sync 寫，預演與接管不寫，#186）。"""
+    import signals
+    import sp500_state
+
+    loads, saved, built = [], [], []
+    monkeypatch.setattr(sp500_state, "load_state",
+                        lambda name: loads.append(name) or {"bull_weeks_counter": 3})
+    monkeypatch.setattr(sp500_state, "save_state", lambda name, state: saved.append(name))
+    seen = _fake_sp500(monkeypatch, built)
+
+    sig = signals.LiveSource().sp500(["AAPL"], "Taylor")
+
+    assert (sig.weights, sig.signal_date) == ({"AAPL": 1.0}, "2026-09-23")
+    assert sig.state == {"bull_weeks_counter": 4}
+    assert seen[0][:2] == (["AAPL"], {"bull_weeks_counter": 3})
+    assert loads == ["Taylor"] and saved == []
+
+
+def test_one_source_builds_the_selection_engine_once(monkeypatch):
+    """同一個來源：Universe 與三個帳戶的 SP500 訊號共用一個選股引擎（#232）。"""
+    import signals
+    import sp500_state
+
+    built = []
+    monkeypatch.setattr(sp500_state, "load_state", lambda name: {})
+    seen = _fake_sp500(monkeypatch, built)
+
+    source = signals.LiveSource()
+    assert source.sp500_universe() == {"AAPL", "MSFT", "SPY", "SSO"}
+    for name in ("Taylor", "Rosa", "Yvonne"):
+        source.sp500([], name)
+
+    assert len(built) == 1
+    assert all(s[3] is built[0] for s in seen)
+    signals.LiveSource().sp500_universe()          # 新的來源（下一次執行）重建
+    assert len(built) == 2
+
+
+def test_as_of_reaches_all_three_strategies(monkeypatch):
+    """as_of 是三個 Strategy 共同的「今天」；None ＝ 真實今天（由策略自己取）。"""
     import pandas as pd
     import signals
     import sp500_state
-    from strategies.sp500_momentum import signal as sp_signal
+    from strategies.sector_rotation import data_loader as sr_data
+    from strategies.sector_rotation import signal as sr_signal
+    from strategies.sector_skew_ls import signal as sk_signal
 
-    saved = []
-    monkeypatch.setattr(sp500_state, "load_state", lambda name: {"bull_weeks_counter": 3})
-    monkeypatch.setattr(sp500_state, "save_state", lambda name, state: saved.append(name))
-    monkeypatch.setattr(sp_signal, "get_latest_weights_live",
-                        lambda holdings, state: ({"AAPL": 1.0}, pd.Timestamp("2026-09-23"),
-                                                 dict(state, bull_weeks_counter=4)))
-    assert signals.get_sp500_weights([], "Taylor", persist=False) == ({"AAPL": 1.0}, "2026-09-23")
-    assert saved == []
-    signals.get_sp500_weights([], "Taylor")
-    assert saved == ["Taylor"]
+    day = pd.Timestamp("2026-10-01")
+    got = {}
+
+    def sr_live(close, zscore_thresh=None, as_of_date=None):
+        got["sr"] = (close, as_of_date)
+        return pd.Series({"XLK": 1.0}), pd.Timestamp("2026-09-28")
+
+    def skewls_live(as_of_date=None):
+        got["skewls"] = as_of_date
+        return {}, pd.Timestamp("2026-09-30")
+
+    monkeypatch.setattr(sr_data, "load_data", lambda: {"etf_close": "closes"})
+    monkeypatch.setattr(sr_signal, "get_latest_weights_live", sr_live)
+    monkeypatch.setattr(sk_signal, "get_latest_weights_live", skewls_live)
+    monkeypatch.setattr(sp500_state, "load_state", lambda name: {})
+    seen = _fake_sp500(monkeypatch, [])
+
+    source = signals.LiveSource(as_of=day)
+    assert source.sr().signal_date == "2026-09-28"
+    assert source.skewls().signal_date == "2026-09-30"
+    source.sp500([], "Taylor")
+
+    assert got == {"sr": ("closes", day), "skewls": day}
+    assert seen[0][2] == day
+
+
+@skip_no_data
+@pytest.mark.parametrize("as_of, sr_date, sp500_date", [
+    ("2026-10-01", "2026-09-28", "2026-09-29"),     # 週四：SR 截到週二前、SP500 截到週三前
+    ("2026-09-29", "2026-09-28", "2026-09-22"),     # 週二當天：SR 用前一天，SP500 用上週二
+    ("2026-09-30", "2026-09-28", "2026-09-29"),     # 週三當天
+])
+def test_signal_dates_follow_each_strategys_schedule(as_of, sr_date, sp500_date, monkeypatch,
+                                                     tmp_path):
+    """訊號日期語意（真資料）：SR 上一個週二之前、SP500 上一個週三之前、SkewLS 截至 as_of
+    的最後收盤。"""
+    import pandas as pd
+    import sp500_state
+    from signals import LiveSource
+
+    monkeypatch.setattr(sp500_state, "STATE_DIR", tmp_path)
+    source = LiveSource(as_of=pd.Timestamp(as_of))
+    assert source.sr().signal_date == sr_date
+    assert source.sp500([], "Test").signal_date == sp500_date
+    assert source.skewls().signal_date == as_of          # 交易日：當天收盤就是最後一筆

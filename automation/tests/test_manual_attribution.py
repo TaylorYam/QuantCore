@@ -34,6 +34,10 @@ def paths(tmp_path, monkeypatch):
     return NS(ledger=ledger, orders=orders)
 
 
+# 這個測試的訊號來源（#232）：rebalance_env／dip_env 放進來，_run_rebalance／_daily 取用
+_SOURCE: dict = {}
+
+
 def _manual_order(path, ref, account, symbol, action, filled, status,
                   quantity=None):
     """寫一筆 Panel 手動單 — 用 manual_orders 自己的 schema 建表。"""
@@ -304,7 +308,7 @@ def rebalance_env(paths, monkeypatch):
     """rebalance_ib.main 的真實流程；訊號固定：SP500 想要 AAPL 250 股、XYZ 250 股。"""
     import notify
     import rebalance_ib
-    import signals
+    from tests.fake_signals import FakeSource
 
     env = NS(sp500_calls=[], broker=None, positions={"AAPL": 100.0, "XYZ": 10.0, "BTC": 1.5},
              sent=[], tg_ok=True)
@@ -319,16 +323,14 @@ def rebalance_env(paths, monkeypatch):
         env.broker = _fake_broker(env.positions, behavior="working")
         return env.broker.connect(ctx)
 
-    def sp500_weights(holdings, account_name, persist=True):
+    def sp500_weights(holdings, account_name):
         env.sp500_calls.append(list(holdings))
         return {"AAPL": 0.5, "XYZ": 0.5}, "2026-09-23"
 
     from tests.fake_broker import install_connect
     install_connect(monkeypatch, connect)
     monkeypatch.setattr(rebalance_ib, "append_trade_log", lambda *a, **k: None)
-    monkeypatch.setattr(signals, "get_sr_weights", lambda: ({}, "N/A"))
-    monkeypatch.setattr(signals, "get_sp500_weights", sp500_weights)
-    monkeypatch.setattr(signals, "get_sp500_universe", lambda historical=True: set(JOINED))
+    monkeypatch.setitem(_SOURCE, "now", FakeSource(sp500=sp500_weights, universe=JOINED))
     return env
 
 
@@ -337,7 +339,8 @@ def _run_rebalance(name="Rosa", mode="sp500"):
     import rebalance_ib
     from notify import Digest
     digest = Digest("調倉 T", icon="📤")
-    rebalance_ib.main(mode=mode, ctx=_ctx(name, tg=("T", "C")), digest=digest)
+    rebalance_ib.main(mode=mode, ctx=_ctx(name, tg=("T", "C")), digest=digest,
+                      source=_SOURCE["now"])
     digest.send()
     return digest
 
@@ -395,7 +398,7 @@ def test_rebalance_unreadable_ledger_stops_account_before_state(rebalance_env, p
     from notify import Digest
     digest = Digest("調倉 T", icon="📤")
     with pytest.raises(ma.ManualAttributionError):
-        rebalance_ib.main(mode="sp500", ctx=_ctx(), digest=digest)
+        rebalance_ib.main(mode="sp500", ctx=_ctx(), digest=digest, source=_SOURCE["now"])
     assert _sent(rebalance_env.broker) == [] and rebalance_env.sp500_calls == []
     assert digest.outcomes(["Rosa"])["Rosa"][0] == "error"
 
@@ -419,7 +422,8 @@ def test_rebalance_lmt_run_uses_the_unified_limit_rule(rebalance_env):
     import rebalance_ib
     from notify import Digest
     ctx = dataclasses.replace(_ctx("Taylor"), order_type="LMT")
-    rebalance_ib.main(mode="sp500", ctx=ctx, digest=Digest("調倉 T", icon="📤"))
+    rebalance_ib.main(mode="sp500", ctx=ctx, digest=Digest("調倉 T", icon="📤"),
+                      source=_SOURCE["now"])
     placed = rebalance_env.broker.placed
     assert [(p.symbol, p.order_type, p.lmt) for p in placed] == [
         ("AAPL", "LMT", round(100.1 * 1.003, 2)), ("XYZ", "LMT", round(100.1 * 1.003, 2))]
@@ -439,9 +443,8 @@ def test_send_gate_holds_persisted_pause_even_if_caller_forgot(paths):
 
 @pytest.fixture
 def sync_env(paths, monkeypatch):
-    import signals
-
     import sync_position
+    from tests.fake_signals import FakeSource
 
     env = NS(broker=None, positions={"AAPL": 100.0, "XYZ": 10.0}, sent=[])
 
@@ -450,12 +453,10 @@ def sync_env(paths, monkeypatch):
         return env.broker.connect(ctx)
 
     # 實盤送單目標給的連線與紀錄（#183：沒有預設，一律明確給）
+    source = FakeSource(sp500=({"AAPL": 0.5, "XYZ": 0.5}, "2026-09-23"), universe=JOINED)
     env.records = sync_position.SyncRecords(
-        connect=connect, attribution_ledger=paths.ledger, manual_orders_store=paths.orders)
-    monkeypatch.setattr(signals, "get_sr_weights", lambda: ({}, "N/A"))
-    monkeypatch.setattr(signals, "get_sp500_weights",
-                        lambda holdings, name: ({"AAPL": 0.5, "XYZ": 0.5}, "2026-09-23"))
-    monkeypatch.setattr(signals, "get_sp500_universe", lambda historical=True: set(JOINED))
+        connect=connect, attribution_ledger=paths.ledger, manual_orders_store=paths.orders,
+        strategy_source=source)
     return env
 
 
@@ -533,19 +534,18 @@ class _Tue0915(date):
 def dip_env(paths, fake_config, monkeypatch, tmp_path):
     """sp500_daily_check 熊市 dip-buy 觸發（SPY 回撤 16%）。"""
     import pandas as pd
-    import signals
     import sp500_daily_check
     import sp500_state
     from strategies.sp500_momentum import utils
+    from tests.fake_signals import FakeSource
 
     env = NS(broker=None)
     monkeypatch.setattr(sp500_state, "STATE_DIR", tmp_path)
     monkeypatch.setattr(sp500_daily_check, "date", _Tue0915)
     monkeypatch.setattr(utils, "load_benchmark", lambda path: pd.DataFrame(
         {"Close": [750.0, 757.3]}, index=pd.to_datetime(["2026-09-11", "2026-09-14"])))
-    monkeypatch.setattr(signals, "get_market_regime_state", lambda ref: {
-        "SPY_Close": 500.0, "SPY_MA200": 600.0, "SPY_DD": -0.16})
-    monkeypatch.setattr(signals, "get_sp500_universe", lambda historical=True: set(UNIVERSE))
+    monkeypatch.setitem(_SOURCE, "now", FakeSource(
+        regime={"SPY_Close": 500.0, "SPY_MA200": 600.0, "SPY_DD": -0.16}, universe=UNIVERSE))
 
     def connect(ctx, **_kw):
         env.broker = _fake_broker({"AAPL": 10.0}, behavior="working")
@@ -561,7 +561,7 @@ def _daily(name="Taylor"):
     import sp500_daily_check
     from notify import Digest
     d = Digest("日度風控 T", icon="📤")
-    sp500_daily_check.run_daily_check(_ctx(name), d)
+    sp500_daily_check.run_daily_check(_ctx(name), d, source=_SOURCE["now"])
     return d
 
 

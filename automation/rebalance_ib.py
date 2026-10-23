@@ -37,13 +37,10 @@ import pandas as pd
 
 # ── 路徑設定 ──────────────────────────────────────────────────────────────────
 BASE_DIR  = Path(__file__).parent
-ROOT_DIR  = BASE_DIR.parent          # C:/QuantCore-master
 LOG_DIR   = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
 
-# 加入 QuantCore root 以便 import strategies
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+import _repo_root  # noqa: E402,F401  QuantCore root 可 import strategies
 
 from excel_logger import append_trade_log
 
@@ -247,7 +244,7 @@ def _log_trades_and_report(digest: Digest, ctx: AccountCtx, *,
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
-def main(mode: str, ctx: AccountCtx, digest: Digest):
+def main(mode: str, ctx: AccountCtx, digest: Digest, source=None):
     """
     mode = "sr"     → 只調 Sector Rotation（週二）；SP500 + SkewLS 維持
     mode = "sp500"  → 只調 SP500 Momentum（週三）；SR + SkewLS 維持
@@ -263,6 +260,7 @@ def main(mode: str, ctx: AccountCtx, digest: Digest):
 
     ctx 為 AccountCtx，由排程執行殼（scheduled_run）建立並傳入。
     Telegram 段落加進 digest（排程執行殼三帳戶合併一則發送）。
+    source：signals.StrategySource（排程入口三帳戶共用一個）；None ＝ LiveSource。
     """
     dry_run     = ctx.dry_run
     order_type  = ctx.order_type
@@ -302,7 +300,7 @@ def main(mode: str, ctx: AccountCtx, digest: Digest):
     try:
         # ── 1. 計算 SR 目標權重（不需 IB）─────────────────────────────────────
         inputs = plan_inputs.start(ctx, mode, persist_state=True,
-                                   narrator=_RebalanceSteps(ctx, mode))
+                                   narrator=_RebalanceSteps(ctx, mode), source=source)
 
         # ── 2. 連線 IB ───────────────────────────────────────────────────────
         log.info("Step 2: Connecting to IB Gateway...")
@@ -458,11 +456,13 @@ def run(argv: list[str] | None = None) -> int:
                         default=None,
                         help="Override order type from ctx (e.g. MKT for manual intraday)")
     args = parser.parse_args(argv)
+    import signals
+    source = signals.LiveSource()       # 三帳戶共用：選股引擎只建一次（#232）
 
     def per_account(ctx: AccountCtx, digest: Digest) -> None:
         if args.order_type:
             ctx = replace(ctx, order_type=args.order_type)
-        main(mode=args.mode, ctx=ctx, digest=digest)
+        main(mode=args.mode, ctx=ctx, digest=digest, source=source)
 
     return scheduled_run.run_job(run_status.REBALANCE_JOB, per_account, account=args.account)
 

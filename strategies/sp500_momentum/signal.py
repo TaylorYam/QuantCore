@@ -50,6 +50,7 @@ def get_latest_weights_live(
     current_holdings: list[str],
     state: dict,
     as_of_date: pd.Timestamp | None = None,
+    selector: SelectionEngine | None = None,
 ) -> tuple[dict, pd.Timestamp, dict]:
     """
     取 SP500 Momentum 最新目標權重（live 模式）。
@@ -64,6 +65,9 @@ def get_latest_weights_live(
         本函式 deep-copy 後在副本上操作，不會 mutate 傳入的 dict。
     as_of_date : pd.Timestamp | None
         以此日期作為「今天」推算上一個排程調倉日；預設為真實今天。
+    selector : SelectionEngine | None
+        呼叫端已建好的選股引擎（同一次執行內共用，automation/signals 的 LiveSource）；
+        None 時自己建一個。
 
     Returns
     -------
@@ -81,7 +85,8 @@ def get_latest_weights_live(
     state = copy.deepcopy(state)  # 純函式：不 mutate caller 的 dict
 
     # 初始化選股引擎 + 市場狀態
-    selector = SelectionEngine()
+    if selector is None:
+        selector = SelectionEngine()
     spy_df   = utils.load_benchmark(sp_cfg.ETF_DIR / "SPY.csv")
     sso_df   = utils.load_benchmark(sp_cfg.ETF_DIR / "SSO.csv")
     regime   = MarketRegime(spy_df, sso_df)

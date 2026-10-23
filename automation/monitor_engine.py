@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Optional
 
+import _repo_root  # noqa: F401  Morning check 讀 strategies 的設定（#232）
+
 
 # ── Ports ─────────────────────────────────────────────────────────────
 

@@ -332,6 +332,8 @@ def make_window(qtbot, source, ports, dialogs, portfolio, extras, tmp_path):
                                                 cold_connect=lambda n: None,
                                                 sleep=lambda s: None, start_delay_ms=0))
         kw.setdefault("broker", FakeBroker(managed=["U001"]))
+        # 訊號來源跟著 broker（sync_env 放的假來源，#232）
+        kw.setdefault("strategy_source", getattr(kw["broker"], "strategy_source", None))
         kw.setdefault("account_ctx_loader", live_ctx)
         kw.setdefault("manual_order_service", lambda **_kw: NS(
             has_active_orders=lambda: False, has_pending_notifications=lambda: False,

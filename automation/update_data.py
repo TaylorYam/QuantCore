@@ -16,13 +16,10 @@ from pathlib import Path
 from datetime import date, datetime
 
 BASE_DIR = Path(__file__).parent
-ROOT_DIR = BASE_DIR.parent          # C:/QuantCore-master
 LOG_DIR  = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
 
-# 加入 QuantCore root
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+import _repo_root  # noqa: E402,F401  QuantCore root 可 import data
 
 log = logging.getLogger(__name__)
 from data.update_outcomes import outcome_errors

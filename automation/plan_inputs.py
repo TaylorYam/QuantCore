@@ -23,6 +23,10 @@ mode：
 persist_state：SP500 訊號要不要寫回 state，以及 SkewLS 調倉後要不要記新目標。
 False 時不寫，並在 skipped_state_writes 記下「本來會寫哪個 state」（預演報表揭露用）。
 
+訊號來源（#232）：start(..., source=) 給 signals.StrategySource；None ＝ 本地 data 的
+signals.LiveSource（這次調倉的 SR／SP500／SkewLS／Universe 都問同一個）。排程一次
+跑三個帳戶時由入口傳同一個來源，選股引擎只建一次。
+
 帳戶快照來源是 adapter（nav() / positions() / prices(symbols)）：Broker 的連線
 （broker.Connection：21:00 調倉、Sync Pos、接管）與預演的
 preview_rebalance.SnapshotAccount（給定 NAV／持倉＋本地收盤價）。
@@ -33,9 +37,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 import rebalance_plan as plan
+
+if TYPE_CHECKING:                       # signals 在 start() 才 import（會載入策略套件）
+    from signals import StrategySource
 
 SCHEDULED_MODES = ("sr", "sp500", "skewls", "both", "all")
 SYNC = "sync"
@@ -67,6 +74,7 @@ class PlanInputs:
     mode: str
     persist_state: bool
     narrator: Narrator
+    source: Optional[StrategySource] = None   # start() 一定會給
     sr_wgt: dict[str, float] = field(default_factory=dict)
     sr_date: str = "N/A"
     # read() 之後
@@ -114,8 +122,6 @@ class PlanInputs:
         的檢查（接管的拒絕條件），拋例外即中止。price_symbols：只取這些報價
         （預設 = 三策略權重 ∪ 現有持倉）。
         """
-        import signals
-
         say = self.narrator
         ctx = self.ctx
         self.nav = account.nav()
@@ -123,7 +129,7 @@ class PlanInputs:
         self.positions = account.positions()
         say.positions(self.positions)
 
-        self.universe = signals.get_sp500_universe()
+        self.universe = self.source.sp500_universe()
         self.split = plan.classify_holdings(self.positions, self.universe)
         say.holdings(self.split)
 
@@ -137,11 +143,12 @@ class PlanInputs:
 
         say.sp500(self.run_sp500)
         if self.run_sp500:
-            # 寫 state 是 get_sp500_weights 的預設；只在不寫時才傳 persist=False
-            self.sp500_wgt, self.sp500_date = signals.get_sp500_weights(
-                self.split.sp500, ctx.name,
-                **({} if self.persist_state else {"persist": False}))
-            if not self.persist_state:
+            signal = self.source.sp500(self.split.sp500, ctx.name)
+            self.sp500_wgt, self.sp500_date = signal.weights, signal.signal_date
+            if self.persist_state:
+                import sp500_state
+                sp500_state.save_state(ctx.name, signal.state)
+            else:
                 self.skipped_state_writes.append(f"sp500_state:{ctx.name}")
         else:
             self.sp500_wgt = plan.sp500_placeholder_weights(self.split.sp500)
@@ -158,7 +165,6 @@ class PlanInputs:
 
     def _skewls_gate(self) -> None:
         """排程 mode 的 SkewLS：唯讀 load state → threshold gate。"""
-        import signals
         import skewls_state
 
         ctx = self.ctx
@@ -169,7 +175,8 @@ class PlanInputs:
         today_date = "N/A"
         if self.run_skewls:
             self.narrator.skewls("check")
-            self.skewls_today, today_date = signals.get_skewls_weights()
+            signal = self.source.skewls()
+            self.skewls_today, today_date = signal.weights, signal.signal_date
         else:
             self.narrator.skewls("hold")
         decision = plan.select_skewls_weights(
@@ -215,18 +222,24 @@ class PlanInputs:
 
 
 def start(ctx, mode: str, *, persist_state: bool,
-          narrator: Optional[Narrator] = None) -> PlanInputs:
-    """開始一次調倉的輸入：算不需要 IB 的訊號（SR；SYNC 另加 SkewLS 最新訊號）。"""
-    import signals
+          narrator: Optional[Narrator] = None,
+          source: Optional[StrategySource] = None) -> PlanInputs:
+    """開始一次調倉的輸入：算不需要 IB 的訊號（SR；SYNC 另加 SkewLS 最新訊號）。
 
+    source：signals.StrategySource；None ＝ signals.LiveSource()。"""
     if mode != SYNC and mode not in SCHEDULED_MODES:
         raise ValueError(f"mode 必須是 {SCHEDULED_MODES} 或 {SYNC!r}，收到 {mode!r}")
+    if source is None:
+        import signals
+        source = signals.LiveSource()
     inputs = PlanInputs(ctx=ctx, mode=mode, persist_state=persist_state,
-                        narrator=narrator or Narrator())
+                        narrator=narrator or Narrator(), source=source)
     inputs.narrator.sr()
-    inputs.sr_wgt, inputs.sr_date = signals.get_sr_weights()
+    sr = source.sr()
+    inputs.sr_wgt, inputs.sr_date = sr.weights, sr.signal_date
     if mode == SYNC and ctx.alloc_skewls > 0:
         inputs.narrator.skewls_latest()
-        inputs.skewls_wgt, inputs.skewls_date = signals.get_skewls_weights()
+        skewls = source.skewls()
+        inputs.skewls_wgt, inputs.skewls_date = skewls.weights, skewls.signal_date
         inputs.skewls_today = dict(inputs.skewls_wgt)
     return inputs

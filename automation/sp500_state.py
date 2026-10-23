@@ -20,17 +20,13 @@ import json
 import logging
 import re
 import shutil
-import sys
 from pathlib import Path
 from datetime import date
 from typing import Optional
 
 import json_state
 
-# strategies 套件需可 import（QuantCore root 要在 sys.path）
-_ROOT_DIR = Path(__file__).parent.parent
-if str(_ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(_ROOT_DIR))
+import _repo_root  # noqa: E402,F401  strategies 套件在 repo 根目錄
 
 # 純狀態語意搬到 strategy 套件；此處 re-export 維持既有 import 介面不變
 from strategies.sp500_momentum.state import (  # noqa: E402,F401

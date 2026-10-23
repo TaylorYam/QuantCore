@@ -15,7 +15,6 @@ from dataclasses import replace
 from datetime import date, datetime, timezone
 from types import SimpleNamespace as NS
 
-import pandas as pd
 import pytest
 
 from tests.fake_broker import FakeBroker
@@ -62,9 +61,23 @@ def sent(broker):
 
 @pytest.fixture
 def broker():
-    """in-memory Broker；persist／gate／sp500_states 是這裡的訊號替身記錄用的。"""
+    """in-memory Broker；gate／sp500_states／strategy_source 是這裡的訊號替身用的。"""
+    from tests.fake_signals import FakeSource
+
     fake = FakeBroker(managed=["U001"], positions={"AAPL": 100.0, "XYZ": 10.0})
-    fake.persist, fake.gate, fake.sp500_states = [], None, []
+    fake.gate, fake.sp500_states = None, []
+
+    def gated(value):
+        def answer(*_args):
+            if fake.gate is not None:
+                fake.gate.wait(5)
+            return value
+        return answer
+
+    # 固定訊號（#232）：送單目標與 Panel 跟著 broker 用這個假來源
+    fake.strategy_source = FakeSource(
+        sr=gated(({}, "N/A")), sp500=gated(({"AAPL": 0.5, "XYZ": 0.5}, "2026-09-29")),
+        universe=JOINED)
     return fake
 
 
@@ -76,46 +89,25 @@ def live_files(tmp_path):
 
 @pytest.fixture
 def sync_env(broker, live_files, monkeypatch):
-    """固定訊號；IB 讀數來自 in-memory Broker；sync_position、rebalance_plan、
-    manual_attribution 用真的。
+    """固定訊號（broker.strategy_source）；IB 讀數來自 in-memory Broker；sync_position、
+    rebalance_plan、manual_attribution 用真的。
     manual_attribution 的預設檔也指到 tmp 的實盤檔：萬一有路徑沒指定，寫進去的資料
-    會被下面「實盤紀錄沒被建立」的斷言抓到，而且碰不到真的檔案。"""
+    會被下面「實盤紀錄沒被建立」的斷言抓到，而且碰不到真的檔案。
+    SP500 state 的寫入記在 broker.sp500_states。"""
     import manual_attribution as ma
-    import signals
+    import sp500_state
 
     monkeypatch.setattr(ma, "DEFAULT_LEDGER_PATH", live_files.attribution)
     monkeypatch.setattr(ma, "DEFAULT_MANUAL_ORDERS_PATH", live_files.orders)
-
-    def sr_weights():
-        if broker.gate is not None:
-            broker.gate.wait(5)
-        return {}, "N/A"
-
-    def sp500_weights(holdings, name, persist=True):
-        broker.persist.append(persist)
-        return {"AAPL": 0.5, "XYZ": 0.5}, "2026-09-29"
-
-    monkeypatch.setattr(signals, "get_sr_weights", sr_weights)
-    monkeypatch.setattr(signals, "get_sp500_weights", sp500_weights)
-    monkeypatch.setattr(signals, "get_sp500_universe", lambda historical=False: set(JOINED))
+    monkeypatch.setattr(sp500_state, "save_state",
+                        lambda *a, **k: broker.sp500_states.append(a))
     return live_files
 
 
 @pytest.fixture
-def takeover_signals(broker, sync_env, monkeypatch):
-    """接管的 SP500 live 權重（不寫 state）；記下任何 SP500 state 寫入。"""
-    import sp500_state
-    from strategies.sp500_momentum import signal as sp_signal
-
-    def live(holdings, state, as_of_date=None):
-        if broker.gate is not None:
-            broker.gate.wait(5)
-        return {"AAPL": 0.5, "XYZ": 0.5}, pd.Timestamp("2026-09-29"), dict(state)
-
-    monkeypatch.setattr(sp_signal, "get_latest_weights_live", live)
-    monkeypatch.setattr(sp500_state, "load_state", lambda name: {})
-    monkeypatch.setattr(sp500_state, "save_state",
-                        lambda *a, **k: broker.sp500_states.append(a))
+def takeover_signals(broker, sync_env):
+    """接管與 Sync Pos 用同一個假來源（接管不寫 SP500 state，記在 broker.sp500_states）。"""
+    return broker.strategy_source
 
 
 def pause_xyz(files: OrderFiles, account="Taylor") -> None:
@@ -153,7 +145,7 @@ def trade_log(monkeypatch):
 
 def make_target(broker, *, live_files):
     return OrderTarget(files=live_files, account_ctx_loader=live_ctx,
-                       broker=broker)
+                       broker=broker, strategy_source=getattr(broker, "strategy_source", None))
 
 
 @pytest.fixture
@@ -250,7 +242,7 @@ def test_live_sync_uses_the_rebalance_identity_and_reports(
     plan = sync.compute("Taylor", lambda m: None)
     [ctx] = broker.ctxs
     assert (ctx.account, ctx.port, ctx.client_id) == ("U001", 4001, 20 + ROLE_REBALANCE)
-    assert broker.persist == [True]                     # 實盤 SP500 state 寫回
+    assert [a[0] for a in broker.sp500_states] == ["Taylor"]   # 實盤 SP500 state 寫回
 
     telegram.ok = False                                 # 暫停通知沒送到：不記已通知
     assert sync.take_notices(plan) == [

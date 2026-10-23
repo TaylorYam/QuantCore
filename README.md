@@ -28,7 +28,7 @@ QuantCore-master/
 │   ├── qt_panel/               #   PySide6 控制面板（ADR-0012）
 │   ├── rebalance_plan.py       #   調倉決策（純函式，不碰 IB）
 │   ├── rebalance_ib.py         #   IB Gateway 自動調倉（caller）
-│   ├── signals.py              #   策略訊號整合（SR / SP500 / Skew LS）
+│   ├── signals.py              #   策略訊號來源 StrategySource（SR / SP500 / Skew LS；LiveSource）
 │   ├── account_ctx.py          #   帳戶上下文 dataclass
 │   ├── monitor_engine.py       #   值班引擎（Rosa poll / TY check / Morning check）
 │   ├── tests/                  #   305+ 離線單元測試

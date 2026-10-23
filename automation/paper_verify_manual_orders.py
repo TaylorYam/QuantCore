@@ -6,8 +6,10 @@ arrives relative to the order's first status, whether a forced cancel from a
 new connection reaches IB, and what IB reports when a DAY order expires.
 
 Safety:
-- Never reads or writes accounts.json / config.json. Host, port, paper
-  account and clientId come from the command line.
+- Never writes accounts.json / config.json and reads no connection settings
+  from them. Host, port, paper account and clientId come from the command
+  line; only the default --label is the first Account allowed to place manual
+  orders in accounts.json ("paper" when there is none, e.g. in a worktree).
 - Refuses to continue unless every account the Gateway manages is a paper
   account (IDs starting with DU or DF).
 - Never sends Telegram: notifications are printed.
@@ -38,9 +40,6 @@ PAPER_PREFIXES = ("DU", "DF")
 PROBE_REF = "QUANTCORE_PAPER_PROBE"
 DEFAULT_STORE = Path(tempfile.gettempdir()) / "quantcore_manual_orders_paper.sqlite3"
 DEFAULT_LOG = Path(tempfile.gettempdir()) / "quantcore_manual_orders_paper.log"
-# ManualOrderService only accepts configured Account names; this is a label,
-# the order goes to --account.
-LABEL = "Taylor"
 # Gateway farm-status notices (reqId -1) are noise for this verification.
 _CONNECTION_NOTICES = {2104, 2106, 2107, 2108, 2158}
 
@@ -123,17 +122,29 @@ def paper_ib(timeline: Timeline | None):
     return ib
 
 
+def _default_label() -> str:
+    """The name the service and its store record orders under.
+
+    Only a label: the order goes to --account. The first Account allowed to
+    place manual orders (accounts.json, #211), so no Account name is
+    hardcoded; "paper" where there is no accounts.json (a PR worktree).
+    """
+    from account_utils import load_capabilities
+
+    names = [c.name for c in load_capabilities() if c.manual_orders]
+    return names[0] if names else "paper"
+
+
 def _paper_ctx(args, name=None):
     return SimpleNamespace(
-        name=name or LABEL, account=args.account, host=args.host,
+        name=name or args.label, account=args.account, host=args.host,
         port=args.port, client_id=args.client_id,
     )
 
 
 def _connect(args, timeline: Timeline | None):
-    """IB 本身的委託紀錄要用 ib_insync 本體查：經 Broker 連上（paper-only 檢查在
-    paper_ib 的 connect 裡）再取出。"""
-    return Broker(lambda: paper_ib(timeline)).connect(_paper_ctx(args), timeout=10).ib
+    """IB 本身的委託紀錄也經 Broker 的連線查（paper-only 檢查在 paper_ib 的 connect 裡）。"""
+    return Broker(lambda: paper_ib(timeline)).connect(_paper_ctx(args), timeout=10)
 
 
 def build_service(args, timeline: Timeline, ib_factory=None) -> mo.ManualOrderService:
@@ -146,7 +157,7 @@ def build_service(args, timeline: Timeline, ib_factory=None) -> mo.ManualOrderSe
         return True
 
     return mo.ManualOrderService(
-        account_names=[LABEL],
+        account_names=[args.label],
         store=mo.ManualOrderStore(args.store),
         account_ctx_factory=account_ctx,
         connect=lambda ctx: Broker(ib_factory or (lambda: paper_ib(timeline))).connect(
@@ -180,12 +191,12 @@ def print_row(row: dict) -> None:
 
 def print_ib_view(args) -> None:
     """IB's own record of this clientId's orders, read on a fresh connection."""
-    ib = _connect(args, None)
+    conn = _connect(args, None)
     try:
-        trades = list(ib.openTrades() or [])
-        trades.extend(ib.reqCompletedOrders(apiOnly=True) or [])
+        trades = conn.open_orders()
+        trades.extend(conn.completed_orders()[0])
     finally:
-        ib.disconnect()
+        conn.close()
     print("\n  IB 端原始委託（新連線讀取）：")
     shown = 0
     for trade in trades:
@@ -220,16 +231,16 @@ def resolve_ref(service: mo.ManualOrderService, text: str) -> str:
 def cmd_hours(args, timeline: Timeline) -> None:
     from symbol_contract import ib_stock
 
-    ib = _connect(args, None)
+    conn = _connect(args, None)
     try:
-        contracts = list(ib.qualifyContracts(ib_stock(args.symbol.upper())) or [])
+        contracts = conn.qualify(ib_stock(args.symbol.upper()))
         if len(contracts) != 1:
             raise SystemExit(f"IB 無法唯一確認 {args.symbol} 合約")
         if args.exchange != "SMART":
-            contracts = [_routed_contract(ib, contracts[0], args.exchange)]
-        details = list(ib.reqContractDetails(contracts[0]) or [])
+            contracts = [_routed_contract(conn, contracts[0], args.exchange)]
+        details = conn.contract_details(contracts[0])
     finally:
-        ib.disconnect()
+        conn.close()
     now = datetime.now(timezone.utc)
     print(f"[{_clock_text()}] {args.symbol.upper()} 合約交易時間（exchange={args.exchange}）")
     for item in details:
@@ -257,9 +268,9 @@ def cmd_probe_2109(args, timeline: Timeline) -> None:
 
     if mo.extended_session_at(datetime.now(timezone.utc)) is None:
         raise SystemExit("probe-2109 只能在盤前或盤後執行（一般時段 MKT 會直接成交）")
-    ib = _connect(args, timeline)
+    conn = _connect(args, timeline)
     try:
-        [contract] = ib.qualifyContracts(ib_stock(args.symbol.upper()))
+        [contract] = conn.qualify(ib_stock(args.symbol.upper()))
         order = MarketOrder(
             "BUY", args.quantity, account=args.account, tif="DAY",
             outsideRth=True, orderRef=PROBE_REF,
@@ -268,10 +279,10 @@ def cmd_probe_2109(args, timeline: Timeline) -> None:
             f"送出 MKT BUY {args.quantity} {args.symbol.upper()} outsideRth=True"
             "（刻意觸發 2109，不經手動下單服務）"
         )
-        trade = ib.placeOrder(contract, order)
+        trade = conn.place(contract, order)
         deadline = time.perf_counter() + args.wait
         while time.perf_counter() < deadline:
-            ib.sleep(0.1)
+            conn.wait(0.1)
         events = [event for event in timeline.events if event.order_id == order.orderId]
         warning = next((event for event in events
                         if event.kind == "error" and event.code == mos.IB_OUTSIDE_RTH_IGNORED), None)
@@ -293,24 +304,24 @@ def cmd_probe_2109(args, timeline: Timeline) -> None:
                   "服務會漏掉")
         if not trade.isDone():
             timeline.mark("取消 probe 委託")
-            ib.cancelOrder(order)
+            conn.cancel(order)
             deadline = time.perf_counter() + 5
             while time.perf_counter() < deadline and not trade.isDone():
-                ib.sleep(0.2)
+                conn.wait(0.2)
         print(f"  probe 最終狀態：{trade.orderStatus.status}，成交 {trade.orderStatus.filled:g} 股")
         if trade.orderStatus.filled:
             print("  注意：paper 帳戶因 probe 產生持倉，請記錄並自行處理")
     finally:
-        ib.disconnect()
+        conn.close()
 
 
-def _routed_contract(ib, smart_contract, exchange: str):
+def _routed_contract(conn, smart_contract, exchange: str):
     """The same listing routed directly to `exchange` (e.g. OVERNIGHT)."""
     from ib_insync import Stock
 
     routed = Stock(smart_contract.symbol, exchange, "USD",
                    primaryExchange=smart_contract.primaryExchange)
-    qualified = list(ib.qualifyContracts(routed) or [])
+    qualified = conn.qualify(routed)
     if len(qualified) != 1:
         raise SystemExit(f"IB 無法確認 {smart_contract.symbol} 在 {exchange} 的合約")
     return qualified[0]
@@ -321,11 +332,11 @@ def cmd_probe_overnight(args, timeline: Timeline) -> None:
     from ib_insync import LimitOrder
     from symbol_contract import ib_stock
 
-    ib = _connect(args, timeline)
+    conn = _connect(args, timeline)
     try:
-        [smart] = ib.qualifyContracts(ib_stock(args.symbol.upper()))
-        contract = _routed_contract(ib, smart, "OVERNIGHT")
-        [details] = ib.reqContractDetails(contract)
+        [smart] = conn.qualify(ib_stock(args.symbol.upper()))
+        contract = _routed_contract(conn, smart, "OVERNIGHT")
+        [details] = conn.contract_details(contract)
         now = datetime.now(timezone.utc)
         in_session = mo.ib_trading_hours_include(details.tradingHours, details.timeZoneId, now)
         print(f"[{_clock_text()}] OVERNIGHT tradingHours 涵蓋現在 = {in_session}")
@@ -339,10 +350,10 @@ def cmd_probe_overnight(args, timeline: Timeline) -> None:
             f"送出 LMT BUY {args.quantity} {contract.symbol} @ {args.limit} "
             f"exchange=OVERNIGHT tif={args.tif}（不經手動下單服務）"
         )
-        trade = ib.placeOrder(contract, order)
+        trade = conn.place(contract, order)
         deadline = time.perf_counter() + args.wait
         while time.perf_counter() < deadline and not trade.isDone():
-            ib.sleep(0.2)
+            conn.wait(0.2)
         print(f"  結果：status={trade.orderStatus.status} filled={trade.orderStatus.filled:g}")
         for entry in trade.log:
             if entry.errorCode:
@@ -352,13 +363,13 @@ def cmd_probe_overnight(args, timeline: Timeline) -> None:
                 print("  保留此單（--keep），用 status 觀察到期行為")
             return
         timeline.mark("取消 probe 委託")
-        ib.cancelOrder(order)
+        conn.cancel(order)
         deadline = time.perf_counter() + 5
         while time.perf_counter() < deadline and not trade.isDone():
-            ib.sleep(0.2)
+            conn.wait(0.2)
         print(f"  取消後狀態：{trade.orderStatus.status}")
     finally:
-        ib.disconnect()
+        conn.close()
 
 
 def cmd_submit(args, timeline: Timeline) -> None:
@@ -366,7 +377,7 @@ def cmd_submit(args, timeline: Timeline) -> None:
     quantity = args.quantity if args.amount is None else None
     amount = Decimal(args.amount) if args.amount is not None else None
     preview = service.preview(
-        LABEL, args.symbol, quantity, args.limit, action=args.action,
+        args.label, args.symbol, quantity, args.limit, action=args.action,
         allow_short=args.allow_short, amount_usd=amount, session=args.session,
     )
     print(f"\n[{_clock_text()}] 預覽（送往 paper 帳號 {args.account}）：")
@@ -431,6 +442,8 @@ def main(argv=None) -> None:
     parser.add_argument("--store", type=Path, default=DEFAULT_STORE)
     parser.add_argument("--log", type=Path, default=DEFAULT_LOG,
                         help="輸出同時附加寫入此 UTF-8 記錄檔")
+    parser.add_argument("--label", help="服務紀錄用的名稱（只是標籤；預設 accounts.json "
+                                        "第一個可手動下單的 Account，沒有就是 paper）")
     sub = parser.add_subparsers(dest="command", required=True)
 
     hours = sub.add_parser("hours", help="讀 IB 合約交易時間並顯示程式判定")
@@ -475,6 +488,7 @@ def main(argv=None) -> None:
     if not args.account.upper().startswith(PAPER_PREFIXES):
         parser.error("--account 必須是 paper 帳號（DU/DF 開頭）")
     args.account = args.account.upper()
+    args.label = args.label or _default_label()
     commands = {
         "hours": cmd_hours, "probe-2109": cmd_probe_2109,
         "probe-overnight": cmd_probe_overnight, "submit": cmd_submit,

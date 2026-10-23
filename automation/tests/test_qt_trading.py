@@ -13,14 +13,13 @@ import pytest
 from tests.test_qt_panel import (  # noqa: F401  fixtures
     dialogs, extras, make_window, portfolio, ports, source,
 )
-from tests.test_manual_orders import FakeIB, FakeIBState
+from tests.test_manual_orders import manual_broker
 from tests.test_qt_order_target import (  # noqa: F401  fixtures
     NOW, live_ctx, order_factory, telegram,
 )
 
 from PySide6.QtCore import Qt
 
-from broker import Broker
 from manual_orders import ManualOrderService
 
 
@@ -38,7 +37,7 @@ class FakeSymbols:
 
 @pytest.fixture
 def ib_state():
-    state = FakeIBState()
+    state = manual_broker()
     state.managed = ["U001"]
     state.positions_by_account = {"U001": {}}
     state.net_liquidation = {"U001": "20000"}
@@ -69,8 +68,8 @@ def services():
 def trading_window(make_window, ib_state, services, telegram, qtbot):
     def make(**kw):
         kw.setdefault("account_ctx_loader", live_ctx)
-        # 手動單用 ib_insync 本體：真的 Broker 接在 test_manual_orders 的假 IB 上
-        kw.setdefault("broker", Broker(lambda: FakeIB(ib_state)))
+        # 手動單的連線也向 in-memory Broker 要（#228）
+        kw.setdefault("broker", ib_state)
         kw.setdefault("manual_order_service", services)
         kw.setdefault("symbol_loader", FakeSymbols)
         w = make_window(**kw)
@@ -115,7 +114,7 @@ def test_order_previews_confirms_sends_and_tracks_status(
     expected = service.preview("Taylor", "AAPL", 5, 100.0).confirmation_text
     assert panel.preview_text.text() == expected
     assert "Account：Taylor" in expected and "限價：$100.0" in expected
-    assert ib_state.placed == []
+    assert ib_state.trades == []
 
     click_and_wait(qtbot, panel, panel.confirm_button)
     [(title, prompt, warning)] = dialogs.confirms
@@ -123,7 +122,7 @@ def test_order_previews_confirms_sends_and_tracks_status(
     assert prompt.startswith(expected)
     assert "送往：實盤帳戶（各帳戶自己的 Gateway）" in prompt
 
-    [trade] = ib_state.placed
+    [trade] = ib_state.trades
     assert (trade.order.action, trade.order.totalQuantity, trade.order.lmtPrice,
             trade.order.account) == ("BUY", 5, 100.0, "U001")
     assert trade.order.orderRef.startswith("QUANTCORE_MANUAL")
@@ -136,7 +135,7 @@ def test_order_previews_confirms_sends_and_tracks_status(
     # 部分成交
     trade.orderStatus.filled = 2
     trade.orderStatus.avgFillPrice = 99.5
-    ib_state.open_trades.remove(trade)
+    ib_state.open_orders.remove(trade)
     ib_state.completed_trades.append(trade)
     click_and_wait(qtbot, panel, panel.refresh_button)
     wait_refreshed(qtbot, panel)
@@ -178,9 +177,9 @@ def test_cancel_waits_for_ib_and_the_result_goes_to_the_accounts_telegram(
     ib_state.cancel_status = "Cancelled"
     click_and_wait(qtbot, panel, panel.cancel_button)
     assert dialogs.confirms[-1][0] == "取消手動委託"
-    [trade] = ib_state.placed
-    assert ib_state.cancelled_orders == [trade.order]
-    ib_state.open_trades.remove(trade)
+    [trade] = ib_state.trades
+    assert ib_state.cancelled == [trade.order]
+    ib_state.open_orders.remove(trade)
     ib_state.completed_trades.append(trade)
     panel.refresh_status()
     wait_refreshed(qtbot, panel)
@@ -197,10 +196,10 @@ def test_ib_expiry_is_tracked_as_expired(trading_window, ib_state, telegram, qtb
     click_and_wait(qtbot, panel, panel.preview_button)
     click_and_wait(qtbot, panel, panel.confirm_button)
     wait_refreshed(qtbot, panel)
-    [trade] = ib_state.placed
+    [trade] = ib_state.trades
     trade.orderStatus.status = "Cancelled"
     trade.completed_status = "Expired (5)"
-    ib_state.open_trades.remove(trade)
+    ib_state.open_orders.remove(trade)
     ib_state.completed_trades.append(trade)
     panel.refresh_status()
     wait_refreshed(qtbot, panel)
@@ -227,7 +226,7 @@ def test_modify_loads_the_order_then_cancels_before_offering_a_new_preview(
     assert dialogs.confirms[-1][0] == "取消後修改手動委託"
     qtbot.waitUntil(lambda: "原委託已取消" in panel.preview_text.text(), timeout=3000)
     assert panel.quantity_edit.text() == "5" and panel.price_edit.text() == "98.0"
-    assert len(ib_state.placed) == 1           # 新委託要再預覽、再確認才送
+    assert len(ib_state.trades) == 1           # 新委託要再預覽、再確認才送
     assert not panel.confirm_button.isEnabled()
 
 

@@ -68,14 +68,14 @@ def test_class_share_is_classified_as_sp500_after_position_normalization():
 
 
 def test_price_fallback_uses_provider_filename_for_class_share(tmp_path, monkeypatch):
-    from strategies.sp500_momentum import config
+    from data import market_data
     import price_utils
 
     stock_dir = tmp_path / "stocks"
     stock_dir.mkdir()
-    pd.DataFrame({"Close": [500.0]}).to_csv(stock_dir / "BRK-B.csv")
-    monkeypatch.setattr(config, "STOCK_DIR", stock_dir)
-    monkeypatch.setattr(config, "ETF_DIR", tmp_path / "etfs")
+    pd.DataFrame({"Date": ["2026-10-06"], "Close": [500.0]}).to_csv(
+        stock_dir / "BRK-B.csv", index=False)
+    monkeypatch.setattr(market_data, "DATA_ROOT", tmp_path)
 
     assert price_utils.load_csv_close("BRK.B") == 500.0
 

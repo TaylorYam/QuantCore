@@ -26,8 +26,8 @@ from typing import Callable, Iterable, Iterator
 from zoneinfo import ZoneInfo
 
 from account_utils import ROLE_MANUAL_ORDER
-# 手動單用的即時報價在 Broker（#185），這裡只用它的結果與規則
-from broker import IB_DONE_STATUSES, AccountValueUnavailable, BrokerQuote, realtime_quote
+# 跟 IB 打交道都經 Broker 的 Connection（#185、#228）；這裡只有手動單的規則
+from broker import IB_DONE_STATUSES, AccountValueUnavailable, BrokerQuote
 # IB 回報 → 手動單狀態的規則與狀態詞彙在 manual_order_status（#210）
 from manual_order_status import (
     ACTIVE_STATUSES, IB_AWAITING_ACK, IB_OUTSIDE_RTH_IGNORED, IB_WORKING_STATUSES,
@@ -60,7 +60,6 @@ _OVERNIGHT_EXCHANGE = "OVERNIGHT"
 _EXTENDED_SUBMIT_MARGIN = timedelta(minutes=1)
 # A limit this far from the last completed close is flagged, never blocked.
 _PRICE_DEVIATION_WARN = Decimal("0.10")
-_PRIOR_CLOSE_TIMEOUT_SECONDS = 10
 _OUTSIDE_RTH_IGNORED_REASON = "IB 回報忽略盤前盤後設定（2109）"
 _IB_ACK_TIMEOUT_SECONDS = 10.0
 _IB_ACK_POLL_SECONDS = 0.5
@@ -171,14 +170,9 @@ def ib_trading_hours_include(trading_hours: str, time_zone_id: str,
     return False
 
 
-def read_ib_daily_closes(ib, contract) -> list[tuple[date, float]]:
-    """Recent regular-session daily closes from IB historical bars."""
-    bars = ib.reqHistoricalData(
-        contract, endDateTime="", durationStr="10 D", barSizeSetting="1 day",
-        whatToShow="TRADES", useRTH=True, formatDate=1,
-        timeout=_PRIOR_CLOSE_TIMEOUT_SECONDS,
-    )
-    return [(bar.date, bar.close) for bar in bars or ()]
+def read_realtime_quote(conn, contract, side: str) -> BrokerQuote:
+    """A fresh, selected-side real-time IB quote (broker.Connection)."""
+    return conn.realtime_quote(contract, side)
 
 
 def last_completed_session(now: datetime) -> date | None:
@@ -838,18 +832,18 @@ def _ib_order_status(trade) -> str:
     return str(getattr(getattr(trade, "orderStatus", None), "status", "") or "")
 
 
-def _await_ib_acknowledgement(ib, trade) -> bool:
+def _await_ib_acknowledgement(conn, trade) -> bool:
     """Pump IB events until IB answers placeOrder; False if it never does."""
     waited = 0.0
     while waited < _IB_ACK_TIMEOUT_SECONDS:
-        ib.sleep(_IB_ACK_POLL_SECONDS)
+        conn.wait(_IB_ACK_POLL_SECONDS)
         waited += _IB_ACK_POLL_SECONDS
         if _ib_order_status(trade) not in IB_AWAITING_ACK:
             return True
     return False
 
 
-def _outside_rth_confirmation_window(ib, trade, warnings: list) -> bool:
+def _outside_rth_confirmation_window(conn, trade, warnings: list) -> bool:
     """Keep the placing connection listening after IB's first status.
 
     True only if the whole window passes without warning 2109 (or the order
@@ -859,39 +853,9 @@ def _outside_rth_confirmation_window(ib, trade, warnings: list) -> bool:
     waited = 0.0
     while (waited < OUTSIDE_RTH_CONFIRM_SECONDS and not warnings
            and _ib_order_status(trade) not in IB_DONE_STATUSES):
-        ib.sleep(_IB_ACK_POLL_SECONDS)
+        conn.wait(_IB_ACK_POLL_SECONDS)
         waited += _IB_ACK_POLL_SECONDS
     return not warnings
-
-
-def _completed_trades_with_status(ib) -> tuple[list, dict[str, str]]:
-    """IB's completed orders, plus each one's completedStatus by orderRef.
-
-    ib_insync's Wrapper.completedOrder keeps only orderState.status, which is
-    Cancelled for both an expiry and a trader cancel, and drops
-    completedStatus. Capture it while this request runs, then restore.
-    """
-    statuses: dict[str, str] = {}
-    wrapper = getattr(ib, "wrapper", None)
-    original = getattr(wrapper, "completedOrder", None)
-    try:
-        hooked = callable(original) and "completedOrder" not in vars(wrapper)
-    except TypeError:
-        hooked = False
-    if hooked:
-        def capture(contract, order, order_state):
-            statuses[str(getattr(order, "orderRef", "") or "")] = str(
-                getattr(order_state, "completedStatus", "") or ""
-            )
-            return original(contract, order, order_state)
-
-        wrapper.completedOrder = capture
-    try:
-        trades = list(ib.reqCompletedOrders(apiOnly=True) or [])
-    finally:
-        if hooked:
-            del wrapper.completedOrder
-    return trades, statuses
 
 
 def _find_manual_trade(trades: Iterable[object], order_ref: str, account: str):
@@ -925,7 +889,6 @@ class ManualOrderService:
                  universe_loader: Callable[[], set[str]] | None = None,
                  order_factory: Callable | None = None,
                  quote_reader: Callable | None = None,
-                 close_reader: Callable | None = None,
                  clock: Callable[[], datetime] | None = None,
                  notifier: Callable[[str, str], bool],
                  store_path: str | Path | None = None):
@@ -949,8 +912,7 @@ class ManualOrderService:
         self._connect = connect
         self._universe_loader = universe_loader or _default_universe_loader
         self._order_factory = order_factory
-        self._quote_reader = quote_reader or realtime_quote
-        self._close_reader = close_reader or read_ib_daily_closes
+        self._quote_reader = quote_reader or read_realtime_quote
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         if not callable(notifier):
             raise TypeError("ManualOrderService requires an injected notifier")
@@ -1025,13 +987,6 @@ class ManualOrderService:
         finally:
             conn.close()
 
-    @contextmanager
-    def _connected_ib(self, account_name: str) -> Iterator[tuple[object, object]]:
-        """(ctx, ib)：The service's rules use ib_insync directly (#185: only the
-        connection underneath moves to the Broker)."""
-        with self._connection(account_name) as (ctx, conn):
-            yield ctx, conn.ib
-
     # ── Request checks, sessions and contracts ──────────────────────────────
 
     @staticmethod
@@ -1077,11 +1032,11 @@ class ManualOrderService:
             raise ManualOrderError("MKT 只能在 NYSE 一般交易時段送出")
         return now
 
-    def _market_quote(self, ib, contract, action: str) -> BrokerQuote:
+    def _market_quote(self, conn, contract, action: str) -> BrokerQuote:
         now = self._require_regular_session()
         side = "ask" if action in {"BUY", "COVER"} else "bid"
         try:
-            quote = self._quote_reader(ib, contract, side)
+            quote = self._quote_reader(conn, contract, side)
         except Exception as exc:
             raise ManualOrderError(
                 "沒有有效的 IB 即時報價；請改用明確股數"
@@ -1098,7 +1053,7 @@ class ManualOrderService:
             raise ManualOrderError("沒有有效的 IB 即時報價；請改用明確股數")
         return quote
 
-    def _prior_close(self, ib, contract) -> tuple[date, float] | None:
+    def _prior_close(self, conn, contract) -> tuple[date, float] | None:
         """The last completed session's close, or None if IB cannot supply it.
 
         Only feeds a warning, so every failure degrades to None.
@@ -1107,7 +1062,7 @@ class ManualOrderService:
         if expected is None:
             return None
         try:
-            closes = list(self._close_reader(ib, contract) or ())
+            closes = list(conn.daily_closes(contract) or ())
         except Exception:
             log.warning("Manual order prior close unavailable for %s",
                         getattr(contract, "symbol", ""), exc_info=True)
@@ -1141,11 +1096,11 @@ class ManualOrderService:
         return now
 
     @staticmethod
-    def _require_extended_contract_hours(ib, contract, now: datetime) -> None:
+    def _require_extended_contract_hours(conn, contract, now: datetime) -> None:
         """Fail closed unless IB's own contract hours cover this extended-hours moment."""
         symbol = getattr(contract, "symbol", "")
         try:
-            details = list(ib.reqContractDetails(contract) or [])
+            details = conn.contract_details(contract)
             if len(details) != 1:
                 raise ValueError(f"expected one contract detail, got {len(details)}")
             covered = ib_trading_hours_include(
@@ -1162,7 +1117,7 @@ class ManualOrderService:
                 "不會改用一般時段送出"
             )
 
-    def _overnight_contract(self, ib, contract):
+    def _overnight_contract(self, conn, contract):
         """The qualified listing routed to OVERNIGHT, if IB lists it and is open now.
 
         Eligibility and hours come from IB itself: the listing's
@@ -1174,7 +1129,7 @@ class ManualOrderService:
 
         symbol = getattr(contract, "symbol", "")
         try:
-            listing = list(ib.reqContractDetails(contract) or [])
+            listing = conn.contract_details(contract)
             if len(listing) != 1:
                 raise ValueError(f"expected one contract detail, got {len(listing)}")
             venues = {item.strip().upper()
@@ -1191,7 +1146,7 @@ class ManualOrderService:
         routed.exchange = _OVERNIGHT_EXCHANGE
         now = self._clock()
         try:
-            details = list(ib.reqContractDetails(routed) or [])
+            details = conn.contract_details(routed)
             if len(details) != 1:
                 raise ValueError(f"expected one contract detail, got {len(details)}")
             hours, zone = details[0].tradingHours, details[0].timeZoneId
@@ -1209,11 +1164,11 @@ class ManualOrderService:
         return routed
 
     @staticmethod
-    def _qualify_contract(ib, symbol: str):
+    def _qualify_contract(conn, symbol: str):
         from symbol_contract import canonical_symbol, ib_stock
 
         requested = ib_stock(symbol)
-        contracts = list(ib.qualifyContracts(requested) or [])
+        contracts = conn.qualify(requested)
         if len(contracts) != 1:
             raise ManualOrderError(f"IB 無法唯一確認 {symbol} 的美股/ETF 合約")
         contract = contracts[0]
@@ -1238,29 +1193,29 @@ class ManualOrderService:
 
     # ── IB sync ─────────────────────────────────────────────────────────────
 
-    def _sync_trades(self, ib, ctx) -> list:
+    def _sync_trades(self, conn, ctx) -> list:
         # IB connect() synchronizes this client's live trades. Use that cache:
         # ib_insync documents reqOpenOrders() as capable of returning stale
         # orders, which could otherwise keep a completed ticker locked.
-        open_trades = list(ib.openTrades() or [])
+        open_trades = conn.open_orders()
         trades = list(open_trades)
         completed_status: dict[str, str] = {}
         try:
-            completed, completed_status = _completed_trades_with_status(ib)
+            completed, completed_status = conn.completed_orders()
             trades.extend(completed)
         except Exception:
             # Open orders remain queryable even on older TWS API versions.
             pass
         fills = []
         try:
-            fills.extend(ib.fills() or [])
+            fills.extend(conn.fills())
         except Exception:
             pass
         try:
             # A reconnect does not necessarily replay executions into fills().
             # Request today's execution records so completed orders whose
             # orderStatus has zeroed fill fields can still be reported.
-            fills.extend(ib.reqExecutions() or [])
+            fills.extend(conn.executions())
         except Exception:
             log.debug("Manual order execution query unavailable", exc_info=True)
         unique_fills = {}
@@ -1414,11 +1369,11 @@ class ManualOrderService:
                 "讀不到帳戶權益（IB NetLiquidation USD），無法用權益百分比下單") from exc
 
     @staticmethod
-    def _position(ib, ctx, contract) -> float:
+    def _position(conn, ctx, contract) -> float:
         """Read this Account's synchronized IB position for the qualified contract."""
         total = 0.0
         try:
-            positions = ib.positions(ctx.account)
+            positions = conn.position_records()
         except Exception as exc:
             raise ManualOrderError(f"無法取得 {ctx.name} 最新持倉，已阻擋委託：{exc}") from exc
         for position in positions:
@@ -1463,7 +1418,7 @@ class ManualOrderService:
 
     def _build_preview(self, account: str, symbol: str, quantity: int | None,
                        price: float | None, action: str, allow_short: bool,
-                       ctx, ib, amount_usd: Decimal | None = None,
+                       ctx, conn, amount_usd: Decimal | None = None,
                        order_type: str = "LMT", session: str = "REGULAR",
                        check_price: bool = False,
                        ) -> tuple[ManualOrderPreview, object]:
@@ -1475,19 +1430,19 @@ class ManualOrderService:
             raise ManualOrderError(
                 f"{symbol} 屬於 SR、Skew LS 或 SP500 歷史策略 Universe，不能手動下單"
             )
-        contract, primary_exchange = self._qualify_contract(ib, symbol)
+        contract, primary_exchange = self._qualify_contract(conn, symbol)
         if extended_now is not None:
-            self._require_extended_contract_hours(ib, contract, extended_now)
+            self._require_extended_contract_hours(conn, contract, extended_now)
         # Closes come from the SMART listing, also for OVERNIGHT-routed orders.
         listing = contract
         if session == "OVERNIGHT":
-            contract = self._overnight_contract(ib, contract)
+            contract = self._overnight_contract(conn, contract)
         quote = None
         conversion_price = None
         if order_type == "MKT":
             self._require_regular_session()
             if amount_usd is not None:
-                quote = self._market_quote(ib, contract, action)
+                quote = self._market_quote(conn, contract, action)
                 conversion_price = quote.price
                 try:
                     quantity = whole_share_quantity(
@@ -1498,12 +1453,12 @@ class ManualOrderService:
                         "美元金額依 IB 即時報價換算後不足一股；請改用明確股數"
                     ) from exc
         assert quantity is not None
-        open_trades = self._sync_trades(ib, ctx)
+        open_trades = self._sync_trades(conn, ctx)
         self._assert_no_duplicate(account, ctx, symbol, open_trades)
-        current = self._position(ib, ctx, contract)
+        current = self._position(conn, ctx, contract)
         projected = self._project_position(action, quantity, current, allow_short)
         price_checked = check_price and order_type == "LMT"
-        prior = self._prior_close(ib, listing) if price_checked else None
+        prior = self._prior_close(conn, listing) if price_checked else None
         preview = ManualOrderPreview(
             account_name=account, account_id=ctx.account, symbol=symbol,
             quantity=quantity, limit_price=price, tif="DAY",
@@ -1553,9 +1508,9 @@ class ManualOrderService:
             raise ManualOrderError("請選擇有效委託類型與價格")
         if action not in {"BUY", "SELL", "COVER"} or not isinstance(allow_short, bool):
             raise ManualOrderError("請選擇有效方向與放空設定")
-        with self._connected_ib(account) as (ctx, ib):
+        with self._connection(account) as (ctx, conn):
             preview, _contract = self._build_preview(
-                account, symbol, quantity, price, action, allow_short, ctx, ib,
+                account, symbol, quantity, price, action, allow_short, ctx, conn,
                 amount, order_type, session, check_price=True,
             )
             return preview
@@ -1603,10 +1558,10 @@ class ManualOrderService:
                 or preview.action not in {"BUY", "SELL", "COVER"}
                 or not isinstance(preview.allow_short, bool)):
             raise ManualOrderError("委託預覽已變更，請重新預覽")
-        with self._connected_ib(account) as (ctx, ib):
+        with self._connection(account) as (ctx, conn):
             fresh, contract = self._build_preview(
                 account, symbol, quantity, price, preview.action,
-                preview.allow_short, ctx, ib, amount, preview.order_type,
+                preview.allow_short, ctx, conn, amount, preview.order_type,
                 preview.session,
             )
             if fresh != preview:
@@ -1618,7 +1573,7 @@ class ManualOrderService:
                 self._require_extended_session(preview.session)
             # Resolve the event before creating the durable row, so a missing
             # IB hook cannot leave an unsent order locked as SENDING.
-            error_event = ib.errorEvent if preview.outside_rth else None
+            error_event = conn.error_event if preview.outside_rth else None
             outside_rth_ignored = []
 
             order_ref = (
@@ -1654,7 +1609,7 @@ class ManualOrderService:
             trade = None
             acknowledged = confirmed = False
             try:
-                trade = ib.placeOrder(contract, order)
+                trade = conn.place(contract, order)
                 self.store.update(
                     order_ref, status="SENT", status_message=STATUS_LABELS["SENT"],
                     broker_order_id=getattr(order, "orderId", None),
@@ -1663,14 +1618,14 @@ class ManualOrderService:
                 if preview.outside_rth:
                     # Listen for 2109 until IB answers, then through the
                     # confirmation window on this same connection.
-                    acknowledged = _await_ib_acknowledgement(ib, trade)
+                    acknowledged = _await_ib_acknowledgement(conn, trade)
                     if acknowledged and not outside_rth_ignored:
                         confirmed = _outside_rth_confirmation_window(
-                            ib, trade, outside_rth_ignored,
+                            conn, trade, outside_rth_ignored,
                         )
                 else:
                     # Allow immediate IB status/error callbacks to reach ib_insync.
-                    ib.sleep(1.0)
+                    conn.wait(1.0)
                 status, message, filled, avg_price = status_from_trade(trade)
                 if status:
                     self.store.update(
@@ -1694,11 +1649,11 @@ class ManualOrderService:
                 # Fail closed: an extended-hours order IB may be running as a
                 # regular-session order is cancelled, never left working.
                 if outside_rth_ignored:
-                    self._force_cancel(ib, trade, order_ref, _OUTSIDE_RTH_IGNORED_REASON)
+                    self._force_cancel(conn, trade, order_ref, _OUTSIDE_RTH_IGNORED_REASON)
                 elif not acknowledged:
-                    self._force_cancel(ib, trade, order_ref, _UNACKNOWLEDGED_REASON)
+                    self._force_cancel(conn, trade, order_ref, _UNACKNOWLEDGED_REASON)
                 elif not confirmed:
-                    self._force_cancel(ib, trade, order_ref, _UNCONFIRMED_REASON)
+                    self._force_cancel(conn, trade, order_ref, _UNCONFIRMED_REASON)
                 else:
                     self.store.update(order_ref, outside_rth_confirmed_at=_utc_now())
         result = self.store.get(order_ref)
@@ -1709,7 +1664,7 @@ class ManualOrderService:
         self._dispatch_terminal_notifications()
         return result
 
-    def _force_cancel(self, ib, trade, order_ref: str, reason: str) -> None:
+    def _force_cancel(self, conn, trade, order_ref: str, reason: str) -> None:
         """Cancel an extended-hours order IB may run as a regular-session order.
 
         The reason is persisted so reconciliation keeps re-sending the cancel
@@ -1724,8 +1679,8 @@ class ManualOrderService:
             forced_cancel_reason=reason,
         )
         try:
-            ib.cancelOrder(trade.order)
-            ib.sleep(1.0)
+            conn.cancel(trade.order)
+            conn.wait(1.0)
         except Exception as exc:
             self.store.update(
                 order_ref, status="CANCEL_UNKNOWN",
@@ -1744,7 +1699,7 @@ class ManualOrderService:
                 filled_quantity=filled, avg_fill_price=avg_price,
             )
 
-    def _enforce_session_routing(self, ib, ctx, open_trades) -> None:
+    def _enforce_session_routing(self, conn, ctx, open_trades) -> None:
         """Force-cancel manual orders IB may run outside their chosen session.
 
         Runs on a fresh connection, where open_trades carry IB's own record
@@ -1778,7 +1733,7 @@ class ManualOrderService:
             if reason and not row.get("forced_cancel_reason"):
                 self.store.update(row["order_ref"], forced_cancel_reason=reason)
             if reason and trade is not None and _ib_order_status(trade) in IB_WORKING_STATUSES:
-                self._force_cancel(ib, trade, row["order_ref"], reason)
+                self._force_cancel(conn, trade, row["order_ref"], reason)
 
     # ── Cancel, status refresh and listing ──────────────────────────────────
 
@@ -1806,12 +1761,12 @@ class ManualOrderService:
                 status_message=STATUS_LABELS["CANCEL_PENDING"],
             ) or row
             try:
-                with self._connected_ib(account) as (ctx, ib):
+                with self._connection(account) as (ctx, conn):
                     if row["account_id"] != ctx.account:
                         raise ManualOrderError(
                             "委託所屬 Account 與目前設定不符；已阻擋取消"
                         )
-                    open_trades = self._sync_trades(ib, ctx)
+                    open_trades = self._sync_trades(conn, ctx)
                     row = self.store.get(order_ref) or row
                     if row["status"] in TERMINAL_STATUSES:
                         result = row
@@ -1831,9 +1786,9 @@ class ManualOrderService:
                                 perm_id=getattr(trade.order, "permId", None),
                             ) or row
                             try:
-                                ib.cancelOrder(trade.order)
-                                ib.sleep(1.0)
-                                self._sync_trades(ib, ctx)
+                                conn.cancel(trade.order)
+                                conn.wait(1.0)
+                                self._sync_trades(conn, ctx)
                             except Exception as exc:
                                 pending = self.store.update(
                                     order_ref, status="CANCEL_UNKNOWN",
@@ -1860,9 +1815,9 @@ class ManualOrderService:
             errors = []
             for account in accounts:
                 try:
-                    with self._connected_ib(account) as (ctx, ib):
-                        open_trades = self._sync_trades(ib, ctx)
-                        self._enforce_session_routing(ib, ctx, open_trades)
+                    with self._connection(account) as (ctx, conn):
+                        open_trades = self._sync_trades(conn, ctx)
+                        self._enforce_session_routing(conn, ctx, open_trades)
                 except Exception as exc:
                     errors.append(f"{account}：{exc}")
                     for row in self.store.list_active(account):

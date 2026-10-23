@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 
 from data.trading_calendar import mc
-from strategies.sp500_momentum.utils import historical_alias, stock_csv_path
+from data.market_data import csv_path as stock_csv_path, historical_alias
 
 
 def read_input(path: Path, sources: list[dict]) -> bytes:

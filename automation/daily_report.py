@@ -78,6 +78,7 @@ def mark_at_reference_close(conn, symbols):
         else:
             missing.append(s)
     if missing:
+        log.info(f"  沒有本地收盤，改用 IB 參考價：{', '.join(missing)}")
         ib_prices = conn.prices(missing)
         for s in missing:
             marks[s] = ib_prices.get(s, 0)

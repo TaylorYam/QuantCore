@@ -15,7 +15,7 @@ _Avoid_: Model, Signal generator, Engine
 
 **Constituents**:
 某個 [[Strategy]] 在指定日期可交易的 ticker 集合（時間函數）。[[SP500]] 的 constituents 隨 S&P index rebalance 變動；[[SR]] / [[Skew LS]] 的 constituents 固定為各自的 sector ETF 清單。Strategy 的訊號產生器只能從當日 constituents 裡選股。
-代碼寫法：constituents 用 S&P 寫法（類股 `BRK.B`），行情檔用 provider 寫法（`BRK-B.csv`）；一般情況只做格式轉換（`strategies/sp500_momentum/utils.provider_symbol`），改名、合併、代碼重用不自動推論。#56 的 `data/historical_aliases.json` 是唯一例外：其中明列的 8 組歷史身份，只有在 inclusive session 日期界限內，才由 reader 與 coverage audit 共用 resolver 對應到 successor provider 檔；界限外仍不對應，跨股別（例如 DISCK）也不對應。下單用的 broker 代碼是另一套寫法，不在此資料契約內：IB 類股由 `automation/symbol_contract.py` 將 `BRK.B`／`BF.B` 轉成 `BRK B`／`BF B`，IB 回傳後再正規化回 constituents symbol；其他代碼維持原值。
+代碼寫法：constituents 用 S&P 寫法（類股 `BRK.B`），行情檔用 provider 寫法（`BRK-B.csv`）；一般情況只做格式轉換（`data/market_data.provider_symbol`），改名、合併、代碼重用不自動推論。#56 的 `data/historical_aliases.json` 是唯一例外：其中明列的 8 組歷史身份，只有在 inclusive session 日期界限內，才由 reader 與 coverage audit 共用 resolver 對應到 successor provider 檔；界限外仍不對應，跨股別（例如 DISCK）也不對應。本地行情 CSV 的讀取（根目錄、檔名、別名、排序去重、`Close`／`Adj Close`、缺檔與壞檔的 log）只在 `data/market_data.py`（#229）：策略的 data loader、SP500 選股、參考價的 CSV 後備、預演都是它的 caller，缺檔時 raise 或改用 IB 由各 caller 決定。下單用的 broker 代碼是另一套寫法，不在此資料契約內：IB 類股由 `automation/symbol_contract.py` 將 `BRK.B`／`BF.B` 轉成 `BRK B`／`BF B`，IB 回傳後再正規化回 constituents symbol；其他代碼維持原值。
 _Avoid_: Tradeable list, Selection pool, Ticker pool
 
 **Universe**:
@@ -148,7 +148,7 @@ _Avoid_: 每日報告的「帳戶快照」（那是 04:40 寫進 Excel 的 NAV�
 
 **Broker（券商連線層）**:
 QuantCore 跟 IB 打交道的那一層：送單、查成交、查持倉與權益。畫面上使用者操作的單（手動單、Sync Pos、交給策略接管）屬於 Panel 的 Trading；真正把單送進 IB、回報成交的是 Broker。
-實作在 `automation/broker.py`（#185）：依帳戶＋用途開連線（clientId 的分配規則只在這裡，不認得的帳戶名稱直接報錯），一條連線上讀權益、持倉、報價、今日委託與成交，送單、撤單、斷線。Panel 的三條送單路徑與 Portfolio、21:00 調倉、16:00 日度風控、04:40 每日報告、21:31 成交回報都向它要連線。Gateway 心跳是長駐的值班連線，不讀數不送單，仍自己連。測試用 `automation/tests/fake_broker.py` 的 in-memory Broker。
+實作在 `automation/broker.py`（#185）：依帳戶＋用途開連線（clientId 的分配規則只在這裡，不認得的帳戶名稱直接報錯），一條連線上讀權益、持倉、報價、今日委託與成交，送單、撤單、斷線；手動單另用的合約細節、已完成委託、日線收盤、錯誤事件與嚴格即時報價也在這條連線上（#228），手動單不再拿 ib_insync 本體。Panel 的三條送單路徑與 Portfolio、21:00 調倉、16:00 日度風控、04:40 每日報告、21:31 成交回報都向它要連線。Gateway 心跳是長駐的值班連線，不讀數不送單，仍自己連。測試用 `automation/tests/fake_broker.py` 的 in-memory Broker。
 讀數與限價各只有一份：權益只讀所選帳戶的 NetLiquidation（USD），cushion、excess liquidity 也只讀所選帳戶，讀不到就報錯（不回傳 0、不拿別的帳戶的數字）；參考價（算股數、Portfolio、每日報告標價）走本連線 → 報價 feed port → 延遲報價 → 本地 CSV；送單時的買賣報價把 bid > ask 當成沒有報價；限價一律買 ask×1.003、賣 bid×0.997，缺價依序 mid → last → close → 參考價；手動單的即時報價刻意較嚴，另一份。21:00 以 MOO 下單時不帶限價，交易紀錄的預估價記算股數用的參考價。
 Broker 是純 IB 介面；把一批策略單送進 IB 的程序（閘門、撤舊單、先賣後買、成交彙整）見 [[策略單送出]]。
 _Avoid_: Execution（與 [[執行盤 (Execution Session)]] 撞名）、Orders（架構圖上同時指畫面的單與送單層，見下方 Flagged ambiguities）

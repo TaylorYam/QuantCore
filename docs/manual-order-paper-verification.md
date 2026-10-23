@@ -12,8 +12,8 @@
 ## 安全界線（先讀）
 
 - **只連 paper Gateway。** 腳本連上後會檢查 Gateway 管理的帳號。只要有任何一個不是 `DU`／`DF` 開頭（live 帳號是 `U` 開頭），就立刻斷線並拒絕執行，連錯 port 也不會下到 live。
-- **不讀也不改** `accounts.json`／`config.json`。host、port、帳號、clientId 全部從命令列給。
-- **不發 Telegram。** 通知只印在畫面上。通知標題顯示「Taylor」只是服務要求的標籤，實際送往的是你給的 paper 帳號。
+- **不改** `accounts.json`／`config.json`，也不從裡面讀連線資料：host、port、帳號、clientId 全部從命令列給。服務要求一個紀錄用的標籤：`--label` 沒給時用 `accounts.json` 裡第一個可以手動下單的 Account 名稱，沒有 `accounts.json`（例如 PR 的 worktree）就是 `paper`（#228）。
+- **不發 Telegram。** 通知只印在畫面上。通知標題顯示的名稱只是上面那個標籤，實際送往的是你給的 paper 帳號。
 - **不碰 live 的委託紀錄。** 使用獨立的 store：`%TEMP%\quantcore_manual_orders_paper.sqlite3`。
 - 所有輸出也會附加寫入 `%TEMP%\quantcore_manual_orders_paper.log`（UTF-8）。跑完告訴我，我直接讀這個檔。
 - 在 PR 的 worktree 執行，**不要**在 `C:\QuantCore-master` 執行。

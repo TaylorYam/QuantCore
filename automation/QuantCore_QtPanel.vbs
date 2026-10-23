@@ -30,4 +30,5 @@ If pyExe = "" Then
     pyExe = "pythonw.exe"
 End If
 
-WshShell.Run """" & pyExe & """ ""run_with_sqlite_backend.py"" --script ""qt_panel_app.py""", 0, False
+' 交易紀錄後端由 config.json 的 log_backend 決定（#230），不再經 run_with_sqlite_backend.py
+WshShell.Run """" & pyExe & """ ""qt_panel_app.py""", 0, False

@@ -3,11 +3,10 @@ Sector Rotation MOM — 參數設定
 所有可調參數集中在此，其他模組從這裡 import。
 """
 
-from pathlib import Path
+from data.market_data import data_root
 
-# ── 資料路徑 ──────────────────────────────────────────────────
-_ROOT    = Path(__file__).resolve().parent.parent.parent
-DATA_DIR = _ROOT / "data" / "etfs"
+# ── 資料路徑（根目錄只有 data_root() 一份，#229）────────────────
+DATA_DIR = data_root() / "etfs"
 
 # ── 板塊 ETF 清單 ─────────────────────────────────────────────
 SECTOR_TICKERS = [

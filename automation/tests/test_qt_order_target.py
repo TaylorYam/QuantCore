@@ -3,7 +3,7 @@
 只從送單目標的 interface 操作（手動單 service、Sync Pos 的計算／通知／送出、接管的
 暫停／預覽／送出／通知），跑真的 manual_orders、sync_position、
 strategy_takeover、manual_attribution；IB 換成 tests/fake_broker.py 的 in-memory
-Broker（手動單用 ib_insync 本體，改接真的 broker.Broker＋test_manual_orders 的假 IB）、
+Broker（手動單也用它，#228）、
 訊號換成固定值、紀錄檔放 tmp_path、Telegram 用假的。不需要 QApplication。
 
 斷言看得到的結果：連到哪個 host／port／clientId、哪份紀錄檔多了資料、state 有沒有
@@ -19,10 +19,9 @@ import pandas as pd
 import pytest
 
 from tests.fake_broker import FakeBroker
-from tests.test_manual_orders import FakeIB, FakeIBState, fake_ib_connect
+from tests.test_manual_orders import manual_broker
 
 from account_utils import ROLE_MANUAL_ORDER, ROLE_REBALANCE, ROLE_TAKEOVER
-from broker import Broker
 from manual_orders import ManualOrderService, ManualOrderStore
 from qt_panel.order_target import OrderFiles, OrderTarget
 
@@ -183,7 +182,7 @@ def _service_factory(**kw):
 
 
 def _ib(account):
-    state = FakeIBState()
+    state = manual_broker()
     state.managed = [account]
     state.positions_by_account = {account: {}}
     state.net_liquidation = {account: "20000"}
@@ -194,10 +193,10 @@ def _ib(account):
 def _cancel_and_close(service, state):
     """送出一張單、撤單，IB 回報已取消後對帳一次：結案通知就在這時發。"""
     order = service.submit(service.preview("Taylor", "AAPL", 5, 100.0))
-    [trade] = state.placed[-1:]
+    [trade] = state.trades[-1:]
     state.cancel_status = "Cancelled"
     service.cancel(order["order_ref"])
-    state.open_trades.remove(trade)
+    state.open_orders.remove(trade)
     state.completed_trades.append(trade)
     service.refresh_status()
     return trade
@@ -208,12 +207,13 @@ def test_live_manual_orders_keep_the_identity_store_and_telegram(
     ib = _ib("U001")
     # 先前（例如切換前的 Tk Panel）送出的單：同一個實盤紀錄檔、同一個 clientId role
     tk = _service_factory(store=ManualOrderStore(live_files.orders),
-                          connect=fake_ib_connect(ib), account_ctx_factory=live_ctx,
+                          connect=lambda ctx: ib.connect(ctx, timeout=10),
+                          account_ctx_factory=live_ctx,
                           notifier=lambda *a: True)
     tk_order = tk.submit(tk.preview("Taylor", "ZZZZ", 4, 100.0))
-    tk_trade = ib.open_trades.pop()
+    tk_trade = ib.open_orders.pop()
 
-    target = make_target(Broker(lambda: FakeIB(ib)), live_files=live_files)
+    target = make_target(ib, live_files=live_files)
     service = target.manual_order_service(NAMES, _service_factory)
     assert service.store.path == live_files.orders
     trade = _cancel_and_close(service, ib)
@@ -228,7 +228,7 @@ def test_live_manual_orders_keep_the_identity_store_and_telegram(
     tk_trade.orderStatus.filled = 4
     tk_trade.orderStatus.avgFillPrice = 99.0
     ib.completed_trades.append(tk_trade)
-    ib.fills.append(NS(contract=tk_trade.contract, execution=NS(
+    ib.session_fills.append(NS(contract=tk_trade.contract, execution=NS(
         acctNumber="U001", permId=tk_trade.order.permId, orderId=tk_trade.order.orderId,
         clientId=20 + ROLE_MANUAL_ORDER, shares=4.0, price=99.0, execId="tk-fill",
         orderRef=tk_order["order_ref"])))

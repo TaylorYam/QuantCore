@@ -6,11 +6,10 @@ Sector Skew LS — 參數設定
 Sharpe ~1.3 / MDD ~-8%），只調整 DATA_DIR 指向 QCORE 的 data/etfs/。
 """
 
-from pathlib import Path
+from data.market_data import data_root
 
-# ── 資料路徑（與 strategies/sector_rotation 對齊）─────────────────────────
-_ROOT    = Path(__file__).resolve().parent.parent.parent
-DATA_DIR = _ROOT / "data" / "etfs"
+# ── 資料路徑（根目錄只有 data_root() 一份，#229）─────────────────────────
+DATA_DIR = data_root() / "etfs"
 
 # ── Universe ──────────────────────────────────────────────────────────────
 # 11 SPDR 板塊 ETF

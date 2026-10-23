@@ -7,14 +7,20 @@ QuantCore Automation — Excel 日誌記錄
 
 from pathlib import Path
 from datetime import datetime, date
+import json
+import logging
 import os
 from uuid import uuid4
 import pandas as pd
+
+log = logging.getLogger(__name__)
 
 BASE_DIR       = Path(__file__).parent
 PORTFOLIO_FILE = BASE_DIR / 'portfolio_tracker.xlsx'
 TRADE_FILE     = BASE_DIR / 'trade_log.xlsx'
 SQLITE_FILE    = BASE_DIR / 'quantcore_logs.sqlite3'
+CONFIG_FILE    = BASE_DIR / 'config.json'      # 後端設定 log_backend（#230）
+BACKEND_ENV    = 'QUANTCORE_LOG_BACKEND'       # 過渡期覆寫 config.json
 PORT_SHEET     = 'Daily'
 TRADE_SHEET    = 'Trades'
 
@@ -98,14 +104,49 @@ def _append_excel(filepath: Path, sheet: str, rows: list) -> None:
                             header=False, startrow=len(existing) + 1)
 
 
-def _log_backend() -> str:
-    """Return the explicitly selected log backend.
+_announced: set[tuple[str, str]] = set()        # 已寫過 log 的 (後端, 來源)
 
-    Excel remains the default for an unchanged deployment.  The SQLite
-    backend is enabled only by setting ``QUANTCORE_LOG_BACKEND=sqlite`` after
-    the staged store, characterization and rollback checks are approved.
+
+def _log_backend() -> str:
+    """交易紀錄寫去哪個後端（`excel`／`sqlite`），只在一處決定（#230）。
+
+    依序：環境變數 QUANTCORE_LOG_BACKEND（過渡期覆寫，live 既有的 wrapper 排程動作
+    不壞）→ config.json 的 `log_backend` → 預設 excel。Panel 與排程都讀同一份
+    config.json；每個行程第一次用到（或後端改變）時寫 log 說明後端與來源。
     """
-    return os.getenv('QUANTCORE_LOG_BACKEND', 'excel').strip().casefold() or 'excel'
+    backend, source = os.getenv(BACKEND_ENV, '').strip(), f'環境變數 {BACKEND_ENV}'
+    if not backend:
+        backend, source = _configured_backend(), 'config.json 的 log_backend'
+    if not backend:
+        backend, source = 'excel', '預設'
+    backend = backend.casefold()
+    if (backend, source) not in _announced:
+        _announced.add((backend, source))
+        log.info(f'交易紀錄後端：{backend}（{source}）')
+    return backend
+
+
+def _configured_backend() -> str:
+    """config.json 的 `log_backend`；沒有檔或沒有欄位回空字串。
+
+    檔案在但讀不懂（不是 JSON、不是物件、欄位不是字串）就報錯並說明原因：
+    猜一個後端寫下去，比寫不進去更難收拾。
+    """
+    if not CONFIG_FILE.exists():
+        return ''
+    try:
+        with open(CONFIG_FILE, encoding='utf-8') as f:
+            cfg = json.load(f)
+    except (OSError, ValueError) as e:
+        raise ValueError(f'{CONFIG_FILE} 讀不到，無法決定交易紀錄後端：{e}') from e
+    if not isinstance(cfg, dict):
+        raise ValueError(f'{CONFIG_FILE} 不是 JSON 物件，無法決定交易紀錄後端')
+    value = cfg.get('log_backend')
+    if value is None:
+        return ''
+    if not isinstance(value, str):
+        raise ValueError(f'{CONFIG_FILE} 的 log_backend 要是 "excel" 或 "sqlite"，不是 {value!r}')
+    return value.strip()
 
 
 def _ensure_sqlite_store():
@@ -133,7 +174,8 @@ def _append_rows(sheet: str, rows: list, identities: list[str]) -> None:
                       sheet, rows)
         return
     if backend != 'sqlite':
-        raise ValueError(f'unsupported QUANTCORE_LOG_BACKEND: {backend!r}')
+        raise ValueError(f'unsupported log backend: {backend!r}（config.json 的 log_backend '
+                         f'或 {BACKEND_ENV} 只能是 excel／sqlite）')
 
     sqlite_store = _ensure_sqlite_store()
     frame = pd.DataFrame(rows)

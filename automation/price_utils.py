@@ -2,7 +2,7 @@
 QuantCore — 參考價的兩個基本零件
 
 - `ticker_price`：從一個 IB ticker 取有效價格（mid／last／close／延遲）。
-- `load_csv_close`：本地 CSV 最後收盤價。
+- `load_csv_close`：本地 CSV 最後收盤價（讀法在 `data/market_data`）。
 
 參考價的多層 fallback（本連線即時 → 報價 feed port → 延遲報價 → 本地 CSV）在
 `broker.Connection.prices`（#185）。
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-# load_csv_close 要 import repo 根目錄的 strategies 套件；排程從 automation/ 啟動時
+# load_csv_close 要 import repo 根目錄的 data 套件；排程從 automation/ 啟動時
 # sys.path 沒有根目錄，不能靠呼叫端剛好先 import 了誰（#217）
 _ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(_ROOT_DIR) not in sys.path:
@@ -44,26 +44,11 @@ def ticker_price(t) -> float:
 
 
 def load_csv_close(symbol: str) -> float:
-    """從本地 CSV 取最後一筆收盤價；沒有這檔的 CSV 回傳 0（呼叫端回退 IB）。
-    讀檔出錯也回傳 0，但寫 warning（#217：以前靜默回 0，整個帳戶改用 IB 報價沒人發現）。"""
-    try:
-        import pandas as pd
-        from strategies.sp500_momentum import config as sp_cfg
-        from strategies.sp500_momentum.utils import stock_csv_path
+    """本地 CSV 最後一筆收盤；沒有檔、檔不能用或價格無效回傳 0（呼叫端回退 IB）。
 
-        # ETF filenames are already their canonical symbols.  Stock files use
-        # the provider naming contract (BRK.B -> BRK-B), including the class
-        # shares opened by issue #52.
-        paths = (
-            sp_cfg.ETF_DIR / f"{symbol}.csv",
-            stock_csv_path(sp_cfg.STOCK_DIR, symbol),
-        )
-        for f in paths:
-            if f.exists():
-                df = pd.read_csv(f, index_col=0, parse_dates=True)
-                c = float(df['Close'].dropna().iloc[-1])
-                if _ok(c):
-                    return c
-    except Exception as e:
-        log.warning(f"CSV close unavailable for {symbol}: {type(e).__name__}: {e}")
-    return 0.0
+    讀法、檔名與缺檔／壞檔的 log 在 data/market_data（#229）；#217 起讀不到不再靜默。
+    """
+    from data import market_data
+
+    c = market_data.last_close(symbol)
+    return float(c) if c is not None and _ok(c) else 0.0

@@ -147,6 +147,21 @@ def _manual_attribution_outside_live(tmp_path_factory):
         yield
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _log_backend_not_from_live_config(tmp_path_factory):
+    """交易紀錄後端（#230）整個測試階段都不讀 live 的 config.json、不吃外面的環境變數。
+
+    live 機器的 config.json 有 `"log_backend": "sqlite"`：沒指定後端的測試會在這台
+    走 SQLite、在 CI 走 Excel。要測後端選擇的測試自己設 CONFIG_FILE／環境變數。
+    """
+    import excel_logger
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(excel_logger, "CONFIG_FILE",
+                   tmp_path_factory.mktemp("log_backend") / "config.json")
+        mp.delenv(excel_logger.BACKEND_ENV, raising=False)
+        yield
+
+
 @pytest.fixture
 def run_status_dir(tmp_path, monkeypatch):
     """需要乾淨紀錄目錄的測試用（每個測試各自一份，還沒建立）。"""

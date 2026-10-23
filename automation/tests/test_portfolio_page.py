@@ -132,7 +132,11 @@ def _settle_snapshots(timers, changes, rounds=1):
 
 
 def _drain_extras(main, source):
-    wait_for(lambda: main.run() or not source.extras_loading())
+    """跑主執行緒直到這一輪讀完（讀完的通知排在所有讀數之後）。"""
+    def done():
+        main.run()
+        return not source.extras_loading()
+    wait_for(done)
 
 
 def _extras(changes):
@@ -282,6 +286,71 @@ def test_snapshots_follow_the_market_hours_schedule(world):
     timers.armed.remove(hour[0])
     hour[0][1]()                                                  # 時段到了
     wait_for(lambda: sorted(c[1] for c in reads.calls if c[0] == SNAPSHOT) == sorted(NAMES))
+
+
+def _fire_slot(timers):
+    """觸發排好的時段計時器（一小時那個）。"""
+    slot = next(h for h in timers.armed if h[0] == 3_600_000)
+    timers.armed.remove(slot)
+    slot[1]()
+
+
+def test_other_readings_are_read_again_at_each_scheduled_slot(world):
+    """Panel 開著跨日：排程時段到時權益紀錄等也重讀，跟按「重新讀取 IB」一樣（#241）。"""
+    reads, main, timers, source, changes, logs = world
+    source.start()
+    _drain_extras(main, source)
+    for _ in range(2):
+        reads.calls.clear()
+        changes.clear()
+        _fire_slot(timers)
+        _drain_extras(main, source)
+        assert [c for c in reads.calls if c[0] != SNAPSHOT] == [
+            (PARAMS, "Taylor"), (PARAMS, "Rosa"),
+            (TRADES, "Taylor", (0.0, 1.0)), (TRADES, "Rosa", (0.5, 0.2)),
+            (EQUITY, "Taylor"), (EQUITY, "Rosa"),
+            (FLOWS, "Taylor"), (FLOWS, "Rosa"),
+        ]
+        assert _extras(changes) == [(k, n) for k in pp.EXTRA_ORDER for n in NAMES]
+
+
+def test_a_slot_while_the_last_pass_is_still_reading_starts_no_second_pass():
+    release = threading.Event()
+    flow_calls = []
+
+    def flows(name):
+        flow_calls.append(name)
+        assert release.wait(3)                                    # 出入金下載很慢
+        return Flows()
+
+    reads, main, timers, source, changes, logs = make_world(flows=flows)
+    source.start()
+    _fire_slot(timers)                                            # 開啟時那一輪還沒讀完
+    release.set()
+    _drain_extras(main, source)
+    assert flow_calls == list(NAMES)
+    source.stop()
+
+
+def test_a_late_slot_reads_nothing():
+    """電腦睡眠醒來、時段晚到超過 5 分鐘：快照與其他讀數都略過這一輪，只排下一個時段。"""
+    clock = {"now": datetime(2026, 10, 22, 10, 0)}
+    reads, main, timers = Reads(), Main(), Timers()
+    source = PortfolioPageSource(
+        NAMES, reads.fetchers(), schedule=timers.schedule, cancel=timers.cancel,
+        post=main.post, on_change=lambda c: None, log=lambda s: None,
+        next_refresh_time=lambda now: now + timedelta(hours=1), now=lambda: clock["now"])
+    source.start()
+    _drain_extras(main, source)
+    wait_for(lambda: sorted(c[1] for c in reads.calls if c[0] == SNAPSHOT) == sorted(NAMES))
+    reads.calls.clear()
+    clock["now"] = datetime(2026, 10, 22, 11, 6)                  # 11:00 的時段晚了 6 分鐘
+    _fire_slot(timers)
+    threading.Event().wait(0.05)
+    main.run()
+    assert reads.calls == [] and not source.extras_loading()
+    assert any(h[0] == 3_600_000 for h in timers.armed)           # 下一個時段照排
+    source.stop()
 
 
 def test_the_page_rules_do_not_need_qt():

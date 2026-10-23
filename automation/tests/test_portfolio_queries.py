@@ -228,6 +228,34 @@ def test_late_timer_skips_refresh():
     loop.stop()
 
 
+def test_on_scheduled_refresh_runs_only_after_on_time_slots():
+    """Startup and manual refreshes do not call it; an on-time slot does; a late slot does not."""
+    from types import SimpleNamespace
+    t0 = _et(2026, 9, 14, 9, 0)
+    slots = [_et(2026, 9, 14, 9, 30), _et(2026, 9, 14, 10, 0), _et(2026, 9, 14, 11, 0)]
+    scheduler = Scheduler(t0)
+    calls, extra = [], []
+    queries = SimpleNamespace(
+        refresh=lambda **kw: calls.append(kw["source"]),
+        drain_changes=lambda: {}, close=lambda: None)
+    loop = PortfolioRefreshLoop(
+        queries, scheduler.schedule, scheduler.cancel, lambda *_: None,
+        next_refresh_time=_fixed_schedule(*slots), now=scheduler.now,
+        on_scheduled_refresh=lambda: extra.append((calls[-1], scheduler.now())))
+    loop.start()
+    loop.refresh()
+    assert calls == ["auto", "manual"] and extra == []
+    scheduler.advance_to(_et(2026, 9, 14, 9, 30))
+    assert extra == [("auto", slots[0])]                          # after the slot's own refresh
+    scheduler.now_dt = _et(2026, 9, 14, 10, 6)                    # 10:00 fires 6 min late
+    for key, (when, fn) in list(scheduler.jobs.items()):
+        if when == slots[1]:
+            del scheduler.jobs[key]
+            fn()
+    assert len(extra) == 1
+    loop.stop()
+
+
 def test_late_timer_within_threshold_still_fires():
     """Timer fires 2 min late → within threshold → refresh happens."""
     from types import SimpleNamespace

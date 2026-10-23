@@ -130,6 +130,15 @@ def _run_status_outside_live_logs(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True, scope="session")
+def _data_trust_outside_live_logs(tmp_path_factory):
+    """04:30 資料可信度結論（#235）整個測試階段都寫到暫存目錄，不進 automation/logs。"""
+    from data import data_trust
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(data_trust, "CONCLUSION_DIR", tmp_path_factory.mktemp("data_trust"))
+        yield
+
+
+@pytest.fixture(autouse=True, scope="session")
 def _manual_attribution_outside_live(tmp_path_factory):
     """手動持倉歸屬紀錄（#106）整個測試階段都指到暫存目錄。
 

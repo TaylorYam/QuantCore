@@ -43,6 +43,8 @@ class StrategySignal:
     weights: dict[str, float]
     signal_date: str                 # 'YYYY-MM-DD'
     state: Optional[dict] = None     # SP500：caller 決定要不要寫回 state 檔
+    # SP500：這次訊號用到、但資料不可信的檔（data.data_trust.Trust；#235，排名照跑）
+    data_problems: tuple = ()
 
 
 class StrategySource(Protocol):
@@ -116,8 +118,10 @@ class LiveSource:
         # Bridge：load state（per-account I/O 屬 automation 層，認得 Account）
         #   → 純策略函式（strategies/，不認得 Account）→ 新 state 交給 caller。
         state = load_state(account_name)
+        selector = self._selection()
+        selector.watch()            # 記這次訊號讀了哪些檔（#235）
         wgt, signal_date, new_state = get_latest_weights_live(
-            holdings, state, as_of_date=self.as_of, selector=self._selection())
+            holdings, state, as_of_date=self.as_of, selector=selector)
 
         sig_date_str = str(signal_date.date())
         log.info(f"SP500 signal date: {sig_date_str}  "
@@ -125,7 +129,11 @@ class LiveSource:
         if wgt:
             for sym, w in sorted(wgt.items(), key=lambda x: -x[1]):
                 log.info(f"  SP500 {sym}: {w*100:.1f}%")
-        return StrategySignal(wgt, sig_date_str, new_state)
+        problems = tuple(selector.data_problems(signal_date))
+        if problems:
+            log.warning(f"  SP500 data not trusted for {sig_date_str} ({len(problems)}): "
+                        + ", ".join(t.describe() for t in problems))
+        return StrategySignal(wgt, sig_date_str, new_state, problems)
 
     # ── Sector Skew LS ───────────────────────────────────────────────
 

@@ -390,7 +390,13 @@ def entry_point(fake_config, monkeypatch, tmp_path):
     fake_update = types.ModuleType("data.update_data")
     fake_update.update_etfs = lambda: None
     fake_update.update_stocks = lambda: None
+    fake_update.ALL_ETFS = []
     monkeypatch.setitem(sys.modules, "data.update_data", fake_update)
+    import signals                      # 04:30 資料可信度（#235）：測試沒有行情檔
+    from data import data_trust
+    monkeypatch.setattr(signals.LiveSource, "sp500_universe", lambda self, historical=True: set())
+    monkeypatch.setattr(data_trust, "conclude", lambda symbols, session: {
+        "schema": data_trust.SCHEMA, "session": str(session), "checked": 0, "problems": {}})
 
     saved_handlers, saved_level = logging.root.handlers[:], logging.root.level
 

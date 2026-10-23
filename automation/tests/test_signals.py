@@ -216,6 +216,12 @@ def _fake_sp500(monkeypatch, built):
         def __init__(self):
             built.append(self)
 
+        def watch(self):
+            pass
+
+        def data_problems(self, session):
+            return []
+
     def live(holdings, state, as_of_date=None, selector=None):
         seen.append((list(holdings), dict(state), as_of_date, selector))
         return {"AAPL": 1.0}, pd.Timestamp("2026-09-23"), dict(state, bull_weeks_counter=4)

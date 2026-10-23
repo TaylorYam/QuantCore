@@ -143,7 +143,7 @@ def test_sp500_selection_reads_and_logs_a_missing_file_once(tmp_path, monkeypatc
 
     monkeypatch.setattr(config, "STOCK_DIR", tmp_path)
     engine = SelectionEngine.__new__(SelectionEngine)
-    engine.data_cache, engine._unusable = {}, set()
+    engine.data_cache, engine._unusable = {}, {}
     reads = []
     monkeypatch.setattr(utils, "load_stock", lambda p: reads.append(p) or md.read_bars(p).frame)
     with caplog.at_level(logging.INFO, logger=md.log.name):
@@ -159,7 +159,7 @@ def test_sp500_selection_logs_bars_outside_the_alias_window(tmp_path, monkeypatc
     _write(tmp_path, "GAP", ["2023-01-03,1,1,1,9,9,1"])
     monkeypatch.setattr(config, "STOCK_DIR", tmp_path)
     engine = SelectionEngine.__new__(SelectionEngine)
-    engine.data_cache, engine._unusable = {}, set()
+    engine.data_cache, engine._unusable = {}, {}
     with caplog.at_level(logging.WARNING, logger=md.log.name):
         assert engine._get_ticker_data("GPS", as_of="2022-02-02") is None
     assert md.OUTSIDE_ALIAS in caplog.text and "GAP.csv" in caplog.text

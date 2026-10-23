@@ -72,7 +72,8 @@ def _patch_signals(monkeypatch, sr=None, universe=None, skewls=None):
             return set(universe or set())
 
         def _selection(self):            # 不讀成分股檔：純策略函式是假的
-            return None
+            from types import SimpleNamespace
+            return SimpleNamespace(watch=lambda: None, data_problems=lambda session: [])
 
     return Source()
 

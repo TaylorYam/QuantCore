@@ -103,6 +103,10 @@ _Avoid_: 前一日, Previous bar
 [[SP500]] 每個交易日盤前跑一次的檢查。原含停損 / 跳空出場 / 熊市 dip-buy，但停損與跳空已移除（[ADR-0004](docs/adr/0004-remove-sp500-fixed-stop-and-gap-exit.md)：回測零貢獻 + 製造 whipsaw），**現在只剩熊市 dip-buy 觸發**。個股出場改由週三 [[Rotation]] 負責。觸發即在 [[執行盤 (Execution Session)]] 送 LMT（outsideRTH）。
 _Avoid_: Daily check, Stop loss job
 
+**資料可信度 (Data Trust)**:
+「這檔的本地行情在某個 session 能不能信」的唯一回答者 `data/data_trust.py`（#235）：ok（有這個 session 的 bar）／stale（沒更新，最後一筆在之前）／missing（缺檔）／broken（讀不到、空檔、別名界限外）。21:00 [[SP500]] 訊號用到但不可信的檔，排名照跑、不改送單，只在 Telegram 與 log 列出（使用者 2026-10-22 選 B）；04:30 資料更新寫 `logs/data_trust/<YYYYMMDD>.json`，連續 3 個 NYSE 交易日沒有新 bar、缺檔或壞檔的成分股／策略 ETF 列進失敗通知。落後天數從最後一筆 bar 與官方交易日曆現算，不另存計數器。SPY 過期停機（[[日度風控 (Daily Risk Check)]]）是另一道閘，規則不變。
+_Avoid_: 資料健康（那是 `data/health.py` 的離線覆蓋報表）, freshness
+
 **Rotation**:
 [[SP500]] 每週三的持股輪動決策：持股「排名跌出前 20（SELL_RANK_THRESHOLD）」或「跌破 EMA50（EXIT_EMA）」者賣出，缺額依動能排名補足（過熱 adj_slope ≥ MAX_ADJ_SLOPE 與 [[噴出 (Blowoff)]] kurt60 > 門檻皆不佔名額，[ADR-0011](docs/adr/0011-sp500-blowoff-entry-block.md)），以 ATR 反比配權。rank 優先於 EMA — 同輪賣出又買回 = 續抱是刻意行為（[ADR-0005](docs/adr/0005-rank-priority-no-entry-ema-filter.md)）；個股出場只由 Rotation 負責（[ADR-0004](docs/adr/0004-remove-sp500-fixed-stop-and-gap-exit.md)）。唯一實作 `strategies/sp500_momentum/rotation.py`；live（signal.py）、backtest（backtester.py 與 frac-sizing 研究）皆為 caller，execution 關切（成交價、資金、取整、kept 的執行回饋）留在 caller。
 _Avoid_: Rebalance（帳戶層 [[Combine]]+下單那一步）、選股（上游 ranking 是 SelectionEngine 的事）

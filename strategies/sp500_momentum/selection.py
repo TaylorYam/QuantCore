@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 import scipy.stats as stats
 
-from data import market_data
+from data import data_trust, market_data
 
 from . import config
 from . import utils
@@ -20,7 +20,8 @@ class SelectionEngine:
                  use_constituents_cache: bool | None = None,
                  constituents_cache_dir=None):
         self.data_cache    = data_cache or {}
-        self._unusable: set = set()      # 缺檔或別名界限外：同一輪不再重讀、不再重記 log
+        self._unusable: dict = {}        # 缺檔或別名界限外 → 原因：同一輪不再重讀、不再重記 log
+        self._watched: set | None = None # watch() 之後問過的代碼（#235：訊號用到哪些檔）
         self.scan_cache    = {}     # {(date, lookback): sorted_list}
         self.metrics_cache = {}     # {(ticker, date, lookback, ema, atr): dict}
         self.use_constituents_cache = use_constituents_cache
@@ -84,8 +85,7 @@ class SelectionEngine:
         session cannot accidentally reuse the successor's bars outside the
         reviewed identity interval.
         """
-        source = market_data.source_symbol(ticker, as_of)
-        cache_key = ticker if source == market_data.provider_symbol(ticker) else (ticker, source)
+        cache_key = self._cache_key(ticker, as_of)
         if ticker in self.data_cache and as_of is None:
             return self.data_cache[ticker]
         if cache_key in self.data_cache:
@@ -100,7 +100,7 @@ class SelectionEngine:
             df = market_data.alias_window(df, ticker, as_of)
             if df.empty:
                 market_data.report(path, market_data.OUTSIDE_ALIAS)
-                self._unusable.add(cache_key)
+                self._unusable[cache_key] = market_data.OUTSIDE_ALIAS
                 return None
             # 優先用 Adj Close 計算 EMA（與原始系統一致）
             price_col = "Adj Close" if "Adj Close" in df.columns else "Close"
@@ -109,8 +109,42 @@ class SelectionEngine:
             self.data_cache[cache_key] = df
             return df
 
-        self._unusable.add(cache_key)
+        # load_stock 已寫 log；這裡只記缺檔或讀不出來（#235 列出用）
+        self._unusable[cache_key] = (market_data.MISSING if not path.exists()
+                                     else market_data.UNREADABLE)
         return None
+
+    @staticmethod
+    def _cache_key(ticker: str, as_of=None):
+        """data_cache／_unusable 的鍵：沒有歷史別名時就是代碼本身。"""
+        source = market_data.source_symbol(ticker, as_of)
+        return ticker if source == market_data.provider_symbol(ticker) else (ticker, source)
+
+    # ── 這次訊號用到的資料可不可信（#235）──────────────────────────────────────
+
+    def watch(self) -> None:
+        """開始記這次訊號問了哪些代碼（scan_market 的成分股、calculate_metrics 的個股）。"""
+        self._watched = set()
+
+    def _note(self, tickers) -> None:
+        if self._watched is not None:
+            self._watched.update(tickers)
+
+    def data_problems(self, session: pd.Timestamp) -> list:
+        """watch() 之後問過、在 session 不可信的代碼 → data_trust.Trust（依代碼排序）。
+
+        只看已讀進來的資料，不重讀檔：缺檔／壞檔 = 讀檔失敗的原因，沒更新 = 最後一筆
+        bar 在 session 之前（照樣排名，使用者 2026-10-22 選 B）。"""
+        out = []
+        for ticker in sorted(self._watched or ()):
+            key = self._cache_key(ticker, session)
+            if key in self._unusable:
+                out.append(data_trust.judge_problem(ticker, self._unusable[key]))
+            elif key in self.data_cache:
+                t = data_trust.judge_frame(ticker, self.data_cache[key], session)
+                if not t.ok:
+                    out.append(t)
+        return out
 
     def preload_all_data(self, start_date=None, end_date=None):
         """預載入所有成分股到記憶體，回測前呼叫可大幅提速。"""
@@ -147,6 +181,7 @@ class SelectionEngine:
         exit_ema_period = config.EXIT_EMA
         atr_period      = config.ATR_PERIOD
         cache_key = (ticker, current_date, lookback, exit_ema_period, atr_period)
+        self._note((ticker,))
 
         if cache_key in self.metrics_cache:
             return self.metrics_cache[cache_key]
@@ -230,11 +265,13 @@ class SelectionEngine:
 
         cache_key = (date, lookback)
         if cache_key in self.scan_cache:
+            self._note(self.get_constituents(date))
             return self.scan_cache[cache_key]
 
         tickers = self.get_constituents(date)
         if not tickers:
             return []
+        self._note(tickers)
 
         results = [m for t in tickers
                    if (m := self.calculate_metrics(t, date, lookback)) is not None]

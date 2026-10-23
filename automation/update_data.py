@@ -6,7 +6,10 @@ QuantCore — 每日收盤後資料更新
 流程：
   1. 更新 ETF 資料（11 板塊 + SPY/SSO/QQQ/VIX）
   2. 更新 SP500 成分股資料（~500 檔）
-  3. 有失敗才發 Telegram（#26：成功不通知；資料沒更新到時，16:00 日度風控
+  3. 資料可信度結論（#235）：當前成分股＋ETF 對最近一個已收盤 session 逐檔判斷，
+     寫 logs/data_trust/<YYYYMMDD>.json（data_trust.CONCLUSION_DIR）；
+     連續 3 個交易日沒有新 bar、缺檔或壞檔的檔列進失敗通知
+  4. 有失敗才發 Telegram（#26：成功不通知；資料沒更新到時，16:00 日度風控
      會發「資料錯位中止」）
 """
 
@@ -45,6 +48,33 @@ def failure_message(errors: list[str], elapsed: int, today: date) -> str | None:
     )
 
 
+def conclude_data_trust(now: datetime | None = None) -> list[str]:
+    """更新完之後的資料可信度結論（#235）：寫一份 JSON，回傳要列進失敗通知的行
+    （data_trust.notice_lines：缺檔、壞檔、連續 LAGGING_SESSIONS 個交易日沒有新 bar）。
+
+    範圍＝最新成分股（不含 SPY／SSO，它們在 etfs/）＋資料更新會下載的 ETF＋VIX；
+    session＝美東最近一個已收盤的 NYSE session。"""
+    import json_state
+    import market_calendar
+    import signals
+    from data import data_trust
+    from data.update_data import ALL_ETFS
+
+    now = now or datetime.now(market_calendar.ET)
+    session = market_calendar.last_completed_session(now)
+    if session is None:
+        raise ValueError(f"找不到 {now} 之前已收盤的 NYSE session（登錄表外？）")
+    stocks = signals.LiveSource().sp500_universe(historical=False) - {"SPY", "SSO"}
+    conclusion = data_trust.conclude({"stocks": stocks, "etfs": [*ALL_ETFS, "VIX"]}, session)
+    data_trust.CONCLUSION_DIR.mkdir(parents=True, exist_ok=True)
+    # 與其他 log 一樣用本機（台北）日期
+    path = data_trust.CONCLUSION_DIR / f"{date.today():%Y%m%d}.json"
+    json_state.save_atomic(path, conclusion)
+    log.info(f"Data trust for {session}: {conclusion['checked']} checked, "
+             f"{len(conclusion['problems'])} not trusted -> {path.name}")
+    return data_trust.notice_lines(conclusion)
+
+
 # ── 主流程 ────────────────────────────────────────────────────────────────────
 def main() -> list[str]:
     start_ts = datetime.now()
@@ -74,11 +104,19 @@ def main() -> list[str]:
         log.error(f"Stock update failed: {e}", exc_info=True)
         errors.append(f"Stocks: {e}")
 
+    # ── 3. 資料可信度結論（#235；失敗不擋通知）──────────────────────────
+    log.info("Step 3: Data trust...")
+    try:
+        errors.extend(conclude_data_trust())
+    except Exception as e:
+        log.error(f"Data trust failed: {e}", exc_info=True)
+        errors.append(f"Data trust: {e}")
+
     elapsed = (datetime.now() - start_ts).seconds
     for e in errors:
         log.warning(f"Update error: {e}")
 
-    # ── 3. Telegram 通知（只在失敗時）──────────────────────────────────────
+    # ── 4. Telegram 通知（只在失敗時）──────────────────────────────────────
     msg = failure_message(errors, elapsed, date.today())
     if msg is not None:
         send_system(msg)                      # config.json 共用頻道（#226）

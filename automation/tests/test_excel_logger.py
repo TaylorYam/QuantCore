@@ -1,8 +1,11 @@
 """Offline tests for the reversible Excel/SQLite log backend seam."""
 
+import json
+import logging
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 import excel_logger
 import sqlite_store
@@ -95,8 +98,6 @@ def test_failed_logger_transaction_preserves_both_projections(monkeypatch, tmp_p
 
 
 def test_first_use_import_and_export_failure_recovery(monkeypatch, tmp_path):
-    import pytest
-
     portfolio, trade_file, db = _patch_paths(monkeypatch, tmp_path)
     monkeypatch.setenv('QUANTCORE_LOG_BACKEND', 'excel')
     excel_logger.append_daily_snapshot(10000, [Position('XLK', 5, 100)],
@@ -154,3 +155,70 @@ def test_excel_backend_writes_columns_in_the_declared_order(monkeypatch, tmp_pat
                                   account_name="Taylor")
     assert tuple(pd.read_excel(portfolio, sheet_name="Daily").columns) == excel_logger.SNAPSHOT_FIELDS
     assert tuple(pd.read_excel(trade_file, sheet_name="Trades").columns) == excel_logger.TRADE_FIELDS
+
+
+# ── 後端只在一處決定（#230）────────────────────────────────────────────────
+
+def _backend_world(monkeypatch, tmp_path, config=None, env=None):
+    path = tmp_path / "config.json"
+    if config is not None:
+        path.write_text(json.dumps(config), encoding="utf-8")
+    monkeypatch.setattr(excel_logger, "CONFIG_FILE", path)
+    monkeypatch.setattr(excel_logger, "_announced", set())
+    if env is None:
+        monkeypatch.delenv(excel_logger.BACKEND_ENV, raising=False)
+    else:
+        monkeypatch.setenv(excel_logger.BACKEND_ENV, env)
+
+
+@pytest.mark.parametrize("config, env, backend, source", [
+    (None, None, "excel", "預設"),                                  # 沒有 config.json
+    ({"host": "127.0.0.1"}, None, "excel", "預設"),                 # 沒有欄位
+    ({"log_backend": "sqlite"}, None, "sqlite", "config.json 的 log_backend"),
+    ({"log_backend": " SQLite "}, None, "sqlite", "config.json 的 log_backend"),
+    ({"log_backend": "excel"}, None, "excel", "config.json 的 log_backend"),
+    ({"log_backend": "excel"}, "sqlite", "sqlite", "環境變數 QUANTCORE_LOG_BACKEND"),
+    (None, "sqlite", "sqlite", "環境變數 QUANTCORE_LOG_BACKEND"),   # 過渡期的 wrapper
+    ({"log_backend": "sqlite"}, "  ", "sqlite", "config.json 的 log_backend"),
+])
+def test_backend_comes_from_env_then_config_then_default(monkeypatch, tmp_path, caplog,
+                                                         config, env, backend, source):
+    _backend_world(monkeypatch, tmp_path, config, env)
+    with caplog.at_level(logging.INFO, logger=excel_logger.log.name):
+        assert excel_logger._log_backend() == backend
+        assert excel_logger._log_backend() == backend
+    assert [r.getMessage() for r in caplog.records] == [f"交易紀錄後端：{backend}（{source}）"]
+
+
+def test_config_backend_routes_the_write_to_sqlite_without_env(monkeypatch, tmp_path):
+    """Panel 與排程不帶 wrapper：config.json 一個欄位就讓兩本 xlsx 改由 SQLite 匯出。"""
+    portfolio, trade_file, db = _patch_paths(monkeypatch, tmp_path)
+    _backend_world(monkeypatch, tmp_path, {"log_backend": "sqlite"})
+    excel_logger.append_daily_snapshot(10000, [Position("XLK", 5, 100)], {"XLK": 110},
+                                       account_name="Taylor", capture_id="c1")
+    assert len(sqlite_store._query(db, "portfolio_snapshots")) == 1
+    assert pd.read_excel(portfolio, sheet_name="Daily").shape[0] == 1
+
+
+@pytest.mark.parametrize("text, reason", [
+    ("{not json", "讀不到"),
+    ("[]", "不是 JSON 物件"),
+    ('{"log_backend": true}', "log_backend 要是"),
+])
+def test_an_unreadable_config_names_the_cause(tmp_path, monkeypatch, text, reason):
+    """config.json 壞了不猜後端：錯誤說清楚是設定檔的問題（呼叫端照舊記成寫入失敗）。"""
+    import excel_logger
+    config = tmp_path / "config.json"
+    config.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(excel_logger, "CONFIG_FILE", config)
+    with pytest.raises(ValueError, match=reason):
+        excel_logger._log_backend()
+
+
+def test_unknown_backend_is_refused_before_writing(monkeypatch, tmp_path):
+    portfolio, _, db = _patch_paths(monkeypatch, tmp_path)
+    _backend_world(monkeypatch, tmp_path, {"log_backend": "csv"})
+    with pytest.raises(ValueError, match="csv"):
+        excel_logger.append_daily_snapshot(10000, [Position("XLK", 5, 100)], {"XLK": 110},
+                                           account_name="Taylor")
+    assert not portfolio.exists() and not db.exists()

@@ -8,9 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+import json_state
+
 BASE_DIR      = Path(__file__).parent
 CONFIG_PATH   = BASE_DIR / 'config.json'
 ACCOUNTS_PATH = BASE_DIR / 'accounts.json'
+BUSY_WAIT_S   = 1.0   # 存檔時 accounts.json 正被排程／Panel 讀取：最多等這麼久再換檔
 
 # clientId 的規則與用途（role）編號只在 broker（#185）；這裡轉出 role 給既有的
 # AccountCtx.from_name(name, ROLE_…) 呼叫端。
@@ -179,6 +182,9 @@ def update_account_config(name: str, updates: dict) -> None:
     """
     寫入指定帳戶在 accounts.json 的覆蓋值（其他帳戶保持不變）。
     範例：update_account_config('Taylor', {'alloc_sr': 0.75, 'alloc_sp500': 0.45})
+
+    原子寫入（#243）：同時在讀的排程／Panel 不會讀到半個檔；寫入失敗時原檔完整、
+    例外照拋。
     """
     accounts = load_accounts()
     found = False
@@ -190,9 +196,8 @@ def update_account_config(name: str, updates: dict) -> None:
     if not found:
         raise ValueError(f"Account '{name}' not found in accounts.json")
 
-    with open(ACCOUNTS_PATH, 'w', encoding='utf-8') as f:
-        json.dump(accounts, f, indent=2, ensure_ascii=False)
-        f.write('\n')
+    json_state.save_atomic(ACCOUNTS_PATH, accounts, indent=2, ensure_ascii=False,
+                           trailing_newline=True, busy_wait=BUSY_WAIT_S)
 
 
 def get_all_account_configs() -> list[dict]:

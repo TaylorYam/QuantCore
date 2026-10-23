@@ -109,6 +109,86 @@ def test_update_account_config_case_insensitive_match(tmp_path, monkeypatch):
     assert data[0]["alloc_sr"] == 0.65
 
 
+# ── 原子寫入（#243）────────────────────────────────────────────────────────
+
+_ACCOUNTS = [
+    {"name": "Taylor", "account": "U001", "port": 4001, "alloc_sr": 0.80,
+     "alloc_sp500": 0.50, "gateway_dir": "C:\\IB-TAYLOR\\ibgateway", "note": "台北"},
+    {"name": "Rosa", "account": "U002", "port": 4002, "alloc_sr": 0.0},
+]
+
+
+@pytest.fixture
+def accounts_file(tmp_path, monkeypatch):
+    import account_utils
+    path = tmp_path / "accounts.json"
+    _write_fake_accounts(path, _ACCOUNTS)
+    monkeypatch.setattr(account_utils, "ACCOUNTS_PATH", path)
+    return path
+
+
+def test_written_bytes_are_the_same_as_the_old_writer(accounts_file, tmp_path):
+    """indent=2、不跳脫中文、結尾換行、文字模式換行（Windows 是 \\r\\n）：跟 #243 之前的寫法逐字相同。"""
+    import account_utils
+    account_utils.update_account_config("Taylor", {"alloc_sr": 0.75, "alloc_skewls": 0.3})
+    expected = [dict(_ACCOUNTS[0], alloc_sr=0.75, alloc_skewls=0.3), _ACCOUNTS[1]]
+    old = tmp_path / "old" / "accounts.json"
+    old.parent.mkdir()
+    with open(old, 'w', encoding='utf-8') as f:                   # #243 之前的寫法
+        json.dump(expected, f, indent=2, ensure_ascii=False)
+        f.write('\n')
+    assert accounts_file.read_bytes() == old.read_bytes()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["accounts.json", "old"]   # 沒留下 .tmp
+
+
+def test_a_failed_write_keeps_the_old_accounts_json(accounts_file):
+    import account_utils
+    before = accounts_file.read_bytes()
+    with pytest.raises(TypeError):
+        account_utils.update_account_config("Taylor", {"alloc_sr": object()})
+    assert accounts_file.read_bytes() == before
+    assert list(accounts_file.parent.iterdir()) == [accounts_file]
+
+
+def test_saving_waits_for_a_reader_that_holds_accounts_json(accounts_file):
+    """排程／Panel 正好開著 accounts.json 在讀：存檔等它讀完再換上，不報錯。"""
+    import threading
+    import account_utils
+    reader = open(accounts_file, encoding="utf-8")
+    threading.Timer(0.2, reader.close).start()
+    account_utils.update_account_config("Rosa", {"alloc_sr": 0.4})
+    with open(accounts_file, encoding="utf-8") as f:
+        assert json.load(f)[1]["alloc_sr"] == 0.4
+
+
+def test_a_reader_never_sees_a_partial_accounts_json(accounts_file):
+    """一邊連續存檔、一邊頻繁讀：讀到的永遠是完整的 JSON（舊或新）。"""
+    import threading
+    import account_utils
+    errors, reads, stop = [], [], threading.Event()
+
+    def read_often():
+        while not stop.is_set():
+            try:
+                with open(accounts_file, encoding="utf-8") as f:
+                    reads.append(json.load(f)[0]["alloc_sr"])
+            except json.JSONDecodeError as e:
+                errors.append(e)
+            except PermissionError:
+                pass                          # Windows：換檔那一瞬間開不了檔，不是半個檔
+            stop.wait(0.001)                  # 真的讀者讀完就關檔，不會一直開著
+
+    reader = threading.Thread(target=read_often)
+    reader.start()
+    try:
+        for i in range(100):
+            account_utils.update_account_config("Taylor", {"alloc_sr": i / 100})
+    finally:
+        stop.set()
+        reader.join()
+    assert errors == [] and reads                                 # 有讀到，且沒有半個檔
+
+
 def test_telegram_dest_shared_account_and_fallback(monkeypatch):
     """帳戶覆寫優先；帳戶讀不到退回 config.json；config 也讀不到 → 空字串（不發）。"""
     import account_utils

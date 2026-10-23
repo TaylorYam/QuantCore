@@ -1,4 +1,7 @@
-"""Panel 查權益／持倉（#149），以及單一帳戶頁的權益序列、策略設定、最近成交（#150）。
+"""Panel 查權益／持倉（#149），以及單一帳戶頁的策略設定、出入金（#150）的讀取函式。
+
+這些函式交給 `qt_panel.portfolio_page`（#231）在背景呼叫；權益序列直接用
+`ledger.daily_nav`，最近成交用 `trades_display.read_account_trades`。
 
 查詢用 `portfolio_snapshot.fetch_snapshot`（經 Broker 開唯讀連線、查完就斷，#208），
 身分是 ROLE_PANEL：不和 Gateway 心跳（ROLE_MONITOR）、排程搶同一個 clientId。
@@ -42,12 +45,6 @@ def read_manual_symbols(account_name: str, path=None) -> dict:
 
 # ── 單一帳戶頁的其他資料（#150）：都只讀檔，不連 IB ─────────────────
 
-def load_equity(account_name: str):
-    """每日 NAV（portfolio_tracker.xlsx 的 Daily）。"""
-    from ledger import daily_nav
-    return daily_nav(account_name)
-
-
 def read_strategy_allocations(account_name: str) -> dict:
     """帳戶的三個 Allocation（唯讀；只取 alloc 欄位，不把 token 等設定帶進畫面）。"""
     from account_utils import get_account_config
@@ -88,8 +85,3 @@ def load_account_cash_flows(account_name: str):
 
     cfg = account_entry(load_accounts(), account_name) or {}
     return load_cash_flows(account_name, cfg, CashFlowCache(), now=datetime.now())
-
-
-def read_recent_trades(account_name: str) -> list:
-    from trades_display import read_account_trades
-    return read_account_trades(account_name)

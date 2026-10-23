@@ -5,13 +5,16 @@
 今日排程的讀取、時鐘、系統匣工廠、叫回視窗的訊號檔、送單的 Broker），測試用假的
 驅動，不連 IB、不讀真實檔案。
 
+Portfolio 頁的讀數全部來自 `qt_panel.portfolio_page`（#231）；Allocation 的編輯流程在
+`qt_panel.allocation_flow`，Gateway 狀態轉換的規則在 `gateway_status.gateway_transition`。
+這裡只接線。
+
 值班（#154）由 `qt_panel.watch` 跑（Rosa poll／TY check／Morning check，既有的
 MonitorEngine）。送單（#151、#183）：這裡建一次送單目標（order_target，各帳戶自己的
 實盤 Gateway）交給 Trading；帳戶身分、紀錄、state、通知都在送單目標裡。
 """
 from __future__ import annotations
 
-import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Sequence
@@ -24,18 +27,19 @@ from PySide6.QtWidgets import (
 )
 
 from account_utils import AccountCapabilities, capabilities_for, remote_gateway_account
-from portfolio_queries import PortfolioQueries, PortfolioRefreshLoop
 
-from qt_panel import dashboard_data, theme
+from qt_panel import allocation_flow, dashboard_data, theme
 from qt_panel.dashboard import Dashboard
 from qt_panel.dashboard_data import JobRow
 from qt_panel.gateway_actions import (
     CredentialStore, Dialogs, GatewayStartFlow, PortsFactory, QtDialogs,
 )
-from qt_panel.gateway_status import GatewaySource
+from qt_panel.gateway_status import GatewaySource, gateway_transition
 from qt_panel.order_target import OrderFiles, OrderTarget
-from qt_panel.portfolio import EQUITY, FLOWS, PARAMS, TRADES, PortfolioPage
+from qt_panel.portfolio import PortfolioPage
+from qt_panel.portfolio_page import SNAPSHOT, PageChange, PageFetchers, PortfolioPageSource
 from qt_panel.trading import TradingPage
+from qt_panel.trading_common import MainThread
 from qt_panel.watch import QtWatch, WatchPorts
 from qt_panel.widgets import label, visible_text
 
@@ -52,8 +56,6 @@ class _Bridge(QObject):
     """背景 thread 的回呼 → Qt 主執行緒（跨執行緒的 signal 會自動排隊）。"""
     gateway_changed = Signal(str, str, str)
     log = Signal(str)
-    account_extra = Signal(str, str, object, str)     # 帳戶, kind, 資料, 錯誤
-    extras_done = Signal()
 
 
 class _Header(QFrame):
@@ -86,7 +88,7 @@ class MainWindow(QMainWindow):
                  equity_fetch: Callable[[str], object],
                  cash_flows_fetch: Callable[[str], object],
                  strategy_config_fetch: Callable[[str], dict],
-                 trades_fetch: Callable[[str], list],
+                 trades_fetch: Callable[[str, object], list],
                  allocation_save: Callable[[str, dict], None] | None = None,
                  portfolio_next_refresh: Callable[[datetime], datetime] | None = None,
                  dialogs: Dialogs | None = None,
@@ -103,7 +105,8 @@ class MainWindow(QMainWindow):
                  watch_ports: WatchPorts | None = None,
                  capabilities: Sequence[AccountCapabilities] | None = None):
         """capabilities：各帳戶的能力（accounts.json，#211）；None = 依 accounts 的名字
-        套現狀預設（不讀檔）。"""
+        套現狀預設（不讀檔）。trades_fetch(name, alloc)：alloc 是同一輪讀到的
+        (alloc_sr, alloc_skewls)，見 portfolio_page。"""
         super().__init__()
         caps = list(capabilities) if capabilities is not None else capabilities_for(accounts)
         self._remote_account = remote_gateway_account(caps)
@@ -120,14 +123,7 @@ class MainWindow(QMainWindow):
         self._read_data_date = read_data_date
         names = [a["name"] for a in accounts]
         self._names = names
-        # 單一帳戶頁的權益序列、策略參數、最近成交：讀本機檔案，背景讀；
-        # 出入金要向 IB Flex 下載（可能要等幾秒），排在所有帳戶的本機資料之後
-        self._extra_fetchers = ((PARAMS, strategy_config_fetch), (TRADES, trades_fetch),
-                                (EQUITY, equity_fetch), (FLOWS, cash_flows_fetch))
-        self._strategy_config_fetch = strategy_config_fetch
         self._allocation_save = allocation_save
-        self._extras_loading = False
-        self._flow_problems: dict[str, str] = {}      # 出入金問題每帳戶同樣的只記一次
         self._today_jobs = today_jobs or (lambda now: dashboard_data.today_jobs(now, names))
         self._clock = clock
         self._taipei_now = taipei_now
@@ -194,21 +190,20 @@ class MainWindow(QMainWindow):
         self._bridge = _Bridge()
         self._bridge.gateway_changed.connect(self._on_gateway_state)
         self._bridge.log.connect(self._append_log)
-        self._bridge.account_extra.connect(self._on_account_extra)
-        self._bridge.extras_done.connect(self._on_extras_done)
+        self._main_thread = MainThread()          # Portfolio 頁讀數從背景轉回主執行緒
         self._gateway_flow = GatewayStartFlow(
             ports_factory=gateway_ports_factory, dialogs=self._dialogs, log=self.log,
             recheck=self._source.recheck, states=self.dashboard.gateway_states,
             after_checks=self._after_gateway_login, step_aside=self.showMinimized,
             accounts=gateway_accounts)
         self._gateway_flow.running_changed.connect(self.dashboard.set_gateway_starting)
-        # 權益／持倉：開啟時一次、美股盤中固定時間，
-        # 每個帳戶查完各自更新，一個失敗不影響其他帳戶
-        self._portfolio_queries = PortfolioQueries(names, portfolio_fetch)
-        self._portfolio_loop = PortfolioRefreshLoop(
-            self._portfolio_queries, self._schedule, self._cancel,
-            self._on_portfolio_change, next_refresh_time=portfolio_next_refresh,
-            log=self.log)
+        self._page_source = PortfolioPageSource(
+            names, PageFetchers(snapshot=portfolio_fetch, params=strategy_config_fetch,
+                                trades=trades_fetch, equity=equity_fetch,
+                                flows=cash_flows_fetch),
+            schedule=self._schedule, cancel=self._cancel, post=self._main_thread.call.emit,
+            on_change=self._on_page_change, log=self.log,
+            next_refresh_time=portfolio_next_refresh)
         self._clock_timer = QTimer(self, interval=1000, timeout=self._update_clock)
         self._signal_timer = QTimer(self, interval=SHOW_SIGNAL_POLL_MS,
                                     timeout=self.check_show_signal)
@@ -244,8 +239,7 @@ class MainWindow(QMainWindow):
         self._watch.start()
         self._start_manual_order_tracking()
         self._reload()
-        self._portfolio_loop.start()
-        self.load_account_extras()
+        self._page_source.start()
         self.trading.start()
         self._clock_timer.start()
         self._minute_timer.start()
@@ -272,7 +266,7 @@ class MainWindow(QMainWindow):
         stop_tracking = getattr(self._manual_service, "stop_monitor", None)
         if callable(stop_tracking):
             stop_tracking()
-        self._portfolio_loop.stop()
+        self._page_source.stop()
         self.trading.stop()
         self._source.stop()
         if self._tray is not None:
@@ -332,18 +326,15 @@ class MainWindow(QMainWindow):
     def _on_gateway_state(self, name: str, state: str, detail: str) -> None:
         previous = self.dashboard.gateway_states().get(name)
         self.dashboard.set_gateway_state(name, state, detail)
-        if name == self._remote_account and state != previous:
+        todo = gateway_transition(name, previous, state, detail, self._remote_account)
+        if todo.update_tray:
             update_tray = getattr(self._tray, "update_state", None)
             if callable(update_tray):
-                update_tray(state, self._clock(), name)  # 系統匣顏色跟著遠端 Gateway 帳戶
-            if self._watch is not None and state == "offline":
-                self._watch.remote_went_offline()
-        if previous is None or state == previous:
-            return
-        if state == "offline":
-            self.log(f"[GW] {name} 離線" + (f" — {detail}" if detail else ""))
-        elif state == "online" and previous != "init":
-            self.log(f"[GW] {name} 已連上")
+                update_tray(state, self._clock(), name)
+        if todo.remote_offline and self._watch is not None:
+            self._watch.remote_went_offline()
+        if todo.log:
+            self.log(todo.log)
 
     def recheck_gateways(self) -> None:
         self.log("[>] 重新檢查 Gateway 連線")
@@ -367,116 +358,31 @@ class MainWindow(QMainWindow):
 
     def refresh_portfolio(self) -> tuple:
         """三個帳戶各查一次（唯讀）；還在查的帳戶不重複送。"""
-        started = self._portfolio_loop.refresh()
-        if started:
-            self.log(f"[>] 讀取帳戶權益與持倉：{'、'.join(started)}")
-        else:
-            self.log("[>] 帳戶查詢還在進行中")
-        self.load_account_extras()
-        return started
+        return self._page_source.refresh()
 
     def load_account_extras(self) -> bool:
         """背景讀各帳戶的策略設定、最近成交、權益序列、出入金；上一輪還沒讀完就不重複讀。"""
-        if not self._running or self._extras_loading:
-            return False
-        self._extras_loading = True
-        names, fetchers, emit = list(self._names), self._extra_fetchers, self._bridge
-
-        def work():
-            try:
-                for kind, fetch in fetchers:
-                    for name in names:
-                        try:
-                            data, error = fetch(name), ""
-                        except Exception as e:
-                            data, error = None, str(e) or type(e).__name__
-                        emit.account_extra.emit(name, kind, data, error)
-            finally:
-                emit.extras_done.emit()
-
-        threading.Thread(target=work, name="qt-panel-account-extras", daemon=True).start()
-        return True
-
-    def _on_account_extra(self, name: str, kind: str, data, error: str) -> None:
-        if not self._running:
-            return
-        self.portfolio.set_extra(name, kind, data, error)
-        if kind == FLOWS:
-            self._log_flow_problem(name, error, data)
-        elif error:
-            what = {EQUITY: "權益紀錄", PARAMS: "策略設定", TRADES: "成交紀錄"}[kind]
-            self.log(f"[X] [{name}] {what}讀取失敗：{error}")
-
-    def _log_flow_problem(self, name: str, error: str, result) -> None:
-        # 沒設定 Flex 是常態：每次重新讀取都記一筆會洗版，同樣的問題只記一次
-        if error:
-            problem = f"[X] [{name}] 出入金讀取失敗：{error}"
-        elif result.error:
-            problem = f"[!] [{name}] 出入金下載失敗，改用快取：{result.error}"
-        else:
-            problem = ""
-        if problem and problem != self._flow_problems.get(name):
-            self.log(problem)
-        self._flow_problems[name] = problem
-
-    def _on_extras_done(self) -> None:
-        self._extras_loading = False
+        return self._page_source.refresh_extras()
 
     def account_extras_loading(self) -> bool:
-        return self._extras_loading
+        return self._page_source.extras_loading()
 
     def edit_allocation(self, name: str) -> None:
         """調整帳戶的 Allocation（#220）：拉桿 → 檢查 → 確認 → 只寫這個帳戶。"""
-        from strategy_params_display import allocation_change, allocations_from_cfg
-
         if self._allocation_save is None:
             return
-        # 開對話框前重讀：初始值、有沒有變、Skew LS 是否首次啟用都以檔案現況為準
-        try:
-            cfg = self._strategy_config_fetch(name)
-        except Exception as e:
-            self._on_account_extra(name, PARAMS, None, str(e) or type(e).__name__)
-            self._dialogs.show_message("策略參數", f"[{name}] 設定讀取失敗：{e}", error=True)
-            return
-        self.portfolio.set_extra(name, PARAMS, cfg)
-        values = self._dialogs.ask_allocation(name, allocations_from_cfg(cfg))
-        if values is None:
-            return
-        change = allocation_change(name, cfg, values)
-        if change.error:
-            self._dialogs.show_message("策略參數", change.error, error=True)
-            return
-        if not change.changed:
-            self.log(f"[{name}] 策略參數沒有變更")
-            return
-        if not self._dialogs.confirm("儲存策略參數", change.confirm_text(),
-                                     warning=change.first_enable_skewls):
-            return
-        try:
-            self._allocation_save(name, change.updates())
-        except Exception as e:
-            self.log(f"[X] [{name}] 策略參數儲存失敗：{e}")
-            self._dialogs.show_message("策略參數", f"[{name}] 儲存失敗：{e}", error=True)
-            return
-        sr, sp, sk = change.values
-        self.log(f"[OK] [{name}] 策略參數已儲存：SR={sr:.0%}  SP500={sp:.0%}  "
-                 f"Skew LS={sk:.0%}  Leverage={sr + sp + sk:.1f}x")
-        try:
-            data, error = self._strategy_config_fetch(name), ""
-        except Exception as e:
-            data, error = None, str(e) or type(e).__name__
-        self._on_account_extra(name, PARAMS, data, error)
+        allocation_flow.edit_allocation(name, read=self._page_source.read_params,
+                                        save=self._allocation_save, dialogs=self._dialogs,
+                                        log=self.log)
 
-    def _on_portfolio_change(self, name: str, state) -> None:
-        self.portfolio.set_state(name, state)
-        if not state.running:
-            if state.error:
-                self.log(f"[X] [{name}] 權益／持倉讀取失敗：{state.error}")
-            else:
-                self.log(f"[OK] [{name}] 權益／持倉已更新")
+    def _on_page_change(self, change: PageChange) -> None:
+        if change.kind == SNAPSHOT:
+            self.portfolio.set_state(change.name, change.data)
+        else:
+            self.portfolio.set_extra(change.name, change.kind, change.data, change.error)
 
     def _schedule(self, ms: int, fn) -> QTimer:
-        """PortfolioRefreshLoop 的計時器：單次、觸發後自己釋放。"""
+        """Portfolio 頁讀數排程的計時器：單次、觸發後自己釋放。"""
         timer = QTimer(self)
         timer.setSingleShot(True)
         timer.timeout.connect(fn)

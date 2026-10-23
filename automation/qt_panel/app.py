@@ -77,14 +77,16 @@ def main() -> int:
 
     try:
         from account_utils import load_accounts, load_capabilities
+        from ledger import daily_nav
         from qt_panel import theme
         from qt_panel.gateway_status import MonitorGatewaySource
         from qt_panel.main_window import MainWindow
         from qt_panel.portfolio_source import (
-            fetch_panel_portfolio, load_account_cash_flows, load_equity, read_recent_trades,
-            read_strategy_allocations, write_strategy_allocations,
+            fetch_panel_portfolio, load_account_cash_flows, read_strategy_allocations,
+            write_strategy_allocations,
         )
         from qt_panel.tray import tray_factory_for
+        from trades_display import read_account_trades
 
         accounts = [{"name": a["name"], "port": a.get("port")} for a in load_accounts()]
         try:
@@ -107,10 +109,10 @@ def main() -> int:
             gateway_ports_factory=lambda ask: gateway_start_win.WindowsPorts(ask_credentials=ask),
             credential_store=WindowsCredentialStore(),
             portfolio_fetch=fetch_panel_portfolio,
-            equity_fetch=load_equity,
+            equity_fetch=daily_nav,
             cash_flows_fetch=load_account_cash_flows,
             strategy_config_fetch=read_strategy_allocations,
-            trades_fetch=read_recent_trades,
+            trades_fetch=lambda name, alloc: read_account_trades(name, alloc=alloc),
             allocation_save=write_strategy_allocations,
             tray_factory=tray_factory_for(icon, "QuantCore Panel"),
             show_signal=show_signal_path(),

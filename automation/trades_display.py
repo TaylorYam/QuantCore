@@ -2,8 +2,9 @@
 
 The trades come from `ledger.recent_trades` (#209); this module only turns them
 into screen rows. `read_account_trades` is what the Panel calls: one account's
-last 7 days, labelled with that account's Allocation. `trade_line` formats one
-trade as a row. Sector and inverse ETF trades are
+last 7 days, labelled with that account's Allocation (the Portfolio page
+source passes the pair it just read, #231). `trade_line` formats one trade
+as a row. Sector and inverse ETF trades are
 labelled with the same rule as the Portfolio (`strategy_owner`, #187). No GUI
 imports; colors come back as theme key names ("green", "red", "yellow", "text_dim").
 """
@@ -77,21 +78,14 @@ def trade_line(trade: ledger.TradeRow,
     )
 
 
-def account_alloc(account_name: str) -> tuple[float, float] | None:
-    """帳戶的 (alloc_sr, alloc_skewls)；讀不到設定回 None（類股 ETF 照舊算 SR）。"""
-    try:
-        from account_utils import get_account_config
-        cfg = get_account_config(account_name)
-        return (float(cfg.get("alloc_sr", 0)), float(cfg.get("alloc_skewls", 0)))
-    except Exception:
-        return None
+def read_account_trades(account_name: str, path: Path | None = None, *,
+                        alloc: tuple[float, float] | None = None) -> list[TradeLine]:
+    """某帳戶最近 7 天的成交畫面列，新到舊。讀不到紀錄當作沒有成交。
 
-
-def read_account_trades(account_name: str, path: Path | None = None) -> list[TradeLine]:
-    """某帳戶最近 7 天的成交畫面列，新到舊（兩個 Panel 用）。讀不到紀錄當作沒有成交。"""
+    alloc：帳戶的 (alloc_sr, alloc_skewls)；None = 讀不到設定（類股 ETF 照舊算 SR）。
+    """
     try:
         trades = ledger.recent_trades(account_name, path=path)
     except Exception:
         return []
-    alloc = account_alloc(account_name)
     return [trade_line(t, alloc) for t in trades]

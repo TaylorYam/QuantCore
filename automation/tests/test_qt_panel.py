@@ -209,6 +209,7 @@ class FakeExtras:
             "Yvonne": FlexNotConfigured("未設定 IB Flex（accounts.json 的 flex_token／flex_query_id）"),
         }
         self.calls = []
+        self.trade_allocs = []      # trades_fetch 收到的 (帳戶, alloc)（#231）
         self.saves = []
         self.save_error = None
 
@@ -228,7 +229,8 @@ class FakeExtras:
     def flows_fetch(self, name):
         return self._get("flows", self.flows, name)
 
-    def trades_fetch(self, name):
+    def trades_fetch(self, name, alloc=None):
+        self.trade_allocs.append((name, alloc))
         return self._get("trades", self.trades, name)
 
     def config_save(self, name, updates):
@@ -1772,3 +1774,22 @@ def test_cash_flows_are_read_with_the_accounts_flex_settings(fake_config, monkey
     name, cfg, path = seen[0]
     assert name == "Rosa" and cfg["account"] == "U12770188" and cfg["flex_query_id"] == "Q"
     assert path == tmp_path / "flows.json"
+
+
+def test_background_reads_reach_the_portfolio_page_on_the_main_thread(make_window, qtbot,
+                                                                       monkeypatch):
+    """#231：讀數來源在背景讀，畫面只在主執行緒更新。"""
+    from qt_panel.portfolio import PortfolioPage
+    seen = []
+    real_extra, real_state = PortfolioPage.set_extra, PortfolioPage.set_state
+
+    def on_main(real):
+        return lambda self, *a, **k: seen.append(
+            threading.current_thread() is threading.main_thread()) or real(self, *a, **k)
+
+    monkeypatch.setattr(PortfolioPage, "set_extra", on_main(real_extra))
+    monkeypatch.setattr(PortfolioPage, "set_state", on_main(real_state))
+    w = make_window()
+    _wait_extras(w, qtbot)
+    _wait_portfolio(w, qtbot)
+    assert len(seen) >= 12 and all(seen)

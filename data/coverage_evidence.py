@@ -41,7 +41,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from data.trading_calendar import mc  # official NYSE registry (automation/market_calendar.py)
+from automation import market_calendar as mc  # official NYSE registry（#234：不再經 data.trading_calendar 轉手）
 from data.historical_aliases import manifest_entry
 from data.market_data import provider_symbol
 

@@ -17,12 +17,10 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
 
-from market_calendar import NYSE_EARLY_CLOSES, is_nyse_trading_day
+# 交易日與收盤時間（含提前收盤）只問 market_calendar（#234）；這裡只決定刷新時刻。
+from market_calendar import session_clock
 
 _MAX_SCAN_DAYS = 14
-
-_REGULAR_CLOSE = time(16, 0)
-_EARLY_CLOSE = time(13, 0)
 
 _SLOTS_REGULAR = (
     time(9, 30),
@@ -35,25 +33,14 @@ _SLOTS_REGULAR = (
     time(16, 0),
 )
 
-_SLOTS_EARLY = tuple(s for s in _SLOTS_REGULAR if s <= _EARLY_CLOSE)
-
-# ── Early-close detection ───────────────────────────────────────────
-#
-# Keep the schedule tied to the official registry in market_calendar.  That
-# module owns the NYSE holiday and early-close dates, including its offline
-# fallback, so this caller cannot drift from the rest of the application.
-_EARLY_CLOSE_DATES: frozenset[date] = frozenset(NYSE_EARLY_CLOSES)
-
-
-def is_early_close(d: date) -> bool:
-    return d in _EARLY_CLOSE_DATES
-
 
 def refresh_slots(d: date) -> tuple[time, ...]:
-    """Scheduled refresh times for date *d*. Empty if non-trading."""
-    if not is_nyse_trading_day(d):
+    """Scheduled refresh times for date *d* (through that day's close).
+    Empty if non-trading; raises ValueError beyond the official registry."""
+    clock = session_clock(d)
+    if clock is None:
         return ()
-    return _SLOTS_EARLY if is_early_close(d) else _SLOTS_REGULAR
+    return tuple(t for t in _SLOTS_REGULAR if t <= clock.regular_close)
 
 
 def next_refresh_time(now_et: datetime) -> datetime:

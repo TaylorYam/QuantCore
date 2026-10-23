@@ -199,6 +199,31 @@ def test_scheduled_refresh_fires_at_market_slots():
     assert len(calls) == 4
 
 
+def test_unschedulable_refresh_still_starts_and_logs():
+    """排不出下一個時段（NYSE 假日表用完會 raise，#234）：啟動照常刷新一次、
+    不排自動刷新、寫 log；手動刷新仍可用。"""
+    from types import SimpleNamespace
+    t0 = _et(2027, 12, 31, 17, 0)
+    scheduler = Scheduler(t0)
+    calls, logs = [], []
+
+    def no_more(now_et):
+        raise ValueError("official NYSE registry covers 2014-01-01..2027-12-31")
+
+    queries = SimpleNamespace(
+        refresh=lambda **kw: calls.append(kw["source"]),
+        drain_changes=lambda: {}, close=lambda: None)
+    loop = PortfolioRefreshLoop(
+        queries, scheduler.schedule, scheduler.cancel, lambda *_: None,
+        next_refresh_time=no_more, now=scheduler.now, log=logs.append)
+    loop.start()
+    assert calls == ["auto"]
+    assert any("cannot schedule next refresh" in l for l in logs)
+    loop.refresh()
+    assert calls == ["auto", "manual"]
+    loop.stop()
+
+
 def test_late_timer_skips_refresh():
     """Timer fires >5 min late (system slept) → skip refresh, just re-arm."""
     from types import SimpleNamespace

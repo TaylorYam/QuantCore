@@ -163,7 +163,15 @@ class PortfolioRefreshLoop:
 
     def _arm_next(self):
         now = self._now()
-        nxt = self._next_refresh_time(now)
+        try:
+            nxt = self._next_refresh_time(now)
+        except Exception as exc:
+            # 排不出下一個時段（例如 NYSE 假日表用完，#234）：只停自動刷新，
+            # 手動刷新照常；告警由值班（Morning check 提醒／停止排程通知）負責。
+            self._armed_for = self._sched_timer = None
+            if self._log is not None:
+                self._log(f"[GW] Portfolio refresh: cannot schedule next refresh — {exc}")
+            return
         self._armed_for = nxt
         delay_ms = max(1, int((nxt - now).total_seconds() * 1000))
         self._sched_timer = self._schedule(delay_ms, self._scheduled_tick)

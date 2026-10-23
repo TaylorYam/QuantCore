@@ -11,7 +11,7 @@ preview_rebalance（離線預演）— 安全保證 + 決策鏈 pin tests。
   4. 決策數字 pin — sizing / 3% 門檻 / no_price / manual 排除
      全部走真 rebalance_plan（combine 內部不動，ADR-0008）
 
-訊號一律 monkeypatch fixtures（不需 data CSV / accounts.json / IB）。
+訊號一律注入的訊號來源（不需 data CSV / accounts.json / IB）。
 """
 
 from __future__ import annotations
@@ -56,26 +56,34 @@ def isolated_state(monkeypatch, tmp_path):
 
 
 def _patch_signals(monkeypatch, sr=None, universe=None, skewls=None):
-    """signals 模組層 fixtures（preview 透過 signals.* 呼叫 → attr patch 生效）。"""
-    import signals
-    monkeypatch.setattr(signals, "get_sr_weights",
-                        lambda: (dict(sr or {}), "2026-07-03"))
-    monkeypatch.setattr(signals, "get_sp500_universe",
-                        lambda historical=True: set(universe or set()))
-    if skewls is not None:
-        monkeypatch.setattr(signals, "get_skewls_weights",
-                            lambda as_of_date=None: (dict(skewls), "2026-07-03"))
+    """訊號來源（#232）：SR／SkewLS／Universe 固定；SP500 走真的 LiveSource bridge
+    （load state → 純策略函式 → 新 state 交給 plan_inputs），純策略函式由
+    _patch_sp500_live 換掉，以驗證 save_state 攔截真的攔在 live 路徑上。"""
+    from signals import LiveSource, StrategySignal
+
+    class Source(LiveSource):
+        def sr(self):
+            return StrategySignal(dict(sr or {}), "2026-07-03")
+
+        def skewls(self):
+            if skewls is None:
+                raise AssertionError("這個情境不該算 SkewLS 訊號")
+            return StrategySignal(dict(skewls), "2026-07-03")
+
+        def sp500_universe(self, historical=True):
+            return set(universe or set())
+
+        def _selection(self):            # 不讀成分股檔：純策略函式是假的
+            return None
+
+    return Source()
 
 
 def _patch_sp500_live(monkeypatch, wgt):
-    """
-    patch 純策略函式（state 由 caller 傳入/回傳）— 讓真的
-    signals.get_sp500_weights bridge（load → 純函式 → save）原樣執行，
-    以驗證 save_state 攔截真的攔在 live 路徑上。
-    """
+    """patch 純策略函式（state 由 caller 傳入/回傳）。"""
     import strategies.sp500_momentum.signal as sp_signal
 
-    def fake_live(current_holdings, state, as_of_date=None):
+    def fake_live(current_holdings, state, as_of_date=None, selector=None):
         new_state = {**state, "bull_weeks_counter": 2}
         return dict(wgt), pd.Timestamp("2026-07-03"), new_state
 
@@ -86,17 +94,18 @@ def _patch_sp500_live(monkeypatch, wgt):
 
 def test_sp500_save_state_intercepted_filesystem_clean(isolated_state,
                                                        monkeypatch):
-    """sp500 mode 走真 get_sp500_weights（每呼叫必 save）→ 攔截記錄 + 零檔案。"""
+    """sp500 mode 走真的 SP500 bridge（persist 時必 save）→ 攔截記錄 + 零檔案。"""
     import sp500_state
     from preview_rebalance import compute_preview
 
     orig_save = sp500_state.save_state
-    _patch_signals(monkeypatch, sr={}, universe={"MU"})
+    src = _patch_signals(monkeypatch, sr={}, universe={"MU"})
     _patch_sp500_live(monkeypatch, {"MU": 1.0})
 
     res = compute_preview(
         "sp500", _make_ctx(), nav=10_000, positions={"MU": 3.0},
         snapshot_prices={"MU": 100.0},
+        source=src,
     )
 
     assert res.blocked_state_writes == ["sp500_state:Test"]
@@ -113,12 +122,13 @@ def test_skewls_trigger_never_writes_state(isolated_state, monkeypatch):
     """skewls mode 觸發 threshold — live 會走 step 10 寫 state，預演必須不寫。"""
     from preview_rebalance import compute_preview
 
-    _patch_signals(monkeypatch, sr={}, universe=set(),
+    src = _patch_signals(monkeypatch, sr={}, universe=set(),
                    skewls={"REW": 0.8, "XLC": -0.4})
 
     res = compute_preview(
         "skewls", _make_ctx(alloc_skewls=0.30), nav=100_000, positions={},
         snapshot_prices={"REW": 20.0, "XLC": 60.0},
+        source=src,
     )
 
     assert res.skewls is not None
@@ -136,7 +146,7 @@ def test_skewls_threshold_hold_is_not_frozen(isolated_state, monkeypatch):
     import skewls_state
     from preview_rebalance import compute_preview
 
-    _patch_signals(monkeypatch, sr={}, universe=set(),
+    src = _patch_signals(monkeypatch, sr={}, universe=set(),
                    skewls={"REW": 0.8, "XLC": -0.4})
     monkeypatch.setattr(
         skewls_state, "load_state",
@@ -148,6 +158,7 @@ def test_skewls_threshold_hold_is_not_frozen(isolated_state, monkeypatch):
         "skewls", _make_ctx(alloc_skewls=0.30), nav=100_000,
         positions={"REW": 1200.0, "XLC": -200.0},
         snapshot_prices={"REW": 20.0, "XLC": 60.0},
+        source=src,
     )
 
     assert res.skewls.triggered is False                 # Δ=0 ≤ 0.40
@@ -164,7 +175,7 @@ def test_sr_mode_holds_sp500_and_never_calls_signal(isolated_state,
     import strategies.sp500_momentum.signal as sp_signal
     from preview_rebalance import compute_preview
 
-    _patch_signals(monkeypatch, sr={"XLK": 1.0}, universe={"MU"})
+    src = _patch_signals(monkeypatch, sr={"XLK": 1.0}, universe={"MU"})
 
     def _must_not_call(*a, **kw):
         raise AssertionError("mode=sr 不得計算 SP500 訊號（ADR-0004）")
@@ -174,6 +185,7 @@ def test_sr_mode_holds_sp500_and_never_calls_signal(isolated_state,
     res = compute_preview(
         "sr", _make_ctx(), nav=100_000, positions={"MU": 10.0},
         snapshot_prices={"XLK": 100.0, "MU": 50.0},
+        source=src,
     )
 
     assert res.blocked_state_writes == []                # 訊號沒跑 → 無 save 嘗試
@@ -194,7 +206,7 @@ def test_sr_mode_keeps_skewls_last_target(isolated_state, monkeypatch):
     import skewls_state
     from preview_rebalance import compute_preview
 
-    _patch_signals(monkeypatch, sr={}, universe=set())
+    src = _patch_signals(monkeypatch, sr={}, universe=set())
     monkeypatch.setattr(
         skewls_state, "load_state",
         lambda name: {"last_target": {"REW": 0.5},
@@ -204,6 +216,7 @@ def test_sr_mode_keeps_skewls_last_target(isolated_state, monkeypatch):
     res = compute_preview(
         "sr", _make_ctx(alloc_skewls=0.30), nav=100_000, positions={},
         snapshot_prices={"REW": 20.0},
+        source=src,
     )
 
     assert res.skewls.triggered is None                  # 本 mode 不檢查
@@ -219,11 +232,12 @@ def test_threshold_skip_and_entry_order(isolated_state, monkeypatch):
     """3% 門檻內漂移 skip；建倉不受門檻限制 — 與 scheduled rebalance 同腦。"""
     from preview_rebalance import compute_preview
 
-    _patch_signals(monkeypatch, sr={"XLK": 0.5, "XLF": 0.5}, universe=set())
+    src = _patch_signals(monkeypatch, sr={"XLK": 0.5, "XLF": 0.5}, universe=set())
 
     res = compute_preview(
         "sr", _make_ctx(), nav=100_000, positions={"XLK": 390.0},
         snapshot_prices={"XLK": 100.0, "XLF": 50.0},
+        source=src,
     )
 
     # XLK: target int(100000×0.8×0.5/100)=400、drift 1% < 3% → 門檻內不動作
@@ -238,13 +252,14 @@ def test_snapshot_price_priority_and_csv_fallback(isolated_state, monkeypatch):
     """snapshot 報價優先；缺的走 price_lookup；仍缺 → no_price 跳過不下單。"""
     from preview_rebalance import compute_preview
 
-    _patch_signals(monkeypatch, sr={}, universe={"MU", "WDC"})
+    src = _patch_signals(monkeypatch, sr={}, universe={"MU", "WDC"})
     _patch_sp500_live(monkeypatch, {"MU": 0.6, "WDC": 0.4})
 
     res = compute_preview(
         "sp500", _make_ctx(), nav=10_000, positions={"WDC": 5.0},
         snapshot_prices={"MU": 42.0},
         price_lookup=lambda s: None,                     # 模擬本地 CSV 缺檔
+        source=src,
     )
 
     assert res.missing_prices == ["WDC"]
@@ -260,7 +275,7 @@ def test_manual_holding_excluded_even_without_price(isolated_state,
     """手動持倉（BTC）永不下單 — 無報價也只進 manual 對帳列。"""
     from preview_rebalance import compute_preview
 
-    _patch_signals(monkeypatch, sr={}, universe={"MU"})
+    src = _patch_signals(monkeypatch, sr={}, universe={"MU"})
     _patch_sp500_live(monkeypatch, {"MU": 1.0})
 
     res = compute_preview(
@@ -268,6 +283,7 @@ def test_manual_holding_excluded_even_without_price(isolated_state,
         positions={"MU": 3.0, "BTC": 65.1783},
         snapshot_prices={"MU": 100.0},
         price_lookup=lambda s: None,
+        source=src,
     )
 
     assert res.split.other == ["BTC"]
@@ -339,7 +355,7 @@ def test_cli_snapshot_end_to_end(isolated_state, monkeypatch, tmp_path,
     """main()：snapshot 模式 + --json 輸出 + 唯讀 from_name（fake accounts）。"""
     import preview_rebalance as pv
 
-    _patch_signals(monkeypatch, sr={"XLK": 1.0}, universe=set())
+    src = _patch_signals(monkeypatch, sr={"XLK": 1.0}, universe=set())
 
     snap = tmp_path / "snap.json"
     snap.write_text(json.dumps({
@@ -350,7 +366,7 @@ def test_cli_snapshot_end_to_end(isolated_state, monkeypatch, tmp_path,
     out = tmp_path / "preview.json"
 
     rc = pv.main(["--account", "Taylor", "--mode", "sr",
-                  "--snapshot", str(snap), "--json", str(out)])
+                  "--snapshot", str(snap), "--json", str(out)], source=src)
 
     assert rc == 0
     text = capsys.readouterr().out

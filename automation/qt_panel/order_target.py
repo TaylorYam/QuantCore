@@ -50,11 +50,14 @@ class OrderTarget:
     text = LIVE_TARGET_TEXT    # 畫面上的「送往：…」
 
     def __init__(self, *, files: OrderFiles | None = None, account_ctx_loader: Callable,
-                 broker: Broker | None = None):
-        """紀錄檔沒給就用正式的實盤檔；broker 只給測試換成 in-memory fake。"""
+                 broker: Broker | None = None, strategy_source=None):
+        """紀錄檔沒給就用正式的實盤檔；broker、strategy_source（signals.StrategySource）
+        只給測試換成 fake。strategy_source 為 None 時 Sync Pos／接管每次計算用一個新的
+        LiveSource（Panel 開著跨天也讀到當天的資料）。"""
         self._broker = broker or Broker()
         self.files = files or default_live_files()
         self._load_ctx = account_ctx_loader
+        self._strategy_source = strategy_source
 
     # ── 帳戶身分 ─────────────────────────────────────────────────────
 
@@ -70,7 +73,8 @@ class OrderTarget:
 
         return SyncRecords(connect=self._broker.connect,
                            attribution_ledger=self.files.attribution,
-                           manual_orders_store=self.files.orders)
+                           manual_orders_store=self.files.orders,
+                           strategy_source=self._strategy_source)
 
     # ── 通知（手動持倉的新暫停、接管結果由 sync_position／strategy_takeover 發該帳戶
     #    Telegram）─────────────────────────────────────────────────────

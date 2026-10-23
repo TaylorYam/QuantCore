@@ -45,22 +45,25 @@ class _Tue0915(date):
 
 @pytest.fixture
 def daily_check_env(fake_config, monkeypatch):
-    """跑到連 IB 為止的真實流程：SPY 資料、市場狀態用假的，連 IB 一律被拒。"""
+    """跑到連 IB 為止的真實流程：SPY 資料、市場狀態（假的訊號來源，#232）用假的，
+    連 IB 一律被拒。"""
     pytest.importorskip("ib_insync")
     import pandas as pd
-    import signals
     import sp500_daily_check
     from strategies.sp500_momentum import utils
     from tests.fake_broker import install_connect
+    from tests.fake_signals import FakeSource
 
     env = NS(
         spy=pd.DataFrame({"Close": [750.0, 757.3]},
                          index=pd.to_datetime(["2026-09-11", "2026-09-14"])),
         regime={"SPY_Close": 757.3, "SPY_MA200": 714.5, "SPY_DD": -0.022},
+        universe=set(),
     )
+    env.source = FakeSource(regime=lambda ref: env.regime,
+                            universe=lambda historical: env.universe)
     monkeypatch.setattr(sp500_daily_check, "date", _Tue0915)
     monkeypatch.setattr(utils, "load_benchmark", lambda path: env.spy)
-    monkeypatch.setattr(signals, "get_market_regime_state", lambda ref: env.regime)
 
     def refused(ctx, **_kw):
         raise ConnectionRefusedError("[WinError 1225] <refused>")
@@ -69,18 +72,19 @@ def daily_check_env(fake_config, monkeypatch):
     return env
 
 
-def _check(name="Taylor"):
+def _check(env, name="Taylor"):
     import sp500_daily_check
     from account_ctx import AccountCtx
     from account_utils import ROLE_MOO_CHECK
     from notify import Digest
     d = Digest("日度風控 2026-09-15", icon="📤")
-    sp500_daily_check.run_daily_check(AccountCtx.from_name(name, ROLE_MOO_CHECK), d)
+    sp500_daily_check.run_daily_check(AccountCtx.from_name(name, ROLE_MOO_CHECK), d,
+                                      source=env.source)
     return d
 
 
 def test_ib_connect_failure_is_reported(daily_check_env):
-    assert _check().render() == (
+    assert _check(daily_check_env).render() == (
         "<b>❌ 日度風控 2026-09-15</b>\n\n"
         "<b>Taylor</b> ❌ IB 連線失敗\n[WinError 1225] &lt;refused&gt;")
 
@@ -88,13 +92,13 @@ def test_ib_connect_failure_is_reported(daily_check_env):
 def test_missing_spy_history_is_reported(daily_check_env):
     daily_check_env.spy = daily_check_env.spy.iloc[-1:]
     assert ("<b>Taylor</b> ❌ 日度風控失敗\nSPY 資料不足，本次沒有做 dip-buy 檢查"
-            in _check().render())
+            in _check(daily_check_env).render())
 
 
 def test_unreadable_spy_data_is_reported_without_none_type_error(daily_check_env):
     """A missing/unreadable benchmark must halt with an actionable alert."""
     daily_check_env.spy = None
-    rendered = _check().render()
+    rendered = _check(daily_check_env).render()
     assert ("<b>Taylor</b> ❌ 日度風控失敗\n"
             "SPY 資料不可用（檔案不存在或格式錯誤），本次沒有做 dip-buy 檢查"
             in rendered)
@@ -104,7 +108,7 @@ def test_unreadable_spy_data_is_reported_without_none_type_error(daily_check_env
 def test_missing_market_regime_is_reported(daily_check_env):
     daily_check_env.regime = {}
     assert ("<b>Taylor</b> ❌ 日度風控失敗\n讀不到市場狀態資料（SPY / MA200），本次沒有做 dip-buy 檢查"
-            in _check().render())
+            in _check(daily_check_env).render())
 
 
 def test_nyse_holiday_stays_silent(daily_check_env, monkeypatch):
@@ -116,7 +120,7 @@ def test_nyse_holiday_stays_silent(daily_check_env, monkeypatch):
             return date(2026, 9, 7)
 
     monkeypatch.setattr(sp500_daily_check, "date", _LaborDay)
-    assert _check().render() is None
+    assert _check(daily_check_env).render() is None
 
 
 # ── 熊市 dip-buy 的限價：Broker 的送單報價＋統一限價規則（#185 第三階段）──────
@@ -125,7 +129,6 @@ def test_nyse_holiday_stays_silent(daily_check_env, monkeypatch):
 def dip_buy(daily_check_env, fake_config, monkeypatch, tmp_path):
     """SPY 跌 16%、在 MA200 下：觸發第一階 dip-buy，真的送單到 in-memory FakeBroker。"""
     import account_utils
-    import signals
     import sp500_state
     import strategy_orders
     from tests.fake_broker import FakeBroker
@@ -135,16 +138,17 @@ def dip_buy(daily_check_env, fake_config, monkeypatch, tmp_path):
     monkeypatch.setattr(account_utils, "load_base_config",
                         lambda: {**base, "dry_run": False})
     monkeypatch.setattr(sp500_state, "STATE_DIR", tmp_path)
-    monkeypatch.setattr(signals, "get_sp500_universe", lambda: {"AAPL"})
+    daily_check_env.universe = {"AAPL"}
     monkeypatch.setattr(strategy_orders.time, "sleep", lambda _s: None)
     fake = FakeBroker(managed=["U17800779"], positions={"AAPL": 10.0}, price=500.0)
     from tests.fake_broker import install
     install(monkeypatch, fake)
+    fake.env = daily_check_env
     return fake
 
 
 def _dip_limit(fake):
-    _check()
+    _check(fake.env)
     [order] = fake.placed
     assert (order.symbol, order.action, order.order_type) == ("SPY", "BUY", "LMT")
     return order.lmt
@@ -156,7 +160,7 @@ def test_daily_check_logs_the_same_connected_line(dip_buy, caplog):
     from account_utils import ROLE_MOO_CHECK
 
     caplog.set_level("INFO")
-    _check()
+    _check(dip_buy.env)
     ctx = AccountCtx.from_name("Taylor", ROLE_MOO_CHECK)
     assert (f"Connected  host={ctx.host} port={ctx.port} clientId={ctx.client_id} "
             f"account={ctx.account}") in caplog.messages
@@ -178,7 +182,7 @@ def test_dip_buy_without_any_quote_uses_the_reference_price(dip_buy):
 
 
 def test_dip_buy_sends_one_lmt_order_and_reports_it(dip_buy):
-    d = _check()
+    d = _check(dip_buy.env)
     assert [(p.symbol, p.order_type, p.outside_rth) for p in dip_buy.placed] == [("SPY", "LMT", True)]
     assert "熊市 dip-buy 送出 1 筆 LMT" in d.render()
 
@@ -190,7 +194,7 @@ def test_dip_buy_dry_run_neither_sends_nor_cancels_existing_orders(dip_buy, fake
     base, _accounts = fake_config
     monkeypatch.setattr(account_utils, "load_base_config", lambda: {**base, "dry_run": True})
     dip_buy.open_orders = [NS(order=NS(orderId=8, orderRef=""), contract=NS(symbol="AAPL"))]
-    d = _check()
+    d = _check(dip_buy.env)
     assert dip_buy.placed == [] and dip_buy.cancelled == []
     assert "dip-buy" not in (d.render() or "")
 
@@ -263,3 +267,22 @@ def test_quiet_ib_console_preserves_info_file_logging(tmp_path):
                 pass
         logging.root.handlers[:] = saved
         logging.root.setLevel(saved_level)
+
+
+def test_run_shares_one_signal_source_across_accounts(fake_config, run_status_dir, monkeypatch):
+    """16:00 排程入口：三帳戶共用一個訊號來源，SPY／SSO 與成分股只讀一次（#232）。"""
+    import notify
+    import scheduled_run
+    import signals
+    import sp500_daily_check
+
+    monkeypatch.setattr(notify, "tg_send", lambda msg, *, token, chat_id: None)
+    monkeypatch.setattr(scheduled_run, "setup_logging", lambda key: None)
+    monkeypatch.setattr(scheduled_run, "quiet_ib_console", lambda: None)
+    seen = []
+    monkeypatch.setattr(sp500_daily_check, "run_daily_check",
+                        lambda ctx, digest, source: seen.append((ctx.name, source)))
+    assert sp500_daily_check.run(["--account", "all"]) == 0
+    assert [name for name, _ in seen] == ["Taylor", "Rosa", "Yvonne"]
+    assert isinstance(seen[0][1], signals.LiveSource)
+    assert all(source is seen[0][1] for _, source in seen)

@@ -66,12 +66,16 @@ class PortfolioSnapshot:
         return cls(date=str(date.today()), source=source, error=error)
 
 
-def fetch_snapshot(ctx: AccountCtx, *, readonly: bool = False) -> PortfolioSnapshot:
+def fetch_snapshot(ctx: AccountCtx, *, readonly: bool = False,
+                   strategy_source=None) -> PortfolioSnapshot:
     """開一條連線讀這個帳戶的快照，讀完就斷。連不上或讀到一半失敗 → available=False，
-    已讀到的權益／cushion 照樣填（例如權益讀到、持倉讀不到時權益照舊顯示）。"""
+    已讀到的權益／cushion 照樣填（例如權益讀到、持倉讀不到時權益照舊顯示）。
+
+    strategy_source：分類持倉用的 [[Universe]] 從哪個 signals.StrategySource 取；
+    None ＝ LiveSource。"""
     from broker import Broker, connected_line
     from rebalance_plan import classify_holdings
-    from signals import get_sp500_universe
+    from signals import LiveSource
     from strategy_owner import INVERSE_ETFS
     from symbol_contract import contract_symbol
 
@@ -89,7 +93,7 @@ def fetch_snapshot(ctx: AccountCtx, *, readonly: bool = False) -> PortfolioSnaps
 
         if positions:
             held = {p.contract.symbol: p.position for p in positions}
-            split = classify_holdings(held, get_sp500_universe() or set())
+            split = classify_holdings(held, (strategy_source or LiveSource()).sp500_universe() or set())
             stocks = set(split.sp500)
             # 策略持有的 ETF = 類股 ETF ＋ 不在 SP500 組的 SkewLS 反向 ETF
             etfs = set(split.sr) | {s for s in held if s in INVERSE_ETFS and s not in stocks}

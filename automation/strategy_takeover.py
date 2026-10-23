@@ -167,7 +167,8 @@ def _compute(conn, ctx: AccountCtx, symbol: str, log_fn: Callable[[str], None],
                                   "成交或取消後再接管")
 
     inputs = plan_inputs.start(ctx, plan_inputs.SYNC, persist_state=False,
-                               narrator=_TakeoverSteps(log_fn))
+                               narrator=_TakeoverSteps(log_fn),
+                               source=records.strategy_source)
     inputs.read(conn,
                 ledger_path=records.attribution_ledger,
                 manual_orders_path=records.manual_orders_store,

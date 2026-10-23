@@ -51,6 +51,8 @@ class SyncRecords:
     connect: Callable[[AccountCtx], object]
     attribution_ledger: Path
     manual_orders_store: Path
+    # 三策略訊號的 signals.StrategySource（#232）；None ＝ 每次計算用一個新的 LiveSource
+    strategy_source: object = None
 
     def open(self, ctx: AccountCtx):
         return self.connect(ctx)
@@ -144,7 +146,8 @@ def compute_sync_plan(
     #    事後 submit 成功時會更新 state 給未來 threshold 用。
     inputs = plan_inputs.start(ctx, plan_inputs.SYNC,
                                persist_state=True,
-                               narrator=_SyncSteps(_log))
+                               narrator=_SyncSteps(_log),
+                               source=records.strategy_source)
 
     # 2. 連 IB → NAV + 持倉 → 手動持倉歸屬（#106，讀寫失敗拋例外：本帳戶這次
     #    不 Sync，且在算 SP500 訊號寫 state 之前）→ SP500 → 報價

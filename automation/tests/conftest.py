@@ -148,6 +148,23 @@ def _manual_attribution_outside_live(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True, scope="session")
+def _strategy_state_outside_live(tmp_path_factory):
+    """SP500／SkewLS state（runtime state）整個測試階段都寫到暫存目錄。
+
+    排程調倉與 Sync Pos 的測試走真的 plan_inputs：SP500 state 由它寫（#232 起訊號
+    來源只回傳新 state）。若用預設目錄，在 live 工作目錄跑測試會蓋掉真的
+    automation/sp500_state_*.json。要看 state 檔的測試自己再指一個目錄。
+    """
+    import skewls_state
+    import sp500_state
+    base = tmp_path_factory.mktemp("strategy_state")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(sp500_state, "STATE_DIR", base)
+        mp.setattr(skewls_state, "STATE_DIR", base)
+        yield
+
+
+@pytest.fixture(autouse=True, scope="session")
 def _log_backend_not_from_live_config(tmp_path_factory):
     """交易紀錄後端（#230）整個測試階段都不讀 live 的 config.json、不吃外面的環境變數。
 

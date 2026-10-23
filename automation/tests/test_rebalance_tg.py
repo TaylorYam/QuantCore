@@ -126,12 +126,16 @@ def test_run_passes_mode_and_order_type_to_each_account(fake_config, run_status_
     monkeypatch.setattr(notify, "tg_send", lambda msg, *, token, chat_id: None)
     monkeypatch.setattr(scheduled_run, "setup_logging", lambda key: None)
     monkeypatch.setattr(scheduled_run, "quiet_ib_console", lambda: None)
-    seen = []
-    monkeypatch.setattr(rebalance_ib, "main", lambda mode, ctx, digest: seen.append(
-        (mode, ctx.name, ctx.order_type)))
+    seen, sources = [], []
+    monkeypatch.setattr(rebalance_ib, "main", lambda mode, ctx, digest, source: (
+        seen.append((mode, ctx.name, ctx.order_type)), sources.append(source)))
     assert rebalance_ib.run(argv) == 0
     names = ["Taylor", "Rosa", "Yvonne"] if "all" == argv[-1] else [argv[-1]]
     assert seen == [(argv[1], n, order_type) for n in names]
+    # 三帳戶共用一個訊號來源：選股引擎一次執行只建一次（#232）
+    import signals
+    assert isinstance(sources[0], signals.LiveSource)
+    assert all(s is sources[0] for s in sources)
 
 
 # ── main() 收尾：Excel 交易紀錄 + Telegram 段落（#29）──────────────────

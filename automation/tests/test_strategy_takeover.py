@@ -13,7 +13,6 @@ from __future__ import annotations
 import sqlite3
 from types import SimpleNamespace as NS
 
-import pandas as pd
 import pytest
 
 import manual_attribution as ma
@@ -51,9 +50,8 @@ def _manual_order(path, ref, account, symbol, action, filled, status, quantity=1
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """Rosa 手動持有 XYZ 10 股、ABC 5 股，兩檔之後都進了 SP500 Universe。"""
-    import signals
     import sp500_state
-    from strategies.sp500_momentum import signal as sp_signal
+    from tests.fake_signals import FakeSource
 
     # IB 這一側是 in-memory Broker：權益、持倉、掛單、送單行為直接設在 env 上
     env = FakeBroker(managed=["U2"], nav=100_000.0,
@@ -64,20 +62,20 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(ma, "DEFAULT_LEDGER_PATH", tmp_path / "ledger.sqlite3")
     monkeypatch.setattr(ma, "DEFAULT_MANUAL_ORDERS_PATH", env.orders)
     monkeypatch.setattr(sp500_state, "STATE_DIR", env.state_dir)
+
+    def sp500(holdings, name):
+        env.sp500_holdings = list(holdings)
+        return dict(env.sp500), "2026-09-22"
+
+    # 訊號來源（#232）：固定訊號，Universe 已含 XYZ、ABC
+    env.source = FakeSource(sr=lambda: (dict(env.sr), "2026-09-28"), sp500=sp500,
+                            skewls=lambda: (dict(env.skewls), "2026-09-28"),
+                            universe=JOINED, sp500_state={"touched": True})
     # 實盤送單目標給的連線與紀錄（#183：沒有預設，一律明確給）
     env.records = SyncRecords(connect=env.connect,
                               attribution_ledger=tmp_path / "ledger.sqlite3",
-                              manual_orders_store=env.orders)
-    monkeypatch.setattr(signals, "get_sp500_universe", lambda historical=True: set(JOINED))
-    monkeypatch.setattr(signals, "get_sr_weights", lambda: (dict(env.sr), "2026-09-28"))
-    monkeypatch.setattr(signals, "get_skewls_weights",
-                        lambda: (dict(env.skewls), "2026-09-28"))
-
-    def live(holdings, state, as_of_date=None):
-        env.sp500_holdings = list(holdings)
-        return dict(env.sp500), pd.Timestamp("2026-09-22"), dict(state, touched=True)
-
-    monkeypatch.setattr(sp_signal, "get_latest_weights_live", live)
+                              manual_orders_store=env.orders,
+                              strategy_source=env.source)
     # 啟用時 XYZ、ABC 還是策略外 = 手動
     ma.evaluate("Rosa", dict(env.positions), UNIVERSE)
     ma.evaluate("Rosa", dict(env.positions), JOINED)
@@ -279,7 +277,7 @@ def test_other_records_keep_the_live_ledger_untouched(env, tmp_path, monkeypatch
         return env.connect(ctx)
 
     records = SyncRecords(connect=connect, attribution_ledger=other.ledger,
-                          manual_orders_store=other.orders)
+                          manual_orders_store=other.orders, strategy_source=env.source)
     ma.evaluate("Rosa", dict(env.positions), UNIVERSE, ledger_path=other.ledger,
                 manual_orders_path=other.orders)
     ma.evaluate("Rosa", dict(env.positions), JOINED, ledger_path=other.ledger,

@@ -98,6 +98,7 @@ class MainWindow(QMainWindow):
                  taipei_now: Callable[[], datetime] = _taipei_now,
                  tray_factory=None, show_signal: Path | None = None,
                  broker=None,
+                 strategy_source=None,
                  manual_order_service: Callable[..., object] | None = None,
                  symbol_loader: Callable | None = None,
                  live_files: OrderFiles | None = None,
@@ -163,10 +164,10 @@ class MainWindow(QMainWindow):
             names, on_refresh=self.refresh_portfolio,
             on_edit_allocation=self.edit_allocation if allocation_save is not None else None,
             colors=colors)
-        # broker 只給測試換成 in-memory fake（tests/fake_broker.py）
+        # broker、strategy_source 只給測試換成 fake（tests/fake_broker.py、fake_signals.py）
         target = OrderTarget(files=live_files,
                              account_ctx_loader=account_ctx_loader or _load_account_ctx,
-                             broker=broker)
+                             broker=broker, strategy_source=strategy_source)
         self.trading = self._build_trading(target, manual_order_service, symbol_loader)
         self._pages: dict[str, QWidget] = {"Dashboard": self.dashboard,
                                            "Portfolio": self.portfolio,

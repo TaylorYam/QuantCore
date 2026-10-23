@@ -29,9 +29,7 @@ from pathlib import Path
 from datetime import date, datetime
 
 BASE_DIR = Path(__file__).parent
-ROOT_DIR = BASE_DIR.parent
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+import _repo_root  # noqa: E402,F401  QuantCore root 可 import strategies
 
 LOG_DIR = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
@@ -67,10 +65,11 @@ class _DipBuySend(strategy_orders.Narrator):
                  f"  ({src['reason']})")
 
 
-def run_daily_check(ctx: AccountCtx, digest: Digest):
+def run_daily_check(ctx: AccountCtx, digest: Digest, source=None):
     """單一帳戶的每日檢查（ctx 由排程執行殼以 ROLE_MOO_CHECK 建立）。
 
     Telegram 內容加進 digest，由排程執行殼三帳戶合併發送（#26）。
+    source：市場狀態與 [[Universe]] 的 signals.StrategySource；None ＝ LiveSource。
     """
     import broker                   # #185：經 Broker 開連線（讀數、送單在 Connection 上）
     import manual_attribution       # #106：手動持倉暫停閘門
@@ -80,8 +79,10 @@ def run_daily_check(ctx: AccountCtx, digest: Digest):
                              mark_dip_triggered, is_dip_triggered)
     # S7：config / utils 是資料載入 helper（不是策略 business logic），可保留
     from strategies.sp500_momentum import config as sp_cfg, utils
-    # S7：MarketRegime / SelectionEngine 走 signals 統一入口
-    from signals import get_market_regime_state
+    # MarketRegime / SelectionEngine 走訊號來源（#232）
+    if source is None:
+        import signals
+        source = signals.LiveSource()
 
     account_name = ctx.name
     tag = f"[{account_name}]"
@@ -137,7 +138,7 @@ def run_daily_check(ctx: AccountCtx, digest: Digest):
                    "warn", **tg)
         return
 
-    mkt = get_market_regime_state(ref_date)
+    mkt = source.market_regime(ref_date)
     if not mkt:
         log.error("No market regime data")
         digest.add(account_name, run_status.DAILY_CHECK_JOB.failed,
@@ -168,9 +169,8 @@ def run_daily_check(ctx: AccountCtx, digest: Digest):
             log.info("  No positions to check")
             return
 
-        # 分辨 SP500 持倉（排除 SR ETFs）— S7 走 signals 單一入口
-        from signals import get_sp500_universe
-        sp500_universe = get_sp500_universe()
+        # 分辨 SP500 持倉（排除 SR ETFs）
+        sp500_universe = source.sp500_universe()
 
         sp500_holdings = [s for s in current_pos
                           if s not in SECTOR_ETFS and s in sp500_universe]
@@ -267,5 +267,14 @@ def run_daily_check(ctx: AccountCtx, digest: Digest):
         log.info("Disconnected")
 
 
+def run(argv: list[str] | None = None) -> int:
+    """排程入口：三帳戶共用一個訊號來源（SPY／SSO 與成分股只讀一次，#232）。"""
+    import signals
+    source = signals.LiveSource()
+    return scheduled_run.run_job(
+        run_status.DAILY_CHECK_JOB,
+        lambda ctx, digest: run_daily_check(ctx, digest, source=source), argv=argv)
+
+
 if __name__ == '__main__':
-    sys.exit(scheduled_run.run_job(run_status.DAILY_CHECK_JOB, run_daily_check))
+    sys.exit(run())

@@ -11,6 +11,7 @@ _Avoid_: User, Client, Sub-account
 **Strategy**:
 一個自成體系的「訊號 → normalized 目標權重（內部 gross ≤ 1.0）」產生器，不知道帳戶存在，也不知道其他 Strategy 存在。滿倉 gross = 1.0，但**持現金是合法輸出**：[[SR]] 的 WEIGHT_STEP 取整殘差（gross 0.95，歷史 13% 天數，回測同源）與 z-threshold 全空手、[[SP500]] 的等待期 / dip 階梯部分配置；[[Skew LS]] 的 gross 依 regime allocation 另行定義。所有 Strategy 的 target 在帳戶層級加總（pure-function combine），IB 自動 net 多空。
 目前定義：[[SR]]、[[SP500]]、[[Skew LS]]。
+live 端「某個 Strategy 某天的權重與訊號日期」只有一個問法：`automation/signals.py` 的訊號來源（`StrategySource`；本地資料算的是 `LiveSource`，測試給假的）。三個 Strategy 的訊號日期語意並排寫在那裡：[[SR]] 上一個週二之前的最後收盤、[[SP500]] 上一個週三之前的最後收盤、[[Skew LS]] 最後收盤（#232）。
 _Avoid_: Model, Signal generator, Engine
 
 **Constituents**:

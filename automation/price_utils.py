@@ -9,16 +9,12 @@ QuantCore — 參考價的兩個基本零件
 """
 
 import logging
-import sys
-from pathlib import Path
 
 import numpy as np
 
 # load_csv_close 要 import repo 根目錄的 data 套件；排程從 automation/ 啟動時
 # sys.path 沒有根目錄，不能靠呼叫端剛好先 import 了誰（#217）
-_ROOT_DIR = Path(__file__).resolve().parent.parent
-if str(_ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(_ROOT_DIR))
+import _repo_root  # noqa: E402,F401
 
 log = logging.getLogger(__name__)
 

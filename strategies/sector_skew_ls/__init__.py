@@ -12,9 +12,7 @@ top 5 long、bottom 5 short；空頭透過反向 ETF 代理（10 檔）+ XLC 直
         config,
     )
 
-Live signal 入口（S16 完成後）：
-
-    from automation.signals import get_skewls_weights
+Live signal 入口（#232 起）：automation/signals.py 的 `LiveSource().skewls()`。
 """
 
 from .data_loader import load_data

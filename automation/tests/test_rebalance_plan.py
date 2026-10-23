@@ -99,7 +99,7 @@ def test_removed_constituent_still_classified_sp500():
     """[[Universe]] = 歷史聯集：已被移出 SP500 的持股仍歸 SP500 不歸其他。
 
     否則移除日起持股凍結（CIEN 2026-01 教訓）— caller 必須傳歷史聯集
-    （signals.get_sp500_universe(historical=True)）。
+    （signals 的 sp500_universe(historical=True)）。
     """
     from rebalance_plan import classify_holdings
 

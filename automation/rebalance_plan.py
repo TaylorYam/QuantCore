@@ -145,9 +145,9 @@ def select_skewls_weights(run_skewls: bool, alloc_skewls: float,
     - 其他 mode → 一律 state last_target，**不檢查**（triggered=None）—
       確保 SR/SP500 rebal 不會誤砍 SkewLS 倉位（pure-function combine）。
     """
-    from strategies.sector_skew_ls import config as skewls_cfg
     import skewls_state
-    threshold = skewls_cfg.REBAL_THRESHOLD
+    from strategy_owner import skewls_rebal_threshold
+    threshold = skewls_rebal_threshold()
 
     if alloc_skewls <= 0:
         return SkewlsDecision({}, "N/A", None, None, threshold)
@@ -299,8 +299,8 @@ def evaluate_deltas(targets: dict[str, dict],
         若同時**存在策略目標** → excluded_conflict（分類異常 — 2026-06
         inverse 凍結事故的指紋：持倉被誤歸手動、目標單整批蒸發）
     """
-    from strategies.sp500_momentum import config as sp_cfg
-    rebal_thresh = sp_cfg.REBALANCE_THRESHOLD  # 0.03
+    from strategy_owner import position_rebalance_threshold
+    rebal_thresh = position_rebalance_threshold()  # 0.03
 
     other = set(current_other_holdings)
     strategy_syms = (set(targets.keys()) | set(current_pos.keys())) - other

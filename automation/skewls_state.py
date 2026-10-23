@@ -1,153 +1,52 @@
 """
-Sector Skew LS — Threshold rebal state 持久化
-
-Skew LS 用 threshold-based rebal：只在 |today_target − last_applied_target|.sum() >
-REBAL_THRESHOLD 時換倉。為了不被其他 Strategy 的 IB 部位污染（XLC 可能同時被 SR
-long 和 Skew LS short），threshold 比較必須用「Skew LS 自己上次送出的 target」
-作為基準，因此需要 per-account state file。
+Sector Skew LS — 狀態持久化（per-account I/O adapter）
 
 每個帳戶一個檔案：automation/skewls_state_{account_name}.json
 
-State schema
-------------
-{
-  "last_target":      {symbol: signed_weight, ...},   # strategy-normalized 權重
-                                                       # （不含 alloc_skewls 縮放）
-  "last_target_date": "YYYY-MM-DD",                   # signal_date 用來算的最後 close
-  "last_rebal_date":  "YYYY-MM-DD",                   # 上次真的發 MOO 的日期
-                                                       # （signal_date 可能 ≠ rebal_date
-                                                       # 如果 threshold 未觸發）
-}
+讀寫規則（路徑清洗、原子寫入、損毀 → 備份＋拋 StateCorrupted）只在
+automation/account_state.py（#233）；本模組只給 SkewLS 的前綴與預設值。
 
-權重慣例
---------
-- last_target 的 weights **未套 alloc_skewls** — 純粹是 strategy 的 normalized output
-  (gross sum ≈ 0.9-1.0，與 [[Inverse Proxy]] 的 capital efficiency 一致)
-- 與 [strategies/sector_skew_ls/signal.py](../strategies/sector_skew_ls/signal.py)
-  `get_latest_weights_live()` 的 return value 同尺度
-
-檔案操作原則
------------
-- 原子寫入：先寫 .tmp 再 rename
-- 讀取失敗時備份損壞檔案 + 記錄錯誤（不 silent fail）
-- account name 以 regex 清洗，防路徑注入
+狀態的 *語意*（threshold delta、should_rebal、update_after_rebal、DEFAULT_STATE 與
+state schema）在 strategies.sector_skew_ls.state —— 純 dict 運算、不認得 Account。
+本模組從那裡 re-export，讓既有 `skewls_state.update_after_rebal` 的呼叫維持不變。
 """
 
 from __future__ import annotations
 
-import json
-import logging
-import re
-import shutil
 from pathlib import Path
-from datetime import date
 
-import json_state
+import account_state
 
-log = logging.getLogger(__name__)
+import _repo_root  # noqa: E402,F401  strategies 套件在 repo 根目錄
 
-STATE_DIR = Path(__file__).parent
+# 純狀態語意在 strategy 套件；此處 re-export 維持既有介面不變
+from strategies.sector_skew_ls.state import (  # noqa: E402,F401
+    DEFAULT_STATE,
+    compute_threshold_delta,
+    should_rebal,
+    update_after_rebal,
+)
 
-
-DEFAULT_STATE: dict = {
-    "last_target":      {},
-    "last_target_date": None,
-    "last_rebal_date":  None,
-}
+SPEC = account_state.StateSpec(prefix="skewls_state", defaults=DEFAULT_STATE,
+                               label="Skewls state", owner="SkewLS")
 
 
 def _state_path(account_name: str) -> Path:
     """檔名格式：skewls_state_{清洗過的 account_name}.json"""
-    safe = re.sub(r'[/\\:*?"<>|\s]', '_', account_name or 'default')
-    safe = safe.strip('._') or 'default'
-    return STATE_DIR / f"skewls_state_{safe}.json"
+    return account_state.path(SPEC, account_name)
 
 
 def load_state(account_name: str = "") -> dict:
     """讀取帳戶狀態，不存在則回傳預設值（空 last_target）。
-    損壞則備份原檔案並記錄錯誤。"""
-    path = _state_path(account_name)
-    if not path.exists():
-        return json.loads(json.dumps(DEFAULT_STATE))  # deep copy
+    損壞則備份原檔案、記錄錯誤並拋 StateCorrupted（#233）。"""
+    return account_state.load(SPEC, account_name)
 
-    try:
-        state = json_state.load(path, None)
-        # 補齊缺少的鍵
-        for k, v in DEFAULT_STATE.items():
-            state.setdefault(k, v)
-        return state
-    except Exception as e:
-        backup = path.with_suffix(f'.corrupt.{int(date.today().strftime("%Y%m%d"))}.json')
-        try:
-            shutil.copy2(path, backup)
-            log.error(f"Skewls state corrupted: {path} ({e}) — backed up to {backup}")
-        except Exception as be:
-            log.error(f"Skewls state corrupted: {path} ({e}) — backup failed: {be}")
-        log.warning(f"Resetting {account_name} skewls state to defaults. Manual review recommended.")
-        return json.loads(json.dumps(DEFAULT_STATE))
+
+def default_state() -> dict:
+    """新的預設 state（Sync Pos 覆寫損毀檔時的起點，#233）。"""
+    return account_state.default_state(SPEC)
 
 
 def save_state(account_name: str, state: dict) -> None:
     """原子寫入帳戶狀態。"""
-    try:
-        json_state.save_atomic(_state_path(account_name), state)
-    except Exception as e:
-        log.error(f"Failed to save skewls state for {account_name}: {e}")
-        raise
-
-
-def compute_threshold_delta(state: dict, today_target: dict[str, float]) -> float:
-    """
-    計算 today_target vs state['last_target'] 的累積換手 (|Δw|.sum())。
-
-    Parameters
-    ----------
-    state        : load_state 結果
-    today_target : 今天從 signals 的 skewls() 算出的 strategy-normalized 權重
-
-    Returns
-    -------
-    delta : float
-        Σ |today.get(s,0) − last.get(s,0)| over union of symbols.
-        初次執行 (last_target 空) → delta = Σ|today_target.values|.
-    """
-    last = state.get("last_target", {}) or {}
-    symbols = set(last.keys()) | set(today_target.keys())
-    return sum(abs(today_target.get(s, 0.0) - last.get(s, 0.0)) for s in symbols)
-
-
-def should_rebal(state: dict, today_target: dict[str, float],
-                 threshold: float) -> tuple[bool, float]:
-    """
-    判斷是否觸發 rebal。
-
-    Returns
-    -------
-    (triggered, delta)
-        triggered: bool — delta > threshold + epsilon
-        delta:     float — 實際計算的累積換手 (回傳供 log 用)
-    """
-    delta = compute_threshold_delta(state, today_target)
-    eps = 1e-9
-    return (delta > threshold + eps), delta
-
-
-def update_after_rebal(state: dict, new_target: dict[str, float],
-                        signal_date: str, rebal_date: str | None = None) -> dict:
-    """
-    Rebal 成功送出 MOO 後呼叫，更新 state 紀錄。
-
-    Parameters
-    ----------
-    new_target  : 剛送出的 target（strategy-normalized，未套 alloc_skewls）
-    signal_date : 訊號計算所用的最後 close 日期（YYYY-MM-DD）
-    rebal_date  : 觸發 rebal 的日期；None = 用 signal_date
-
-    Returns
-    -------
-    Updated state dict（caller 必須呼叫 save_state 持久化）
-    """
-    state["last_target"]      = dict(new_target)
-    state["last_target_date"] = signal_date
-    state["last_rebal_date"]  = rebal_date or signal_date
-    return state
+    account_state.save(SPEC, account_name, state, what="skewls state")

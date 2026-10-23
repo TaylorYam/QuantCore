@@ -173,6 +173,9 @@ def _compute(conn, ctx: AccountCtx, symbol: str, log_fn: Callable[[str], None],
                 ledger_path=records.attribution_ledger,
                 manual_orders_path=records.manual_orders_store,
                 vet=vet, price_symbols=[symbol])
+    if inputs.sp500_state_error is not None:   # 沒有 SP500 訊號就算不出目標（#233）
+        raise TakeoverRefused(f"{ctx.name} 的 SP500 state 讀不出來："
+                              f"{inputs.sp500_state_error.where()}；人工處理後再接管")
     nav = inputs.nav
     positions = inputs.positions
     attribution = inputs.attribution

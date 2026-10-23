@@ -50,7 +50,7 @@ def _manual_order(path, ref, account, symbol, action, filled, status, quantity=1
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """Rosa 手動持有 XYZ 10 股、ABC 5 股，兩檔之後都進了 SP500 Universe。"""
-    import sp500_state
+    import account_state
     from tests.fake_signals import FakeSource
 
     # IB 這一側是 in-memory Broker：權益、持倉、掛單、送單行為直接設在 env 上
@@ -61,7 +61,7 @@ def env(tmp_path, monkeypatch):
     env.state_dir.mkdir()
     monkeypatch.setattr(ma, "DEFAULT_LEDGER_PATH", tmp_path / "ledger.sqlite3")
     monkeypatch.setattr(ma, "DEFAULT_MANUAL_ORDERS_PATH", env.orders)
-    monkeypatch.setattr(sp500_state, "STATE_DIR", env.state_dir)
+    monkeypatch.setattr(account_state, "STATE_DIR", env.state_dir)
 
     def sp500(holdings, name):
         env.sp500_holdings = list(holdings)
@@ -308,3 +308,14 @@ def test_takeover_orders_survive_strategy_cancel_all():
     takeover = NS(order=NS(orderRef="QUANTCORE_TAKEOVER:ROSA:abc"))
     strategy = NS(order=NS(orderRef=""))
     assert ma.strategy_open_trades([takeover, strategy]) == [strategy]
+
+
+
+def test_corrupt_sp500_state_refuses_takeover_and_keeps_the_file(env):
+    """#233：沒有 SP500 訊號就算不出目標 — 拒絕，不用佔位權重亂算。"""
+    path = env.state_dir / "sp500_state_Rosa.json"
+    path.write_bytes(b'{"bull_weeks_counter": 2,')
+    with pytest.raises(st.TakeoverRefused, match="SP500 state 讀不出來：sp500_state_Rosa.json"):
+        st.build_preview(_ctx(), "XYZ", records=env.records)
+    assert path.read_bytes() == b'{"bull_weeks_counter": 2,'
+    assert env.placed == []

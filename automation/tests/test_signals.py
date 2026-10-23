@@ -309,11 +309,11 @@ def test_signal_dates_follow_each_strategys_schedule(as_of, sr_date, sp500_date,
                                                      tmp_path):
     """訊號日期語意（真資料）：SR 上一個週二之前、SP500 上一個週三之前、SkewLS 截至 as_of
     的最後收盤。"""
+    import account_state
     import pandas as pd
-    import sp500_state
     from signals import LiveSource
 
-    monkeypatch.setattr(sp500_state, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(account_state, "STATE_DIR", tmp_path)
     source = LiveSource(as_of=pd.Timestamp(as_of))
     assert source.sr().signal_date == sr_date
     assert source.sp500([], "Test").signal_date == sp500_date

@@ -70,6 +70,12 @@ mode 有兩種語意：
 - 不寫時，記下「本來會寫哪個 state」（預演報表會揭露）。
 - 送單後的 SkewLS state 更新也只在這裡：排程 mode 觸發門檻才記，SYNC 有目標就記。
 
+state 檔讀不出來（損毀）時，該 Account 該 Strategy 這一輪停下、其他 Strategy 照常，並發 Telegram 要人工處理（#233）：
+- SP500：不算訊號、持股維持不動、不覆寫 state；交給策略接管拒絕；16:00 日度風控不做 dip-buy 檢查。
+- SkewLS（排程 mode）：類股 ETF＋反向 ETF（含 XLC 空單）全部維持現有股數 — SR 與 SkewLS 共用類股 ETF，state 壞了分不出哪些股數屬於 SkewLS。
+- SkewLS（SYNC）：照常同步，送出後用新目標覆寫 state。
+- 損毀檔備份為 `*.corrupt.YYYYMMDD.json`，原檔留在原地；修好或刪掉之前每一輪都會再停、再告警。讀寫規則的唯一實作 `automation/account_state.py`。
+
 帳戶快照來源是 adapter：[[Broker（券商連線層）]] 的連線（21:00 調倉、Sync Pos、接管）和預演的給定快照。決策本身（Combine、hold、門檻、訂單清單）仍在 rebalance_plan。
 _Avoid_: Snapshot（只是其中一部分）、Signals（三策略權重只是其中一部分）
 

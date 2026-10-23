@@ -63,12 +63,10 @@ SKEWLS_TODAY = {"REW": 0.5, "XLC": -0.5}
 @pytest.fixture
 def env(monkeypatch, tmp_path):
     """固定訊號（假的訊號來源，#232）；state 目錄在 tmp。"""
-    import skewls_state
-    import sp500_state
+    import account_state
     from tests.fake_signals import FakeSource
 
-    monkeypatch.setattr(sp500_state, "STATE_DIR", tmp_path)
-    monkeypatch.setattr(skewls_state, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(account_state, "STATE_DIR", tmp_path)
     calls = NS(order=[])
 
     def sp500_weights(holdings, name):

@@ -533,14 +533,14 @@ class _Tue0915(date):
 @pytest.fixture
 def dip_env(paths, fake_config, monkeypatch, tmp_path):
     """sp500_daily_check 熊市 dip-buy 觸發（SPY 回撤 16%）。"""
+    import account_state
     import pandas as pd
     import sp500_daily_check
-    import sp500_state
     from strategies.sp500_momentum import utils
     from tests.fake_signals import FakeSource
 
     env = NS(broker=None)
-    monkeypatch.setattr(sp500_state, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(account_state, "STATE_DIR", tmp_path)
     monkeypatch.setattr(sp500_daily_check, "date", _Tue0915)
     monkeypatch.setattr(utils, "load_benchmark", lambda path: pd.DataFrame(
         {"Close": [750.0, 757.3]}, index=pd.to_datetime(["2026-09-11", "2026-09-14"])))

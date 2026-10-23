@@ -113,6 +113,23 @@ def test_paused_symbols_show_their_reason_and_are_not_sent(
     qtbot.waitUntil(lambda: "XYZ 策略單暫停" in w.dashboard.log_text(), timeout=2000)
 
 
+def test_unreadable_state_file_is_shown_in_the_preview_and_the_log(
+        sync_window, broker, monkeypatch, tmp_path, qtbot):
+    """#233：SP500 state 讀不出來 → SP500 持股這次不動，預覽與 Output Log 都告警。"""
+    import account_state
+    monkeypatch.setattr(account_state, "STATE_DIR", tmp_path)
+    (tmp_path / "sp500_state_Taylor.json").write_bytes(b'{"bull_weeks_counter": 2,')
+    broker.positions = {"AAPL": 100.0}
+    w = sync_window()
+    sync = w.trading.sync
+    compute(qtbot, sync)
+    text = sync.preview_text()
+    assert "State 檔讀不出來（需要人工處理）" in text
+    assert "SP500 state 讀不出來：sp500_state_Taylor.json" in text
+    assert "Already on target" in text                     # AAPL 維持 100、不買 XYZ
+    assert "[!] [Taylor] ⚠️ SP500 state 讀不出來" in w.dashboard.log_text()
+
+
 # ── 沒人在等的結果 ───────────────────────────────────────────────────
 
 def test_discarded_computation_is_dropped_and_never_sent(sync_window, broker, qtbot):

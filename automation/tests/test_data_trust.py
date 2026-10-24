@@ -238,7 +238,7 @@ def _rebalance(problems):
         name="Rosa", account="U00000001", host="127.0.0.1", port=4999, client_id=99,
         dry_run=False, order_type="MOO", outside_rth=False, wait_fill_sec=0,
         alloc_sr=0.0, alloc_sp500=1.0, alloc_skewls=0.0,
-        price_feed_port=None, tg_token="T", tg_chat_id="C")
+        price_feed_port=None)
     source = FakeSource(sp500=({"AAPL": 0.5, "MSFT": 0.5}, SESSION),
                         universe={"AAPL", "MSFT"}, sp500_problems=problems)
     digest = Digest("調倉 T", icon="📤")

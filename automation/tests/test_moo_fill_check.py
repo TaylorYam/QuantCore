@@ -171,8 +171,7 @@ def broker_with(trades=(), fills=(), positions=None):
     return fake
 
 
-CTX = NS(account="U1", name="Taylor", host="127.0.0.1", port=4001, client_id=22,
-         tg_token="T", tg_chat_id="C")
+CTX = NS(account="U1", name="Taylor", host="127.0.0.1", port=4001, client_id=22)
 
 
 def test_main_connects_through_the_broker_and_logs_the_same_line(monkeypatch, caplog):

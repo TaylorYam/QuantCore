@@ -47,7 +47,7 @@ Issue: https://github.com/TaylorYam/QuantCore/issues/16
 - 原版 `origin/main`（c29230f）的查詢輸出以 fake API 抓取三帳戶 × 五情境，固定日期後保存於 `automation/tests/fixtures/portfolio_legacy.json`；新版預設查詢路徑逐一比對序列化結果。
 - 查詢流程不呼叫策略訊號產生器、不改策略 state；上述 characterization 是查詢輸出基準，不是策略 signal／state 的 characterization。
 - 真實驗收工具：`automation/check_portfolio_queries.py`，必須明確提供 `--live-readonly`；只執行一輪查詢，不啟動 Panel／值班／Telegram／交易模組。
-- 工具從實盤設定唯讀取得 Account 身分與連線資訊；測試 ctx 的 Allocation 為零、dry_run 為真、Telegram 憑證為空。測試主連線 ID 為 16025/16035/16045，備援報價 ID 為 17025/17035/17045；與現有角色及固定 99 分離。
+- 工具從實盤設定唯讀取得 Account 身分與連線資訊；測試 ctx 的 Allocation 為零、dry_run 為真（ctx 本身不帶 Telegram 憑證，#253）。測試主連線 ID 為 16025/16035/16045，備援報價 ID 為 17025/17035/17045；與現有角色及固定 99 分離。
 - 實際查詢以 `readonly=True` 連線，非零 client ID，不接管或綁定既有訂單；此參數是客戶端同步模式，不代表更改 Gateway 權限。安全範圍由工具僅呼叫查詢函式保證。
 - 報告寫在開發 worktree 的 gitignored `output/`，只含成功狀態、時間、持倉筆數及測試 ID，不保存帳號、NAV 數值或標的明細。
 - 對照實盤 code/config/state/report 檔案雜湊及原有 TCP 連線，確認測試沒有改寫檔案或中斷既有連線。這些檢查不等同證明 Gateway 內部完全沒有負載變化。

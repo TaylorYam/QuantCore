@@ -46,7 +46,7 @@ def base_ctx(name, role):
         host="127.0.0.1", port={"Taylor": 4001, "Rosa": 4002, "Yvonne": 4003}[name],
         client_id=20 + role, dry_run=True, order_type="MOO", outside_rth=False,
         wait_fill_sec=0, alloc_sr=0.0, alloc_sp500=0.5, alloc_skewls=SKEWLS_ALLOC[name],
-        price_feed_port=4002, tg_token="LIVE-TOKEN", tg_chat_id="LIVE-CHAT",
+        price_feed_port=4002,
     )
 
 

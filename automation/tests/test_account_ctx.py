@@ -30,8 +30,8 @@ def test_from_name_taylor(fake_config):
     assert ctx.alloc_skewls == 0.0    # 預設 0，不影響 live
     assert ctx.dry_run is True
     assert ctx.order_type == "MOO"
-    assert ctx.tg_token == "FAKE_TOKEN"
-    assert ctx.tg_chat_id == "FAKE_CHAT"
+    # Telegram 目的地由 account_utils.telegram_dest 決定，ctx 不帶 token（#253）
+    assert not hasattr(ctx, "tg_token") and not hasattr(ctx, "tg_chat_id")
 
 
 def test_from_name_rosa(fake_config):
@@ -109,7 +109,7 @@ def test_frozen_replace_creates_new_object(fake_config):
     assert original.outside_rth is False
     # Other fields preserved
     assert modified.port == original.port
-    assert modified.tg_token == original.tg_token
+    assert modified.price_feed_port == original.price_feed_port
 
 
 def test_client_id_unique_per_role(fake_config):

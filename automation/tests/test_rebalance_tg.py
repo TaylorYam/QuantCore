@@ -106,7 +106,7 @@ def test_add_section_never_raises(monkeypatch):
         raise RuntimeError("format bug")
 
     monkeypatch.setattr(rebalance_ib, "rebalance_tg_section", broken)
-    ctx = NS(name="Taylor", order_type="MOO", dry_run=False, tg_token="T", tg_chat_id="C")
+    ctx = NS(name="Taylor", order_type="MOO", dry_run=False)
     d = Digest("調倉")
     rebalance_ib._add_rebalance_section(d, ctx, placed=PLACED, fill_results=[])
     assert d.render() is None
@@ -142,8 +142,7 @@ def test_run_passes_mode_and_order_type_to_each_account(fake_config, run_status_
 
 def _ctx(name="Taylor"):
     from types import SimpleNamespace as NS
-    return NS(name=name, order_type="MOO", dry_run=False, leverage=1.3,
-              tg_token="T", tg_chat_id="C")
+    return NS(name=name, order_type="MOO", dry_run=False, leverage=1.3)
 
 
 def test_log_trades_and_report_writes_each_order(monkeypatch):
@@ -203,7 +202,7 @@ def test_digest_renders_three_accounts_in_one_message():
 
     d = Digest("調倉 2026-09-10", icon="📤")
     for name, placed in (("Taylor", PLACED), ("Rosa", PLACED[:1]), ("Yvonne", [])):
-        ctx = NS(name=name, order_type="MOO", dry_run=False, tg_token="T", tg_chat_id="C")
+        ctx = NS(name=name, order_type="MOO", dry_run=False)
         rebalance_ib._add_rebalance_section(d, ctx, placed=placed, fill_results=[])
     assert d.render() == (
         "<b>📤 調倉 2026-09-10</b>\n"

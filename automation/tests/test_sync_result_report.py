@@ -9,7 +9,7 @@ import sync_position as sp
 
 
 def plan():
-    ctx = NS(name="Rosa", leverage=1.0, dry_run=False, tg_token="T", tg_chat_id="C")
+    ctx = NS(name="Rosa", leverage=1.0, dry_run=False)
     return NS(ctx=ctx, nav=123_456.789, sr_date="2026-09-30", sp500_date="2026-09-29")
 
 

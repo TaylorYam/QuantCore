@@ -117,7 +117,7 @@ def test_order_path_uses_broker_symbol_in_mock_ib():
         name="Test", account="U00000000", host="127.0.0.1", port=4001,
         client_id=20, dry_run=True, order_type="MOO", outside_rth=False,
         wait_fill_sec=0, alloc_sr=0.0, alloc_sp500=0.5, alloc_skewls=0.0,
-        price_feed_port=None, tg_token="", tg_chat_id="",
+        price_feed_port=None,
     )
     from broker import Connection
     sent = strategy_orders.send(

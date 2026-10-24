@@ -28,7 +28,7 @@ def _ctx(order_type="LMT", dry_run=False, outside_rth=True, wait=30):
         name="Rosa", account="U00000001", host="127.0.0.1", port=4999,
         client_id=99, dry_run=dry_run, order_type=order_type, outside_rth=outside_rth,
         wait_fill_sec=wait, alloc_sr=0.0, alloc_sp500=0.5, alloc_skewls=0.0,
-        price_feed_port=None, tg_token="", tg_chat_id="",
+        price_feed_port=None,
     )
 
 

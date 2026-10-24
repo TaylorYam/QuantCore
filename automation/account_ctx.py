@@ -21,7 +21,7 @@ Usage:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from account_utils import get_account_config
 from broker import client_id as broker_client_id
@@ -59,10 +59,6 @@ class AccountCtx:
 
     # ── Data feed ────────────────────────────────────────────
     price_feed_port: int         # 備援報價 port（有 MD 訂閱的帳戶）
-
-    # ── Telegram ─────────────────────────────────────────────
-    tg_token: str
-    tg_chat_id: str
 
     # ── Computed fields ──────────────────────────────────────
     @property
@@ -105,8 +101,6 @@ class AccountCtx:
             alloc_sp500    = float(cfg.get('alloc_sp500', 0.50)),
             alloc_skewls   = float(cfg.get('alloc_skewls', 0.0)),
             price_feed_port= int(cfg.get('price_feed_port', 4002)),
-            tg_token       = cfg.get('telegram_token', ''),
-            tg_chat_id     = cfg.get('telegram_chat_id', ''),
         )
 
     def __repr__(self) -> str:

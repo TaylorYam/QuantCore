@@ -4,7 +4,7 @@
 10pt 小字的中文是灰階、沒對齊像素格，筆畫發糊不連續。正黑體只有一般／粗體兩種字重，
 font-weight 500 會顯示成一般、600 以上是粗體。
 
-淺灰頁面、白色卡片、深色字；Tk 版的深藍＋金色只當重點色。
+淺灰頁面、白色卡片、深色字；深藍＋金色只當重點色。
 """
 
 BG = "#f4f6f9"
@@ -27,7 +27,7 @@ WARN_TEXT = "#9a3412"
 GATEWAY_COLOR = {"init": TEXT_FAINT, "connecting": ORANGE, "online": GREEN, "offline": RED}
 GATEWAY_TEXT = {"init": "檢查中…", "connecting": "連線中…", "online": "線上", "offline": "離線"}
 
-AMBER = "#b45309"   # 白底上看得清楚的黃（Tk 的 yellow）
+AMBER = "#b45309"   # 白底上看得清楚的黃
 BLUE = "#1d4ed8"
 
 # portfolio_display 等共用模組回傳的 theme key → 新 Panel 的顏色

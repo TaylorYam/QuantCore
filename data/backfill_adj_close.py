@@ -1,6 +1,8 @@
 """
 QuantCore — 一次性回補：填回 data/stocks/*.csv 缺失的 Adj Close 欄位
 
+一次性／研究用：不在排程或 Panel 裡執行，見 docs/data-roadmap.md（#236）。
+
 背景：
     舊版 update_data.py 下載時沒抓 "Adj Close" 欄位，導致 2026-01-30 之後
     新增的資料列該欄位為空。SP500 momentum 策略用 Adj Close 算 adj_slope

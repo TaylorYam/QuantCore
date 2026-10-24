@@ -1,5 +1,5 @@
 """
-Unit tests for notify.tg_send / tg_send_photo / Digest.
+Unit tests for notify.tg_send / Digest.
 
 Coverage:
   - Empty token / chat_id → silent no-op (no network call)
@@ -81,23 +81,6 @@ def test_tg_send_token_and_chat_id_are_keyword_only():
         notify.tg_send("msg", "TOKEN", "CHAT")  # type: ignore[misc]
 
 
-def test_tg_send_photo_empty_token_is_noop():
-    import notify
-    with patch("urllib.request.urlopen") as mock_urlopen:
-        notify.tg_send_photo("/nonexistent.png",
-                             token="", chat_id="123", caption="test")
-        assert not mock_urlopen.called
-
-
-def test_tg_send_photo_file_not_found_is_swallowed():
-    """FileNotFoundError inside open() should be caught."""
-    import notify
-    # No mock needed: real token but nonexistent file.
-    # Should log warning, not raise.
-    notify.tg_send_photo("/definitely/does/not/exist.png",
-                         token="TOKEN", chat_id="CHAT")
-
-
 # ── Digest（#26：同一排程多帳戶合併一則）─────────────────────────────
 
 DEST = {"token": "TOKEN", "chat_id": "CHAT"}
@@ -172,6 +155,22 @@ def test_digest_escapes_account_names():
     d = notify.Digest("t")
     d.add("A<B", "x", **DEST)
     assert "<b>A&lt;B</b> x" in d.render()
+
+
+def test_digest_escape_split_title_by_digest_rest_by_caller():
+    """#236：Digest 只 escape 標題與帳戶名稱；headline／body／note／footer 原樣
+    輸出（caller 可放 <b> 等標籤，動態字串由 caller 用 error_line 等 escape）。"""
+    import notify
+    d = notify.Digest("調倉 <t>")
+    d.note("<i>note</i>")
+    d.add("Taylor", "<i>head</i>", ["<code>body</code>", notify.error_line("boom <x>")],
+          **DEST)
+    d.footer("<b>foot</b>", **DEST)
+    msg = d.render()
+    assert "調倉 &lt;t&gt;</b>" in msg and "<t>" not in msg
+    for raw in ("<i>note</i>", "<b>Taylor</b> <i>head</i>", "<code>body</code>",
+                "boom &lt;x&gt;", "<b>foot</b>"):
+        assert raw in msg
 
 
 def test_digest_groups_by_destination(monkeypatch):

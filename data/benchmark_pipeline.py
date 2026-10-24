@@ -1,5 +1,7 @@
 """Offline timing of existing SP500 code on a caller-supplied dataset.
 
+一次性／研究用：不在排程或 Panel 裡執行，見 docs/data-roadmap.md（#236）。
+
 No strategy changes, report writing, live state, network or broker connections.
 Each repetition has fresh application caches; the OS file cache is NOT flushed.
 """

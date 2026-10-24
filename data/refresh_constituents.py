@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import html
-import json
 import os
 import re
 import secrets
@@ -50,7 +49,6 @@ STOCK_DIR         = ROOT / "data" / "stocks"
 CONST_FILE        = REF_DIR / "sp500_constituents_daily.xlsx"
 TRADING_DAYS_FILE = REF_DIR / "us_trading_days.xlsx"
 LOG_DIR           = ROOT / "automation" / "logs"
-TELEGRAM_CFG      = ROOT / "automation" / "config.json"
 
 # 官方 NYSE registry（G0/G7）與 reader 的代碼命名契約（BRK.B → BRK-B.csv）
 for _path in (ROOT, ROOT / "automation"):
@@ -97,21 +95,11 @@ def die(msg: str) -> "NoReturn":
     sys.exit(1)
 
 
-# ── Telegram (optional; reuses automation/notify.py) ─────────────────────────
+# ── Telegram：系統層告警走 notify.send_system（config.json 共用頻道，#207）──
 def tg_notify(msg: str) -> None:
-    if not TELEGRAM_CFG.exists():
-        return
-    try:
-        cfg = json.loads(TELEGRAM_CFG.read_text(encoding="utf-8"))
-        token = cfg.get("telegram_token", "")
-        chat_id = cfg.get("telegram_chat_id", "")
-        if not (token and chat_id):
-            return
-        sys.path.insert(0, str(ROOT / "automation"))
-        from notify import tg_send
-        tg_send(msg, token=token, chat_id=chat_id)
-    except Exception as e:
-        log(f"Telegram send skipped: {e}", level="WARN")
+    from notify import send_system
+    if not send_system(msg):     # 送不出去的原因 send_system 已記在 logging
+        log("Telegram send skipped: not configured or not delivered", level="WARN")
 
 
 # ── Wikipedia fetch ──────────────────────────────────────────────────────────

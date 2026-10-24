@@ -1,5 +1,8 @@
 """
 QuantCore 資料遷移腳本
+
+一次性／研究用：不在排程或 Panel 裡執行，見 docs/data-roadmap.md（#236）。
+
 統一格式：CSV，欄位 Date, Open, High, Low, Close, Adj Close, Volume
 來源：
   - ETF/基準：yfinance 重新下載（確保 OHLCV 完整）

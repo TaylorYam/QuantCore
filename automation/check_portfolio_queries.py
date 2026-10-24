@@ -20,6 +20,8 @@ from portfolio_queries import PortfolioQueries
 
 
 def load_contexts(source_root):
+    # 刻意不用 AccountCtx.from_name（#236 評估過）：它讀執行端自己的 accounts.json，
+    # 會帶進配置比例與 Telegram；這裡要的是 --source-root 那份安裝的連線身分而已。
     config_dir = source_root / "automation"
     base = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
     accounts = json.loads((config_dir / "accounts.json").read_text(encoding="utf-8"))

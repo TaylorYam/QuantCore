@@ -20,7 +20,6 @@ QuantCore-master/
 │   ├── update_data.py          #   增量更新腳本
 │   ├── refresh_constituents.py #   SP500 成分股自動更新（ADR-0009）
 │   ├── checksum.py             #   資料完整性校驗
-│   ├── migrate_data.py         #   可攜式資料根目錄遷移
 │   ├── etfs/                   #   板塊 ETF 日線 CSV
 │   ├── stocks/                 #   S&P 500 成分股日線 CSV（500+）
 │   └── reference/              #   成分股歷史 / 交易日曆

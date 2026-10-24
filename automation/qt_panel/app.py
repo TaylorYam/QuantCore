@@ -1,6 +1,6 @@
 """Panel 的啟動流程：管理員權限 → 單一實例 → 讀設定 → 開主視窗（#147）。
 
-Panel 負責值班與實盤送單（#154 從 Tk Panel 切換，#155 刪除 Tk Panel）。
+Panel 負責值班與實盤送單（PySide6，ADR-0012）。
 單一實例鎖保證同時只有一個 Panel 在值班；第二次開啟只會把已開的視窗叫到前面。
 """
 from __future__ import annotations

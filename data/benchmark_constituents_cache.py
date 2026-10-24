@@ -1,4 +1,7 @@
-"""Measure authoritative Excel parsing and derived Constituents cache paths."""
+"""Measure authoritative Excel parsing and derived Constituents cache paths.
+
+一次性／研究用：不在排程或 Panel 裡執行，見 docs/data-roadmap.md（#236）。
+"""
 from __future__ import annotations
 
 import argparse

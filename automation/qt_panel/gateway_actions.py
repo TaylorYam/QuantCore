@@ -68,7 +68,7 @@ class Dialogs(Protocol):
 
 
 class QtDialogs:
-    """真的跳窗。跳窗暫設最上層：被 Gateway 視窗蓋住時 Panel 才不會整個點不動（Tk #124）。"""
+    """真的跳窗。跳窗暫設最上層：被 Gateway 視窗蓋住時 Panel 才不會整個點不動。"""
 
     def __init__(self, parent: QWidget):
         self._parent = parent
@@ -192,7 +192,7 @@ class GatewayStartFlow(QObject):
             if line:
                 self._log(f"[GW] {line}")
         started = isinstance(result, Started)
-        # 三個都登入就沒有要使用者處理的事：不跳窗（Tk #129）
+        # 三個都登入就沒有要使用者處理的事：不跳窗
         if not (started and result.all_logged_in):
             self._dialogs.show_message("啟動 Gateway", msg, error=not ok)
             if started:
@@ -200,7 +200,7 @@ class GatewayStartFlow(QObject):
         if started:
             self._begin_post_login_checks()
 
-    # ── 登入後：等 Gateway 能接 API 再重新檢查（同 Tk #131 的節奏）─────
+    # ── 登入後：等 Gateway 能接 API 再重新檢查 ─────
 
     def _begin_post_login_checks(self) -> None:
         self._checks = 0

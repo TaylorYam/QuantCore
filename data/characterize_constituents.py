@@ -1,5 +1,7 @@
 """Capture deterministic Constituents and 3 Account x 5 SP500 signal/state output.
 
+一次性／研究用：不在排程或 Panel 裡執行，見 docs/data-roadmap.md（#236）。
+
 This is an offline characterization tool.  It redirects every config path and
 state write to caller-supplied locations and restores pre-existing state bytes
 after each run.

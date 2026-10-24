@@ -1,5 +1,7 @@
 """Audit and stage verified historical Constituents membership repairs (#54).
 
+一次性／研究用：不在排程或 Panel 裡執行，見 docs/data-roadmap.md（#236）。
+
 The January 2026 workbook was reconstructed from a current ticker list.  That
 made later joiners appear under their current symbols before they joined the
 index.  This tool applies only the reviewed effective dates in

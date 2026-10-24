@@ -15,9 +15,6 @@ import sys
 from pathlib import Path
 from datetime import date
 
-import matplotlib
-matplotlib.use('Agg')
-
 BASE_DIR = Path(__file__).parent
 LOG_DIR  = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)
@@ -36,6 +33,7 @@ import scheduled_run
 
 # ── AccountCtx（S6：ctx 為所有函式的必要參數，無 module global 可 fallback）
 from account_ctx import AccountCtx
+from account_utils import telegram_dest   # #207：Telegram 目的地唯一來源
 
 # ── IB 連線經 Broker（#185）；權益、持倉、報價都在 broker.Connection 上
 import broker
@@ -90,7 +88,7 @@ def main(ctx: AccountCtx, digest: Digest):
 
     警示加進 digest（排程執行殼三帳戶合併一則發送）。
     """
-    dest = {"token": ctx.tg_token, "chat_id": ctx.tg_chat_id}
+    dest = telegram_dest(ctx.name)
     acct_name = ctx.name
 
     log.info(f"QuantCore daily report start — {date.today()}")

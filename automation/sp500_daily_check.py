@@ -26,7 +26,7 @@ Telegram：dip-buy 送單、資料錯位中止、失敗（讀不到資料、連�
 import logging
 import sys
 from pathlib import Path
-from datetime import date, datetime
+from datetime import date
 
 BASE_DIR = Path(__file__).parent
 import _repo_root  # noqa: E402,F401  QuantCore root 可 import strategies
@@ -39,6 +39,7 @@ from notify import Digest, error_line, order_group_lines   # 三帳戶合併一�
 import run_status
 import scheduled_run                            # #206：排程執行殼
 from account_ctx import AccountCtx
+from account_utils import telegram_dest       # #207：Telegram 目的地唯一來源
 import strategy_orders                          # #205：策略單送出（撤舊單、限價、送單、成交）
 log = logging.getLogger(__name__)
 
@@ -65,7 +66,7 @@ def run_daily_check(ctx: AccountCtx, digest: Digest, source=None):
     from strategy_owner import SECTOR_ETFS   # #187：類股 ETF 清單唯一來源
     from symbol_contract import canonical_symbol
     from account_state import MANUAL_FIX, StateCorrupted
-    from sp500_state import (load_state, save_state, update_bull_counter,
+    from sp500_state import (load_state, save_state,
                              mark_dip_triggered, is_dip_triggered)
     # S7：config / utils 是資料載入 helper（不是策略 business logic），可保留
     from strategies.sp500_momentum import config as sp_cfg, utils
@@ -81,7 +82,7 @@ def run_daily_check(ctx: AccountCtx, digest: Digest, source=None):
     log.info(f"  {tag} SP500 Daily Check  {date.today()}")
     log.info(f"{'='*60}")
 
-    tg = {"token": ctx.tg_token, "chat_id": ctx.tg_chat_id}
+    tg = telegram_dest(ctx.name)
 
     # ── 載入市場資料（SPY df 用於取 trading day index，非 strategy logic）
     spy_path = sp_cfg.ETF_DIR / "SPY.csv"

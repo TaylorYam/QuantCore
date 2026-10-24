@@ -12,6 +12,8 @@ BRK-B.csv, the same naming contract as the strategy reader).
 Usage:
     python data/refresh_constituents.py             # interactive
     python data/refresh_constituents.py --dry-run   # show diff only, no writes
+    python data/refresh_constituents.py --rebuild-from YYYY-MM-DD
+                                                    # rewrite rows from that date (#249)
 
 Design: see docs/adr/0002-sp500-constituents-on-demand-refresh.md
 """
@@ -22,6 +24,7 @@ import argparse
 import html
 import json
 import os
+import re
 import secrets
 import shutil
 import sys
@@ -68,6 +71,9 @@ CHANGES_SOFT_WARN = 10      # G3
 # "ticker" 抓 symbol rename 列（如 2026-06-24 SATS→ECHO）
 RENAME_KEYWORDS   = ["rename", "merger", "acqui", "private", "spin-off", "spinoff",
                      "spun off", "ticker"]
+# 晚登錄事件（#249）往回看的天數，同 G2。2026-10-24 用 live 名單 518 個
+# base（2024-10 起）對當時 Wikipedia 歷史表校準：30–730 天都是 0 誤報。
+LATE_EVENT_LOOKBACK_DAYS = GAP_LIMIT_DAYS
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 LOG_DIR.mkdir(exist_ok=True, parents=True)
@@ -204,9 +210,10 @@ def inspect_existing_excel() -> tuple[pd.Timestamp, set[str], dict[str, pd.DataF
     if not CONST_FILE.exists():
         die(f"Existing constituents file not found: {CONST_FILE}")
 
-    xl = pd.ExcelFile(CONST_FILE, engine="openpyxl")
-    all_sheets = {name: pd.read_excel(xl, sheet_name=name) for name in xl.sheet_names}
-    year_sheets = sorted(s for s in xl.sheet_names if s.isdigit())
+    # 用 with 關檔：Windows 上沒關的讀取 handle 會讓之後的 os.replace 失敗
+    with pd.ExcelFile(CONST_FILE, engine="openpyxl") as xl:
+        all_sheets = {name: pd.read_excel(xl, sheet_name=name) for name in xl.sheet_names}
+    year_sheets = sorted(s for s in all_sheets if s.isdigit())
     if not year_sheets:
         die(f"No year sheets found in {CONST_FILE.name}")
 
@@ -226,12 +233,7 @@ def inspect_existing_excel() -> tuple[pd.Timestamp, set[str], dict[str, pd.DataF
         sheet_last = df["Date"].iloc[-1]
         if last_date is None or sheet_last > last_date:
             last_date = sheet_last
-            last_row = df.iloc[-1]
-            last_constituents = {
-                str(v).replace(".txt", "").strip().upper()
-                for v in last_row.values
-                if isinstance(v, str) and str(v).strip() and not str(v).startswith("20")
-            }
+            last_constituents = _row_tickers(df.iloc[-1])
             ticker_cols = [c for c in df.columns if c != "Date"]
 
     if last_date is None:
@@ -240,6 +242,79 @@ def inspect_existing_excel() -> tuple[pd.Timestamp, set[str], dict[str, pd.DataF
     log(f"  Existing Excel last_date = {last_date.date()}  "
         f"constituents = {len(last_constituents)}  ticker_cols = {len(ticker_cols)}")
     return last_date, last_constituents, all_sheets, ticker_cols
+
+
+def _row_tickers(row: pd.Series) -> set[str]:
+    return {
+        str(v).replace(".txt", "").strip().upper()
+        for v in row.values
+        if isinstance(v, str) and str(v).strip() and not str(v).startswith("20")
+    }
+
+
+def dated_rows(
+    all_sheets: dict[str, pd.DataFrame],
+    after: pd.Timestamp | None = None,
+    before: pd.Timestamp | None = None,
+) -> dict[pd.Timestamp, set[str]]:
+    """Existing snapshots with after < Date < before, across all year sheets."""
+    rows: dict[pd.Timestamp, set[str]] = {}
+    for name in sorted(s for s in all_sheets if s.isdigit()):
+        df = all_sheets[name]
+        if "Date" not in df.columns or df.empty:
+            continue
+        dates = pd.to_datetime(df["Date"], errors="coerce")
+        keep = dates.notna()
+        if after is not None:
+            keep &= dates > after
+        if before is not None:
+            keep &= dates < before
+        for d, (_, row) in zip(dates[keep], df[keep].iterrows()):
+            rows[d] = _row_tickers(row)
+    return dict(sorted(rows.items()))
+
+
+def snapshot_before(
+    all_sheets: dict[str, pd.DataFrame], when: pd.Timestamp,
+) -> tuple[pd.Timestamp, set[str]] | None:
+    """The last existing snapshot strictly before *when* (the --rebuild-from base)."""
+    rows = dated_rows(all_sheets, before=when)
+    if not rows:
+        return None
+    last = max(rows)
+    return last, rows[last]
+
+
+_BACKUP_STAMP = re.compile(r"\.bak_(\d{8})_(\d{6})$")
+
+
+def _excel_last_date(path: Path) -> pd.Timestamp | None:
+    try:
+        with pd.ExcelFile(path, engine="openpyxl") as xl:
+            dates = [pd.to_datetime(pd.read_excel(xl, sheet_name=s, usecols=["Date"])["Date"],
+                                    errors="coerce").max()
+                     for s in xl.sheet_names if s.isdigit()]
+    except Exception:
+        return None
+    dates = [d for d in dates if pd.notna(d)]
+    return max(dates) if dates else None
+
+
+def find_restore_backup(rebuild_from: pd.Timestamp) -> tuple[Path, pd.Timestamp] | None:
+    """atomic_apply 每次寫入前都備份；rebuild_from 當天或之後的第一份備份 = 那天
+    之前最後一次寫入的結果。讀它的最後一列確認早於 rebuild_from 才回報。"""
+    stamped = []
+    for path in CONST_FILE.parent.glob(f"{CONST_FILE.stem}.bak_*{CONST_FILE.suffix}"):
+        m = _BACKUP_STAMP.search(path.stem)
+        if m and pd.Timestamp(m.group(1)) >= rebuild_from:
+            stamped.append((m.group(1) + m.group(2), path))
+    if not stamped:
+        return None
+    path = min(stamped)[1]
+    last = _excel_last_date(path)
+    if last is None or last >= rebuild_from:
+        return None
+    return path, last
 
 
 # ── Trading days ─────────────────────────────────────────────────────────────
@@ -301,6 +376,100 @@ def reconstruct_gap(
         snapshots[td] = set(current)
 
     return snapshots, gap_events
+
+
+def detect_late_events(
+    changes_df: pd.DataFrame,
+    base_date: pd.Timestamp,
+    rows: dict[pd.Timestamp, set[str]],
+) -> pd.DataFrame:
+    """#249：Wikipedia 在我們寫完名單之後才補登、生效日又早於 base_date 的事件。
+    reconstruct_gap 只套用 Date >= base_date，這種事件會被永久跳過，之後每次
+    G1 都 fail。*rows* 是既有名單列，用 late_event_rows() 取（涵蓋整個 lookback）。
+
+    生效日到 base_date 之間只要有一列反映了事件（加入的在、移除的不在）就算已
+    套用；之後才消失是別的原因（例：2026-03-23 加入的 SATS 06-24 改名 ECHO），
+    不是晚登錄。只比 base 那一列的話，這種「加入後改名」會被誤報好幾個月。"""
+    cutoff = base_date - pd.Timedelta(days=LATE_EVENT_LOOKBACK_DAYS)
+    window = changes_df[(changes_df["Date"] >= cutoff) & (changes_df["Date"] < base_date)]
+
+    def reflected(ev: pd.Series) -> bool:
+        since = [tks for d, tks in rows.items() if ev["Date"] <= d <= base_date]
+        if not since:
+            return True                       # 沒有可對照的列，不判定
+        add, rem = ev["Added_Ticker"], ev["Removed_Ticker"]
+        return ((not add or any(add in tks for tks in since))
+                and (not rem or any(rem not in tks for tks in since)))
+
+    late = pd.Series([not reflected(ev) for _, ev in window.iterrows()],
+                     index=window.index, dtype=bool)
+    return window[late].sort_values("Date", kind="stable")
+
+
+def late_event_rows(all_sheets: dict[str, pd.DataFrame],
+                    base_date: pd.Timestamp) -> dict[pd.Timestamp, set[str]]:
+    """detect_late_events 要對照的既有列：lookback 起點到 base_date（含）。"""
+    return dated_rows(all_sheets,
+                      after=base_date - pd.Timedelta(days=LATE_EVENT_LOOKBACK_DAYS + 1),
+                      before=base_date + pd.Timedelta(days=1))
+
+
+def _event_line(ev: pd.Series) -> str:
+    return (f"  {ev['Date'].date()}  "
+            f"+{ev['Added_Ticker'] or '---':6s}  "
+            f"-{ev['Removed_Ticker'] or '---':6s}  "
+            f"({ev['Reason'][:60]})")
+
+
+def explain_late_events(
+    late: pd.DataFrame,
+    rebuild_from: pd.Timestamp,
+    base_date: pd.Timestamp,
+    restore_base: pd.Timestamp | None,
+    unmatched: tuple[list[str], list[str]],
+    renames: list[tuple[str, str, "pd.Timestamp | None"]],
+    backup: tuple[Path, pd.Timestamp] | None,
+) -> str:
+    """決定 B（2026-10-24）：不寫檔，白話講清楚晚登錄事件、疑似改名、從哪天重建、
+    對應備份與要跑的那一行指令。事件太多時只列前 20 筆（tg_send 不分段，
+    Telegram 單則上限 4096 字）。"""
+    lines = [f"Wikipedia 晚登錄了 {len(late)} 筆成分股事件：生效日早於名單起點 "
+             f"{base_date.date()}，但名單沒有反映。未寫入。",
+             "晚登錄事件："]
+    lines += [_event_line(ev) for _, ev in late.head(20).iterrows()]
+    if len(late) > 20:
+        lines.append(f"  (+{len(late) - 20} more)")
+
+    only_list, only_wiki = unmatched
+    if only_list or only_wiki:
+        lines.append("疑似改名（從上面那天重建後仍對不上；改名不會出現在 Wikipedia "
+                     "歷史表，請查 SEC 8-K 確認生效日）：")
+        if only_list:
+            lines.append(f"  名單有、Wikipedia 沒有：{', '.join(only_list)}")
+        if only_wiki:
+            lines.append(f"  Wikipedia 有、名單沒有：{', '.join(only_wiki)}")
+
+    if restore_base is None:
+        lines.append(f"名單裡沒有 {rebuild_from.date()} 之前的列，無法自動重建，請人工修正名單。")
+        return "\n".join(lines)
+
+    cmd = ["python data/refresh_constituents.py", f"--rebuild-from {rebuild_from.date()}"]
+    cmd += [f"--rename {old}={new}" + (f":{when.date()}" if when is not None else "")
+            for old, new, when in renames]
+    rename_pair = len(only_list) == 1 and len(only_wiki) == 1
+    if rename_pair:
+        cmd.append(f"--rename {only_list[0]}={only_wiki[0]}:YYYY-MM-DD")
+    lines.append(f"處理：從 {rebuild_from.date()} 重建（起點用名單 {restore_base.date()} 那列），"
+                 f"會改寫 {rebuild_from.date()} 之後已寫入的名單列。")
+    lines.append("人工跑這一行（照樣過所有 gate、顯示 diff、要你確認"
+                 + ("；改名日期查證後填入" if rename_pair else "") + "）：")
+    lines.append("  " + " ".join(cmd))
+    if backup is not None:
+        lines.append(f"不用先還原備份。若要手動還原，對應的備份是 {backup[0].name}"
+                     f"（名單到 {backup[1].date()}）。")
+    else:
+        lines.append("不用先還原備份（也沒找到對應的自動備份）。")
+    return "\n".join(lines)
 
 
 # ── Gates ────────────────────────────────────────────────────────────────────
@@ -392,12 +561,7 @@ def gate_g5_rename_detect(gap_events: pd.DataFrame) -> list[str]:
     for _, ev in gap_events.iterrows():
         reason = str(ev["Reason"]).lower()
         if any(kw in reason for kw in RENAME_KEYWORDS):
-            warnings.append(
-                f"  {ev['Date'].date()}  "
-                f"+{ev['Added_Ticker'] or '---':6s}  "
-                f"-{ev['Removed_Ticker'] or '---':6s}  "
-                f"({ev['Reason'][:60]})"
-            )
+            warnings.append(_event_line(ev))
     if warnings:
         return ["G5 rename / M&A keyword WARN -- verify these are real add/removes, not symbol renames:"] + warnings
     return []
@@ -449,12 +613,18 @@ def show_diff(
     removed_tickers: set[str],
     hard_halts: list[str],
     soft_warns: list[str],
+    rewrites: list[str] | None = None,
 ) -> None:
     print()
     print("=" * 72)
     print(f"  SP500 Constituents Refresh  -- diff")
     print(f"  Gap: {last_date.date()} -> {today.date()}  ({len(snapshots)} trading days)")
     print("=" * 72)
+
+    if rewrites:
+        print()
+        for line in rewrites:
+            print(line)
 
     if gap_events.empty:
         print("\n  (no constituent changes in gap)")
@@ -488,6 +658,32 @@ def show_diff(
     print("\n" + "=" * 72)
 
 
+def rewrite_summary(
+    old_rows: dict[pd.Timestamp, set[str]],
+    snapshots: dict[pd.Timestamp, set[str]],
+) -> list[str]:
+    """--rebuild-from：已寫入、這次會被改寫的名單列。只列差異開始或改變的那天。"""
+    if not old_rows:
+        return []
+    lines = [f"  Rewriting {len(old_rows)} existing row(s) "
+             f"({min(old_rows).date()} -> {max(old_rows).date()}):"]
+    prev: tuple[tuple[str, ...], tuple[str, ...]] = ((), ())
+    for d, old in old_rows.items():
+        new = snapshots.get(d)
+        if new is None:
+            lines.append(f"    {d.date()}  row dropped (not a trading day)")
+            continue
+        diff = (tuple(sorted(new - old)), tuple(sorted(old - new)))
+        if diff != prev:
+            text = "  ".join(part for part in (" ".join(f"+{t}" for t in diff[0]),
+                                               " ".join(f"-{t}" for t in diff[1])) if part)
+            lines.append(f"    {d.date()}  {text or '(same as existing row)'}")
+        prev = diff
+    if len(lines) == 1:
+        lines.append("    (no membership change)")
+    return lines
+
+
 # ── Atomic apply ─────────────────────────────────────────────────────────────
 def _make_staging_dir(parent: Path, prefix: str) -> Path:
     """Create a uniquely named staging directory that inherits *parent*'s ACL.
@@ -512,8 +708,11 @@ def atomic_apply(
     new_tickers: set[str],
     all_sheets: dict[str, pd.DataFrame],
     ticker_cols: list[str],
+    replace_after: pd.Timestamp | None = None,
 ) -> None:
     """
+    0. With replace_after (--rebuild-from), existing rows dated after it are
+       dropped so the rebuilt snapshots replace them.
     1. Download new ticker CSVs into staging under STOCK_DIR.
     2. Build new Excel under staging in REF_DIR.
     3. Backup existing Excel, atomically replace staged files in place.
@@ -581,6 +780,9 @@ def atomic_apply(
 
             if existing is not None:
                 existing = existing.copy()
+                if replace_after is not None:
+                    existing = existing[
+                        pd.to_datetime(existing["Date"], errors="coerce") <= replace_after]
                 for c in cur_ticker_cols:
                     if c not in existing.columns:
                         existing[c] = pd.NA
@@ -637,7 +839,7 @@ def xl_sheet_order(sheets: dict[str, pd.DataFrame]) -> list[str]:
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="On-demand SP500 constituents refresh")
     parser.add_argument("--dry-run", action="store_true",
                         help="Fetch + show diff but do not write")
@@ -650,12 +852,20 @@ def main() -> None:
                              "Injected as a synthetic event through the normal "
                              "pipeline; incompatible with --auto (supervised = "
                              "a human confirms the diff)")
-    args = parser.parse_args()
+    parser.add_argument("--rebuild-from", metavar="YYYY-MM-DD",
+                        help="Rebuild and rewrite snapshots from this date on, "
+                             "starting from the last existing row before it "
+                             "(late-registered Wikipedia events, #249); "
+                             "incompatible with --auto")
+    args = parser.parse_args(argv)
 
     if args.auto and args.rename:
         die("--rename is supervised-only -- do not combine with --auto")
+    if args.auto and args.rebuild_from:
+        die("--rebuild-from is supervised-only -- do not combine with --auto")
     try:
         renames = parse_rename_args(args.rename)
+        rebuild_from = pd.Timestamp(args.rebuild_from) if args.rebuild_from else None
     except ValueError as e:
         die(str(e))
 
@@ -678,17 +888,38 @@ def main() -> None:
     today = tdays_le_today[-1]
     log(f"  Today's trading-day snap: {today.date()}")
 
-    if today <= last_date:
+    # 重建起點：平常是名單最後一列；--rebuild-from 時是那天之前的最後一列，
+    # 之後已寫入的列會被改寫（#249 晚登錄事件）。
+    base_date, base_constituents = last_date, last_constituents
+    if rebuild_from is not None:
+        if rebuild_from > last_date:
+            die(f"--rebuild-from {rebuild_from.date()} is after the last snapshot "
+                f"({last_date.date()}) -- a normal run already covers it")
+        base = snapshot_before(all_sheets, rebuild_from)
+        if base is None:
+            die(f"--rebuild-from {rebuild_from.date()}: no existing snapshot before it")
+        base_date, base_constituents = base
+        log(f"  --rebuild-from {rebuild_from.date()}: base = {base_date.date()} "
+            f"({len(base_constituents)} constituents); rows after it will be rewritten")
+
+    if today <= base_date:
         log("Already up to date -- no trading days in gap.")
         return
 
     # Phase 1.5: operator-supervised renames → 合成事件（先驗證再注入）
+    wiki_changes = changes_df
     if renames:
+        # --rebuild-from 時 OLD 也可能是重建區間內才加入的代碼
+        added_in_gap = set(changes_df.loc[changes_df["Date"] >= base_date, "Added_Ticker"])
         for old, new, when in renames:
             if new not in current_today:
                 die(f"--rename {old}={new}: {new} not in Wikipedia current membership")
-            if old not in last_constituents:
-                die(f"--rename {old}={new}: {old} not in last snapshot ({last_date.date()})")
+            if old not in base_constituents | added_in_gap:
+                die(f"--rename {old}={new}: {old} neither in snapshot {base_date.date()} "
+                    f"nor added by a later event")
+            if when is not None and when < base_date:
+                die(f"--rename {old}={new}:{when.date()} is before the gap start "
+                    f"({base_date.date()}) -- add --rebuild-from {when.date()}")
         changes_df = inject_rename_events(changes_df, renames, default_date=today)
         for old, new, when in renames:
             log(f"  --rename injected: {old} -> {new}  "
@@ -698,21 +929,38 @@ def main() -> None:
     hard_halts: list[str] = []
     soft_warns: list[str] = []
 
-    hard_halts += gate_g2_gap_length(last_date, today)
-    hard_halts += gate_g7_calendar(trading_days, last_date, today)
+    hard_halts += gate_g2_gap_length(base_date, today)
+    hard_halts += gate_g7_calendar(trading_days, base_date, today)
     if hard_halts:
-        show_diff(last_date, today, pd.DataFrame(), {}, set(), set(), hard_halts, soft_warns)
+        show_diff(base_date, today, pd.DataFrame(), {}, set(), set(), hard_halts, soft_warns)
         die("\n".join(hard_halts))
+
+    # Phase 2.5: 晚登錄事件（#249，決定 B）→ 不寫，講清楚從哪天重建
+    late = detect_late_events(wiki_changes, base_date, late_event_rows(all_sheets, base_date))
+    if not late.empty:
+        late_from = late["Date"].min()
+        restore = snapshot_before(all_sheets, late_from)
+        unmatched: tuple[list[str], list[str]] = ([], [])
+        if restore is not None:
+            trial, _ = reconstruct_gap(restore[0], today, restore[1], changes_df, trading_days)
+            if trial:
+                trial_today = trial[max(trial)]
+                unmatched = (sorted(trial_today - current_today),
+                             sorted(current_today - trial_today))
+        die(explain_late_events(late, late_from, base_date, restore[0] if restore else None,
+                                unmatched, renames, find_restore_backup(late_from)))
 
     # Phase 3: reconstruct
     snapshots, gap_events = reconstruct_gap(
-        last_date, today, last_constituents, changes_df, trading_days
+        base_date, today, base_constituents, changes_df, trading_days
     )
     if not snapshots:
         log("Already up to date -- no trading days in gap.")
         return
 
     reconstructed_today = snapshots[max(snapshots.keys())]
+    rewritten = dated_rows(all_sheets, after=base_date)
+    rewrites = rewrite_summary(rewritten, snapshots)
 
     # Phase 4: remaining gates
     hard_halts += gate_g1_cross_check(reconstructed_today, current_today)
@@ -732,8 +980,8 @@ def main() -> None:
     soft_warns += gate_g5_rename_detect(gap_events)
 
     # Phase 5: show diff
-    show_diff(last_date, today, gap_events, snapshots, new_tickers, removed_tickers,
-              hard_halts, soft_warns)
+    show_diff(base_date, today, gap_events, snapshots, new_tickers, removed_tickers,
+              hard_halts, soft_warns, rewrites)
 
     if hard_halts:
         die("\n".join(hard_halts))
@@ -752,7 +1000,7 @@ def main() -> None:
                 level="ERROR")
             tg_notify(
                 "<b>SP500 refresh：soft warnings，未寫入</b>\n"
-                f"Gap: {last_date.date()} → {today.date()}"
+                f"Gap: {base_date.date()} → {today.date()}"
                 f"（+{len(new_tickers)} −{len(removed_tickers)}）\n"
                 f"<code>{html.escape(chr(10).join(soft_warns))}</code>\n"
                 "請人工 review：python data/refresh_constituents.py"
@@ -773,7 +1021,8 @@ def main() -> None:
 
     # Phase 7: apply
     try:
-        atomic_apply(snapshots, new_tickers, all_sheets, ticker_cols)
+        atomic_apply(snapshots, new_tickers, all_sheets, ticker_cols,
+                     replace_after=base_date if rebuild_from is not None else None)
     except Exception as e:
         log(f"Apply failed mid-flight: {e}", level="ERROR")
         tg_notify(f"<b>SP500 refresh apply failed</b>\n{html.escape(str(e))}")
@@ -782,7 +1031,8 @@ def main() -> None:
     # 成功只寫 log，不發 Telegram（#26：成功通知靜音；halt / soft warning /
     # apply 失敗照發，名單超過 7 天沒更新時 morning check 會提醒）。
     new_csv_str = ", ".join(sorted(new_tickers)) if new_tickers else "(none)"
-    log(f"Refreshed: {last_date.date()} -> {today.date()}  ({len(snapshots)} trading days)  "
+    log(f"Refreshed: {base_date.date()} -> {today.date()}  ({len(snapshots)} trading days, "
+        f"{len(rewritten)} rewritten)  "
         f"events={len(gap_events)} (+{len(new_tickers)} -{len(removed_tickers)})  "
         f"new CSVs: {new_csv_str}")
     log("Done.")

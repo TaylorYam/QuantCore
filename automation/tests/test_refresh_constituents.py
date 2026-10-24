@@ -412,3 +412,237 @@ def test_g4_and_download_use_provider_symbol(monkeypatch):
     assert refresh.gate_g4_yfinance_existence({"BRK.B", "AAPL"}) == {}
     assert sorted(asked) == ["AAPL", "BRK-B"]
     assert refresh.provider_symbol("BF.B") == "BF-B"
+
+
+# ── #249: late-registered Wikipedia events (2026-10 CTVA/VYLR/TWLO case) ─────
+#
+# 10-07 04:50 the refresh wrote a 10-07 snapshot while Wikipedia's history
+# table only went up to 09-21.  Wikipedia later back-filled three events dated
+# before 10-07, and PSKY renamed to SKYD (never in the history table).  The gap
+# filter (Date >= last_date) skipped the three events forever, so every later
+# --auto run failed G1 with no hint of why.
+
+OCT_LAST = pd.Timestamp("2026-10-07")
+OCT_SNAPSHOT = {"AAA", "CTVA", "WBD", "PSKY", "EARLY"}
+OCT_CHANGES = _changes([
+    ("2026-09-21", "EARLY", "GONE", "Market capitalization change."),  # reflected
+    ("2026-10-01", "VYLR", "", "S&P 500 constituent Corteva spun off Vylor."),
+    ("2026-10-06", "", "CTVA", "Market capitalization change."),
+    ("2026-10-06", "TWLO", "WBD", "Market capitalization change."),
+])
+OCT_WIKI_NOW = {"AAA", "EARLY", "SKYD", "TWLO", "VYLR"}
+
+
+def _late_rows(late):
+    return [(str(ev["Date"].date()), ev["Added_Ticker"], ev["Removed_Ticker"])
+            for _, ev in late.iterrows()]
+
+
+OCT_ROWS = {
+    pd.Timestamp("2026-09-18"): {"AAA", "CTVA", "WBD", "PSKY", "GONE"},
+    pd.Timestamp("2026-09-21"): OCT_SNAPSHOT,
+    pd.Timestamp("2026-10-01"): OCT_SNAPSHOT,
+    OCT_LAST: OCT_SNAPSHOT,
+}
+
+
+def test_detect_late_events_finds_back_filled_events_missing_from_snapshot():
+    from data.refresh_constituents import detect_late_events
+    late = detect_late_events(OCT_CHANGES, OCT_LAST, OCT_ROWS)
+    assert _late_rows(late) == [
+        ("2026-10-01", "VYLR", ""),
+        ("2026-10-06", "", "CTVA"),
+        ("2026-10-06", "TWLO", "WBD"),
+    ]
+
+
+def test_detect_late_events_ignores_reflected_and_old_events():
+    from data.refresh_constituents import detect_late_events
+    changes = _changes([
+        ("2026-09-21", "EARLY", "GONE", "Market capitalization change."),  # reflected
+        ("2026-08-03", "BRIEF", "", "Market capitalization change."),      # in the 08-03 row
+        ("2026-09-01", "", "BRIEF", "Acquired by EARLY."),                   # gone by 09-21
+        ("2024-03-18", "OLDSYM", "", "Market capitalization change."),     # renamed long ago
+        ("2026-10-07", "SAMEDAY", "", "Market capitalization change."),    # in the gap, not late
+    ])
+    rows = {pd.Timestamp("2026-08-03"): {"AAA", "BRIEF"}, **OCT_ROWS}
+    late = detect_late_events(changes, OCT_LAST, rows)
+    assert late.empty
+    # nothing inside the look-back window at all
+    outside = detect_late_events(changes.iloc[[3]], OCT_LAST, rows)
+    assert outside.empty and list(outside.columns) == list(changes.columns)
+
+
+def test_detect_late_events_ignores_add_later_renamed():
+    """Real-data false positive found while calibrating: SATS added 2026-03-23
+    (in the rows from that day), renamed ECHO 06-24 via --rename.  Comparing
+    against the base row alone flagged it as late until it aged out."""
+    from data.refresh_constituents import detect_late_events
+    changes = _changes([("2026-08-10", "SATS", "PAYC", "Market capitalization change.")])
+    rows = {pd.Timestamp("2026-08-10"): {"AAA", "SATS"},
+            pd.Timestamp("2026-09-15"): {"AAA", "ECHO"},
+            OCT_LAST: {"AAA", "ECHO"}}
+    assert detect_late_events(changes, OCT_LAST, rows).empty
+
+
+def test_snapshot_before_returns_last_row_strictly_before_date():
+    from data.refresh_constituents import snapshot_before
+    sheets = {
+        "Summary": pd.DataFrame({"x": [1]}),
+        "2026": pd.DataFrame({
+            "Date": pd.to_datetime(["2026-09-29", "2026-09-30", "2026-10-01"]),
+            "T1": ["AAA", "AAA", "AAA"], "T2": ["BBB", "CCC", "VYLR"],
+        }),
+    }
+    assert snapshot_before(sheets, pd.Timestamp("2026-10-01")) == (
+        pd.Timestamp("2026-09-30"), {"AAA", "CCC"})
+    assert snapshot_before(sheets, pd.Timestamp("2026-09-29")) is None
+
+
+# ── #249: end-to-end main() on a temporary constituents workbook ─────────────
+
+def _oct_sessions():
+    return pd.DatetimeIndex([pd.Timestamp(d) for d in mc.official_sessions(
+        _date(2026, 1, 2), _date(2026, 12, 31))])
+
+
+def _write_book(path, rows):
+    width = max(len(t) for _, t in rows)
+    cols = [f"T{i}" for i in range(1, width + 1)]
+    data = [{"Date": d, **dict(zip(cols, sorted(t)))} for d, t in rows]
+    pd.DataFrame(data, columns=["Date"] + cols).to_excel(path, sheet_name="2026", index=False)
+
+
+def _read_book(path):
+    df = pd.read_excel(path, sheet_name="2026")
+    return {pd.Timestamp(r["Date"]): {v for k, v in r.items() if k != "Date" and isinstance(v, str)}
+            for _, r in df.iterrows()}
+
+
+@pytest.fixture
+def oct_env(tmp_path, monkeypatch):
+    """Workbook as written by the 10-07 04:50 run (Sep 14 - Oct 7), Wikipedia
+    as of 10-21 (three back-filled events, SKYD instead of PSKY)."""
+    import data.refresh_constituents as refresh
+
+    ref_dir, stock_dir = tmp_path / "reference", tmp_path / "stocks"
+    ref_dir.mkdir()
+    stock_dir.mkdir()
+    const_file = ref_dir / "sp500_constituents_daily.xlsx"
+    sessions = _oct_sessions()
+    pre = {"AAA", "CTVA", "WBD", "PSKY", "GONE"}
+    written = [(d, pre if d < pd.Timestamp("2026-09-21") else OCT_SNAPSHOT)
+               for d in sessions if pd.Timestamp("2026-09-14") <= d <= OCT_LAST]
+    _write_book(const_file, written)
+    # backups named like atomic_apply's: one before, one after the late events
+    _write_book(ref_dir / "sp500_constituents_daily.bak_20260930_202420.xlsx",
+                [r for r in written if r[0] <= pd.Timestamp("2026-09-23")])
+    _write_book(ref_dir / "sp500_constituents_daily.bak_20261007_045037.xlsx",
+                [r for r in written if r[0] <= pd.Timestamp("2026-09-30")])
+
+    class FakeDate(_date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 10, 21)
+
+    class FakeTicker:
+        def __init__(self, _sym):
+            pass
+
+        def history(self, **_kwargs):
+            return pd.DataFrame(
+                {"Open": [1.0], "High": [1.0], "Low": [1.0], "Close": [1.0],
+                 "Adj Close": [1.0], "Volume": [1]},
+                index=pd.DatetimeIndex(["2026-10-20"]),
+            )
+
+    sent, logged = [], []
+    monkeypatch.setattr(refresh, "REF_DIR", ref_dir)
+    monkeypatch.setattr(refresh, "STOCK_DIR", stock_dir)
+    monkeypatch.setattr(refresh, "CONST_FILE", const_file)
+    monkeypatch.setattr(refresh, "date", FakeDate)
+    monkeypatch.setattr(refresh, "load_trading_days", lambda: sessions)
+    monkeypatch.setattr(refresh, "fetch_wikipedia",
+                        lambda: (set(OCT_WIKI_NOW), OCT_CHANGES.copy()))
+    monkeypatch.setattr(refresh, "tg_notify", sent.append)
+    monkeypatch.setattr(refresh, "log", lambda msg, level="INFO": logged.append(msg))
+    monkeypatch.setattr(refresh.yf, "Ticker", FakeTicker)
+    return refresh, const_file, stock_dir, sent, written
+
+
+def test_auto_halts_on_late_events_and_explains_rebuild(oct_env):
+    """Decision B: no write; the alert names each late event, where to rebuild
+    from, the matching backup and the one command to run -- and reports the
+    PSKY/SKYD rename separately from the late events."""
+    refresh, const_file, _stock_dir, sent, _written = oct_env
+    before = const_file.read_bytes()
+
+    with pytest.raises(SystemExit) as exc:
+        refresh.main(["--auto"])
+
+    assert exc.value.code == 1
+    assert const_file.read_bytes() == before
+    assert len(sent) == 1
+    msg = sent[0]
+    assert "2026-10-01" in msg and "+VYLR" in msg
+    assert "-CTVA" in msg and "+TWLO" in msg and "-WBD" in msg
+    assert "sp500_constituents_daily.bak_20261007_045037.xlsx" in msg
+    assert ("python data/refresh_constituents.py --rebuild-from 2026-10-01 "
+            "--rename PSKY=SKYD:YYYY-MM-DD") in msg
+    # rename is its own section, after the late events
+    assert msg.index("PSKY") > msg.index("+VYLR")
+    assert "G1 cross-check FAIL" not in msg
+
+
+def test_rebuild_from_with_rename_rewrites_rows_from_that_date(oct_env, monkeypatch):
+    refresh, const_file, stock_dir, sent, written = oct_env
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+
+    refresh.main(["--rebuild-from", "2026-10-01", "--rename", "PSKY=SKYD:2026-10-06"])
+
+    assert sent == []
+    book = _read_book(const_file)
+    for d, tickers in written:
+        if d < pd.Timestamp("2026-10-01"):
+            assert book[d] == tickers                      # history before untouched
+    assert book[pd.Timestamp("2026-10-01")] == OCT_SNAPSHOT | {"VYLR"}
+    assert book[pd.Timestamp("2026-10-02")] == OCT_SNAPSHOT | {"VYLR"}
+    assert book[pd.Timestamp("2026-10-06")] == OCT_WIKI_NOW
+    assert book[pd.Timestamp("2026-10-21")] == OCT_WIKI_NOW
+    assert max(book) == pd.Timestamp("2026-10-21")
+    assert sorted(p.name for p in stock_dir.glob("*.csv")) == ["SKYD.csv", "TWLO.csv", "VYLR.csv"]
+
+
+def test_rebuild_from_accepts_rename_of_ticker_added_inside_the_window(oct_env, monkeypatch):
+    """VYLR joins 10-01 (after the 09-30 base) and renames VYLX on 10-02: the
+    rename's OLD side is not in the base row but is added in the gap."""
+    refresh, const_file, _stock_dir, sent, _written = oct_env
+    monkeypatch.setattr(refresh, "fetch_wikipedia", lambda: (
+        OCT_WIKI_NOW - {"VYLR"} | {"VYLX"}, OCT_CHANGES.copy()))
+    before = const_file.read_bytes()
+
+    refresh.main(["--dry-run", "--rebuild-from", "2026-10-01",
+                  "--rename", "PSKY=SKYD:2026-10-06", "--rename", "VYLR=VYLX:2026-10-02"])
+
+    assert sent == []
+    assert const_file.read_bytes() == before
+
+
+def test_rebuild_from_is_supervised_only(oct_env):
+    refresh, const_file, _stock_dir, sent, _written = oct_env
+    before = const_file.read_bytes()
+    with pytest.raises(SystemExit):
+        refresh.main(["--auto", "--rebuild-from", "2026-10-01"])
+    assert const_file.read_bytes() == before
+    assert "--rebuild-from" in sent[0]
+
+
+def test_rebuild_from_too_late_still_halts_on_earlier_late_event(oct_env):
+    """Rebuilding from 10-06 leaves the 10-01 VYLR add unreflected."""
+    refresh, const_file, _stock_dir, sent, _written = oct_env
+    before = const_file.read_bytes()
+    with pytest.raises(SystemExit):
+        refresh.main(["--dry-run", "--rebuild-from", "2026-10-06",
+                      "--rename", "PSKY=SKYD:2026-10-06"])
+    assert const_file.read_bytes() == before
+    assert "+VYLR" in sent[0] and "--rebuild-from 2026-10-01" in sent[0]

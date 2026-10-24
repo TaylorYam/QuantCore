@@ -40,8 +40,6 @@ def _make_ctx(alloc_sr: float = 0.80, alloc_sp500: float = 0.50,
         alloc_sp500=alloc_sp500,
         alloc_skewls=alloc_skewls,
         price_feed_port=4002,
-        tg_token="",
-        tg_chat_id="",
     )
 
 

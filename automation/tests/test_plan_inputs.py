@@ -22,7 +22,7 @@ def _ctx(alloc_sr=0.5, alloc_sp500=0.5, alloc_skewls=0.3):
         name="Test", account="U00000000", host="127.0.0.1", port=4001, client_id=20,
         dry_run=True, order_type="MOO", outside_rth=False, wait_fill_sec=0,
         alloc_sr=alloc_sr, alloc_sp500=alloc_sp500, alloc_skewls=alloc_skewls,
-        price_feed_port=None, tg_token="", tg_chat_id="")
+        price_feed_port=None)
 
 
 class FakeAccount:

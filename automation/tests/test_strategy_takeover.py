@@ -30,7 +30,7 @@ def _ctx(name="Rosa", dry_run=False, alloc=(0.0, 0.5, 0.0)):
         name=name, account={"Rosa": "U2", "Taylor": "U1"}[name], host="127.0.0.1",
         port=4999, client_id=98, dry_run=dry_run, order_type="MOO",
         outside_rth=False, wait_fill_sec=3, alloc_sr=alloc[0], alloc_sp500=alloc[1],
-        alloc_skewls=alloc[2], price_feed_port=None, tg_token="T", tg_chat_id="C",
+        alloc_skewls=alloc[2], price_feed_port=None,
     )
 
 

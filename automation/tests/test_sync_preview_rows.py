@@ -10,8 +10,7 @@ import sync_preview_rows as rows
 def _ctx(sr=0.3, sp=0.5, sk=0.2):
     return AccountCtx(name="Taylor", account="U0", host="127.0.0.1", port=1, client_id=1,
                       dry_run=True, order_type="LMT", outside_rth=True, wait_fill_sec=0,
-                      alloc_sr=sr, alloc_sp500=sp, alloc_skewls=sk, price_feed_port=None,
-                      tg_token="", tg_chat_id="")
+                      alloc_sr=sr, alloc_sp500=sp, alloc_skewls=sk, price_feed_port=None)
 
 
 def _plan(**changes):

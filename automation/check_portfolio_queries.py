@@ -32,8 +32,8 @@ def load_contexts(source_root):
         client_id=acceptance_check_client_id(i),
         dry_run=True, order_type="MOO", outside_rth=False, wait_fill_sec=0,
         alloc_sr=0, alloc_sp500=0, alloc_skewls=0,
-        price_feed_port=int(base.get("price_feed_port", 4002)),
-        tg_token="", tg_chat_id="") for i, a in enumerate(accounts)}
+        price_feed_port=int(base.get("price_feed_port", 4002)))
+        for i, a in enumerate(accounts)}
 
 
 def main(argv=None):

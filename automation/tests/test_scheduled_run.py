@@ -48,7 +48,8 @@ def at(when: datetime, monkeypatch) -> None:
 def section(text="送出 1 筆 MOO", level="ok"):
     """假本體：每個帳戶加一段。"""
     def per_account(ctx, digest):
-        digest.add(ctx.name, text, [], level, token=ctx.tg_token, chat_id=ctx.tg_chat_id)
+        from account_utils import telegram_dest
+        digest.add(ctx.name, text, [], level, **telegram_dest(ctx.name))
     return per_account
 
 

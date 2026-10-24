@@ -48,7 +48,7 @@ def _run(monkeypatch, cushion, snapshot=lambda *a, **k: None):
     fake = _broker(monkeypatch, cushion)
     monkeypatch.setattr(daily_report, "append_daily_snapshot", snapshot)
     ctx = NS(name="Taylor", account="U1", host="127.0.0.1", port=4001, client_id=1,
-             tg_token="T", tg_chat_id="C", alloc_sr=0.0, alloc_skewls=1.0)
+             alloc_sr=0.0, alloc_skewls=1.0)
     d = Digest("每日報告 2026-09-15", icon="📊")
     daily_report.main(ctx, digest=d)
     assert fake.connects == [("127.0.0.1", 4001, 1)] and fake.closed == 1
@@ -83,8 +83,7 @@ def test_main_failure_section_content(monkeypatch):
     from notify import Digest
 
     _broker(monkeypatch).fail["account_info"] = RuntimeError("no <account> data")
-    ctx = NS(name="Rosa", account="U2", host="127.0.0.1", port=4002, client_id=1,
-             tg_token="T", tg_chat_id="C")
+    ctx = NS(name="Rosa", account="U2", host="127.0.0.1", port=4002, client_id=1)
     d = Digest("每日報告", icon="📊")
     with pytest.raises(RuntimeError):
         daily_report.main(ctx, digest=d)

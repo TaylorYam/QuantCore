@@ -60,10 +60,6 @@ class AccountCtx:
     # ── Data feed ────────────────────────────────────────────
     price_feed_port: int         # 備援報價 port（有 MD 訂閱的帳戶）
 
-    # ── Telegram ─────────────────────────────────────────────
-    tg_token: str
-    tg_chat_id: str
-
     # ── Computed fields ──────────────────────────────────────
     @property
     def leverage(self) -> float:
@@ -105,8 +101,6 @@ class AccountCtx:
             alloc_sp500    = float(cfg.get('alloc_sp500', 0.50)),
             alloc_skewls   = float(cfg.get('alloc_skewls', 0.0)),
             price_feed_port= int(cfg.get('price_feed_port', 4002)),
-            tg_token       = cfg.get('telegram_token', ''),
-            tg_chat_id     = cfg.get('telegram_chat_id', ''),
         )
 
     def __repr__(self) -> str:

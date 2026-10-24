@@ -140,13 +140,13 @@ def test_etf_freeze_holds_every_strategy_etf_at_current_shares():
 
 # ── plan_inputs ─────────────────────────────────────────────────────
 
-def _ctx(name="Rosa", alloc_sr=0.0, alloc_sp500=0.5, alloc_skewls=0.5, tg=("", "")):
+def _ctx(name="Rosa", alloc_sr=0.0, alloc_sp500=0.5, alloc_skewls=0.5):
     from account_ctx import AccountCtx
     return AccountCtx(
         name=name, account="U00000001", host="127.0.0.1", port=4999, client_id=99,
         dry_run=False, order_type="MOO", outside_rth=False, wait_fill_sec=0,
         alloc_sr=alloc_sr, alloc_sp500=alloc_sp500, alloc_skewls=alloc_skewls,
-        price_feed_port=None, tg_token=tg[0], tg_chat_id=tg[1])
+        price_feed_port=None)
 
 
 SKEWLS_TODAY = {"XLK": 0.5, "SEF": 0.5}
@@ -200,7 +200,7 @@ def _rebalance(env, mode):
     import rebalance_ib
     from notify import Digest
     digest = Digest("調倉 T", icon="📤")
-    rebalance_ib.main(mode=mode, ctx=_ctx(tg=("T", "C")), digest=digest, source=env.source)
+    rebalance_ib.main(mode=mode, ctx=_ctx(), digest=digest, source=env.source)
     return digest.render()
 
 

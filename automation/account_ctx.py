@@ -21,7 +21,7 @@ Usage:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from account_utils import get_account_config
 from broker import client_id as broker_client_id

@@ -21,7 +21,7 @@ from portfolio_queries import PortfolioQueries
 
 def load_contexts(source_root):
     # 刻意不用 AccountCtx.from_name（#236 評估過）：它讀執行端自己的 accounts.json，
-    # 會帶進配置比例與 Telegram；這裡要的是 --source-root 那份安裝的連線身分而已。
+    # 會帶進配置比例；這裡要的是 --source-root 那份安裝的連線身分而已。
     config_dir = source_root / "automation"
     base = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
     accounts = json.loads((config_dir / "accounts.json").read_text(encoding="utf-8"))
@@ -32,8 +32,8 @@ def load_contexts(source_root):
         client_id=acceptance_check_client_id(i),
         dry_run=True, order_type="MOO", outside_rth=False, wait_fill_sec=0,
         alloc_sr=0, alloc_sp500=0, alloc_skewls=0,
-        price_feed_port=int(base.get("price_feed_port", 4002)))
-        for i, a in enumerate(accounts)}
+        price_feed_port=int(base.get("price_feed_port", 4002)),
+    ) for i, a in enumerate(accounts)}
 
 
 def main(argv=None):

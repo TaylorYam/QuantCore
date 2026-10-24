@@ -30,7 +30,7 @@ def test_from_name_taylor(fake_config):
     assert ctx.alloc_skewls == 0.0    # 預設 0，不影響 live
     assert ctx.dry_run is True
     assert ctx.order_type == "MOO"
-    # Telegram 目的地只由 account_utils.telegram_dest 決定（#207）：ctx 不帶 token（#253）
+    # Telegram 目的地由 account_utils.telegram_dest 決定，ctx 不帶 token（#253）
     assert not hasattr(ctx, "tg_token") and not hasattr(ctx, "tg_chat_id")
 
 

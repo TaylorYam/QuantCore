@@ -147,6 +147,7 @@ def rebalance_tg_section(placed: list[dict], fill_results: list[dict], *,
                          drift_advisories: list[str] = (),
                          pause_notices: list[str] = (),
                          state_alarms: list[str] = (),
+                         data_alarms: list[str] = (),
                          error_msg: str | None = None
                          ) -> tuple[str, list[str], str] | None:
     """單一帳戶的 21:00 調倉段落 → (headline, body, level)；不需要發回 None。
@@ -154,14 +155,14 @@ def rebalance_tg_section(placed: list[dict], fill_results: list[dict], *,
     只列送出的單（BUY / SELL 各一行）。發送條件：有送單、對帳警報（🔴 該動
     卻沒送單 / ⚠️ 無報價 / 對帳段失敗）、新的手動持倉暫停（#106，同一次
     暫停只通知一次）、state 檔讀不出來（#233，每一輪都發，直到人工處理）、
-    或錯誤。🟠 合計偏離只附在已經要發的段落。MOO 送出時
+    SP500 訊號有資料不可信的檔（#235，排名照跑、只列出）、或錯誤。🟠 合計偏離只附在已經要發的段落。MOO 送出時
     還沒成交，成交由 21:31 moo_fill_check 回報；非 MOO（手動 --order-type
     MKT/LMT）則把沒成交完的單列出來。
     """
     unfilled = ([f for f in fill_results if f.get('status') != 'Filled']
                 if order_type != 'MOO' else [])
     if (not placed and not drift_alarms and not pause_notices and not state_alarms
-            and not error_msg):
+            and not data_alarms and not error_msg):
         return None
 
     dry = " [DRY RUN]" if dry_run else ""
@@ -173,11 +174,14 @@ def rebalance_tg_section(placed: list[dict], fill_results: list[dict], *,
         headline = f"❌ 失敗{dry}" if error_msg else f"沒有送單{dry}"
     if state_alarms and not error_msg:      # 當日排程總結（#38）看得到有策略停下
         headline += "，⚠️ 有策略停下（state 讀不出來）"
+    elif data_alarms and not error_msg:
+        headline += "，⚠️ SP500 有資料不可信"
 
     body = order_group_lines(placed)
     body += [f"⚠️ {f['symbol']} 成交 {f['filled']}/{f['qty']} [{f['status']}]"
              for f in unfilled]
     body += [html_mod.escape(ln) for ln in state_alarms]
+    body += [html_mod.escape(ln) for ln in data_alarms]
     body += [html_mod.escape(ln) for ln in pause_notices]
     body += [html_mod.escape(ln) for ln in drift_alarms]
     body += [html_mod.escape(ln) for ln in drift_advisories]
@@ -186,7 +190,7 @@ def rebalance_tg_section(placed: list[dict], fill_results: list[dict], *,
 
     if error_msg:
         level = "error"
-    elif drift_alarms or unfilled or pause_notices or state_alarms:
+    elif drift_alarms or unfilled or pause_notices or state_alarms or data_alarms:
         level = "warn"
     else:
         level = "ok"
@@ -217,6 +221,7 @@ def _log_trades_and_report(digest: Digest, ctx: AccountCtx, *,
                            error_msg: str | None,
                            pause_notices: list[str] = (),
                            state_alarms: list[str] = (),
+                           data_alarms: list[str] = (),
                            on_delivered=None) -> Exception | None:
     """main() 收尾：寫 Excel 交易紀錄，再加 Telegram 段落。回傳 Excel 寫入例外。
 
@@ -247,6 +252,7 @@ def _log_trades_and_report(digest: Digest, ctx: AccountCtx, *,
         drift_advisories=drift_advisories,
         pause_notices=pause_notices,
         state_alarms=state_alarms,
+        data_alarms=data_alarms,
         error_msg=error_msg,
         on_delivered=on_delivered,
     )
@@ -443,6 +449,7 @@ def main(mode: str, ctx: AccountCtx, digest: Digest, source=None):
             error_msg=error_msg,
             pause_notices=manual_attribution.pause_notice_lines(new_notices),
             state_alarms=inputs.state_notices(),
+            data_alarms=inputs.data_notices(),
             # 暫停／接管結果只通知一次：訊息確定送達才記；沒送到下一輪再附上
             on_delivered=((lambda: manual_attribution.mark_notified(
                 acct_name, notice_keys)) if notice_keys else None),

@@ -103,6 +103,8 @@ class PlanInputs:
     # state 檔讀不出來（#233）：該策略這一輪停下
     sp500_state_error: Optional[StateCorrupted] = None
     skewls_state_error: Optional[StateCorrupted] = None
+    # SP500 訊號用到、但資料不可信的檔（data.data_trust.Trust；#235，排名照跑、只列出）
+    sp500_data_problems: list = field(default_factory=list)
 
     # ── mode 語意 ────────────────────────────────────────────────────
 
@@ -159,6 +161,16 @@ class PlanInputs:
                              f"下次 21:00 SkewLS 仍會停下；{MANUAL_FIX}")
         return lines
 
+    def data_notices(self) -> list[str]:
+        """SP500 這次訊號少算或用了舊資料的檔（Telegram 用，#235）；沒有時為空。"""
+        problems = self.sp500_data_problems
+        if not problems:
+            return []
+        from data.data_trust import summary_lines
+        return ([f"📉 SP500 訊號日 {self.sp500_date} 有 {len(problems)} 檔資料不可信"
+                 "（排名照跑，缺檔／壞檔的不在排名裡）："]
+                + summary_lines(problems))
+
     # ── 讀帳戶 ──────────────────────────────────────────────────────
 
     def read(self, account, *, attribution: bool = True,
@@ -200,6 +212,7 @@ class PlanInputs:
                 self.sp500_state_error = e
         if signal is not None:
             self.sp500_wgt, self.sp500_date = signal.weights, signal.signal_date
+            self.sp500_data_problems = list(signal.data_problems)
             if self.persist_state:
                 import sp500_state
                 sp500_state.save_state(ctx.name, signal.state)

@@ -29,6 +29,7 @@ def test_main_success_sends_nothing(monkeypatch):
     fake.update_etfs = lambda: None
     fake.update_stocks = lambda: None
     monkeypatch.setitem(sys.modules, "data.update_data", fake)
+    monkeypatch.setattr(update_data, "conclude_data_trust", lambda: [])
     sent = []
     monkeypatch.setattr(update_data, "send_system", lambda msg: sent.append(msg) or True)
     assert update_data.main() == []
@@ -55,6 +56,7 @@ def test_main_failure_sends(monkeypatch):
     fake.update_etfs = broken
     fake.update_stocks = lambda: None
     monkeypatch.setitem(sys.modules, "data.update_data", fake)
+    monkeypatch.setattr(update_data, "conclude_data_trust", lambda: [])
     sent = []
     monkeypatch.setattr(update_data, "send_system",          # config.json 共用頻道（#226）
                         lambda msg: sent.append(msg) or True)
@@ -73,6 +75,7 @@ def test_main_failure_writes_each_error_to_the_log(monkeypatch, caplog):
     fake.update_etfs = lambda: ["SMN: provider 歷史與本地檔核對不過，已停止續寫（scale step）"]
     fake.update_stocks = lambda: None
     monkeypatch.setitem(sys.modules, "data.update_data", fake)
+    monkeypatch.setattr(update_data, "conclude_data_trust", lambda: [])
     monkeypatch.setattr(update_data, "send_system", lambda msg: True)
     with caplog.at_level(logging.WARNING, logger=update_data.log.name):
         update_data.main()

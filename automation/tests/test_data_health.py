@@ -270,6 +270,7 @@ def test_scheduler_propagates_returned_errors(monkeypatch):
                                    "status": "download_failed", "detail": "download failed",
                                    "rows_added": 0}]
     monkeypatch.setitem(sys.modules, "data.update_data", fake)
+    monkeypatch.setattr(update_data, "conclude_data_trust", lambda: [])   # #235 另有測試
     sent = []
     monkeypatch.setattr(update_data, "send_system", lambda msg: sent.append((msg,)) or True)
     result = update_data.main()

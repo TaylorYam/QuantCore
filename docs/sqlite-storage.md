@@ -55,9 +55,8 @@ source of truth for recovery.
 ## Runtime writer seam
 
 The backend is chosen in one place (#230): `config.json` `log_backend`
-(`"sqlite"` or `"excel"`; missing means Excel). The environment variable
-`QUANTCORE_LOG_BACKEND`, when set, still overrides it during the transition, so
-scheduled actions that go through `run_with_sqlite_backend.py` keep working.
+(`"sqlite"` or `"excel"`; missing means Excel). Scheduled tasks and the panel
+read the same field; no environment variable or wrapper is involved.
 The logger logs the backend and its source the first time a process writes.
 Selecting `sqlite` makes the logger initialize or validate
 `automation/quantcore_logs.sqlite3`, append through `sqlite_store.append_runtime`
@@ -218,6 +217,15 @@ task edits, preserve the verified executable, arguments, working directory,
 principal and triggers. Do not use `install_all_tasks.py` to change only the
 backend setting because it replaces multiple tasks. Task XML and launcher
 backups from activation are recorded in the local cutover artifact directory.
+
+**Superseded by #230 (2026-10-24).** The backend now comes from `config.json`
+`log_backend` (live: `"sqlite"`). The four writer tasks were reinstalled with
+`install_all_tasks.py` as direct actions (`daily_report.py --account all`,
+`rebalance_ib.py ...`), with executable, principal, triggers and settings
+compared before and after; only the wrapper prefix was removed. The panel
+launcher no longer uses a wrapper. `run_with_sqlite_backend.py` and the
+`QUANTCORE_LOG_BACKEND` override were then deleted. Re-running
+`install_all_tasks.py` no longer changes where logs are written.
 
 The live activation evidence is stored outside Git under the cutover artifact
 directory. The initial import and acceptance checks on 2026-09-22 reported:

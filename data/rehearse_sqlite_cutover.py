@@ -54,8 +54,10 @@ def rehearse(portfolio: Path, trades: Path, output: Path) -> dict:
         return {table: store._query(db, table)
                 for table in ('portfolio_snapshots', 'trades')}
 
-    with patch.multiple(logger, PORTFOLIO_FILE=pp, TRADE_FILE=pt, SQLITE_FILE=db), \
-            patch.dict('os.environ', {'QUANTCORE_LOG_BACKEND': 'sqlite'}):
+    config = output / 'config.json'               # 後端照 live 的方式寫在 config.json（#230）
+    config.write_text('{"log_backend": "sqlite"}', encoding='utf-8')
+    with patch.multiple(logger, PORTFOLIO_FILE=pp, TRADE_FILE=pt, SQLITE_FILE=db,
+                        CONFIG_FILE=config):
         assert not db.exists()
         logger._ensure_sqlite_store()
         report['first_use_import'] = reconcile(p, t)

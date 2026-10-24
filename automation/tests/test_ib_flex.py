@@ -338,7 +338,6 @@ def test_cli_checks_the_daily_nav_from_the_given_directory(tmp_path, monkeypatch
         position, avgCost = 5, 100
 
     monkeypatch.setattr(excel_logger, "PORTFOLIO_FILE", tmp_path / "portfolio_tracker.xlsx")
-    monkeypatch.delenv("QUANTCORE_LOG_BACKEND", raising=False)
     excel_logger.append_daily_snapshot(123_456.0, [Position()], {"XLK": 110}, account_name="Rosa")
     (tmp_path / "accounts.json").write_text("[]", encoding="utf-8")
     seen = {}

@@ -13,6 +13,7 @@ Run with:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -174,17 +175,28 @@ def _strategy_state_outside_live(tmp_path_factory):
 
 @pytest.fixture(autouse=True, scope="session")
 def _log_backend_not_from_live_config(tmp_path_factory):
-    """交易紀錄後端（#230）整個測試階段都不讀 live 的 config.json、不吃外面的環境變數。
+    """交易紀錄後端（#230）整個測試階段都不讀 live 的 config.json。
 
     live 機器的 config.json 有 `"log_backend": "sqlite"`：沒指定後端的測試會在這台
-    走 SQLite、在 CI 走 Excel。要測後端選擇的測試自己設 CONFIG_FILE／環境變數。
+    走 SQLite、在 CI 走 Excel。要指定後端的測試用 `log_backend` fixture。
     """
     import excel_logger
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(excel_logger, "CONFIG_FILE",
                    tmp_path_factory.mktemp("log_backend") / "config.json")
-        mp.delenv(excel_logger.BACKEND_ENV, raising=False)
         yield
+
+
+@pytest.fixture
+def log_backend(monkeypatch, tmp_path):
+    """`log_backend("sqlite")`：這個測試的交易紀錄後端，照 live 的方式寫在 config.json。"""
+    import excel_logger
+
+    def use(backend: str) -> None:
+        config = tmp_path / "log_backend_config.json"
+        config.write_text(json.dumps({"log_backend": backend}), encoding="utf-8")
+        monkeypatch.setattr(excel_logger, "CONFIG_FILE", config)
+    return use
 
 
 @pytest.fixture

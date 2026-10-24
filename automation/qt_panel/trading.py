@@ -43,7 +43,7 @@ SYMBOL_WIDTH = 320      # 代碼欄下方要放公司名稱提示
 
 
 def ascii_only(edit: QLineEdit) -> None:
-    """英數欄位（#138 的 Qt 版）：關掉這個欄位的輸入法，萬一仍收到全形字元就轉半形。
+    """英數欄位：關掉這個欄位的輸入法，萬一仍收到全形字元就轉半形。
 
     Qt 在 Windows 上對不接受輸入法的焦點元件會自己解除 IME context，
     不必自己呼叫 Win32 ImmAssociateContext。

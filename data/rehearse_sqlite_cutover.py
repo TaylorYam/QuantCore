@@ -1,5 +1,7 @@
 """Offline SQLite release rehearsal using read-only copies of account logs.
 
+一次性／研究用：不在排程或 Panel 裡執行，見 docs/data-roadmap.md（#236）。
+
 The output directory must not exist. No broker, configuration, notification,
 or runtime state module is used. Detailed artifacts stay local (not in Git).
 """

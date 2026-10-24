@@ -26,14 +26,10 @@ order_type 選項：
 """
 
 import html as html_mod
-import json, logging, sys, urllib.request, urllib.parse
+import logging, sys
 from dataclasses import replace
 from pathlib import Path
 from datetime import date, datetime
-
-import matplotlib
-matplotlib.use('Agg')
-import pandas as pd
 
 # ── 路徑設定 ──────────────────────────────────────────────────────────────────
 BASE_DIR  = Path(__file__).parent
@@ -46,15 +42,12 @@ from excel_logger import append_trade_log
 
 log = logging.getLogger(__name__)
 
-# ── IB 連線工具 ───────────────────────────────────────────────────────────────
-from ib_insync import util
-
-
 # ── Telegram 通知（統一由 notify.py 提供；三帳戶合併一則，#26）──────────
 from notify import Digest, error_line, order_group_lines
 
 # ── AccountCtx（S6：ctx 為所有函式的必要參數，模組不再有 mutable globals）
 from account_ctx import AccountCtx
+from account_utils import telegram_dest   # #207：Telegram 目的地唯一來源
 
 # ── 排程執行殼（log、逐帳戶、失敗段落、執行紀錄、exit code；#206）
 import run_status
@@ -75,7 +68,6 @@ import manual_attribution
 
 # ── 策略單送出與成交彙整（#205）
 import strategy_orders
-from strategy_orders import make_order  # noqa: F401 — re-export 一輪：舊路徑，之後刪
 
 
 # ── 21:00 調倉的進度 log（plan_inputs 依步驟呼叫；文字與 #186 之前逐字相同）──
@@ -207,8 +199,7 @@ def _add_rebalance_section(digest: Digest, ctx: AccountCtx,
         section = rebalance_tg_section(order_type=ctx.order_type,
                                        dry_run=ctx.dry_run, **kwargs)
         if section is not None:
-            digest.add(ctx.name, *section,
-                       token=ctx.tg_token, chat_id=ctx.tg_chat_id,
+            digest.add(ctx.name, *section, **telegram_dest(ctx.name),
                        on_delivered=on_delivered)
     except Exception as e:
         log.warning(f"Telegram section build failed: {e}")
@@ -298,7 +289,6 @@ def main(mode: str, ctx: AccountCtx, digest: Digest, source=None):
     start_ts     = datetime.now()
     placed       = []
     fill_results = []
-    pos_detail   = []
     error_msg    = None
     inputs: plan_inputs.PlanInputs | None = None   # Step 1–5 調倉輸入（中途失敗時保留已讀到的部分）
     drift_alarms: list[str] = []      # Step 9b 對帳警報（TG 必發）
@@ -380,10 +370,6 @@ def main(mode: str, ctx: AccountCtx, digest: Digest, source=None):
             sent = strategy_orders.send(conn, order_list, ctx,
                                         narrator=_RebalanceSend(order_type))
             placed, fill_results = sent.placed, sent.fills
-
-        # ── 9. 帳戶現況 + 損益 ──────────────────────────────────────────────
-        log.info("Step 9: Fetching positions detail for P&L...")
-        pos_detail = conn.positions_detail()
 
         # ── 9b. 理論 vs 實際對帳（執行驗證）─────────────────────────────
         # MOO 開盤才成交 → 不比成交、比「送單覆蓋」：算出該動卻一張單都

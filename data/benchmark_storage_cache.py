@@ -1,5 +1,7 @@
 """Measure cold-proxy and warm market-history reads after an explicit Windows cache purge.
 
+一次性／研究用：不在排程或 Panel 裡執行，見 docs/data-roadmap.md（#236）。
+
 Run only on a machine where an operator has approved a host-wide cache purge.
 The source archive is read-only; the existing Parquet conversion and report must
 already exist below --output-dir. RAMMap is not bundled with this repository.

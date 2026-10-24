@@ -23,6 +23,24 @@ import pytest
 from data.refresh_constituents import gate_g5_rename_detect, reconstruct_gap
 
 
+@pytest.mark.parametrize("delivered", [True, False])
+def test_tg_notify_goes_through_send_system_and_logs_when_not_sent(monkeypatch, delivered):
+    """#236：告警走 notify.send_system（共用頻道）；送不出去時這支腳本自己的 log
+    要看得到（send_system 的 warning 走 logging，排程下不會進這個 log 檔）。"""
+    import notify
+    import data.refresh_constituents as refresh
+
+    sent, logged = [], []
+    monkeypatch.setattr(notify, "send_system", lambda msg: sent.append(msg) or delivered)
+    monkeypatch.setattr(refresh, "log", lambda msg, level="INFO": logged.append((level, msg)))
+
+    refresh.tg_notify("<b>halted</b>")
+
+    assert sent == ["<b>halted</b>"]
+    assert logged == ([] if delivered else
+                      [("WARN", "Telegram send skipped: not configured or not delivered")])
+
+
 def test_fetch_wikipedia_reads_current_and_history_pages(monkeypatch):
     """Wikipedia moved the changes table to a separate history page on
     2026-08-11.  The refresh must not assume both tables share one page."""

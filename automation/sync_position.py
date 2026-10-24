@@ -302,7 +302,7 @@ def submit_sync_orders(
 
     conn = records.open(exec_ctx)
     try:
-        # 送單閘門用送單目標給的歸屬紀錄（paper 用自己的檔，#152）；
+        # 送單閘門用送單目標（SyncRecords）給的歸屬紀錄（#183）；
         # o.price = 預覽時的估價（報價都缺時的後備）
         sent = strategy_orders.send(conn, plan.orders, exec_ctx, narrator=_Steps(),
                                     log_fn=log_fn, **records.gate_options())
@@ -310,7 +310,7 @@ def submit_sync_orders(
 
         # 6. SkewLS state 更新（Sync Pos = 強制同步，所以即使非 threshold-triggered 也存）
         #    這樣下次 scheduled threshold check 才有正確 baseline。
-        #    規則與寫入的唯一實作在 plan_inputs（paper＝不寫 state 時不記）。
+        #    規則與寫入的唯一實作在 plan_inputs（Sync Pos 一律 persist_state=True，#226）。
         if plan.inputs is not None:
             try:
                 recorded = plan.inputs.record_skewls_rebalance()

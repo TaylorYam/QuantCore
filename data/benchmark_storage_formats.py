@@ -1,5 +1,7 @@
 """Offline, repeatable CSV / Parquet benchmark for the market-data archive.
 
+一次性／研究用：不在排程或 Panel 裡執行，見 docs/data-roadmap.md（#236）。
+
 All writes go below ``--output-dir``. The supplied data root is fingerprinted
 before and after the run and is never modified. This script benchmarks CSV and
 per-ticker Parquet; it records DuckDB availability but does not install or

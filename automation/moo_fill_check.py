@@ -36,6 +36,7 @@ from notify import Digest, error_line
 
 # ── AccountCtx（S6：ctx 為必要參數）────────────────────────────────────
 from account_ctx import AccountCtx
+from account_utils import telegram_dest   # #207：Telegram 目的地唯一來源
 
 # ── IB 連線（#185：經 Broker，讀數在 broker.Connection 上）
 import broker
@@ -223,7 +224,7 @@ def moo_section(rows: list[MooFill], *,
 
 def main(ctx: AccountCtx, digest: Digest):
     """MOO 成交回報。結果加進 digest（排程執行殼三帳戶合併發送）。"""
-    dest = {"token": ctx.tg_token, "chat_id": ctx.tg_chat_id}
+    dest = telegram_dest(ctx.name)
 
     log.info(f"{'='*60}")
     log.info(f"  MOO Fill Check  {date.today()}")

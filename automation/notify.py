@@ -1,7 +1,7 @@
 """
 Telegram 通知統一模組。
 
-所有 script 共用這裡的 `tg_send` / `tg_send_photo`，避免 5 份複製漂移。
+所有 script 共用這裡的 `tg_send`，避免 5 份複製漂移。
 Token / chat_id 由 caller 傳入；手動／Panel 路徑改用 `send_system`（共用頻道）與
 `send_account`（該帳戶頻道：沒覆寫就是共用設定，帳戶讀不到也退回共用），目的地
 只問 `account_utils.telegram_dest`
@@ -11,10 +11,9 @@ Token / chat_id 由 caller 傳入；手動／Panel 路徑改用 `send_system`（
 `Digest` 把三帳戶合成一則，沒內容就不發。
 
 Usage:
-    from notify import tg_send, tg_send_photo
+    from notify import tg_send
 
     tg_send("message", token="123:abc", chat_id="456")
-    tg_send_photo("/path/to/chart.png", token, chat_id, caption="Daily Equity")
 
     # 若 caller 想避免每次傳 token/chat_id，可以 curry：
     from functools import partial
@@ -36,7 +35,6 @@ import html
 import logging
 import urllib.parse
 import urllib.request
-from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -71,51 +69,6 @@ def tg_send(msg: str, *, token: str, chat_id: str,
     except Exception as e:
         log.warning(f"Telegram notify failed: {e}")
         return False
-
-
-def tg_send_photo(photo_path: str, *, token: str, chat_id: str,
-                  caption: str = "", timeout: float = 30.0) -> None:
-    """
-    發送圖片 + 可選 caption 到 Telegram（multipart/form-data）。
-
-    用於 daily_report 發送 equity chart。失敗同樣只寫 warning log。
-    """
-    if not token or not chat_id:
-        return
-    try:
-        url = f"https://api.telegram.org/bot{token}/sendPhoto"
-        boundary = "----QuantCoreBoundary"
-        body = b""
-
-        # chat_id field
-        body += f"--{boundary}\r\n".encode()
-        body += b"Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n"
-        body += f"{chat_id}\r\n".encode()
-
-        # caption field
-        if caption:
-            body += f"--{boundary}\r\n".encode()
-            body += b"Content-Disposition: form-data; name=\"caption\"\r\n\r\n"
-            body += f"{caption}\r\n".encode()
-
-        # photo file
-        filename = Path(photo_path).name
-        body += f"--{boundary}\r\n".encode()
-        body += f'Content-Disposition: form-data; name="photo"; filename="{filename}"\r\n'.encode()
-        body += b"Content-Type: image/png\r\n\r\n"
-        with open(photo_path, 'rb') as f:
-            body += f.read()
-        body += b"\r\n"
-
-        body += f"--{boundary}--\r\n".encode()
-
-        req = urllib.request.Request(url, data=body, method='POST')
-        req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            if resp.status != 200:
-                log.warning(f"Telegram photo HTTP {resp.status}")
-    except Exception as e:
-        log.warning(f"Telegram photo failed: {e}")
 
 
 # ── 送到哪（#207）：目的地只問 account_utils.telegram_dest ─────────────
@@ -220,7 +173,11 @@ class Digest:
         最後、等級參與標題 icon；沒有段落時訊息只有這一行
       - 依 (token, chat_id) 分組發送：帳戶若覆寫 telegram 設定也不會送錯群
 
-    body、headline、footer 由 caller 負責 HTML escape（動態錯誤字串務必 escape）。
+    HTML escape 的分工（parse_mode=HTML：沒 escape 的 `<` 會讓 Telegram 拒收整則）：
+      - Digest 自己 escape：title、帳戶名稱
+      - 原樣輸出、由 caller 負責：headline、body、note()、footer()（可以放 `<b>`
+        等標籤）；其中的動態字串（例外訊息、外部文字）務必 escape，用
+        `error_line()`／`account_header()` 或 `html.escape`
     """
 
     def __init__(self, title: str, icon: str = ""):

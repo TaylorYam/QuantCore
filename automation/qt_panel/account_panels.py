@@ -21,7 +21,7 @@ from qt_panel import theme
 from qt_panel.widgets import Card, all_text, clear_layout, label
 
 TRADE_HEADERS = ("時間", "代號", "方向", "股數", "成交價", "策略", "狀態")
-ALLOCATION_STEP = 0.05          # 拉桿每格 5%，範圍 0–100%（沿用 Tk Panel 的拉桿）
+ALLOCATION_STEP = 0.05          # 拉桿每格 5%，範圍 0–100%
 ALLOCATION_STEPS = 20
 
 

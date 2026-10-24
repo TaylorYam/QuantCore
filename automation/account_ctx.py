@@ -1,8 +1,8 @@
 """
 AccountCtx — immutable account configuration container.
 
-取代散落在 rebalance_ib / daily_report / moo_fill_check 的模組全域變數
-+ _apply_config() mutation pattern。
+一個帳戶這次執行要用的設定（accounts.json + config.json 合併後凍結）。排程與
+Panel 的函式都明確接收 ctx，模組沒有可變的全域設定。
 
 Why:
     - Thread-safe：凍結的 dataclass，一旦建立無法修改，多帳戶並行零 race
@@ -17,11 +17,6 @@ Usage:
     with Broker().connect(ctx) as conn:
         nav = conn.nav()
     send_account(ctx.name, msg)          # notify：該帳戶的 Telegram（#207）
-
-Migration 注意事項：
-    - 本 module 不動 _apply_config()，只新增 AccountCtx
-    - 後續 S3-S5 slice 會逐步把 callers 從全域變數 migrate 到 ctx
-    - S6 slice 才會刪除 _apply_config() 和全域變數
 """
 
 from __future__ import annotations

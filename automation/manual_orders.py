@@ -1696,93 +1696,91 @@ class ManualOrderService:
         cancellation state. Until IB reports Cancelled (or another terminal
         result such as Filled), the order keeps its Account/symbol lock.
         """
-        with self._operation_lock:
-            row = self.store.get(str(order_ref or ""))
-            if (row is None or not str(order_ref or "").startswith(
-                    MANUAL_ORDER_REF_PREFIX)):
-                raise ManualOrderError("找不到這筆手動委託；未送出取消要求")
-            if row["status"] in TERMINAL_STATUSES:
-                return self._with_status_label(row)
-            if row["status"] in {"CANCEL_PENDING", "CANCEL_UNKNOWN"}:
-                return self._with_status_label(row)
+        row = self.store.get(str(order_ref or ""))
+        if (row is None or not str(order_ref or "").startswith(
+                MANUAL_ORDER_REF_PREFIX)):
+            raise ManualOrderError("找不到這筆手動委託；未送出取消要求")
+        if row["status"] in TERMINAL_STATUSES:
+            return self._with_status_label(row)
+        if row["status"] in {"CANCEL_PENDING", "CANCEL_UNKNOWN"}:
+            return self._with_status_label(row)
 
-            account = self._account_name(row["account_name"])
-            row = self.store.update(
-                order_ref, status="CANCEL_PENDING",
-                status_message=STATUS_LABELS["CANCEL_PENDING"],
-            ) or row
-            try:
-                with self._connection(account) as (ctx, conn):
-                    if row["account_id"] != ctx.account:
-                        raise ManualOrderError(
-                            "委託所屬 Account 與目前設定不符；已阻擋取消"
-                        )
-                    open_trades = self._sync_trades(conn, ctx)
-                    row = self.store.get(order_ref) or row
-                    if row["status"] in TERMINAL_STATUSES:
-                        result = row
-                    else:
-                        trade = _find_manual_trade(open_trades, order_ref, ctx.account)
-                        if trade is None:
-                            result = self.store.update(
-                                order_ref, status="CANCEL_UNKNOWN",
-                                status_message=(
-                                    "IB 尚未提供可驗證的手動委託；保持未結案，請刷新確認"
-                                ),
-                            ) or row
-                        else:
-                            pending = self.store.update(
-                                order_ref,
-                                broker_order_id=getattr(trade.order, "orderId", None),
-                                perm_id=getattr(trade.order, "permId", None),
-                            ) or row
-                            try:
-                                conn.cancel(trade.order)
-                                conn.wait(1.0)
-                                self._sync_trades(conn, ctx)
-                            except Exception as exc:
-                                pending = self.store.update(
-                                    order_ref, status="CANCEL_UNKNOWN",
-                                    status_message=f"取消結果待確認：{exc}",
-                                ) or pending
-                            result = self.store.get(order_ref) or pending
-            except Exception as exc:
+        account = self._account_name(row["account_name"])
+        row = self.store.update(
+            order_ref, status="CANCEL_PENDING",
+            status_message=STATUS_LABELS["CANCEL_PENDING"],
+        ) or row
+        try:
+            with self._connection(account) as (ctx, conn):
+                if row["account_id"] != ctx.account:
+                    raise ManualOrderError(
+                        "委託所屬 Account 與目前設定不符；已阻擋取消"
+                    )
+                open_trades = self._sync_trades(conn, ctx)
                 row = self.store.get(order_ref) or row
-                if row["status"] not in TERMINAL_STATUSES:
-                    row = self.store.update(
-                        order_ref, status="CANCEL_UNKNOWN",
-                        status_message=f"取消結果待確認：{exc}",
-                    ) or row
-                result = row
-            self._dispatch_terminal_notifications()
-            return self._with_status_label(result)
+                if row["status"] in TERMINAL_STATUSES:
+                    result = row
+                else:
+                    trade = _find_manual_trade(open_trades, order_ref, ctx.account)
+                    if trade is None:
+                        result = self.store.update(
+                            order_ref, status="CANCEL_UNKNOWN",
+                            status_message=(
+                                "IB 尚未提供可驗證的手動委託；保持未結案，請刷新確認"
+                            ),
+                        ) or row
+                    else:
+                        pending = self.store.update(
+                            order_ref,
+                            broker_order_id=getattr(trade.order, "orderId", None),
+                            perm_id=getattr(trade.order, "permId", None),
+                        ) or row
+                        try:
+                            conn.cancel(trade.order)
+                            conn.wait(1.0)
+                            self._sync_trades(conn, ctx)
+                        except Exception as exc:
+                            pending = self.store.update(
+                                order_ref, status="CANCEL_UNKNOWN",
+                                status_message=f"取消結果待確認：{exc}",
+                            ) or pending
+                        result = self.store.get(order_ref) or pending
+        except Exception as exc:
+            row = self.store.get(order_ref) or row
+            if row["status"] not in TERMINAL_STATUSES:
+                row = self.store.update(
+                    order_ref, status="CANCEL_UNKNOWN",
+                    status_message=f"取消結果待確認：{exc}",
+                ) or row
+            result = row
+        self._dispatch_terminal_notifications()
+        return self._with_status_label(result)
 
     @_serialize_service_operation
     def refresh_status(self) -> dict:
         """Reconnect with each owning clientId and reconcile active orders."""
-        with self._operation_lock:
-            active = self.store.list_active()
-            accounts = list(dict.fromkeys(row["account_name"] for row in active))
-            errors = []
-            for account in accounts:
-                try:
-                    with self._connection(account) as (ctx, conn):
-                        open_trades = self._sync_trades(conn, ctx)
-                        self._enforce_session_routing(conn, ctx, open_trades)
-                except Exception as exc:
-                    errors.append(f"{account}：{exc}")
-                    for row in self.store.list_active(account):
-                        unknown_status = (
-                            "CANCEL_UNKNOWN" if row["status"] in {
-                                "CANCEL_PENDING", "CANCEL_UNKNOWN",
-                            } else "IB_UNKNOWN"
-                        )
-                        self.store.update(
-                            row["order_ref"], status=unknown_status,
-                            status_message=f"IB 對帳失敗；保持未結案：{exc}",
-                        )
-            self._dispatch_terminal_notifications()
-            return {"orders": self.list_orders(active_only=True), "errors": errors}
+        active = self.store.list_active()
+        accounts = list(dict.fromkeys(row["account_name"] for row in active))
+        errors = []
+        for account in accounts:
+            try:
+                with self._connection(account) as (ctx, conn):
+                    open_trades = self._sync_trades(conn, ctx)
+                    self._enforce_session_routing(conn, ctx, open_trades)
+            except Exception as exc:
+                errors.append(f"{account}：{exc}")
+                for row in self.store.list_active(account):
+                    unknown_status = (
+                        "CANCEL_UNKNOWN" if row["status"] in {
+                            "CANCEL_PENDING", "CANCEL_UNKNOWN",
+                        } else "IB_UNKNOWN"
+                    )
+                    self.store.update(
+                        row["order_ref"], status=unknown_status,
+                        status_message=f"IB 對帳失敗；保持未結案：{exc}",
+                    )
+        self._dispatch_terminal_notifications()
+        return {"orders": self.list_orders(active_only=True), "errors": errors}
 
     def list_orders(self, limit: int = 100, *, active_only: bool = False) -> list[dict]:
         rows = (self.store.list_active() if active_only

@@ -48,7 +48,7 @@ def ib_state():
 @pytest.fixture
 def services():
     """手動單 service：連線、帳戶身分、紀錄檔（tmp_path）、通知由送單目標給。
-    背景對帳不開（測試自己按重新整理）；主視窗有沒有啟動它見 test_qt_production_trading。"""
+    背景對帳不開（測試自己按重新整理）；主視窗有沒有啟動它見 test_qt_trading_live。"""
     built = []
 
     def build(**kw):

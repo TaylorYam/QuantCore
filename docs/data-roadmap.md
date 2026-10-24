@@ -116,6 +116,25 @@ silently alter research inputs.
    make I/O a material end-to-end bottleneck, or when DuckDB can be measured in
    the target environment.
 
+### One-off and research scripts (#236)
+
+These `data/` scripts are not run by any scheduled task or by the Panel. Each was
+written for one migration, repair, benchmark or characterization and is kept for
+reproducibility; its header says so. Run them only from an isolated worktree,
+as their own docs describe.
+
+| Script | Purpose | Doc |
+|---|---|---|
+| `backfill_adj_close.py` | one-off Adj Close backfill for `data/stocks` | — |
+| `migrate_data.py` | one-off migration of the old data folders to the unified CSV format | — |
+| `repair_constituents_history.py` | audit and stage historical Constituents repairs (#54) | [constituents-history-repair.md](constituents-history-repair.md) |
+| `characterize_constituents.py` | OLD/NEW Constituents and SP500 signal/state characterization | [constituents-cache.md](constituents-cache.md) |
+| `benchmark_constituents_cache.py` | Excel vs derived Constituents cache timing | [constituents-cache.md](constituents-cache.md) |
+| `benchmark_pipeline.py` | offline SP500 pipeline timing | [data-session-study.md](data-session-study.md) |
+| `benchmark_storage_formats.py` | CSV / Parquet storage benchmark | [data-storage-benchmark.md](data-storage-benchmark.md) |
+| `benchmark_storage_cache.py` | cold/warm cache read benchmark | [data-storage-cold-cache.md](data-storage-cold-cache.md) |
+| `rehearse_sqlite_cutover.py` | offline SQLite trade-log cutover rehearsal | [sqlite-storage.md](sqlite-storage.md) |
+
 ### Tracked follow-ups
 
 There are no open data-quality implementation follow-ups for Issues #82 or #83.

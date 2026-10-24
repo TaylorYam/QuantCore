@@ -30,7 +30,6 @@ def logs(monkeypatch, tmp_path):
     monkeypatch.setattr(excel_logger, "PORTFOLIO_FILE", tmp_path / "portfolio_tracker.xlsx")
     monkeypatch.setattr(excel_logger, "TRADE_FILE", tmp_path / "trade_log.xlsx")
     monkeypatch.setattr(excel_logger, "SQLITE_FILE", tmp_path / "quantcore_logs.sqlite3")
-    monkeypatch.delenv("QUANTCORE_LOG_BACKEND", raising=False)
     return tmp_path
 
 
@@ -151,8 +150,8 @@ def test_unreadable_fill_price_reads_as_zero(tmp_path):
 
 # ── SQLite 後端：Excel 投影讀回同樣的值 ──────────────────────────────
 
-def test_sqlite_backend_projection_reads_back_the_same(logs, monkeypatch):
-    monkeypatch.setenv("QUANTCORE_LOG_BACKEND", "sqlite")
+def test_sqlite_backend_projection_reads_back_the_same(logs, monkeypatch, use_log_backend):
+    use_log_backend("sqlite")
     _on_day(monkeypatch, "2026-10-02")
     _snapshot(100_000.0, "Taylor")
     _trade("Taylor", strategy="SkewLS")

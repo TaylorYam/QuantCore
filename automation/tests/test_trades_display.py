@@ -78,7 +78,6 @@ def test_stock_trades_keep_the_old_label_for_every_written_strategy(written):
 @pytest.fixture
 def trade_log(monkeypatch, tmp_path):
     monkeypatch.setattr(excel_logger, "TRADE_FILE", tmp_path / "trade_log.xlsx")
-    monkeypatch.delenv("QUANTCORE_LOG_BACKEND", raising=False)
 
     def write(account, symbol, strategy, *, fill=True):
         placed = [{"symbol": symbol, "action": "BUY", "qty": 3, "lmt_price": 12.0,

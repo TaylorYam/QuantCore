@@ -23,19 +23,19 @@ class Position:
         self.avgCost = avg_cost
 
 
-def _patch_paths(monkeypatch, tmp_path: Path, log_backend, backend="sqlite"):
+def _patch_paths(monkeypatch, tmp_path: Path, use_log_backend, backend="sqlite"):
     portfolio = tmp_path / "portfolio_tracker.xlsx"
     trades = tmp_path / "trade_log.xlsx"
     db = tmp_path / "quantcore_logs.sqlite3"
     monkeypatch.setattr(excel_logger, "PORTFOLIO_FILE", portfolio)
     monkeypatch.setattr(excel_logger, "TRADE_FILE", trades)
     monkeypatch.setattr(excel_logger, "SQLITE_FILE", db)
-    log_backend(backend)
+    use_log_backend(backend)
     return portfolio, trades, db
 
 
-def test_sqlite_backend_exports_and_retries_by_identity(monkeypatch, tmp_path, log_backend):
-    portfolio, trade_file, db = _patch_paths(monkeypatch, tmp_path, log_backend)
+def test_sqlite_backend_exports_and_retries_by_identity(monkeypatch, tmp_path, use_log_backend):
+    portfolio, trade_file, db = _patch_paths(monkeypatch, tmp_path, use_log_backend)
     positions = [Position("XLK", 5, 100)]
 
     excel_logger.append_daily_snapshot(
@@ -73,10 +73,10 @@ def test_sqlite_backend_exports_and_retries_by_identity(monkeypatch, tmp_path, l
     assert pd.read_excel(trade_file, sheet_name="Trades").shape[0] == 1
 
 
-def test_failed_logger_transaction_preserves_both_projections(monkeypatch, tmp_path, log_backend):
+def test_failed_logger_transaction_preserves_both_projections(monkeypatch, tmp_path, use_log_backend):
     import pytest
 
-    portfolio, trade_file, db = _patch_paths(monkeypatch, tmp_path, log_backend)
+    portfolio, trade_file, db = _patch_paths(monkeypatch, tmp_path, use_log_backend)
     excel_logger.append_daily_snapshot(10000, [Position('XLK', 5, 100)],
                                       {'XLK': 110}, account_name='Taylor',
                                       capture_id='initial')
@@ -97,13 +97,13 @@ def test_failed_logger_transaction_preserves_both_projections(monkeypatch, tmp_p
     assert [p.read_bytes() for p in (portfolio, trade_file)] == before_files
 
 
-def test_first_use_import_and_export_failure_recovery(monkeypatch, tmp_path, log_backend):
-    portfolio, trade_file, db = _patch_paths(monkeypatch, tmp_path, log_backend, "excel")
+def test_first_use_import_and_export_failure_recovery(monkeypatch, tmp_path, use_log_backend):
+    portfolio, trade_file, db = _patch_paths(monkeypatch, tmp_path, use_log_backend, "excel")
     excel_logger.append_daily_snapshot(10000, [Position('XLK', 5, 100)],
                                       {'XLK': 110}, account_name='Taylor')
     assert not db.exists()
     old = portfolio.read_bytes()
-    log_backend('sqlite')
+    use_log_backend('sqlite')
     export = sqlite_store.export_excel
 
     def fail_export(*args):
@@ -143,9 +143,9 @@ def test_daily_snapshot_attributes_long_sector_etfs_by_allocation(monkeypatch):
     assert written[0]["Strategy"] == "SR"                  # 沒給 Allocation：維持舊規則
 
 
-def test_excel_backend_writes_columns_in_the_declared_order(monkeypatch, tmp_path, log_backend):
+def test_excel_backend_writes_columns_in_the_declared_order(monkeypatch, tmp_path, use_log_backend):
     """#209：寫端 dict 的欄序和 SNAPSHOT_FIELDS／TRADE_FIELDS（SQLite 匯出用）一致。"""
-    portfolio, trade_file, _ = _patch_paths(monkeypatch, tmp_path, log_backend, "excel")
+    portfolio, trade_file, _ = _patch_paths(monkeypatch, tmp_path, use_log_backend, "excel")
     excel_logger.append_daily_snapshot(10000, [Position("XLK", 5, 100)], {"XLK": 110},
                                        account_name="Taylor")
     excel_logger.append_trade_log([{"symbol": "XLK", "action": "BUY", "qty": 2,
@@ -186,10 +186,9 @@ def test_backend_comes_from_config_then_default(monkeypatch, tmp_path, caplog,
     assert [r.getMessage() for r in caplog.records] == [f"交易紀錄後端：{backend}（{source}）"]
 
 
-def test_config_backend_routes_the_write_to_sqlite_without_env(monkeypatch, tmp_path, log_backend):
-    """Panel 與排程不帶 wrapper：config.json 一個欄位就讓兩本 xlsx 改由 SQLite 匯出。"""
-    portfolio, trade_file, db = _patch_paths(monkeypatch, tmp_path, log_backend)
-    _backend_world(monkeypatch, tmp_path, {"log_backend": "sqlite"})
+def test_config_backend_routes_the_write_to_sqlite(monkeypatch, tmp_path, use_log_backend):
+    """Panel 與排程都一樣：config.json 一個欄位就讓兩本 xlsx 改由 SQLite 匯出。"""
+    portfolio, trade_file, db = _patch_paths(monkeypatch, tmp_path, use_log_backend)
     excel_logger.append_daily_snapshot(10000, [Position("XLK", 5, 100)], {"XLK": 110},
                                        account_name="Taylor", capture_id="c1")
     assert len(sqlite_store._query(db, "portfolio_snapshots")) == 1
@@ -211,9 +210,8 @@ def test_an_unreadable_config_names_the_cause(tmp_path, monkeypatch, text, reaso
         excel_logger._log_backend()
 
 
-def test_unknown_backend_is_refused_before_writing(monkeypatch, tmp_path, log_backend):
-    portfolio, _, db = _patch_paths(monkeypatch, tmp_path, log_backend)
-    _backend_world(monkeypatch, tmp_path, {"log_backend": "csv"})
+def test_unknown_backend_is_refused_before_writing(monkeypatch, tmp_path, use_log_backend):
+    portfolio, _, db = _patch_paths(monkeypatch, tmp_path, use_log_backend, "csv")
     with pytest.raises(ValueError, match="csv"):
         excel_logger.append_daily_snapshot(10000, [Position("XLK", 5, 100)], {"XLK": 110},
                                            account_name="Taylor")

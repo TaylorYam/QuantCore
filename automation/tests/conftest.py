@@ -188,8 +188,8 @@ def _log_backend_not_from_live_config(tmp_path_factory):
 
 
 @pytest.fixture
-def log_backend(monkeypatch, tmp_path):
-    """`log_backend("sqlite")`：這個測試的交易紀錄後端，照 live 的方式寫在 config.json。"""
+def use_log_backend(monkeypatch, tmp_path):
+    """`use_log_backend("sqlite")`：這個測試的交易紀錄後端，照 live 的方式寫在 config.json。"""
     import excel_logger
 
     def use(backend: str) -> None:

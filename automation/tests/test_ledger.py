@@ -150,8 +150,8 @@ def test_unreadable_fill_price_reads_as_zero(tmp_path):
 
 # ── SQLite 後端：Excel 投影讀回同樣的值 ──────────────────────────────
 
-def test_sqlite_backend_projection_reads_back_the_same(logs, monkeypatch, log_backend):
-    log_backend("sqlite")
+def test_sqlite_backend_projection_reads_back_the_same(logs, monkeypatch, use_log_backend):
+    use_log_backend("sqlite")
     _on_day(monkeypatch, "2026-10-02")
     _snapshot(100_000.0, "Taylor")
     _trade("Taylor", strategy="SkewLS")

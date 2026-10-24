@@ -67,13 +67,10 @@ Runtime appends require an explicit capture or order identity. Reusing that
 identity updates the same row; a new identity on the same date/account/symbol
 is retained as a separate occurrence. Callers can pass `capture_id` to
 `append_daily_snapshot` and `append_trade_log`; broker order ids are used when
-available for trade rows. The code falls back to Excel when neither the
-environment variable nor `log_backend` is set. Until #230 is deployed, live
-scheduled writers and the panel process selected SQLite through the checked-in
-wrapper (activation section below). `install_all_tasks.py` never added the
-wrapper (the live actions were rewritten by hand in #73) and
-`QuantCore_QtPanel.vbs` no longer uses it, so `config.json` must carry
-`"log_backend": "sqlite"` before either runs.
+available for trade rows. The code falls back to Excel when `log_backend` is
+not set, so live `config.json` carries `"log_backend": "sqlite"`. Before #230
+the live writers selected SQLite through a wrapper that set an environment
+variable; that history is in the activation record below.
 
 The isolated staging copy measured a 473.76 ms median to read both Excel
 workbooks versus 22.99 ms for the equivalent SQLite queries (5,054 snapshots
@@ -177,6 +174,17 @@ remains covered by the separate audits and tracked follow-ups in
 
 ### Scheduler activation and rollback record (2026-09-22)
 
+> **Historical record, superseded by #230.** The backend now comes only from
+> `config.json` `log_backend`. On 2026-10-24 the four writer tasks were
+> reinstalled with `install_all_tasks.py` as direct actions
+> (`daily_report.py --account all`, `rebalance_ib.py ...`); executable,
+> principal, triggers and settings were compared before and after and only the
+> wrapper prefix changed. The panel launcher no longer uses a wrapper.
+> `run_with_sqlite_backend.py` and the `QUANTCORE_LOG_BACKEND` override were
+> removed after the first post-reinstall 04:40 and 21:00 runs logged
+> `config.json` as the source. The wrapper, environment variable and the advice
+> not to re-run `install_all_tasks.py` below describe the 2026-09-22 setup only.
+
 The SQLite backend is enabled for the live scheduled log writers. Activation
 followed the frozen-input characterization, real-log rehearsal, CI checks and a
 fresh live import/backup. No task was started during the change. The first
@@ -210,22 +218,13 @@ manual-order path. `install_all_tasks.py::task_specs` defines the expected daily
 report and Tuesday/Wednesday/SkewLS rebalance task names. It registers direct
 Python actions, so editing the legacy `.bat` launchers alone does not switch
 those tasks. The installed actions were checked against this source during
-activation. The checked-in `automation/run_with_sqlite_backend.py` wrapper sets
+activation. The then checked-in `automation/run_with_sqlite_backend.py` wrapper set
 `QUANTCORE_LOG_BACKEND=sqlite` for the four scheduled writers; the panel uses the
 same wrapper for manual orders and was restarted after activation. For future
 task edits, preserve the verified executable, arguments, working directory,
 principal and triggers. Do not use `install_all_tasks.py` to change only the
 backend setting because it replaces multiple tasks. Task XML and launcher
 backups from activation are recorded in the local cutover artifact directory.
-
-**Superseded by #230 (2026-10-24).** The backend now comes from `config.json`
-`log_backend` (live: `"sqlite"`). The four writer tasks were reinstalled with
-`install_all_tasks.py` as direct actions (`daily_report.py --account all`,
-`rebalance_ib.py ...`), with executable, principal, triggers and settings
-compared before and after; only the wrapper prefix was removed. The panel
-launcher no longer uses a wrapper. `run_with_sqlite_backend.py` and the
-`QUANTCORE_LOG_BACKEND` override were then deleted. Re-running
-`install_all_tasks.py` no longer changes where logs are written.
 
 The live activation evidence is stored outside Git under the cutover artifact
 directory. The initial import and acceptance checks on 2026-09-22 reported:
